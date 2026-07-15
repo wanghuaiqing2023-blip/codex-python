@@ -538,6 +538,7 @@ class TerminalHistoryWriter:
     terminal_columns: Callable[[], int] = lambda: 80
     check_resize: Callable[[], None] | None = None
     history_bottom_row: Callable[[bool], int] | None = None
+    prepare_history_insert: Callable[[int], None] | None = None
     clear_bottom_pane: Callable[[], None] | None = None
     render_bottom_pane: Callable[[], None] | None = None
     append_transcript_cell: Callable[[object], None] | None = None
@@ -557,13 +558,15 @@ class TerminalHistoryWriter:
         end: str = "\n",
         reserve_active_bottom_pane: bool = False,
     ) -> None:
+        terminal_active = self.terminal_active()
+        prepared = end == "\n" and self._prepare_terminal_insert(1, terminal_active=terminal_active)
         self.state = run_terminal_history_output_and_flush(
             self.writer,
             self.state,
             text,
             end,
-            terminal_active=self.terminal_active(),
-            check_resize=self.check_resize,
+            terminal_active=terminal_active,
+            check_resize=None if prepared else self.check_resize,
             history_bottom_row=lambda: self._history_bottom_row(reserve_active_bottom_pane),
             clear_bottom_pane=self.clear_bottom_pane,
             render_bottom_pane=self.render_bottom_pane,
@@ -579,14 +582,20 @@ class TerminalHistoryWriter:
         end: str = "\n",
         reserve_active_bottom_pane: bool = False,
     ) -> None:
+        terminal_active = self.terminal_active()
+        row_count = len(terminal_history_cell_insert_plan(self.state, text, self.wrap_width()).lines)
+        prepared = end == "\n" and self._prepare_terminal_insert(
+            row_count,
+            terminal_active=terminal_active,
+        )
         self.state = run_terminal_history_cell_output_and_flush(
             self.writer,
             self.state,
             text,
             end,
             self.wrap_width(),
-            terminal_active=self.terminal_active(),
-            check_resize=self.check_resize,
+            terminal_active=terminal_active,
+            check_resize=None if prepared else self.check_resize,
             history_bottom_row=lambda: self._history_bottom_row(reserve_active_bottom_pane),
             clear_bottom_pane=self.clear_bottom_pane,
             render_bottom_pane=self.render_bottom_pane,
@@ -639,6 +648,14 @@ class TerminalHistoryWriter:
             if self.terminal_active():
                 if self.check_resize is not None:
                     self.check_resize()
+                self._prepare_terminal_insert(
+                    sum(
+                        max(1, (line.width() + self.wrap_width() - 1) // self.wrap_width())
+                        for line in source_lines
+                    ),
+                    terminal_active=True,
+                    check_resize=False,
+                )
                 bottom = self._history_bottom_row(reserve_active_bottom_pane)
                 insert_terminal_history_lines_and_flush(
                     self.writer,
@@ -673,12 +690,18 @@ class TerminalHistoryWriter:
         reserve_active_bottom_pane: bool = False,
         render_bottom_pane: bool = True,
     ) -> None:
+        materialized = tuple(str(line) for line in lines)
+        terminal_active = self.terminal_active()
+        prepared = self._prepare_terminal_insert(
+            len(materialized),
+            terminal_active=terminal_active,
+        )
         self.state = run_terminal_history_lines_output_and_flush(
             self.writer,
             self.state,
-            lines,
-            terminal_active=self.terminal_active(),
-            check_resize=self.check_resize,
+            materialized,
+            terminal_active=terminal_active,
+            check_resize=None if prepared else self.check_resize,
             history_bottom_row=lambda: self._history_bottom_row(reserve_active_bottom_pane),
             clear_bottom_pane=self.clear_bottom_pane if clear_bottom_pane else None,
             render_bottom_pane=self.render_bottom_pane if render_bottom_pane else None,
@@ -711,6 +734,21 @@ class TerminalHistoryWriter:
         if self.history_bottom_row is None:
             raise ValueError("history_bottom_row callback is required for terminal history insertion")
         return self.history_bottom_row(reserve_active_bottom_pane)
+
+    def _prepare_terminal_insert(
+        self,
+        inserted_rows: int,
+        *,
+        terminal_active: bool,
+        check_resize: bool = True,
+    ) -> bool:
+        if not terminal_active:
+            return False
+        if check_resize and self.check_resize is not None:
+            self.check_resize()
+        if self.prepare_history_insert is not None:
+            self.prepare_history_insert(max(0, int(inserted_rows)))
+        return True
 
     def _append_text_transcript_cell(self, text: str) -> None:
         if self.append_transcript_cell is None:
@@ -1236,12 +1274,9 @@ def insert_terminal_history_lines(
     if clear_bottom_pane is not None:
         clear_bottom_pane()
     if mode is InsertHistoryMode.ZELLIJ_RAW:
-        # Fixed Rust baseline 1c7832f, insert_history::ZellijRaw: write the
-        # finalized source rows through the terminal's full scrolling surface,
-        # then advance blank rows for the inline viewport. Python's hybrid
-        # backend uses this branch because it does not own ratatui's complete
-        # viewport cursor model; partial-region scrolling can otherwise lose
-        # rows from Windows Terminal scrollback.
+        # Rust insert_history::ZellijRaw is a Zellij-only fallback because
+        # Zellij does not preserve terminal soft-wrap continuation inside a
+        # scroll region. Other terminal backends use the Standard branch.
         reset_scroll_region(writer)
         screen_bottom = max(int(terminal_rows or history_bottom_row), int(history_bottom_row))
         viewport_top = min(screen_bottom, max(1, int(history_bottom_row) + 1))

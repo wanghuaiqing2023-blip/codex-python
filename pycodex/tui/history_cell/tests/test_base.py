@@ -48,6 +48,28 @@ def test_prefixed_wrapped_cell_handles_zero_width_and_prefixes() -> None:
     assert texts(cell.raw_lines()) == ["abcdef"]
 
 
+def test_prefixed_wrapped_cell_uses_initial_prefix_only_once_across_source_lines() -> None:
+    # Rust owner: history_cell::base::PrefixedWrappedHistoryCell delegates to
+    # adaptive_wrap_lines, whose initial indent applies only to the first line.
+    cell = PrefixedWrappedHistoryCell.new(["one", "two"], "> ", "  ")
+
+    assert texts(cell.display_lines(80)) == ["> one", "  two"]
+
+
+def test_prefixed_wrapped_cell_preserves_prefix_span_styles() -> None:
+    cell = PrefixedWrappedHistoryCell.new(
+        "content",
+        Line.from_spans([Span("✔ ", "green")]),
+        "  ",
+    )
+
+    rendered = cell.display_lines(80)
+    assert [(span.content, span.style) for span in rendered[0].spans] == [
+        ("✔ ", "green"),
+        ("content", None),
+    ]
+
+
 def test_composite_history_cell_joins_non_empty_parts_with_blank_lines() -> None:
     first = PlainHistoryCell.new(["one"])
     empty = PlainHistoryCell.new([])

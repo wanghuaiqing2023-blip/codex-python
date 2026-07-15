@@ -5,19 +5,13 @@
     InitialHistoryReplayBuffer,
     ResizeReflowPlan,
     ResizeReflowState,
-    TerminalBottomPaneFootprintRenderPass,
-    TerminalBottomPaneFootprintTracker,
     TerminalResizeCoordinator,
     TerminalResizeHistoryReplayer,
     TerminalResizeReflowPlan,
     TerminalResizeRuntimeState,
     begin_initial_history_replay_buffer_plan,
     begin_thread_switch_history_replay_buffer_plan,
-    bottom_pane_footprint_transition,
-    bottom_pane_footprint_transition_for_footprints,
     buffer_initial_history_replay_display_lines,
-    create_terminal_bottom_pane_footprint_cycle_runner,
-    create_terminal_bottom_pane_footprint_tracker,
     display_lines_for_history_insert,
     finish_initial_history_replay_buffer_plan,
     handle_draw_size_change_plan,
@@ -25,7 +19,6 @@
     maybe_finish_stream_reflow_plan,
     maybe_run_resize_reflow,
     history_line_wrap_policy,
-    plan_terminal_bottom_pane_footprint_reflow,
     plan_terminal_resize_reflow,
     plan_terminal_size_change_reflow,
     plan_terminal_stream_finish_reflow,
@@ -43,12 +36,6 @@
     render_transcript_lines_for_reflow,
     reflow_transcript_now,
     reset_history_emission_state,
-    run_terminal_bottom_pane_footprint_clear_cycle,
-    run_terminal_bottom_pane_footprint_external_repaint,
-    run_terminal_bottom_pane_footprint_render_cycle,
-    run_terminal_bottom_pane_footprint_render_cycle_for_context,
-    run_terminal_bottom_pane_footprint_render_cycle_for_view_state,
-    run_terminal_bottom_pane_footprint_reflow,
     run_terminal_layout_activation,
     run_terminal_layout_deactivation,
     run_terminal_history_state_viewport_repaint_for_width,
@@ -57,14 +44,9 @@
     run_terminal_resize_reflow_plan,
     run_terminal_size_change_reflow,
     should_mark_reflow_as_stream_time,
-    terminal_history_bottom_row,
-    terminal_history_bottom_row_for_context,
-    terminal_history_bottom_row_for_view_state,
     terminal_history_state_for_resize_replay,
     trailing_run_start,
 )
-from pycodex.tui.bottom_pane.terminal_footprint import TerminalBottomPaneFootprint
-from pycodex.tui.chatwidget.status_surfaces import TerminalLiveStatusSurface
 from pycodex.tui.insert_history import TerminalHistoryState
 from pycodex.tui.history_cell.messages import AgentMarkdownCell, new_user_prompt
 
@@ -102,69 +84,6 @@ def test_trailing_run_start_ignores_non_matching_tail():
     ]
 
     assert trailing_run_start(cells, "AgentMessageCell") == 2
-
-
-def test_terminal_history_bottom_row_tracks_live_viewport_footprint() -> None:
-    # Rust owners: codex-tui::insert_history writes history above the inline
-    # viewport, and app::resize_reflow rebuilds that viewport after bottom-pane
-    # footprint changes. Python keeps the same boundary as a history/reflow
-    # calculation rather than a bottom-pane frame projection.
-    size = os.terminal_size((80, 24))
-
-    assert terminal_history_bottom_row(size, live_status_active=False) == 20
-    assert terminal_history_bottom_row(size, live_status_active=True) == 18
-    assert terminal_history_bottom_row(size, live_status_active=False, popup_height=3) == 19
-    assert terminal_history_bottom_row(size, live_status_active=True, popup_height=3) == 18
-    assert terminal_history_bottom_row(size, live_status_active=False, reserve_active_bottom_pane=True) == 18
-
-    class RenderContext:
-        popup_height = 3
-
-    assert (
-        terminal_history_bottom_row_for_context(
-            size,
-            live_status=TerminalLiveStatusSurface.inactive(),
-            bottom_pane_context=RenderContext(),
-        )
-        == 19
-    )
-    assert (
-        terminal_history_bottom_row_for_context(
-            size,
-            live_status=TerminalLiveStatusSurface.active_status("working"),
-            bottom_pane_context=RenderContext(),
-        )
-        == 18
-    )
-    assert (
-        terminal_history_bottom_row_for_context(
-            size,
-            live_status=TerminalLiveStatusSurface.inactive(),
-            bottom_pane_context=RenderContext(),
-            reserve_active_bottom_pane=True,
-        )
-        == 18
-    )
-
-    class RenderContextProvider:
-        def __init__(self) -> None:
-            self.calls: list[tuple[os.terminal_size, bool]] = []
-
-        def render_context_for_size(self, provider_size, composer_cursor_visible):
-            self.calls.append((provider_size, composer_cursor_visible()))
-            return RenderContext()
-
-    provider = RenderContextProvider()
-    assert (
-        terminal_history_bottom_row_for_view_state(
-            size,
-            live_status=TerminalLiveStatusSurface.inactive(),
-            bottom_pane_state=provider,
-            composer_cursor_visible=lambda: True,
-        )
-        == 19
-    )
-    assert provider.calls == [(size, True)]
 
 
 def test_buffer_initial_history_replay_display_lines_keeps_newest_rows():
@@ -290,717 +209,6 @@ def test_resize_scheduling_and_reflow_runtime_paths_are_semantic_plans():
     assert deferred.schedule_frame_in == "pending_until"
 
 
-def test_bottom_pane_popup_footprint_change_repaints_history_viewport() -> None:
-    # Rust source contract:
-    # - codex-tui::bottom_pane changes desired height when a popup/view opens.
-    # - codex-tui::app::resize_reflow owns repairing the visible transcript
-    #   viewport for bottom-pane footprint changes, not individual commands.
-    previous = TerminalBottomPaneFootprint(live_status_active=False, popup_height=0)
-    current = TerminalBottomPaneFootprint(live_status_active=False, popup_height=4)
-
-    plan = plan_terminal_bottom_pane_footprint_reflow(
-        terminal_size=os.terminal_size((96, 24)),
-        previous=TerminalLiveStatusSurface.inactive(),
-        current=TerminalLiveStatusSurface.inactive(),
-        previous_footprint=previous,
-        current_footprint=current,
-        active_stream=False,
-    )
-
-    assert plan == TerminalResizeReflowPlan("repaint_history_viewport", pending=False)
-
-
-def test_bottom_pane_footprint_transition_maps_live_rows_for_reflow() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow consumes bottom-pane footprint changes
-    #   as affected live rows before planning retained-history repaint.
-    # - bottom_pane supplies compact footprint values; transition comparison
-    #   and changed/no-op detection belong to resize_reflow.
-    size = os.terminal_size((80, 24))
-    inactive = TerminalLiveStatusSurface.inactive()
-    active = TerminalLiveStatusSurface.active_status("\u2022 Working")
-
-    grow = bottom_pane_footprint_transition(size, inactive, active)
-    same = bottom_pane_footprint_transition(size, active, TerminalLiveStatusSurface.active_status("\u2022 Thinking"))
-    shrink = bottom_pane_footprint_transition(size, active, inactive)
-    popup = bottom_pane_footprint_transition_for_footprints(
-        size,
-        TerminalBottomPaneFootprint(live_status_active=False, popup_height=0),
-        TerminalBottomPaneFootprint(live_status_active=False, popup_height=4),
-    )
-
-    assert grow.old_rows == (21, 22, 23, 24)
-    assert grow.new_rows == (19, 20, 21, 22, 23, 24)
-    assert grow.changed
-    assert not same.changed
-    assert shrink.changed
-    assert popup.old_rows == (21, 22, 23, 24)
-    assert popup.new_rows == (19, 20, 21, 22, 23, 24)
-    assert popup.changed
-
-
-def test_bottom_pane_footprint_tracker_plans_active_view_reflow_timing() -> None:
-    # Rust source contract:
-    # - codex-tui::bottom_pane owns the desired active BottomPaneView footprint.
-    # - codex-tui::app::resize_reflow owns grow/shrink repaint timing so
-    #   transcript history remains visible around live-pane footprint changes.
-    size = os.terminal_size((80, 24))
-    inactive = TerminalLiveStatusSurface.inactive()
-    tracker = TerminalBottomPaneFootprintTracker()
-
-    slash_popup = tracker.plan_reflow(size, inactive, popup_height=3, popup_is_active_view=False)
-    assert not slash_popup.repaint_needed
-
-    grow = tracker.plan_reflow(size, inactive, popup_height=4, popup_is_active_view=True)
-    assert grow.previous == TerminalBottomPaneFootprint(live_status_active=False, popup_height=0)
-    assert grow.current == TerminalBottomPaneFootprint(live_status_active=False, popup_height=4)
-    assert grow.repaint_before_render
-    assert not grow.repaint_after_render
-
-    tracker.update_after_render(inactive, popup_height=4, popup_is_active_view=True)
-    shrink = tracker.plan_reflow(size, inactive, popup_height=0, popup_is_active_view=False)
-    assert shrink.previous == TerminalBottomPaneFootprint(live_status_active=False, popup_height=4)
-    assert shrink.current == TerminalBottomPaneFootprint(live_status_active=False, popup_height=0)
-    assert not shrink.repaint_before_render
-    assert shrink.repaint_after_render
-
-
-def test_create_terminal_bottom_pane_footprint_tracker_keeps_tracker_state_in_owner() -> None:
-    # Rust owner: codex-tui::app::resize_reflow owns bottom-pane footprint
-    # tracker state construction; terminal controllers should request the
-    # owner-managed tracker instead of instantiating repaint state directly.
-    tracker = create_terminal_bottom_pane_footprint_tracker()
-
-    assert isinstance(tracker, TerminalBottomPaneFootprintTracker)
-    assert tracker.previous() == TerminalBottomPaneFootprint(live_status_active=False, popup_height=0)
-
-
-def test_bottom_pane_footprint_tracker_runs_render_cycle_around_reflow() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns before/after history repaint timing
-    #   for bottom-pane footprint changes.
-    # - Terminal controllers supply repaint/render callbacks instead of
-    #   duplicating the sequencing.
-    size = os.terminal_size((80, 24))
-    inactive = TerminalLiveStatusSurface.inactive()
-    tracker = TerminalBottomPaneFootprintTracker()
-    calls: list[str] = []
-
-    rendered = tracker.render_with_reflow(
-        size,
-        inactive,
-        popup_height=4,
-        popup_is_active_view=True,
-        repaint=lambda previous, current: calls.append(f"repaint:{previous.popup_height}->{current.popup_height}"),
-        render=lambda: calls.append("render") or True,
-        render_after_repaint=lambda: calls.append("rerender") or True,
-    )
-
-    assert rendered is True
-    assert calls == ["repaint:0->4", "render"]
-    assert tracker.popup_height == 4
-    assert tracker.popup_was_active_view is True
-
-    calls.clear()
-
-    rendered = tracker.render_with_reflow(
-        size,
-        inactive,
-        popup_height=0,
-        popup_is_active_view=False,
-        repaint=lambda previous, current: calls.append(f"repaint:{previous.popup_height}->{current.popup_height}"),
-        render=lambda: calls.append("render") or True,
-        render_after_repaint=lambda: calls.append("rerender") or True,
-    )
-
-    assert rendered is True
-    assert calls == ["render", "repaint:4->0", "rerender"]
-    assert tracker.popup_height == 0
-    assert tracker.popup_was_active_view is False
-
-
-def test_bottom_pane_footprint_tracker_supplies_render_passes_for_controller() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns before/after history repaint timing
-    #   for bottom-pane footprint changes.
-    # - Python's hybrid controller supplies the concrete render callback, but
-    #   resize_reflow owns which live-pane footprint the first and follow-up
-    #   render must clear.
-    size = os.terminal_size((80, 24))
-    inactive = TerminalLiveStatusSurface.inactive()
-    tracker = TerminalBottomPaneFootprintTracker()
-    calls: list[str] = []
-    passes: list[TerminalBottomPaneFootprintRenderPass] = []
-
-    def render(pass_state: TerminalBottomPaneFootprintRenderPass) -> bool:
-        passes.append(pass_state)
-        calls.append("render")
-        return True
-
-    assert tracker.render_with_reflow_passes(
-        size,
-        inactive,
-        popup_height=4,
-        popup_is_active_view=True,
-        check_resize=True,
-        repaint=lambda previous, current: calls.append(f"repaint:{previous.popup_height}->{current.popup_height}"),
-        render=render,
-    )
-
-    assert calls == ["repaint:0->4", "render"]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=True,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        )
-    ]
-
-    calls.clear()
-    passes.clear()
-
-    assert tracker.render_with_reflow_passes(
-        size,
-        inactive,
-        popup_height=0,
-        popup_is_active_view=False,
-        check_resize=True,
-        repaint=lambda previous, current: calls.append(f"repaint:{previous.popup_height}->{current.popup_height}"),
-        render=render,
-    )
-
-    assert calls == ["render", "repaint:4->0", "render"]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=True,
-            clear_popup_height=4,
-            clear_live_status_active=False,
-        ),
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=False,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        ),
-    ]
-
-
-def test_bottom_pane_footprint_cycle_runner_builds_history_bottom_row_callback() -> None:
-    # Rust owner: codex-tui::app::resize_reflow owns history viewport bounds
-    # above the inline bottom pane. Terminal controllers should bind their
-    # terminal-size/live-status/bottom-pane-state providers once and consume
-    # this owner callback instead of collecting those values locally.
-    class Context:
-        def __init__(self, popup_height: int) -> None:
-            self.popup_height = popup_height
-            self.popup_is_active_view = False
-
-    class PaneState:
-        def __init__(self) -> None:
-            self.popup_height = 3
-            self.calls: list[tuple[os.terminal_size, bool]] = []
-
-        def render_context_for_size(self, size, composer_cursor_visible):
-            visible = composer_cursor_visible()
-            self.calls.append((size, visible))
-            return Context(self.popup_height if visible else 0)
-
-    size = [os.terminal_size((80, 24))]
-    live_status = [TerminalLiveStatusSurface.inactive()]
-    cursor_visible = [True]
-    pane_state = PaneState()
-    runner = create_terminal_bottom_pane_footprint_cycle_runner()
-    history_bottom_row = runner.history_bottom_row_callback(
-        terminal_size=lambda: size[0],
-        live_status=lambda: live_status[0],
-        bottom_pane_state=pane_state,
-        composer_cursor_visible=lambda: cursor_visible[0],
-    )
-
-    assert history_bottom_row() == terminal_history_bottom_row_for_view_state(
-        size[0],
-        live_status=live_status[0],
-        bottom_pane_state=pane_state,
-        composer_cursor_visible=lambda: cursor_visible[0],
-    )
-    assert history_bottom_row(True) == terminal_history_bottom_row(
-        size[0],
-        live_status_active=False,
-        popup_height=0,
-        reserve_active_bottom_pane=True,
-    )
-
-    size[0] = os.terminal_size((80, 30))
-    pane_state.popup_height = 0
-    cursor_visible[0] = False
-
-    assert history_bottom_row() == terminal_history_bottom_row(
-        size[0],
-        live_status_active=False,
-        popup_height=0,
-    )
-    assert pane_state.calls[-1] == (os.terminal_size((80, 30)), False)
-
-
-def test_bottom_pane_footprint_cycle_runner_builds_clear_callback() -> None:
-    # Rust owner: codex-tui::app::resize_reflow owns the remembered bottom-pane
-    # footprint reset after a live-pane clear. Terminal controllers should bind
-    # a clear callback once and supply only the terminal-projection clear
-    # factory.
-    live_status = [TerminalLiveStatusSurface.active_status("working")]
-    calls: list[str] = []
-    runner = create_terminal_bottom_pane_footprint_cycle_runner()
-    runner.tracker.live_status_active = True
-    runner.tracker.popup_height = 4
-    runner.tracker.active_tail_height = 3
-    runner.tracker.composer_height = 2
-
-    def clear_factory(
-        status: TerminalLiveStatusSurface,
-        check_resize: bool,
-        footprint: TerminalBottomPaneFootprint,
-    ):
-        calls.append(f"factory:{status.active}:{check_resize}")
-        calls.append(f"footprint:{footprint}")
-
-        def clear() -> bool:
-            calls.append("clear")
-            return True
-
-        return clear
-
-    clear = runner.clear_callback(
-        live_status=lambda: live_status[0],
-        clear_factory=clear_factory,
-    )
-
-    assert clear(False) is True
-
-    assert calls == [
-        "factory:True:False",
-        "footprint:TerminalBottomPaneFootprint(live_status_active=True, popup_height=4, "
-        "active_tail_height=3, composer_height=2)",
-        "clear",
-    ]
-    assert runner.tracker.previous() == TerminalBottomPaneFootprint()
-
-
-def test_bottom_pane_footprint_cycle_runner_builds_render_for_view_state_callback() -> None:
-    # Rust owner: codex-tui::app::resize_reflow owns bottom-pane footprint
-    # render-cycle timing. Terminal controllers should bind size/status/state
-    # providers once and supply only a terminal-projection render-pass factory.
-    class Context:
-        popup_height = 3
-        popup_is_active_view = True
-
-    class PaneState:
-        def __init__(self) -> None:
-            self.calls: list[tuple[os.terminal_size, bool]] = []
-
-        def render_context_for_size(self, size, composer_cursor_visible):
-            visible = composer_cursor_visible()
-            self.calls.append((size, visible))
-            return Context()
-
-    size = [os.terminal_size((80, 24))]
-    live_status = [TerminalLiveStatusSurface.inactive()]
-    cursor_visible = [False]
-    pane_state = PaneState()
-    calls: list[str] = []
-    passes: list[TerminalBottomPaneFootprintRenderPass] = []
-    runner = create_terminal_bottom_pane_footprint_cycle_runner()
-
-    def render_factory(status: TerminalLiveStatusSurface, clear_external_blank_rows: bool):
-        calls.append(f"factory:{status.active}:{clear_external_blank_rows}")
-
-        def render(pass_state, context) -> bool:
-            passes.append(pass_state)
-            calls.append(f"render:{context.popup_height}")
-            return True
-
-        return render
-
-    def run_external_repaint(repaint):
-        calls.append("external:start")
-        repaint()
-        calls.append("external:done")
-
-    render_for_view_state = runner.render_for_view_state_callback(
-        terminal_size=lambda: size[0],
-        live_status=lambda: live_status[0],
-        bottom_pane_state=pane_state,
-        composer_cursor_visible=lambda: cursor_visible[0],
-        repaint_footprint=lambda previous, current: calls.append(
-            f"repaint:{previous.popup_height}->{current.popup_height}"
-        ),
-        run_external_repaint=run_external_repaint,
-        render_factory=render_factory,
-    )
-
-    assert render_for_view_state(check_resize=False, clear_external_blank_rows=True)
-
-    assert pane_state.calls == [(os.terminal_size((80, 24)), False)]
-    assert calls == [
-        "factory:False:True",
-        "external:start",
-        "repaint:0->3",
-        "external:done",
-        "render:3",
-    ]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=False,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        )
-    ]
-
-
-def test_bottom_pane_footprint_clear_cycle_updates_tracker_only_after_clear() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns the remembered bottom-pane
-    #   footprint used by future history repaint decisions.
-    # - Terminal controllers supply the concrete clear callback; they do not
-    #   update tracker state directly.
-    tracker = TerminalBottomPaneFootprintTracker(
-        live_status_active=True,
-        popup_height=3,
-        popup_was_active_view=True,
-    )
-    calls: list[str] = []
-
-    assert not run_terminal_bottom_pane_footprint_clear_cycle(
-        tracker,
-        lambda: calls.append("skip") or False,
-    )
-    assert calls == ["skip"]
-    assert tracker.live_status_active is True
-    assert tracker.popup_height == 3
-    assert tracker.popup_was_active_view is True
-
-    assert run_terminal_bottom_pane_footprint_clear_cycle(
-        tracker,
-        lambda: calls.append("clear") or True,
-    )
-    assert calls == ["skip", "clear"]
-    assert tracker.live_status_active is False
-    assert tracker.popup_height == 0
-
-
-def test_bottom_pane_footprint_external_repaint_uses_resize_owner_lifecycle() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns no-op detection and external repaint
-    #   dispatch around bottom-pane footprint changes.
-    # - Terminal controllers supply callbacks; they do not own the branching.
-    previous = TerminalBottomPaneFootprint(live_status_active=False, popup_height=0)
-    same = TerminalBottomPaneFootprint(live_status_active=False, popup_height=0)
-    current = TerminalBottomPaneFootprint(live_status_active=False, popup_height=4)
-    calls: list[str] = []
-
-    def run_external_repaint(repaint):
-        calls.append("external:start")
-        repaint()
-        calls.append("external:done")
-
-    def repaint(prev: TerminalBottomPaneFootprint, cur: TerminalBottomPaneFootprint) -> None:
-        calls.append(f"repaint:{prev.popup_height}->{cur.popup_height}")
-
-    assert not run_terminal_bottom_pane_footprint_external_repaint(
-        previous,
-        current,
-        None,
-        run_external_repaint=run_external_repaint,
-    )
-    assert not run_terminal_bottom_pane_footprint_external_repaint(
-        previous,
-        same,
-        repaint,
-        run_external_repaint=run_external_repaint,
-    )
-    assert calls == []
-
-    assert run_terminal_bottom_pane_footprint_external_repaint(
-        previous,
-        current,
-        repaint,
-        run_external_repaint=run_external_repaint,
-    )
-    assert calls == ["external:start", "repaint:0->4", "external:done"]
-
-
-def test_bottom_pane_footprint_render_cycle_wraps_external_repaint_lifecycle() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns bottom-pane footprint repaint
-    #   timing around live-pane renders.
-    # - Python controllers supply callbacks; resize_reflow owns the external
-    #   repaint lifecycle and follow-up render pass parameters.
-    size = os.terminal_size((80, 24))
-    inactive = TerminalLiveStatusSurface.inactive()
-    tracker = TerminalBottomPaneFootprintTracker()
-    calls: list[str] = []
-    passes: list[TerminalBottomPaneFootprintRenderPass] = []
-
-    def run_external_repaint(repaint):
-        calls.append("external:start")
-        repaint()
-        calls.append("external:done")
-
-    def repaint(prev: TerminalBottomPaneFootprint, cur: TerminalBottomPaneFootprint) -> None:
-        calls.append(f"repaint:{prev.popup_height}->{cur.popup_height}")
-
-    def render(pass_state: TerminalBottomPaneFootprintRenderPass) -> bool:
-        passes.append(pass_state)
-        calls.append("render")
-        return True
-
-    assert run_terminal_bottom_pane_footprint_render_cycle(
-        tracker,
-        size,
-        inactive,
-        popup_height=4,
-        popup_is_active_view=True,
-        check_resize=True,
-        render=render,
-        repaint_footprint=repaint,
-        run_external_repaint=run_external_repaint,
-    )
-
-    assert calls == ["external:start", "repaint:0->4", "external:done", "render"]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=True,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        )
-    ]
-
-    calls.clear()
-    passes.clear()
-
-    assert run_terminal_bottom_pane_footprint_render_cycle(
-        tracker,
-        size,
-        inactive,
-        popup_height=0,
-        popup_is_active_view=False,
-        check_resize=True,
-        render=render,
-        repaint_footprint=repaint,
-        run_external_repaint=run_external_repaint,
-    )
-
-    assert calls == ["render", "external:start", "repaint:4->0", "external:done", "render"]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=True,
-            clear_popup_height=4,
-            clear_live_status_active=False,
-        ),
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=False,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        ),
-    ]
-
-
-def test_bottom_pane_footprint_render_cycle_for_context_reads_popup_footprint() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns bottom-pane footprint repaint
-    #   timing.
-    # - Terminal controllers pass the bottom-pane render context through this
-    #   owner boundary instead of reading popup footprint fields locally.
-    class RenderContext:
-        popup_height = 3
-        popup_is_active_view = True
-
-    size = os.terminal_size((80, 24))
-    inactive = TerminalLiveStatusSurface.inactive()
-    tracker = TerminalBottomPaneFootprintTracker()
-    calls: list[str] = []
-    passes: list[TerminalBottomPaneFootprintRenderPass] = []
-
-    def run_external_repaint(repaint):
-        calls.append("external:start")
-        repaint()
-        calls.append("external:done")
-
-    def repaint(prev: TerminalBottomPaneFootprint, cur: TerminalBottomPaneFootprint) -> None:
-        calls.append(f"repaint:{prev.popup_height}->{cur.popup_height}")
-
-    def render(pass_state: TerminalBottomPaneFootprintRenderPass) -> bool:
-        passes.append(pass_state)
-        calls.append("render")
-        return True
-
-    assert run_terminal_bottom_pane_footprint_render_cycle_for_context(
-        tracker,
-        size,
-        inactive,
-        bottom_pane_context=RenderContext(),
-        check_resize=False,
-        render=render,
-        repaint_footprint=repaint,
-        run_external_repaint=run_external_repaint,
-    )
-
-    assert calls == ["external:start", "repaint:0->3", "external:done", "render"]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=False,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        )
-    ]
-    assert tracker.previous() == TerminalBottomPaneFootprint(
-        live_status_active=False,
-        popup_height=3,
-    )
-
-
-def test_bottom_pane_footprint_render_cycle_for_view_state_projects_context_once() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns the bottom-pane footprint render
-    #   cycle and consumes the bottom-pane render context for repaint timing.
-    # - Terminal controllers provide owner state and render callbacks, but they
-    #   should not decide when to fetch the context from the bottom-pane owner.
-    class RenderContext:
-        popup_height = 2
-        popup_is_active_view = True
-
-    class RenderContextProvider:
-        def __init__(self) -> None:
-            self.context = RenderContext()
-            self.calls: list[tuple[os.terminal_size, bool]] = []
-
-        def render_context_for_size(self, provider_size, composer_cursor_visible):
-            self.calls.append((provider_size, composer_cursor_visible()))
-            return self.context
-
-    size = os.terminal_size((80, 24))
-    provider = RenderContextProvider()
-    inactive = TerminalLiveStatusSurface.inactive()
-    tracker = TerminalBottomPaneFootprintTracker()
-    calls: list[str] = []
-    contexts: list[object] = []
-    passes: list[TerminalBottomPaneFootprintRenderPass] = []
-
-    def run_external_repaint(repaint):
-        calls.append("external:start")
-        repaint()
-        calls.append("external:done")
-
-    def repaint(prev: TerminalBottomPaneFootprint, cur: TerminalBottomPaneFootprint) -> None:
-        calls.append(f"repaint:{prev.popup_height}->{cur.popup_height}")
-
-    def render(pass_state: TerminalBottomPaneFootprintRenderPass, context: object) -> bool:
-        passes.append(pass_state)
-        contexts.append(context)
-        calls.append("render")
-        return True
-
-    assert run_terminal_bottom_pane_footprint_render_cycle_for_view_state(
-        tracker,
-        size,
-        inactive,
-        bottom_pane_state=provider,
-        composer_cursor_visible=lambda: True,
-        check_resize=False,
-        render=render,
-        repaint_footprint=repaint,
-        run_external_repaint=run_external_repaint,
-    )
-
-    assert provider.calls == [(size, True)]
-    assert contexts == [provider.context]
-    assert calls == ["external:start", "repaint:0->2", "external:done", "render"]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=False,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        )
-    ]
-    assert tracker.previous() == TerminalBottomPaneFootprint(
-        live_status_active=False,
-        popup_height=2,
-    )
-
-
-def test_bottom_pane_footprint_cycle_runner_owns_tracker_state_for_controller() -> None:
-    # Rust source contract:
-    # - codex-tui::app::resize_reflow owns the stateful bottom-pane footprint
-    #   lifecycle used by terminal controllers.
-    # - Controllers provide owner state and callbacks through a semantic
-    #   runner instead of holding the raw tracker and calling low-level cycle
-    #   helpers themselves.
-    class RenderContext:
-        popup_height = 3
-        popup_is_active_view = True
-
-    class RenderContextProvider:
-        def __init__(self) -> None:
-            self.context = RenderContext()
-            self.calls: list[tuple[os.terminal_size, bool]] = []
-
-        def render_context_for_size(self, provider_size, composer_cursor_visible):
-            self.calls.append((provider_size, composer_cursor_visible()))
-            return self.context
-
-    runner = create_terminal_bottom_pane_footprint_cycle_runner()
-    provider = RenderContextProvider()
-    size = os.terminal_size((80, 24))
-    calls: list[str] = []
-    passes: list[TerminalBottomPaneFootprintRenderPass] = []
-
-    def run_external_repaint(repaint):
-        calls.append("external:start")
-        repaint()
-        calls.append("external:done")
-
-    def repaint(prev: TerminalBottomPaneFootprint, cur: TerminalBottomPaneFootprint) -> None:
-        calls.append(f"repaint:{prev.popup_height}->{cur.popup_height}")
-
-    def render(pass_state: TerminalBottomPaneFootprintRenderPass, context: object) -> bool:
-        passes.append(pass_state)
-        calls.append(f"render:{context.popup_height}")
-        return True
-
-    assert runner.history_bottom_row(
-        size,
-        live_status=TerminalLiveStatusSurface.inactive(),
-        bottom_pane_state=provider,
-        composer_cursor_visible=lambda: True,
-    ) == 19
-
-    assert runner.render_for_view_state(
-        size,
-        TerminalLiveStatusSurface.inactive(),
-        bottom_pane_state=provider,
-        composer_cursor_visible=lambda: True,
-        check_resize=False,
-        render=render,
-        repaint_footprint=repaint,
-        run_external_repaint=run_external_repaint,
-    )
-
-    assert provider.calls == [(size, True), (size, True)]
-    assert calls == ["external:start", "repaint:0->3", "external:done", "render:3"]
-    assert passes == [
-        TerminalBottomPaneFootprintRenderPass(
-            check_resize=False,
-            clear_popup_height=0,
-            clear_live_status_active=False,
-        )
-    ]
-    assert runner.tracker.previous() == TerminalBottomPaneFootprint(
-        live_status_active=False,
-        popup_height=3,
-    )
-
-    assert runner.clear(lambda: calls.append("clear") or True)
-    assert runner.tracker.previous() == TerminalBottomPaneFootprint()
-
-
 def test_maybe_finish_stream_reflow_runs_immediate_source_backed_reflow_after_stream_resize() -> None:
     # Rust source contract:
     # - codex-tui::app::resize_reflow::App::maybe_finish_stream_reflow drains
@@ -1087,9 +295,8 @@ def test_typed_transcript_keeps_rust_user_to_assistant_spacing() -> None:
 
 def test_repaint_terminal_history_viewport_anchors_retained_tail_above_bottom_pane() -> None:
     # Rust source contract:
-    # - app::resize_reflow rebuilds the visible history area from retained
-    #   source-backed history lines after terminal or bottom-pane footprint
-    #   changes.
+    # - app::resize_reflow rebuilds visible history from retained source-backed
+    #   lines after transcript reflow; tui supplies the current history bound.
     writer = StringIO()
 
     painted = repaint_terminal_history_viewport(
@@ -1340,8 +547,8 @@ def test_run_terminal_history_state_scrollback_replay_resets_then_replays() -> N
 
 def test_run_terminal_history_state_scrollback_replay_insert_preserves_live_status_footprint() -> None:
     # Rust owner: codex-tui::app::resize_reflow owns resize replay ordering.
-    # The terminal product path must rebuild retained scrollback while
-    # reserving an active bottom-pane status footprint.
+    # The replay batch preserves the active-status reservation supplied through
+    # insert_history; tui remains the viewport-geometry owner.
     state = TerminalHistoryState(
         history_has_content=True,
         history_ended_with_blank=True,
@@ -1379,14 +586,14 @@ def test_plan_terminal_resize_reflow_defers_stream_time_changes() -> None:
     assert plan.pending is True
 
 
-def test_plan_terminal_resize_reflow_routes_terminal_and_pane_repairs() -> None:
+def test_plan_terminal_resize_reflow_routes_only_terminal_size_changes() -> None:
     resize = plan_terminal_resize_reflow(
         trigger="terminal_resize",
         changed=True,
         active_stream=False,
     )
-    footprint = plan_terminal_resize_reflow(
-        trigger="bottom_pane_footprint",
+    unrelated = plan_terminal_resize_reflow(
+        trigger="bottom_pane_viewport",
         changed=True,
         active_stream=False,
     )
@@ -1399,81 +606,10 @@ def test_plan_terminal_resize_reflow_routes_terminal_and_pane_repairs() -> None:
 
     assert resize.action == "replay_history_scrollback"
     assert resize.pending is False
-    assert footprint.action == "repaint_history_viewport"
-    assert footprint.pending is False
+    assert unrelated.action == "none"
+    assert unrelated.pending is False
     assert unchanged.action == "none"
     assert unchanged.pending is True
-
-
-def test_plan_terminal_bottom_pane_footprint_reflow_maps_surface_change_to_resize_plan() -> None:
-    # Rust source contract:
-    # - codex-tui::bottom_pane requests redraw when status indicator footprint
-    #   changes, and app::resize_reflow maps that footprint change to retained
-    #   history viewport repair in the terminal product path.
-    size = os.terminal_size((80, 24))
-    idle = TerminalLiveStatusSurface.inactive()
-    active = TerminalLiveStatusSurface.active_status("\u2022 Working")
-
-    repair = plan_terminal_bottom_pane_footprint_reflow(
-        terminal_size=size,
-        previous=idle,
-        current=active,
-        active_stream=False,
-    )
-    deferred = plan_terminal_bottom_pane_footprint_reflow(
-        terminal_size=size,
-        previous=idle,
-        current=active,
-        active_stream=True,
-    )
-    unchanged = plan_terminal_bottom_pane_footprint_reflow(
-        terminal_size=size,
-        previous=active,
-        current=TerminalLiveStatusSurface.active_status("\u2022 Thinking"),
-        active_stream=False,
-        pending=True,
-    )
-
-    assert repair == TerminalResizeReflowPlan("repaint_history_viewport")
-    assert deferred == TerminalResizeReflowPlan("defer_until_stream_finish", pending=True)
-    assert unchanged == TerminalResizeReflowPlan("none", pending=True)
-
-
-def test_run_terminal_bottom_pane_footprint_reflow_guards_inactive_path() -> None:
-    size = os.terminal_size((80, 24))
-    calls: list[TerminalResizeReflowPlan] = []
-
-    ran = run_terminal_bottom_pane_footprint_reflow(
-        terminal_active=False,
-        terminal_size=size,
-        previous=TerminalLiveStatusSurface.inactive(),
-        current=TerminalLiveStatusSurface.active_status("\u2022 Working"),
-        active_stream=False,
-        pending=False,
-        run_reflow_plan=calls.append,
-    )
-
-    assert ran is False
-    assert calls == []
-
-
-def test_run_terminal_bottom_pane_footprint_reflow_dispatches_even_none_plan() -> None:
-    size = os.terminal_size((80, 24))
-    active = TerminalLiveStatusSurface.active_status("\u2022 Working")
-    calls: list[TerminalResizeReflowPlan] = []
-
-    ran = run_terminal_bottom_pane_footprint_reflow(
-        terminal_active=True,
-        terminal_size=size,
-        previous=active,
-        current=TerminalLiveStatusSurface.active_status("\u2022 Thinking"),
-        active_stream=False,
-        pending=True,
-        run_reflow_plan=calls.append,
-    )
-
-    assert ran is True
-    assert calls == [TerminalResizeReflowPlan("none", pending=True)]
 
 
 def test_plan_terminal_size_change_reflow_initializes_without_replay() -> None:
@@ -1926,29 +1062,6 @@ def test_terminal_resize_coordinator_required_stream_finish_replays_canonical_sc
 
     assert coordinator.run_stream_finish_reflow() is True
     assert calls == ["reset", "external:start", "replay", "external:end", "frame"]
-
-
-def test_terminal_resize_coordinator_dispatches_bottom_pane_footprint_reflow() -> None:
-    calls: list[str] = []
-    coordinator = TerminalResizeCoordinator(
-        terminal_active=lambda: True,
-        current_size=lambda: os.terminal_size((80, 24)),
-        active_stream=lambda: False,
-        reset_terminal_scroll_region=lambda: calls.append("reset"),
-        render_bottom_pane=lambda: calls.append("render"),
-        repaint_history_viewport=lambda: calls.append("repaint"),
-        replay_history_scrollback=lambda: calls.append("replay"),
-    )
-    coordinator.activate_layout()
-
-    ran = coordinator.run_bottom_pane_footprint_reflow(
-        previous=TerminalLiveStatusSurface.inactive(),
-        current=TerminalLiveStatusSurface.active_status("\u2022 Working"),
-    )
-
-    assert ran is True
-    assert coordinator.pending is False
-    assert calls == ["render", "repaint"]
 
 
 def test_terminal_resize_history_replayer_repaints_viewport_from_live_state() -> None:

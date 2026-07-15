@@ -13,6 +13,7 @@ from typing import Protocol, TypeAlias
 
 from .selection_popup_common import TerminalPopupLine as TerminalBottomPanePopupLine
 from ..chatwidget.status_surfaces import TerminalLiveStatusSurface
+from ..tui import Rect
 
 
 @dataclass(frozen=True)
@@ -74,9 +75,10 @@ class TerminalBottomPaneRenderContextProtocol(Protocol):
 
 
 class TerminalBottomPaneRenderPassProtocol(Protocol):
-    """Resize-owned render pass consumed by terminal request builders."""
+    """TUI-owned render pass consumed by terminal request builders."""
 
     check_resize: bool
+    viewport_area: Rect
     clear_popup_height: int
     clear_live_status_active: bool
     clear_active_tail_height: int
@@ -115,6 +117,9 @@ class TerminalBottomPaneClearRequest:
     def projection_cursor_visible(self) -> bool | None:
         return None
 
+    def projection_viewport_area(self) -> Rect | None:
+        return None
+
 
 @dataclass(frozen=True)
 class TerminalBottomPaneRenderRequest:
@@ -137,6 +142,7 @@ class TerminalBottomPaneRenderRequest:
     active_tail_lines: tuple[str, ...] = ()
     clear_active_tail_height: int = 0
     clear_composer_height: int = 1
+    viewport_area: Rect | None = None
 
     def action_plan(self) -> TerminalBottomPaneActionPlan:
         return terminal_bottom_pane_render_plan(
@@ -164,6 +170,9 @@ class TerminalBottomPaneRenderRequest:
 
     def projection_cursor_visible(self) -> bool | None:
         return self.cursor_visible
+
+    def projection_viewport_area(self) -> Rect | None:
+        return self.viewport_area
 
 
 TerminalBottomPaneRequest: TypeAlias = TerminalBottomPaneClearRequest | TerminalBottomPaneRenderRequest
@@ -208,6 +217,7 @@ def terminal_bottom_pane_render_request(
     clear_external_blank_rows: bool = False,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    viewport_area: Rect | None = None,
 ) -> TerminalBottomPaneRenderRequest:
     """Build the bottom-pane-owned render request from render context.
 
@@ -234,6 +244,7 @@ def terminal_bottom_pane_render_request(
         clear_external_blank_rows=clear_external_blank_rows,
         clear_active_tail_height=clear_active_tail_height,
         clear_composer_height=clear_composer_height,
+        viewport_area=viewport_area,
     )
 
 
@@ -248,10 +259,10 @@ def terminal_bottom_pane_render_request_for_pass(
     footer_right_text: str = "",
     clear_external_blank_rows: bool = False,
 ) -> TerminalBottomPaneRenderRequest:
-    """Build a render request from a resize-owned render pass.
+    """Build a render request from a TUI-owned render pass.
 
-    Rust owners: ``codex-tui::app::resize_reflow`` owns the render-pass
-    timing fields, while ``codex-tui::bottom_pane`` owns the render request.
+    Rust owners: ``codex-tui::tui`` owns the viewport frame area, while
+    ``codex-tui::bottom_pane`` owns the render request.
     Terminal controllers should pass the pass object through this owner helper
     instead of unpacking pass fields locally.
     """
@@ -269,6 +280,7 @@ def terminal_bottom_pane_render_request_for_pass(
         clear_active_tail_height=int(getattr(render_pass, "clear_active_tail_height", 0)),
         clear_composer_height=int(getattr(render_pass, "clear_composer_height", 1)),
         clear_external_blank_rows=clear_external_blank_rows,
+        viewport_area=getattr(render_pass, "viewport_area", None),
     )
 
 

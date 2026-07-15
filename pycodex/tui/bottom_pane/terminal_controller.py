@@ -1,20 +1,18 @@
 """Terminal bottom-pane controller for the hybrid product path.
 
 The controller wires Rust-owned bottom-pane state to Python's hybrid terminal
-backend.  ``view_stack`` owns draft/popup/active-view semantics,
-``app.resize_reflow`` owns footprint repaint decisions, and
-``custom_terminal`` owns terminal repaint state and side effects through
+backend. ``view_stack`` owns draft/popup/active-view semantics, ``tui`` owns
+the inline viewport, and ``custom_terminal`` owns backend side effects through
 ``terminal_projection``.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Callable, TextIO, TypeVar
+from typing import Any, Callable, TextIO, TypeVar
 
 
 from .chat_composer import TERMINAL_COMPOSER_SHUTDOWN_PLACEHOLDER
-from .terminal_footprint import TerminalBottomPaneFootprint
 from .terminal_projection import TerminalBottomPaneRequestRunner
 from .view_stack import (
     TerminalBottomPaneViewState,
@@ -23,9 +21,7 @@ from .view_stack import (
 )
 _ExternalRepaintResult = TypeVar("_ExternalRepaintResult")
 from ..chatwidget.status_surfaces import TerminalLiveStatusSurface
-from ..app.resize_reflow import (
-    create_terminal_bottom_pane_footprint_cycle_runner,
-)
+from ..tui import create_terminal_bottom_pane_viewport_cycle_runner
 
 
 class TerminalBottomPaneController:
@@ -49,7 +45,6 @@ class TerminalBottomPaneController:
         footer_right_text: Callable[[], str] | None = None,
         open_command_view: TerminalCommandViewFactory | None = None,
         on_selection_events: TerminalSelectionEventHandler | None = None,
-        repaint_footprint: Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], None] | None = None,
         cursor_visible: Callable[[], bool] | None = None,
         set_terminal_title_requires_action: Callable[[bool], None] | None = None,
         command_popup_flags: object | None = None,
@@ -59,44 +54,51 @@ class TerminalBottomPaneController:
         self._set_terminal_title_requires_action = set_terminal_title_requires_action or (lambda _required: None)
         composer_cursor_visible = cursor_visible or (lambda: True)
         self._view_state = TerminalBottomPaneViewState.new(command_popup_flags)
-        self._footprint_runner = create_terminal_bottom_pane_footprint_cycle_runner()
         self._request_runner = TerminalBottomPaneRequestRunner(
             writer,
             terminal_size=terminal_size,
             resize=resize,
         )
-        self._history_bottom_row = self._footprint_runner.history_bottom_row_callback(
+        self._viewport_runner = create_terminal_bottom_pane_viewport_cycle_runner(
+            terminal_size=self._request_runner.terminal_size,
+            resize=resize,
+            scroll_region_up=self._request_runner.scroll_region_up,
+            scroll_region_down=self._request_runner.scroll_region_down,
+            clear_after_position=self._request_runner.clear_after_position,
+            invalidate_viewport=self._request_runner.invalidate_viewport,
+        )
+        self._history_bottom_row = self._viewport_runner.history_bottom_row_callback(
             terminal_size=self._request_runner.terminal_size,
             live_status=live_status,
             bottom_pane_state=self._view_state,
             composer_cursor_visible=composer_cursor_visible,
         )
-        self._clear_bottom_pane = self._footprint_runner.clear_callback(
+        self._resize_reflow_replay_callback = (
+            self._viewport_runner.resize_reflow_replay_callback_factory(
+                terminal_size=self._request_runner.terminal_size,
+                live_status=live_status,
+                bottom_pane_state=self._view_state,
+                composer_cursor_visible=composer_cursor_visible,
+            )
+        )
+        self._clear_bottom_pane = self._viewport_runner.clear_callback(
             live_status=live_status,
             clear_factory=self._request_runner.clear_factory_callback(
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
             ),
         )
-        self._render_for_view_state = self._footprint_runner.render_for_view_state_callback(
+        self._render_for_view_state = self._viewport_runner.render_for_view_state_callback(
             terminal_size=self._request_runner.terminal_size,
             live_status=live_status,
             bottom_pane_state=self._view_state,
             composer_cursor_visible=composer_cursor_visible,
-            repaint_footprint=repaint_footprint,
-            run_external_repaint=self.run_external_repaint,
             render_factory=self._request_runner.render_pass_factory_callback(
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
                 footer_text=footer_text,
                 footer_right_text=footer_right_text or (lambda: ""),
             ),
-        )
-        self._synchronize_footprint = self._footprint_runner.synchronize_for_view_state_callback(
-            terminal_size=self._request_runner.terminal_size,
-            live_status=live_status,
-            bottom_pane_state=self._view_state,
-            composer_cursor_visible=composer_cursor_visible,
         )
 
     def sync_draft(self, draft: str) -> None:
@@ -213,6 +215,17 @@ class TerminalBottomPaneController:
     def history_bottom_row(self, reserve_active_bottom_pane: bool = False) -> int:
         return self._history_bottom_row(reserve_active_bottom_pane)
 
+    def prepare_history_insert(self, inserted_rows: int) -> None:
+        self._viewport_runner.prepare_history_insert(inserted_rows)
+
+    def resize_reflow_replay_callback(
+        self,
+        replay_history_scrollback: Callable[[], Any],
+    ) -> Callable[[], Any]:
+        """Bind app-owned replay behind TUI-owned viewport preparation."""
+
+        return self._resize_reflow_replay_callback(replay_history_scrollback)
+
     def clear(self, *, check_resize: bool = True) -> bool:
         return self._clear_bottom_pane(check_resize)
 
@@ -234,7 +247,6 @@ class TerminalBottomPaneController:
     def render_after_history_repaint(self, *, check_resize: bool = False) -> bool:
         """Render after external history viewport writes may have dirtied blank live rows."""
 
-        self._synchronize_footprint()
         return self.render(check_resize=check_resize, clear_external_blank_rows=False)
 
     def render_without_resize_check(self) -> bool:

@@ -1,3 +1,5 @@
+"""Rust source: codex/codex-rs/tui/src/chatwidget/permissions_menu.rs."""
+
 from pycodex.tui.chatwidget.permissions_menu import (
     AUTO_REVIEW_DESCRIPTION,
     ApprovalPreset,

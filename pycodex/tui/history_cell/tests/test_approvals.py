@@ -1,5 +1,7 @@
 """Parity tests for codex-rs/tui/src/history_cell/approvals.rs."""
 
+# Rust owner: codex-tui::history_cell::approvals.
+
 from pycodex.tui.history_cell.approvals import (
     ApprovalDecisionActor,
     ApprovalDecisionSubject,
@@ -25,6 +27,13 @@ def texts(cell, width=120):
     return [line_text(line) for line in cell.display_lines(width)]
 
 
+def styled_spans(cell, width=120):
+    return [
+        [(span.content, span.style) for span in line.spans]
+        for line in cell.display_lines(width)
+    ]
+
+
 def test_exec_snippet_strips_bash_lc_truncates_newlines_and_empty() -> None:
     assert exec_snippet(["bash", "-lc", "echo hello"]) == "echo hello"
     assert truncate_exec_snippet("echo one\necho two") == "echo one ..."
@@ -41,9 +50,20 @@ def test_user_approved_command_this_time_and_for_session() -> None:
         subject, ReviewDecision.approved_for_session(), ApprovalDecisionActor.User
     )
 
-    assert texts(once) == ["OK You approved codex to run echo hello this time"]
+    # Rust snapshot: approvals__tests__short_command_approved.snap.
+    assert texts(once) == ["✔ You approved codex to run echo hello this time"]
     assert texts(session) == [
-        "OK You approved codex to run echo hello every time this session"
+        "✔ You approved codex to run echo hello every time this session"
+    ]
+    assert styled_spans(once) == [
+        [
+            ("✔ ", "green"),
+            ("You ", None),
+            ("approved", "bold"),
+            (" codex to run ", None),
+            ("echo hello", "dim"),
+            (" this time", "bold"),
+        ]
     ]
 
 
@@ -54,7 +74,16 @@ def test_guardian_denied_command_uses_request_wording() -> None:
         ApprovalDecisionActor.Guardian,
     )
 
-    assert texts(cell) == ["NO Request denied for codex to run rm -rf /tmp/x"]
+    assert texts(cell) == ["✗ Request denied for codex to run rm -rf /tmp/x"]
+    assert styled_spans(cell) == [
+        [
+            ("✗ ", "red"),
+            ("Request ", None),
+            ("denied", "bold"),
+            (" for codex to run ", None),
+            ("rm -rf /tmp/x", "dim"),
+        ]
+    ]
 
 
 def test_network_decisions_cover_temporary_and_persisted_rules() -> None:
@@ -79,11 +108,11 @@ def test_network_decisions_cover_temporary_and_persisted_rules() -> None:
     )
 
     assert texts(allowed) == [
-        "OK You approved codex network access to example.com this time"
+        "✔ You approved codex network access to example.com this time"
     ]
-    assert texts(persisted) == ["OK You persisted Codex network access to example.com"]
+    assert texts(persisted) == ["✔ You persisted Codex network access to example.com"]
     assert texts(denied_saved) == [
-        "NO You denied codex network access to example.com and saved that rule"
+        "✗ You denied codex network access to example.com and saved that rule"
     ]
 
 
@@ -106,34 +135,34 @@ def test_policy_amendment_and_timeout_and_abort_wording() -> None:
     )
 
     assert texts(policy) == [
-        "OK You approved codex to always run commands that start with cargo test"
+        "✔ You approved codex to always run commands that start with cargo test"
     ]
     assert texts(timeout) == [
-        "NO Review timed out before codex could run cargo fmt"
+        "✗ Review timed out before codex could run cargo fmt"
     ]
     assert texts(abort) == [
-        "NO You canceled the request for codex network access to api.example.com"
+        "✗ You canceled the request for codex network access to api.example.com"
     ]
 
 
 def test_guardian_patch_and_action_helpers() -> None:
     assert texts(new_guardian_denied_patch_request(["a.py"])) == [
-        "NO Request denied for codex to apply a patch touching a.py"
+        "✗ Request denied for codex to apply a patch touching a.py"
     ]
     assert texts(new_guardian_denied_patch_request(["a.py", "b.py"])) == [
-        "NO Request denied for codex to apply a patch touching 2 files"
+        "✗ Request denied for codex to apply a patch touching 2 files"
     ]
     assert texts(new_guardian_timed_out_patch_request(["a.py"])) == [
-        "NO Review timed out before codex could apply a patch touching a.py"
+        "✗ Review timed out before codex could apply a patch touching a.py"
     ]
     assert texts(new_guardian_denied_action_request("opening file")) == [
-        "NO Request denied for opening file"
+        "✗ Request denied for opening file"
     ]
     assert texts(new_guardian_approved_action_request("opening file")) == [
-        "OK Request approved for opening file"
+        "✔ Request approved for opening file"
     ]
     assert texts(new_guardian_timed_out_action_request("opening file")) == [
-        "NO Review timed out before opening file"
+        "✗ Review timed out before opening file"
     ]
 
 

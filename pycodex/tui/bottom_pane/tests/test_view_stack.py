@@ -330,6 +330,32 @@ def test_view_stack_handles_active_selection_key_and_completion_pop() -> None:
     assert stack.active_view() is None
 
 
+def test_view_stack_number_key_accepts_and_pops_selection_immediately() -> None:
+    # Rust: ListSelectionView handles numeric shortcuts before BottomPane
+    # applies the accepted-view completion pop in the same input pass.
+    events = []
+    selected = []
+    stack = BottomPaneViewStack()
+    stack.replace_with_selection_view(
+        SelectionViewParams(
+            items=[
+                SelectionItem(name="first"),
+                SelectionItem(
+                    name="second",
+                    actions=[lambda _tx: selected.append("second")],
+                    dismiss_on_select=True,
+                ),
+            ],
+        ),
+        events,
+    )
+
+    assert stack.handle_active_key("2", selection_events=events) is True
+
+    assert selected == ["second"]
+    assert stack.active_view() is None
+
+
 def test_view_stack_routes_active_key_through_bottom_pane_view_trait() -> None:
     # Rust owner: bottom_pane::BottomPane routes active-view input through the
     # BottomPaneView trait, not through list-selection-specific helpers.

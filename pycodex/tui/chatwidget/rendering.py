@@ -96,6 +96,7 @@ def terminal_bottom_pane_frame(
     clear_live_status_active: bool = False,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    viewport_area: object | None = None,
 ) -> TerminalBottomPaneFrame:
     """Build the Rust-like bottom-pane frame for the terminal adapter.
 
@@ -117,6 +118,7 @@ def terminal_bottom_pane_frame(
         clear_active_tail_height=clear_active_tail_height,
         composer_height=composer_projection.height,
         clear_composer_height=clear_composer_height,
+        viewport_area=viewport_area,
     )
 
     writes: list[TerminalBottomPaneFrameWrite] = []

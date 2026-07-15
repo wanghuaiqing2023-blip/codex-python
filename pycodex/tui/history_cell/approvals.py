@@ -21,8 +21,8 @@ RUST_MODULE = RustTuiModule(
 )
 
 MAX_EXEC_SNIPPET_GRAPHEMES = 80
-APPROVED_SYMBOL = "OK "
-DENIED_SYMBOL = "NO "
+APPROVED_SYMBOL = "✔ "
+DENIED_SYMBOL = "✗ "
 
 
 def _line_text(line: Line) -> str:
@@ -228,13 +228,9 @@ class ReviewDecision:
         raise ValueError(f"unknown review decision: {value!r}")
 
 
-def _summary_cell(summary: str, approved: bool) -> PrefixedWrappedHistoryCell:
-    return PrefixedWrappedHistoryCell.new(Line.from_text(summary), APPROVED_SYMBOL if approved else DENIED_SYMBOL, "  ")
-
-
-def _command_summary_or_request(command: tuple[str, ...], action_text: str) -> str:
-    snippet = non_empty_exec_snippet(command)
-    return f"{action_text} {snippet}" if snippet else action_text.replace("codex to run", "this request")
+def _summary_cell(summary: Line, approved: bool) -> PrefixedWrappedHistoryCell:
+    symbol = Span(APPROVED_SYMBOL, "green") if approved else Span(DENIED_SYMBOL, "red")
+    return PrefixedWrappedHistoryCell.new(summary, symbol, "  ")
 
 
 def new_approval_decision_cell(
@@ -246,81 +242,180 @@ def new_approval_decision_cell(
     decision = ReviewDecision.coerce(decision)
     actor = ApprovalDecisionActor.coerce(actor)
 
-    approved = decision.kind in {
-        "approved",
-        "approved_execpolicy_amendment",
-        "approved_for_session",
-        "network_policy_amendment",
-    }
-
     if decision.kind == "approved":
         if subject.kind == "command":
             snippet = non_empty_exec_snippet(subject.command)
-            summary = (
-                f"{actor.subject()}approved codex to run {snippet} this time"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("approved", "bold"),
+                    " codex to run ",
+                    Span(snippet, "dim"),
+                    Span(" this time", "bold"),
+                ]
                 if snippet
-                else f"{actor.subject()}approved this request this time"
+                else [
+                    actor.subject(),
+                    Span("approved", "bold"),
+                    " this request",
+                    Span(" this time", "bold"),
+                ]
             )
         else:
-            summary = f"{actor.subject()}approved codex network access to {subject.target} this time"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("approved", "bold"),
+                    " codex network access to ",
+                    Span(subject.target or "", "dim"),
+                    Span(" this time", "bold"),
+                ]
+            )
+        approved = True
     elif decision.kind == "approved_execpolicy_amendment":
         amendment = decision.proposed_execpolicy_amendment
         snippet = exec_snippet(amendment.command if amendment else ())
-        summary = f"{actor.subject()}approved codex to always run commands that start with {snippet}"
+        summary = Line.from_spans(
+            [
+                actor.subject(),
+                Span("approved", "bold"),
+                " codex to always run commands that start with ",
+                Span(snippet, "dim"),
+            ]
+        )
+        approved = True
     elif decision.kind == "approved_for_session":
         if subject.kind == "command":
             snippet = non_empty_exec_snippet(subject.command)
-            summary = (
-                f"{actor.subject()}approved codex to run {snippet} every time this session"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("approved", "bold"),
+                    " codex to run ",
+                    Span(snippet, "dim"),
+                    Span(" every time this session", "bold"),
+                ]
                 if snippet
-                else f"{actor.subject()}approved this request every time this session"
+                else [
+                    actor.subject(),
+                    Span("approved", "bold"),
+                    " this request",
+                    Span(" every time this session", "bold"),
+                ]
             )
         else:
-            summary = f"{actor.subject()}approved codex network access to {subject.target} every time this session"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("approved", "bold"),
+                    " codex network access to ",
+                    Span(subject.target or "", "dim"),
+                    Span(" every time this session", "bold"),
+                ]
+            )
+        approved = True
     elif decision.kind == "network_policy_amendment":
         amendment = decision.network_policy_amendment
         target = subject.target if subject.kind == "network" else (amendment.host if amendment else "")
         if amendment and amendment.action is NetworkPolicyRuleAction.Allow:
-            summary = f"{actor.subject()}persisted Codex network access to {target}"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("persisted", "bold"),
+                    " Codex network access to ",
+                    Span(target or "", "dim"),
+                ]
+            )
             approved = True
         else:
-            summary = f"{actor.subject()}denied codex network access to {target} and saved that rule"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("denied", "bold"),
+                    " codex network access to ",
+                    Span(target or "", "dim"),
+                    " and saved that rule",
+                ]
+            )
             approved = False
     elif decision.kind == "denied":
         if subject.kind == "command":
             snippet = non_empty_exec_snippet(subject.command)
             if actor is ApprovalDecisionActor.User:
-                summary = (
-                    f"{actor.subject()}did not approve codex to run {snippet}"
+                summary = Line.from_spans(
+                    [
+                        actor.subject(),
+                        Span("did not approve", "bold"),
+                        " codex to run ",
+                        Span(snippet, "dim"),
+                    ]
                     if snippet
-                    else f"{actor.subject()}did not approve this request"
+                    else [
+                        actor.subject(),
+                        Span("did not approve", "bold"),
+                        " this request",
+                    ]
                 )
             else:
-                summary = f"Request denied for codex to run {snippet}" if snippet else "Request denied"
+                summary = Line.from_spans(
+                    ["Request ", Span("denied", "bold"), " for codex to run ", Span(snippet, "dim")]
+                    if snippet
+                    else ["Request ", Span("denied", "bold")]
+                )
         else:
-            summary = f"{actor.subject()}did not approve codex network access to {subject.target}"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("did not approve", "bold"),
+                    " codex network access to ",
+                    Span(subject.target or "", "dim"),
+                ]
+            )
         approved = False
     elif decision.kind == "timed_out":
         if subject.kind == "command":
             snippet = non_empty_exec_snippet(subject.command)
-            summary = (
-                f"Review timed out before codex could run {snippet}"
+            summary = Line.from_spans(
+                ["Review ", Span("timed out", "bold"), " before codex could run ", Span(snippet, "dim")]
                 if snippet
-                else "Review timed out before this request could be approved"
+                else [
+                    "Review ",
+                    Span("timed out", "bold"),
+                    " before this request could be approved",
+                ]
             )
         else:
-            summary = f"Review timed out before codex could access {subject.target}"
+            summary = Line.from_spans(
+                [
+                    "Review ",
+                    Span("timed out", "bold"),
+                    " before codex could access ",
+                    Span(subject.target or "", "dim"),
+                ]
+            )
         approved = False
     elif decision.kind == "abort":
         if subject.kind == "command":
             snippet = non_empty_exec_snippet(subject.command)
-            summary = (
-                f"{actor.subject()}canceled the request to run {snippet}"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("canceled", "bold"),
+                    " the request to run ",
+                    Span(snippet, "dim"),
+                ]
                 if snippet
-                else f"{actor.subject()}canceled this request"
+                else [actor.subject(), Span("canceled", "bold"), " this request"]
             )
         else:
-            summary = f"{actor.subject()}canceled the request for codex network access to {subject.target}"
+            summary = Line.from_spans(
+                [
+                    actor.subject(),
+                    Span("canceled", "bold"),
+                    " the request for codex network access to ",
+                    Span(subject.target or "", "dim"),
+                ]
+            )
         approved = False
     else:
         raise ValueError(f"unsupported review decision: {decision.kind}")
@@ -328,32 +423,50 @@ def new_approval_decision_cell(
     return _summary_cell(summary, approved)
 
 
-def _patch_file_summary(files: list[str]) -> str:
-    if len(files) == 1:
-        return f"a patch touching {files[0]}"
-    return f"a patch touching {len(files)} files"
-
-
 def new_guardian_denied_patch_request(files: Iterable[str]) -> PrefixedWrappedHistoryCell:
     file_list = [str(file) for file in files]
-    return _summary_cell(f"Request denied for codex to apply {_patch_file_summary(file_list)}", False)
+    summary = ["Request ", Span("denied", "bold"), " for codex to apply ", "a patch touching "]
+    if len(file_list) == 1:
+        summary.append(Span(file_list[0], "dim"))
+    else:
+        summary.extend([Span(str(len(file_list)), "dim"), " files"])
+    return _summary_cell(Line.from_spans(summary), False)
 
 
 def new_guardian_denied_action_request(summary: str) -> PrefixedWrappedHistoryCell:
-    return _summary_cell(f"Request denied for {summary}", False)
+    return _summary_cell(
+        Line.from_spans(["Request ", Span("denied", "bold"), " for ", Span(summary, "dim")]),
+        False,
+    )
 
 
 def new_guardian_approved_action_request(summary: str) -> PrefixedWrappedHistoryCell:
-    return _summary_cell(f"Request approved for {summary}", True)
+    return _summary_cell(
+        Line.from_spans(["Request ", Span("approved", "bold"), " for ", Span(summary, "dim")]),
+        True,
+    )
 
 
 def new_guardian_timed_out_patch_request(files: Iterable[str]) -> PrefixedWrappedHistoryCell:
     file_list = [str(file) for file in files]
-    return _summary_cell(f"Review timed out before codex could apply {_patch_file_summary(file_list)}", False)
+    summary = [
+        "Review ",
+        Span("timed out", "bold"),
+        " before codex could apply ",
+        "a patch touching ",
+    ]
+    if len(file_list) == 1:
+        summary.append(Span(file_list[0], "dim"))
+    else:
+        summary.extend([Span(str(len(file_list)), "dim"), " files"])
+    return _summary_cell(Line.from_spans(summary), False)
 
 
 def new_guardian_timed_out_action_request(summary: str) -> PrefixedWrappedHistoryCell:
-    return _summary_cell(f"Review timed out before {summary}", False)
+    return _summary_cell(
+        Line.from_spans(["Review ", Span("timed out", "bold"), " before ", Span(summary, "dim")]),
+        False,
+    )
 
 
 def new_review_status_line(message: str) -> PlainHistoryCell:

@@ -217,8 +217,8 @@ def test_terminal_action_builds_surface_requests_from_bottom_pane_context() -> N
 
 
 def test_terminal_action_builds_render_request_from_resize_pass() -> None:
-    # Rust owners: codex-tui::app::resize_reflow owns the render-pass timing
-    # fields, and codex-tui::bottom_pane owns the render request. The terminal
+    # Rust owners: codex-tui::tui owns viewport render-pass timing fields, and
+    # codex-tui::bottom_pane owns the render request. The terminal
     # controller should pass the pass object through this helper rather than
     # unpacking clear/check fields itself.
     class PassState:

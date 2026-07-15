@@ -16,7 +16,7 @@ from pycodex.tui.chatwidget.status_surfaces import TerminalLiveStatusSurface
 def test_terminal_footprint_rows_reserve_idle_status_and_popup_space() -> None:
     # Rust owners: codex-tui::bottom_pane::chat_composer desired_height and
     # BottomPaneView desired_height determine the live-pane footprint consumed
-    # by custom_terminal and app::resize_reflow.
+    # by tui and custom_terminal.
     size = os.terminal_size((80, 24))
 
     assert bottom_pane_height(live_status_active=False) == 4
@@ -32,8 +32,8 @@ def test_terminal_footprint_rows_reserve_idle_status_and_popup_space() -> None:
 
 def test_terminal_footprint_from_live_status_surface() -> None:
     # Rust owners: codex-tui::chatwidget::status_surfaces determines whether
-    # the status surface expands the bottom-pane footprint; app::resize_reflow
-    # consumes the resulting compact footprint value.
+    # the status surface expands the bottom-pane footprint; tui consumes the
+    # resulting compact desired-height value.
     inactive = TerminalLiveStatusSurface.inactive()
     active_without_text = TerminalLiveStatusSurface.active_status()
     active_with_text = TerminalLiveStatusSurface.active_status("\u2022 Working")
@@ -114,7 +114,7 @@ def test_terminal_footprint_owns_popup_layout_rows() -> None:
 
 
 def test_terminal_footprint_assigns_and_clears_wrapped_composer_rows() -> None:
-    # Fixed Rust owners: chat_composer::desired_height and app::resize_reflow.
+    # Fixed Rust owners: chat_composer::desired_height and tui::draw_with_resize_reflow.
     size = os.terminal_size((80, 24))
 
     wrapped = terminal_bottom_pane_layout_rows(

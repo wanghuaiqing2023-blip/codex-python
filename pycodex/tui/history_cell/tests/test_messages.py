@@ -72,6 +72,20 @@ def test_user_history_cell_trims_trailing_blank_message_lines_and_keeps_one_oute
     assert "› line one" in rendered
 
 
+def test_user_history_cell_wraps_with_prompt_only_on_first_line() -> None:
+    # Rust evidence: user_history_cell_wraps_and_prefixes_each_line_snapshot.
+    cell = new_user_prompt("one two three four five six seven")
+
+    assert texts(cell.display_lines(12)) == [
+        "",
+        "› one two",
+        "  three",
+        "  four five",
+        "  six seven",
+        "",
+    ]
+
+
 def test_user_history_cell_raw_lines_include_remote_image_labels() -> None:
     cell = new_user_prompt("hello\n", remote_image_urls=["https://example.com/img.png"])
 

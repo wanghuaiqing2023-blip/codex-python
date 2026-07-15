@@ -14,6 +14,7 @@ from pycodex.tui.bottom_pane.selection_popup_common import (
     build_full_line,
     compute_desc_col,
     measure_rows_height,
+    measure_rows_height_with_col_width_mode,
     menu_surface_inset,
     menu_surface_padding_height,
     render_menu_surface,
@@ -77,6 +78,41 @@ def test_terminal_popup_lines_preserve_selected_row_semantics() -> None:
     assert rendered[0].selected is False
     assert rendered[1].text.startswith("/memories")
     assert rendered[1].selected is True
+
+
+def test_terminal_popup_lines_reserve_measured_height_for_all_wrapped_items() -> None:
+    # Rust source: selection_popup_common requires wrapped rendering to be
+    # paired with measure_rows_height_with_col_width_mode to avoid clipping.
+    rows = [
+        GenericDisplayRow(
+            name=f"{index}. Option {index}",
+            description="A long description that wraps onto another terminal row.",
+        )
+        for index in range(1, 5)
+    ]
+    state = ScrollState(selected_idx=0)
+    column_width = ColumnWidthConfig(ColumnWidthMode.AUTO_ALL_ROWS)
+    width = 44
+
+    rendered = render_terminal_popup_lines(
+        rows,
+        state,
+        width=width,
+        max_results=4,
+        empty_message="no matches",
+        column_width=column_width,
+    )
+
+    expected_height = measure_rows_height_with_col_width_mode(
+        rows,
+        state,
+        max_results=4,
+        width=width + 1,
+        column_width=column_width,
+    )
+    assert len(rendered) == expected_height
+    for index in range(1, 5):
+        assert any(line.text.startswith(f"{index}. Option {index}") for line in rendered)
 
 
 def test_terminal_popup_line_style_maps_selected_semantics_to_terminal_style() -> None:

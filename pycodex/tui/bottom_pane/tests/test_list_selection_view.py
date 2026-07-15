@@ -221,3 +221,61 @@ def test_key_dispatch_and_semantic_render_helpers_cover_runtime_boundaries():
     assert side_layout_width_half_uses_exact_split() is True
     assert side_layout_width_half_falls_back_when_list_would_be_too_narrow() is True
     assert stacked_side_content_is_used_when_side_by_side_does_not_fit() is True
+
+
+def test_number_key_accepts_the_numbered_enabled_item_immediately() -> None:
+    # Rust: bottom_pane::list_selection_view::handle_key_event maps a digit to
+    # the Nth enabled row and calls accept() in the same key event.
+    acted = []
+    view = _view(
+        [
+            SelectionItem(name="disabled", is_disabled=True),
+            SelectionItem(
+                name="first enabled",
+                actions=[lambda _tx: acted.append("first")],
+                dismiss_on_select=True,
+            ),
+            SelectionItem(
+                name="second enabled",
+                actions=[lambda _tx: acted.append("second")],
+                dismiss_on_select=True,
+            ),
+        ]
+    )
+
+    handle_key_event(view, "2")
+
+    assert view.selected_actual_idx() == 2
+    assert acted == ["second"]
+    assert view.completion() is ViewCompletion.ACCEPTED
+
+
+def test_non_search_shortcut_accepts_but_searchable_digit_filters() -> None:
+    # Rust handles display_shortcut and row numbers only for non-searchable
+    # lists; printable digits remain ordinary search input otherwise.
+    acted = []
+    shortcut_view = _view(
+        [
+            SelectionItem(
+                name="accept",
+                display_shortcut="x",
+                actions=[lambda _tx: acted.append("shortcut")],
+                dismiss_on_select=True,
+            )
+        ]
+    )
+    searchable = ListSelectionView.new(
+        SelectionViewParams(
+            items=[SelectionItem(name="version 2", search_value="version 2")],
+            is_searchable=True,
+        ),
+        app_event_tx=[],
+    )
+
+    handle_key_event(shortcut_view, "x")
+    handle_key_event(searchable, "2")
+
+    assert acted == ["shortcut"]
+    assert shortcut_view.completion() is ViewCompletion.ACCEPTED
+    assert searchable.search_query == "2"
+    assert searchable.completion() is None

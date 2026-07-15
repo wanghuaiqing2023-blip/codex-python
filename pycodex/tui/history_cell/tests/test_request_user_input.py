@@ -25,9 +25,11 @@ def test_split_answer_separates_options_from_last_user_note() -> None:
 
 
 def test_wrap_with_prefix_applies_initial_and_subsequent_prefixes() -> None:
+    # Rust source: request_user_input::wrap_with_prefix delegates to the shared
+    # adaptive_wrap_line FirstFit word-wrapping contract.
     wrapped = wrap_with_prefix("alpha beta gamma", 10, "? ", "  ")
 
-    assert texts(wrapped) == ["? alpha be", "  ta gamma"]
+    assert texts(wrapped) == ["? alpha", "  beta", "  gamma"]
 
 
 def test_display_lines_counts_answered_and_marks_unanswered() -> None:

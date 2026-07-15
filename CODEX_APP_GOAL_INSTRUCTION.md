@@ -96,7 +96,8 @@ Testing principle:
 
 Documentation principle:
 - Important progress must be recorded.
-- Use root-level status or porting notes to record:
+- Use root-level status, module `README.md` files, Rust-derived tests, or a
+  focused alignment document to record:
   Rust crate/module, Rust source files, Python target files, behavior contract, tests run, known gaps, and deferred branches.
 - Keep deprecated ledgers clearly marked as deprecated if they no longer match the current module-tree strategy.
 

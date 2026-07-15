@@ -16,6 +16,7 @@ import pycodex.tui.chatwidget.turn_runtime as turn_runtime
 import pycodex.tui.custom_terminal as custom_terminal
 import pycodex.tui.transcript_reflow as transcript_reflow
 from pycodex.app_server_protocol import ThreadGoal, ThreadGoalStatus
+from pycodex.features import Features
 from pycodex.protocol import PermissionProfile, ReasoningEffort
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.chatwidget.protocol import ServerNotification, ServerRequest
@@ -225,15 +226,32 @@ class _ObservingSubmitRuntime(_FakeActiveThreadRuntime):
         return _ObservingEventStream(list(self.events), self.on_before_yield)
 
 
-class _QueuedSubmitRuntime(_FakeActiveThreadRuntime):
+class _QueuedSubmitRuntime(_FakeActiveThreadRuntime):
     def __init__(self, event_batches: list[list[ServerNotification]]) -> None:
         super().__init__([])
         self.event_batches = [list(batch) for batch in event_batches]
 
-    def submit_thread_op(self, thread_id: str, op: AppCommand) -> _ListEventStream:
-        self.submitted.append((thread_id, op))
-        events = self.event_batches.pop(0) if self.event_batches else []
-        return _ListEventStream(events)
+    def submit_thread_op(self, thread_id: str, op: AppCommand) -> _ListEventStream:
+        self.submitted.append((thread_id, op))
+        events = self.event_batches.pop(0) if self.event_batches else []
+        return _ListEventStream(events)
+
+
+class _QueuedObservingSubmitRuntime(_FakeActiveThreadRuntime):
+    def __init__(
+        self,
+        event_batches: list[list[ServerNotification]],
+        observers: list[Any | None],
+    ) -> None:
+        super().__init__([])
+        self.event_batches = [list(batch) for batch in event_batches]
+        self.observers = list(observers)
+
+    def submit_thread_op(self, thread_id: str, op: AppCommand) -> _ObservingEventStream:
+        self.submitted.append((thread_id, op))
+        events = self.event_batches.pop(0) if self.event_batches else []
+        observer = self.observers.pop(0) if self.observers else None
+        return _ObservingEventStream(events, observer)
 
 
 class _TtyStringIO(io.StringIO):
@@ -260,6 +278,38 @@ def _patch_terminal_input_source(monkeypatch: Any, source: Any) -> None:
         "TerminalInputSourceProvider",
         lambda stdin: SimpleNamespace(get=lambda: source),
     )
+
+
+def test_terminal_runtime_selects_history_mode_from_zellij_detection(monkeypatch) -> None:
+    # Rust tui::Tui caches terminal_info().is_zellij(); stdout being a TTY is
+    # not sufficient to select insert_history::ZellijRaw.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: os.terminal_size((80, 24)))
+    runtime = terminal_runtime.TuiAppRuntime(_FakeActiveThreadRuntime([]))
+
+    monkeypatch.setattr(
+        terminal_runtime,
+        "terminal_info",
+        lambda: SimpleNamespace(is_zellij=lambda: False),
+    )
+    windows_terminal_runner = terminal_runtime.TerminalTuiRunner(
+        runtime,
+        stdout=_TtyStringIO(),
+        stdin=_TtyStringIO(),
+    )
+    assert windows_terminal_runner._history.insert_mode is terminal_runtime.InsertHistoryMode.STANDARD
+
+    monkeypatch.setattr(
+        terminal_runtime,
+        "terminal_info",
+        lambda: SimpleNamespace(is_zellij=lambda: True),
+    )
+    zellij_runner = terminal_runtime.TerminalTuiRunner(
+        runtime,
+        stdout=_TtyStringIO(),
+        stdin=_TtyStringIO(),
+    )
+    assert zellij_runner._history.insert_mode is terminal_runtime.InsertHistoryMode.ZELLIJ_RAW
 
 
 def test_terminal_runtime_turn_input_arbitrates_interrupt_without_losing_text(monkeypatch) -> None:
@@ -390,8 +440,12 @@ def test_terminal_runtime_resolves_active_turn_exec_approval_with_direction_keys
     assert "Would you like to run the following command?" in stdout.getvalue()
     assert "write file" in rendered
     assert rendered.count(
-        "You approved codex to run 'Set-Content hello.txt hi' this time"
+        "✔ You approved codex to run 'Set-Content hello.txt hi' this time"
     ) == 1
+    raw = stdout.getvalue()
+    assert "\x1b[32m✔ " in raw
+    assert "\x1b[1mapproved" in raw
+    assert "\x1b[2m'Set-Content hello.txt hi'" in raw
     assert "\x1b]0;[ ! ] Action Required\x07" in stdout.getvalue()
     assert "\x1b]0;\x07" in stdout.getvalue()
     assert "\x07" in stdout.getvalue()
@@ -436,7 +490,8 @@ def test_terminal_runtime_exec_approval_fullscreen_shortcut_uses_static_pager(mo
 def test_terminal_runtime_approval_resize_preserves_history_and_view_identity(monkeypatch) -> None:
     # Fixed Rust commit 1c7832f owners:
     # bottom_pane::approval_overlay owns the active request while
-    # app::resize_reflow/custom_terminal repair the changing viewport. The
+    # tui/custom_terminal repair the changing viewport; app::resize_reflow
+    # replays retained history only for the physical resize. The
     # prompt and typed decision remain canonical history across both footprint
     # growth and a physical resize during the pending approval.
     size = [os.terminal_size((96, 24))]
@@ -493,8 +548,18 @@ def test_terminal_runtime_approval_resize_preserves_history_and_view_identity(mo
     assert "Would you like to run the following command?" in snapshots["resized"]
     assert "\u203a write file" in snapshots["raw_resized"]
     assert snapshots["completed"].count("\u203a write file") == 1
-    assert snapshots["completed"].count("You approved codex to run") == 1
+    assert snapshots["completed"].count("✔ You approved codex to run") == 1
     assert "Would you like to run the following command?" not in snapshots["completed"]
+    completed_lines = snapshots["completed"].splitlines()
+    prompt_row = next(index for index, line in enumerate(completed_lines) if "› write file" in line)
+    approval_row = next(index for index, line in enumerate(completed_lines) if "✔ You approved" in line)
+    composer_row = max(index for index, line in enumerate(completed_lines) if line.lstrip().startswith("›"))
+    footer_row = max(index for index, line in enumerate(completed_lines) if "gpt-test high" in line)
+    # Rust UserHistoryCell ends with a blank row, and App inserts one separator
+    # before the following non-continuation approval cell.
+    assert approval_row - prompt_row == 3
+    assert composer_row > approval_row
+    assert footer_row > composer_row
 
 
 def test_terminal_runtime_user_input_request_round_trips_and_records_typed_history(monkeypatch) -> None:
@@ -699,7 +764,8 @@ def test_terminal_runtime_line_input_source_submits_prompt(monkeypatch) -> None:
     assert runtime.submitted
     submitted_items = runtime.submitted[0][1].payload.get("items") or []
     assert submitted_items[0].payload.get("text") == "hello?"
-    assert _user_history_insert_at(18, "\u203a hello?") in stdout.getvalue()
+    rendered = vt_screen_text(stdout.getvalue(), rows=24, cols=80)
+    assert rendered.count("\u203a hello?") == 1
 
 
 def test_terminal_runtime_status_command_writes_rust_status_cell_without_user_turn(monkeypatch) -> None:
@@ -940,7 +1006,8 @@ def test_terminal_runtime_key_stream_submits_ascii_prompt(monkeypatch) -> None:
 
     submitted_items = runtime.submitted[0][1].payload.get("items") or []
     assert submitted_items[0].payload.get("text") == "hello"
-    assert _user_history_insert_at(18, "\u203a hello") in stdout.getvalue()
+    rendered = vt_screen_text(stdout.getvalue(), rows=24, cols=80)
+    assert rendered.count("\u203a hello") == 1
 
 
 def test_terminal_runtime_left_moves_real_composer_cursor_before_insertion(monkeypatch) -> None:
@@ -1041,6 +1108,51 @@ def test_terminal_runtime_slash_popup_renders_and_moves_selection(monkeypatch) -
     assert "\x1b[94m/memories" in output
     assert "\x1b[7m/memories" not in output
     assert runtime.submitted == []
+
+
+def test_terminal_runtime_slash_popup_grows_below_composer_without_covering_history(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - bottom_pane::chat_composer lays out composer before command_popup.
+    # - tui::draw_with_resize_reflow resizes the inline viewport from the complete
+    #   BottomPane::desired_height before drawing, preserving transcript rows.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((96, 80)))
+    monkeypatch.setattr(custom_terminal, "terminal_size", lambda: os.terminal_size((96, 80)))
+    monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: os.terminal_size((96, 80)))
+    runtime = _FakeActiveThreadRuntime(
+        [
+            ServerNotification("TurnStarted", {}),
+            ServerNotification("AgentMessageDelta", {"delta": "history remains visible"}),
+            ServerNotification("TurnCompleted", {}),
+        ]
+    )
+    stdout = io.StringIO()
+    snapshots: dict[str, str] = {}
+
+    def capture_after_slash_popup() -> TerminalInputEvent:
+        snapshots["slash_popup"] = vt_screen_text(stdout.getvalue(), rows=80, cols=96)
+        return TerminalInputEvent("eof")
+
+    _patch_terminal_input_source(
+        monkeypatch,
+        _FakeTerminalInputSource(
+            [
+                TerminalInputEvent("text", "keep this prompt"),
+                TerminalInputEvent("enter"),
+                TerminalInputEvent("text", "/"),
+                capture_after_slash_popup,
+            ]
+        ),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    screen = snapshots["slash_popup"]
+    assert "› keep this prompt" in stdout.getvalue()
+    history_answer = screen.index("• history remains visible")
+    composer = screen.index("› /")
+    popup = screen.index("/model", composer + len("› /"))
+    assert history_answer < composer < popup
+    assert len(runtime.submitted) == 1
 
 
 def test_terminal_runtime_goal_feature_is_visible_in_filtered_slash_popup(monkeypatch) -> None:
@@ -1269,8 +1381,8 @@ def test_terminal_runtime_model_command_opens_bottom_pane_selection_view(monkeyp
 def test_terminal_runtime_model_popup_repaints_history_viewport_when_footprint_grows(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::bottom_pane owns active popup/view footprint.
-    # - codex-tui::app::resize_reflow repaints the transcript viewport when
-    #   that footprint changes so opening /model does not blank prior history.
+    # - codex-tui::tui resizes the transcript viewport when that footprint
+    #   changes so opening /model does not blank prior history.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((96, 24)))
     monkeypatch.setattr(custom_terminal, "terminal_size", lambda: os.terminal_size((96, 24)))
     monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: os.terminal_size((96, 24)))
@@ -1496,8 +1608,8 @@ def test_terminal_runtime_repaints_final_history_viewport_after_model_selection(
     # Rust-derived contract:
     # - codex-tui::insert_history retains finalized user and assistant history
     #   cells as the source of truth.
-    # - codex-tui::app::resize_reflow repairs the visible history viewport
-    #   after stream completion, while bottom_pane owns only the live rows.
+    # - codex-tui::tui repairs the visible inline viewport after the active
+    #   model view closes, while bottom_pane owns only the live rows.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((96, 24)))
     monkeypatch.setattr(custom_terminal, "terminal_size", lambda: os.terminal_size((96, 24)))
     monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: os.terminal_size((96, 24)))
@@ -1682,14 +1794,17 @@ def test_terminal_runtime_inserts_blank_line_between_history_cells(monkeypatch) 
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    user_index = output.find(_user_history_insert_at(18, "\u203a hello?"))
-    assistant_index = output.find("\u2022 hello from model", user_index)
-    assert user_index >= 0
-    assert user_index < assistant_index
-    assert "\x1b[2K" in output[user_index:assistant_index]
-
-    normalized = _strip_ansi_controls(output)
-    assert "\n\u2022 Working (" not in normalized
+    screen_lines = vt_screen_text(output, rows=24, cols=80).splitlines()
+    user_row = next(index for index, line in enumerate(screen_lines) if "\u203a hello?" in line)
+    assistant_row = next(index for index, line in enumerate(screen_lines) if "\u2022 hello from model" in line)
+    # UserHistoryCell contributes its trailing blank and App contributes the
+    # separator before the next non-continuation cell.
+    assert assistant_row - user_row == 3
+    assert "Working (" in output
+    assert re.search(
+        r"\x1b\[1;\d+r\x1b\[\d+;1H\r\n\u2022 Working \(",
+        output,
+    ) is None
 
 
 def test_terminal_runtime_retry_error_is_live_status_not_history() -> None:
@@ -1754,8 +1869,8 @@ def test_terminal_runtime_review_popup_submits_review_operation_not_user_turn(mo
 
 
 def test_terminal_runtime_permissions_popup_applies_selection_without_user_turn(monkeypatch, tmp_path) -> None:
-    # Rust baseline 1c7832f: slash_dispatch -> permission_popups ->
-    # permissions_menu -> AppEvent::SelectPermissionProfile.
+    # Rust baseline 1c7832f: slash_dispatch -> permission_popups, while
+    # list_selection_view accepts numeric shortcuts in the same key event.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 30)))
     monkeypatch.setattr(custom_terminal, "terminal_size", lambda: os.terminal_size((100, 30)))
     monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: os.terminal_size((100, 30)))
@@ -1764,10 +1879,17 @@ def test_terminal_runtime_permissions_popup_applies_selection_without_user_turn(
     runtime.session_config.approvals_reviewer = "user"
     runtime.session_config.active_permission_profile = ":read-only"
     runtime.session_config.codex_home = tmp_path
+    runtime.session_config.features = Features.with_defaults()
+    snapshots: dict[str, str] = {}
+
+    def capture_permissions_popup() -> TerminalInputEvent:
+        snapshots["permissions"] = vt_screen_text(stdout.getvalue(), rows=30, cols=100)
+        return TerminalInputEvent("text", "2")
+
     source = _FakeTerminalInputSource(
         [
             TerminalInputEvent("text", "/permissions"), TerminalInputEvent("enter"),
-            TerminalInputEvent("down"), TerminalInputEvent("enter"),
+            capture_permissions_popup,
             TerminalInputEvent("text", "/quit"), TerminalInputEvent("enter"),
         ]
     )
@@ -1780,6 +1902,12 @@ def test_terminal_runtime_permissions_popup_applies_selection_without_user_turn(
     assert runtime.session_config.active_permission_profile.id == ":workspace"
     assert runtime.session_config.permission_profile == PermissionProfile.workspace_write()
     assert "\u2022 Permissions updated to Default" in _strip_ansi_controls(stdout.getvalue())
+    popup = snapshots["permissions"]
+    labels = ("Read Only", "Default", "Auto-review", "Full Access")
+    for label in labels:
+        assert label in popup, label
+    option_positions = [popup.index(label) for label in labels]
+    assert option_positions == sorted(option_positions)
 
 
 def test_terminal_runtime_keymap_popup_completes_live_edit_flow(monkeypatch, tmp_path) -> None:
@@ -1843,8 +1971,8 @@ def test_terminal_runtime_terminal_footer_is_live_not_history(monkeypatch) -> No
     assert footer_index >= 0
     assert re.search(r"\x1b\[22;\d+H", output[footer_index:])
     assert "\ngpt-test high" not in output
-    assert output.count(_user_history_insert_at(18, "\u203a hello?")) == 1
-    assert "\x1b[1;18r\x1b[18;1H\u203a hello?" not in output
+    final_screen = vt_screen_text(output, rows=24, cols=80)
+    assert final_screen.count("\u203a hello?") == 1
     assert "\u2022 hello from model" in output
     assert "gpt-test high fast" not in output
 
@@ -1878,14 +2006,12 @@ def test_terminal_runtime_bottom_pane_reserves_rust_spacing(monkeypatch) -> None
     assert "\x1b[23;1H\x1b[2K" in output
     assert "\x1b[24;1Hgpt-test high" in output
 
-    before_submit = runtime.output_before_submit
-    assert "\x1b[1;18r" in before_submit
-    assert "\x1b[19;1H\u2022 Working (0s \u2022 esc to interrupt)" in before_submit
-    assert "\x1b[20;1H\x1b[2K" in before_submit
-    assert "\x1b[21;1H\x1b[2K" in before_submit
-    assert "\x1b[22;1H\u203a" in before_submit
-    assert "\x1b[23;1H\x1b[2K" in before_submit
-    assert "\x1b[24;1Hgpt-test high" in before_submit
+    before_submit = vt_screen_text(runtime.output_before_submit, rows=24, cols=80).splitlines()
+    user_row = next(index for index, line in enumerate(before_submit) if "\u203a hello?" in line)
+    working_row = next(index for index, line in enumerate(before_submit) if "\u2022 Working (0s" in line)
+    composer_row = max(index for index, line in enumerate(before_submit) if line.lstrip().startswith("\u203a"))
+    footer_row = max(index for index, line in enumerate(before_submit) if "gpt-test high" in line)
+    assert 0 <= user_row < working_row < composer_row < footer_row
 
 
 def test_terminal_runtime_terminal_footer_includes_fast_model_detail(monkeypatch) -> None:
@@ -2001,23 +2127,28 @@ def test_terminal_runtime_finalized_tail_does_not_leave_partial_status_card(monk
     assert "┘" not in screen
 
 
-def test_terminal_runtime_repaints_bottom_pane_after_terminal_resize(monkeypatch) -> None:
+def test_terminal_runtime_reflows_bottom_pane_after_terminal_resize(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::tui::event_stream maps crossterm resize events to
     #   TuiEvent::Resize.
     # - codex-tui::app::handle_tui_event handles Resize like Draw and asks
     #   Tui::draw_with_resize_reflow to recompute the inline viewport before
     #   rendering the bottom pane.
-    # - The scrollback product path must therefore clear the previous bottom
-    #   pane footprint, rebuild the scroll region, and repaint composer/footer
-    #   at the new terminal rows after a Windows Terminal resize/maximize.
+    # - tui::Tui owns viewport geometry; app::resize_reflow only replays the
+    #   retained transcript after Tui has moved the viewport.
     monkeypatch.setattr(transcript_reflow, "TRANSCRIPT_REFLOW_DEBOUNCE", 0)
     current_size = [os.terminal_size((80, 24))]
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: current_size[0])
 
-    def resize_terminal() -> TerminalInputEvent:
-        current_size[0] = os.terminal_size((100, 30))
-        return TerminalInputEvent("resize")
+    def resize_terminal() -> TerminalInputEvent:
+        current_size[0] = os.terminal_size((100, 30))
+        return TerminalInputEvent("resize")
+
+    snapshots: dict[str, str] = {}
+
+    def capture_after_resize() -> TerminalInputEvent:
+        snapshots["resized"] = vt_screen_text(stdout.getvalue(), rows=30, cols=100)
+        return TerminalInputEvent("text", "hello?")
 
     runtime = _FakeActiveThreadRuntime(
         [
@@ -2028,10 +2159,10 @@ def test_terminal_runtime_repaints_bottom_pane_after_terminal_resize(monkeypatch
     )
     stdout = io.StringIO()
     source = _FakeTerminalInputSource(
-        [
-            resize_terminal,
-            TerminalInputEvent("text", "hello?"),
-            TerminalInputEvent("enter"),
+        [
+            resize_terminal,
+            capture_after_resize,
+            TerminalInputEvent("enter"),
             TerminalInputEvent("text", "/quit"),
             TerminalInputEvent("enter"),
         ]
@@ -2042,25 +2173,13 @@ def test_terminal_runtime_repaints_bottom_pane_after_terminal_resize(monkeypatch
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    assert "\x1b[21;1H\x1b[2K" in output
-    assert "\x1b[22;1H\x1b[2K" in output
-    assert "\x1b[23;1H\x1b[2K" in output
-    assert "\x1b[24;1H\x1b[2K" in output
-    assert "\x1b[27;1H\x1b[2K" in output
-    assert "\x1b[28;1H\x1b[2K" in output
-    assert "\x1b[29;1H\x1b[2K" in output
-    assert "\x1b[30;1H\x1b[2K" in output
-    assert "\x1b[28;1H\u203a hello?" in output
-    assert "\x1b[30;1Hgpt-test high" in output
-    assert "\x1b[1;26r" in output
-    assert "\x1b[28;3H" in output
-    # Rust app::resize_reflow replays the complete typed transcript, including
-    # session/startup cells before the user cell.
-    replay_index = output.find("\x1b[1;24r\x1b[24;1H")
-    user_history_index = output.find("\u203a hello?", replay_index)
-    assert replay_index >= 0
-    assert user_history_index > replay_index
-    assert output.find("\x1b[30;1Hgpt-test high") < user_history_index
+    resized = snapshots["resized"]
+    assert "\u203a" in resized
+    assert "gpt-test high" in resized
+    assert "\u203a hello?" in output
+    assert "\u2022 hello from model" in output
+    assert "\x1b[1;30r\x1b[1;1H" in output
+    assert RUST_RESIZE_CLEAR_MARKER in output
 
 
 def test_terminal_runtime_resize_replays_visible_transcript_tail(monkeypatch) -> None:
@@ -2105,14 +2224,14 @@ def test_terminal_runtime_resize_replays_visible_transcript_tail(monkeypatch) ->
     resize_index = output.rfind(RUST_RESIZE_CLEAR_MARKER)
     assert resize_index >= 0
     resize_output = output[resize_index:]
-    assert resize_output.count(">_ OpenAI Codex") == 1
-    assert _history_insert_at(26, "\u256d", bottom=26) in resize_output
+    assert resize_output.count(">_ OpenAI Codex") == 1
+    assert "\x1b[1;30r\x1b[1;1H" in resize_output
     assert ">_ OpenAI Codex" in resize_output
     assert "\u203a hello?" in resize_output
     assert "\u2022 hello from model" in resize_output
-    assert "\x1b[28;1H\u203a " in resize_output
-    assert "\x1b[30;1Hgpt-test high" in resize_output
-    assert output.count(_user_history_insert_at(18, "\u203a hello?")) == 1
+    resized_screen = vt_screen_text(resize_output, rows=30, cols=100)
+    assert "\u203a Shutting down..." in resized_screen
+    assert "gpt-test high" in resized_screen
 
 
 def test_terminal_runtime_resize_shrink_clears_stale_visible_viewport(monkeypatch) -> None:
@@ -2152,9 +2271,10 @@ def test_terminal_runtime_resize_shrink_clears_stale_visible_viewport(monkeypatc
     assert output.count(RUST_RESIZE_CLEAR_MARKER) >= 2
     final_replay = output[output.rfind(RUST_RESIZE_CLEAR_MARKER) :]
     assert final_replay.count(">_ OpenAI Codex") == 1
-    assert _history_insert_at(20, "\u256d", bottom=20) in final_replay
-    assert "\x1b[22;1H\u203a " in final_replay
-    assert "\x1b[24;1Hgpt-test high" in final_replay
+    assert "\x1b[1;24r\x1b[1;1H" in final_replay
+    final_screen = vt_screen_text(final_replay, rows=24, cols=80)
+    assert "\u203a Shutting down..." in final_screen
+    assert "gpt-test high" in final_screen
 
 
 def test_terminal_runtime_grow_shrink_replay_has_single_transcript_copy(monkeypatch) -> None:
@@ -2206,8 +2326,9 @@ def test_terminal_runtime_grow_shrink_replay_has_single_transcript_copy(monkeypa
     assert final_replay.count("\u203a hello?") == 1
     assert final_replay.count("\u2022 hello from model") == 1
     assert final_replay.find("\u203a hello?") < final_replay.find("\u2022 hello from model")
-    assert "\x1b[22;1H\u203a " in final_replay
-    assert "\x1b[24;1Hgpt-test high" in final_replay
+    final_screen = vt_screen_text(final_replay, rows=24, cols=80)
+    assert "\u203a Shutting down..." in final_screen
+    assert "gpt-test high" in final_screen
 
 
 def test_terminal_runtime_terminal_event_loop_submits_chinese_text_once(monkeypatch) -> None:
@@ -2242,7 +2363,8 @@ def test_terminal_runtime_terminal_event_loop_submits_chinese_text_once(monkeypa
     output = stdout.getvalue()
     assert "\x1b[22;1H\u203a \u4f60" in output
     assert "\x1b[22;5H\u597d" in output
-    assert output.count(_user_history_insert_at(18, "\u203a 你好")) == 1
+    final_screen = vt_screen_text(output, rows=24, cols=80)
+    assert final_screen.count("\u203a 你好") == 1
     assert "\x1b[24;1Hgpt-test high" in output
     assert runtime.submitted
 
@@ -2284,7 +2406,8 @@ def test_terminal_runtime_key_stream_submits_chinese_text_followed_by_space(monk
 
     submitted_items = runtime.submitted[0][1].payload.get("items") or []
     assert submitted_items[0].payload.get("text") == "\u4f60\u597d x"
-    assert _user_history_insert_at(18, "\u203a \u4f60\u597d x") in stdout.getvalue()
+    final_screen = vt_screen_text(stdout.getvalue(), rows=24, cols=80)
+    assert final_screen.count("\u203a \u4f60\u597d x") == 1
 
 
 def test_terminal_runtime_wraps_prefixed_history_cells_with_continuation_indent(monkeypatch) -> None:
@@ -2308,10 +2431,10 @@ def test_terminal_runtime_wraps_prefixed_history_cells_with_continuation_indent(
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    assert _user_history_insert_at(18, "\u203a \u4f60\u597d\u4e16\u754c\u4e2d\u6587") in output
-    user_start = output.find(_user_history_insert_at(18, "\u203a \u4f60\u597d\u4e16\u754c\u4e2d\u6587"))
+    user_start = output.find("\r\n\u203a \u4f60\u597d\u4e16\u754c\u4e2d\u6587")
     assistant_start = output.find("\u2022 ", user_start)
-    assert "\r\n\u203a \u6362\u884c" in output[user_start:assistant_start]
+    assert user_start >= 0
+    assert "\r\n  \u6362\u884c" in output[user_start:assistant_start]
     assistant_index = output.find("\u2022 uvwxyzABCDEFG")
     assert assistant_index >= 0
     assert "\r\n  HI" in output[assistant_index:]
@@ -2327,11 +2450,11 @@ def test_terminal_runtime_terminal_streaming_answer_preserves_footer(monkeypatch
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
 
     stdout = io.StringIO()
-    mid_stream_output: list[str] = []
-
-    def capture_after_first_delta(index: int) -> None:
-        if index == 2:
-            mid_stream_output.append(stdout.getvalue())
+    mid_stream_screens: list[str] = []
+
+    def capture_after_first_delta(index: int) -> None:
+        if index == 2:
+            mid_stream_screens.append(vt_screen_text(stdout.getvalue(), rows=24, cols=80))
 
     runtime = _ObservingSubmitRuntime(
         [
@@ -2342,23 +2465,22 @@ def test_terminal_runtime_terminal_streaming_answer_preserves_footer(monkeypatch
         ],
         capture_after_first_delta,
     )
-    stdin = _TtyStringIO("hello?\n/quit\n")
-
-    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
-    assert mid_stream_output
-
-    captured = mid_stream_output[0]
-    footer_clear_index = captured.rfind("\x1b[24;1H\x1b[2K")
-    footer_paint_index = captured.rfind("\x1b[24;1Hgpt-test high")
-    assert footer_clear_index >= 0
-    assert footer_paint_index > footer_clear_index
-    assert "\x1b[22;1H\x1b[2K" in captured
+    stdin = _TtyStringIO("hello?\n/quit\n")
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
+    assert mid_stream_screens
+
+    captured = mid_stream_screens[0]
     assert "\u2022 streaming answer" not in captured
-    assert "Working (" not in captured[footer_paint_index:]
-
-    output = stdout.getvalue()
-    assert "\u2022 streaming answer continues" in output
-    assert output.rfind("\x1b[24;1Hgpt-test high") > output.find("\u2022 streaming answer")
+    assert "Working (" not in captured
+    assert "\u203a" in captured
+    assert "gpt-test high" in captured
+
+    output = stdout.getvalue()
+    assert "\u2022 streaming answer continues" in output
+    final_screen = vt_screen_text(output, rows=24, cols=80)
+    assert "\u2022 streaming answer continues" in final_screen
+    assert "gpt-test high" in final_screen
 
 
 def test_terminal_runtime_streaming_deltas_do_not_repaint_unchanged_footer(monkeypatch) -> None:
@@ -2433,11 +2555,12 @@ def test_terminal_runtime_stream_resize_replays_after_turn_complete(monkeypatch)
     resize_index = output.find(RUST_RESIZE_CLEAR_MARKER)
     assert resize_index >= 0
     resize_output = output[resize_index:]
-    assert resize_output.count(">_ OpenAI Codex") == 1
-    assert resize_output.count("\u203a hello?") == 1
-    assert resize_output.count("\u2022 streaming answer") == 1
-    assert "\x1b[28;1H\u203a " in resize_output
-    assert "\x1b[30;1Hgpt-test high" in resize_output
+    resized_screen = vt_screen_text(resize_output, rows=30, cols=100)
+    assert resized_screen.count(">_ OpenAI Codex") == 1
+    assert resized_screen.count("\u203a hello?") == 1
+    assert resized_screen.count("\u2022 streaming answer") == 1
+    assert "\u203a Shutting down..." in resized_screen
+    assert "gpt-test high" in resized_screen
 
 
 def test_terminal_runtime_terminal_shows_working_before_blocking_submit(monkeypatch) -> None:
@@ -2467,39 +2590,32 @@ def test_terminal_runtime_terminal_shows_working_before_blocking_submit(monkeypa
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    assert _user_history_insert_at(18, "\u203a hello?") in runtime.output_before_submit
-    assert _history_insert_at(20, "\u203a hello?") not in runtime.output_before_submit
-    assert "\x1b[19;1H\x1b[2K" in runtime.output_before_submit
-    assert "\x1b[20;1H\x1b[2K" in runtime.output_before_submit
-    assert "\x1b[22;1H\x1b[2K" in runtime.output_before_submit
-    assert "\x1b[23;1H\x1b[2K" in runtime.output_before_submit
-    assert "\x1b[19;1H\u2022 Working (0s \u2022 esc to interrupt)" in runtime.output_before_submit
-    assert "\x1b[22;1H\u203a " in runtime.output_before_submit
-    assert "\x1b[24;1Hgpt-test high" in runtime.output_before_submit
-    replay_index = runtime.output_before_submit.rfind("\x1b[1;1H\x1b[2K")
-    assert replay_index >= 0
-    replay = runtime.output_before_submit[replay_index:]
-    user_repaint = re.search(r"\x1b\[\d+;1H\u203a hello\?", replay)
-    assert user_repaint is not None
-    assert "\x1b[1;1H\u203a hello?" not in replay
-    assert user_repaint.start() < replay.find(
-        "\x1b[19;1H\u2022 Working (0s \u2022 esc to interrupt)"
-    )
+    screen_before_submit = vt_screen_text(runtime.output_before_submit, rows=24, cols=80)
+    assert "\u203a hello?" in screen_before_submit
+    assert "\u2022 Working (0s \u2022 esc to interrupt)" in screen_before_submit
+    assert "gpt-test high" in screen_before_submit
+    assert screen_before_submit.find("\u203a hello?") < screen_before_submit.find("Working (0s")
     assert output.find("\u203a hello?") < output.find("Working (0s")
     assert output.find("Working (0s") < output.find("\u2022 hello from model")
     assert output.rfind("\x1b[24;1Hgpt-test high") > output.find("\u2022 hello from model")
 
 
-def test_terminal_runtime_status_height_change_replays_previous_answer(monkeypatch) -> None:
+def test_terminal_runtime_status_height_change_keeps_previous_answer_visible(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::bottom_pane::ensure_status_indicator requests a redraw when
     #   the active-turn status appears.
-    # - codex-tui::app::resize_reflow replays retained HistoryCells above the
-    #   new bottom pane footprint, so the expanded Working pane cannot erase
-    #   the previous finalized assistant cell.
-    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
-    runtime = _QueuedSubmitRuntime(
-        [
+    # - codex-tui::tui::draw_with_resize_reflow grows the inline viewport and
+    #   preserves retained HistoryCells above the expanded bottom pane.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    stdout = io.StringIO()
+    snapshots: list[str] = []
+
+    def capture_second_turn_status(index: int) -> None:
+        if index == 1:
+            snapshots.append(vt_screen_text(stdout.getvalue(), rows=24, cols=80))
+
+    runtime = _QueuedObservingSubmitRuntime(
+        [
             [
                 ServerNotification("TurnStarted", {}),
                 ServerNotification("AgentMessageDelta", {"delta": "first answer"}),
@@ -2509,24 +2625,21 @@ def test_terminal_runtime_status_height_change_replays_previous_answer(monkeypat
                 ServerNotification("TurnStarted", {}),
                 ServerNotification("AgentMessageDelta", {"delta": "second answer"}),
                 ServerNotification("TurnCompleted", {}),
-            ],
-        ]
-    )
-    stdout = io.StringIO()
-    stdin = _TtyStringIO("first?\nsecond?\n/quit\n")
+            ],
+        ],
+        [None, capture_second_turn_status],
+    )
+    stdin = _TtyStringIO("first?\nsecond?\n/quit\n")
 
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
-    output = stdout.getvalue()
-    second_prompt_index = output.find("\u203a second?")
-    second_working_index = output.find("Working (0s", second_prompt_index)
-    assert second_prompt_index >= 0
-    assert second_working_index > second_prompt_index
-
-    redraw_for_second_turn = output[second_prompt_index:second_working_index]
-    assert "\x1b[1;1H" in redraw_for_second_turn
-    assert "\u2022 first answer" in redraw_for_second_turn
-    assert "\u2022 second answer" in output[second_working_index:]
+    assert snapshots
+    second_turn_screen = snapshots[0]
+    assert "\u2022 first answer" in second_turn_screen
+    assert "\u203a second?" in second_turn_screen
+    assert "\u2022 Working (0s \u2022 esc to interrupt)" in second_turn_screen
+    assert "gpt-test high" in second_turn_screen
+    assert "\u2022 second answer" in stdout.getvalue()
 
 
 def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(monkeypatch) -> None:
@@ -2534,46 +2647,48 @@ def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(
     # - codex-tui::bottom_pane status is a live active-turn surface; elapsed
     #   time changes there while no history cell is inserted.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
-    now = [200.0]
+    now = [200.0]
     monkeypatch.setattr(turn_runtime.time, "monotonic", lambda: now[0])
-
-    def advance_time() -> None:
-        now[0] += 1.2
+    stdout = io.StringIO()
+    idle_screens: list[str] = []
+
+    def advance_time() -> None:
+        idle_screens.append(vt_screen_text(stdout.getvalue(), rows=24, cols=80))
+        now[0] += 1.2
 
     runtime = _IdleSubmitRuntime(
         [
             ServerNotification("AgentMessageDelta", {"delta": "after idle"}),
             ServerNotification("TurnCompleted", {}),
         ],
-        idle_count=2,
-        on_idle=advance_time,
-    )
-    stdout = io.StringIO()
-    stdin = _TtyStringIO("hello?\n/quit\n")
+        idle_count=3,
+        on_idle=advance_time,
+    )
+    stdin = _TtyStringIO("hello?\n/quit\n")
 
-    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
-
-    output = stdout.getvalue()
-    assert "\x1b[19;1H\u2022 Working (0s \u2022 esc to interrupt)" in output
-    assert "\x1b[19;1H\u2022 Working (1s \u2022 esc to interrupt)" in output
-    assert "\x1b[19;1H\u2022 Working (2s \u2022 esc to interrupt)" in output
-    assert "\x1b[24;1Hgpt-test high" in output
-    assert "\n\u2022 Working (1s" not in output
-    assert "\u2022 after idle" in output
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
+
+    output = stdout.getvalue()
+    assert len(idle_screens) == 3
+    for seconds, screen in enumerate(idle_screens):
+        assert f"\u2022 Working ({seconds}s \u2022 esc to interrupt)" in screen
+        assert "gpt-test high" in screen
+    assert "\u2022 after idle" in output
 
 
-def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(monkeypatch) -> None:
+def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::chatwidget::streaming::on_stream_error owns the live
     #   reconnect status until another concrete turn event takes over.
-    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
-    now = [300.0]
-    monkeypatch.setattr(turn_runtime.time, "monotonic", lambda: now[0])
-
-    def advance_time() -> None:
-        now[0] += 1.2
-
-    runtime = _IdleSubmitRuntime(
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    stdout = io.StringIO()
+    retry_screens: list[str] = []
+
+    def capture_retry_status(index: int) -> None:
+        if index == 2:
+            retry_screens.append(vt_screen_text(stdout.getvalue(), rows=24, cols=80))
+
+    runtime = _ObservingSubmitRuntime(
         [
             ServerNotification("TurnStarted", {}),
             ServerNotification(
@@ -2589,21 +2704,21 @@ def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(mo
             ServerNotification("AgentMessageDelta", {"delta": "recovered"}),
             ServerNotification("TurnCompleted", {}),
         ],
-        idle_count=1,
-        on_idle=advance_time,
-    )
-    stdout = io.StringIO()
-    stdin = _TtyStringIO("hello?\n/quit\n")
+        capture_retry_status,
+    )
+    stdin = _TtyStringIO("hello?\n/quit\n")
 
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
-    output = stdout.getvalue()
-    reconnect_index = output.find("Reconnecting... 2/5")
-    recovered_index = output.find("\u2022 recovered")
-    assert reconnect_index > output.find("Working (1s")
-    assert recovered_index > reconnect_index
-    assert "Working (2s" not in output[reconnect_index:recovered_index]
-    assert "\u203a hello?" in output
+    assert retry_screens
+    retry_screen = retry_screens[0]
+    assert "Reconnecting... 2/5" in retry_screen
+    assert "Request timed out" in retry_screen
+    assert "Working (" not in retry_screen
+    assert "gpt-test high" in retry_screen
+    output = stdout.getvalue()
+    assert "\u2022 recovered" in output
+    assert "\u203a hello?" in output
 
 
 def test_terminal_runtime_terminal_retry_status_stays_in_bottom_pane(monkeypatch) -> None:
@@ -2612,10 +2727,17 @@ def test_terminal_runtime_terminal_retry_status_stays_in_bottom_pane(monkeypatch
     #   through bottom_pane::status_indicator, not insert_history.
     # - The scrollback product path must therefore paint reconnect text in the
     #   inline status row while preserving the user's finalized transcript line
-    #   and footer.
-    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
-    runtime = _FakeActiveThreadRuntime(
-        [
+    #   and footer.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    stdout = io.StringIO()
+    retry_screens: list[str] = []
+
+    def capture_retry_status(index: int) -> None:
+        if index == 2:
+            retry_screens.append(vt_screen_text(stdout.getvalue(), rows=24, cols=80))
+
+    runtime = _ObservingSubmitRuntime(
+        [
             ServerNotification("TurnStarted", {}),
             ServerNotification(
                 "Error",
@@ -2627,20 +2749,26 @@ def test_terminal_runtime_terminal_retry_status_stays_in_bottom_pane(monkeypatch
                     },
                 },
             ),
-            ServerNotification("AgentMessageDelta", {"delta": "recovered"}),
-            ServerNotification("TurnCompleted", {}),
-        ]
-    )
-    stdout = io.StringIO()
-    stdin = _TtyStringIO("hello?\n/quit\n")
+            ServerNotification("AgentMessageDelta", {"delta": "recovered"}),
+            ServerNotification("TurnCompleted", {}),
+        ],
+        capture_retry_status,
+    )
+    stdin = _TtyStringIO("hello?\n/quit\n")
 
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
-    output = stdout.getvalue()
-    assert "\u203a hello?" in output
-    assert "\x1b[19;1H\u2022 Reconnecting... 2/5 \u2514 Request timed out" in output
-    assert "\x1b[24;1Hgpt-test high" in output
-    assert "\n\u2022 Reconnecting... 2/5" not in output
+    assert retry_screens
+    retry_screen = retry_screens[0]
+    assert "\u203a hello?" in retry_screen
+    assert "Reconnecting... 2/5" in retry_screen
+    assert "Request timed out" in retry_screen
+    assert "gpt-test high" in retry_screen
+    output = stdout.getvalue()
+    assert re.search(
+        r"\x1b\[1;\d+r\x1b\[\d+;1H\r\n\u2022 Reconnecting\.\.\. 2/5",
+        output,
+    ) is None
     assert "\u2022 recovered" in output
 
 

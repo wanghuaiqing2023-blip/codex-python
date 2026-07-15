@@ -143,9 +143,8 @@ def test_terminal_projection_manifest_tracks_backend_metadata_projection() -> No
 
 
 def test_terminal_controller_manifest_tracks_view_state_resize_reflow_boundary() -> None:
-    # Rust owner: app::resize_reflow owns footprint timing and history viewport
-    # bounds. The terminal controller should wire bottom-pane state to that
-    # owner instead of claiming to pass already-expanded render context.
+    # Rust owner: tui.rs owns inline viewport geometry and draw ordering. The
+    # terminal controller only binds bottom-pane state into that owner.
     entry = next(
         entry
         for entry in TUI_ALIGNMENT_ENTRIES
@@ -154,21 +153,18 @@ def test_terminal_controller_manifest_tracks_view_state_resize_reflow_boundary()
     responsibility = next(
         responsibility
         for responsibility in entry.responsibilities
-        if responsibility.name == "footprint reflow trigger"
+        if responsibility.name == "inline viewport bridge"
     )
 
-    assert responsibility.rust_module == "codex-tui::app::resize_reflow"
+    assert responsibility.rust_module == "codex-tui::tui"
     assert "bottom-pane owner state and cursor callbacks" in responsibility.description
-    assert "footprint cycle runner" in responsibility.description
-    assert "render callback" in responsibility.description
-    assert "external repaint runner" in responsibility.description
-    assert "footprint-change detection" in responsibility.description
-    assert "render-context acquisition" in responsibility.description
-    assert "history viewport bounds" in responsibility.description
-    assert "footprint timing" in responsibility.description
-    assert "remembered footprint state" in responsibility.description
-    assert "controller-detected live-pane footprint changes" not in responsibility.description
-    assert "tracker construction in the controller" in responsibility.description
+    assert "viewport-cycle runner" in responsibility.description
+    assert "desired-height draws" in responsibility.description
+    assert "terminal-resize viewport updates" in responsibility.description
+    assert "pre-insert scroll movement" in responsibility.description
+    assert "prepare_history_insert" in responsibility.description
+    assert "resize_reflow_replay" in responsibility.description
+    assert "app::resize_reflow" in responsibility.description
 
     live_buffer_responsibility = next(
         responsibility
@@ -176,7 +172,7 @@ def test_terminal_controller_manifest_tracks_view_state_resize_reflow_boundary()
         if responsibility.name == "live buffer lifecycle invalidation"
     )
     assert live_buffer_responsibility.rust_module == "codex-tui::custom_terminal"
-    assert "owner-managed projection-cycle runner" in live_buffer_responsibility.description
+    assert "projection backend callbacks" in live_buffer_responsibility.description
     assert "constructing LiveViewportRenderer" in live_buffer_responsibility.description
     assert "resetting raw buffer state" in live_buffer_responsibility.description
 
@@ -214,6 +210,7 @@ def test_terminal_tui_direct_entries_are_one_to_one_with_rust_modules() -> None:
 
 def test_terminal_tui_critical_modules_are_manifested() -> None:
     expected = {
+        "pycodex/tui/tui/__init__.py",
         "pycodex/tui/tui/event_stream.py",
         "pycodex/tui/ratatui_bridge/buffer.py",
         "pycodex/tui/ratatui_bridge/backend.py",
@@ -228,6 +225,8 @@ def test_terminal_tui_critical_modules_are_manifested() -> None:
         "pycodex/tui/bottom_pane/command_popup.py",
         "pycodex/tui/bottom_pane/slash_commands.py",
         "pycodex/tui/chatwidget/slash_dispatch.py",
+        "pycodex/tui/chatwidget/permission_popups.py",
+        "pycodex/tui/chatwidget/permissions_menu.py",
         "pycodex/tui/chatwidget/model_popups.py",
         "pycodex/tui/chatwidget/rendering.py",
         "pycodex/tui/chatwidget/turn_runtime.py",
@@ -245,6 +244,9 @@ def test_terminal_tui_critical_modules_are_manifested() -> None:
         "pycodex/tui/app/resize_reflow.py",
         "pycodex/tui/custom_terminal.py",
         "pycodex/tui/insert_history.py",
+        "pycodex/tui/wrapping.py",
+        "pycodex/tui/history_cell/base.py",
+        "pycodex/tui/history_cell/approvals.py",
         "pycodex/tui/history_cell/messages.py",
         "pycodex/tui/history_cell/session.py",
     }
@@ -556,7 +558,7 @@ def test_terminal_product_path_contract_matrix_is_guarded() -> None:
         "footer_live_pane": "test_terminal_runtime_terminal_footer_is_live_not_history",
     }
     required_controller_tests = {
-        "bottom_pane_history_reflow_on_popup": "test_terminal_bottom_pane_controller_reflows_history_when_popup_footprint_grows",
+        "bottom_pane_viewport_resize_on_popup": "test_terminal_bottom_pane_controller_resizes_tui_viewport_for_active_view",
     }
     required_chat_composer_tests = {
         "popup_key_mapping": "test_terminal_popup_key_maps_rust_like_payloads",
@@ -574,8 +576,8 @@ def test_terminal_product_path_contract_matrix_is_guarded() -> None:
     }
     required_projection_tests = {
         "bottom_pane_frame_diff": "test_terminal_projection_frame_update_diff_uses_custom_terminal_owner",
-        "resize_reflow_clear_callback": "test_terminal_bottom_pane_request_runner_builds_resize_reflow_clear_callback",
-        "resize_reflow_render_callback": "test_terminal_bottom_pane_request_runner_builds_resize_reflow_render_callback",
+        "tui_viewport_clear_callback": "test_terminal_bottom_pane_request_runner_builds_tui_viewport_clear_callback",
+        "tui_viewport_render_callback": "test_terminal_bottom_pane_request_runner_builds_tui_viewport_render_callback",
     }
 
     assert set(required_runtime_tests.values()) <= runtime_tests
@@ -947,60 +949,64 @@ def test_terminal_projection_owns_request_runner_without_surface_adapter() -> No
     assert "isinstance(request, TerminalBottomPaneRenderRequest)" not in projection_source
 
     resize_reflow_source = (REPO_ROOT / "pycodex/tui/app/resize_reflow.py").read_text(encoding="utf-8-sig")
-    assert "class TerminalBottomPaneFootprintTracker" in resize_reflow_source
-    assert "class TerminalBottomPaneFootprintCycleRunner" in resize_reflow_source
-    assert "class TerminalBottomPaneFootprintRenderPass" in resize_reflow_source
-    assert "class TerminalBottomPaneFootprintReflowDecision" in resize_reflow_source
-    assert "class TerminalBottomPaneFootprintTransition" in resize_reflow_source
-    assert "def bottom_pane_footprint_transition" in resize_reflow_source
-    assert "def terminal_history_bottom_row" in resize_reflow_source
-    assert "def history_bottom_row_callback(" in resize_reflow_source
-    assert "def clear_callback(" in resize_reflow_source
-    assert "TerminalBottomPaneClearFactory = Callable[" in resize_reflow_source
-    assert '"TerminalBottomPaneClearFactory",' in resize_reflow_source
-    assert "def render_for_view_state_callback(" in resize_reflow_source
-    assert "TerminalBottomPaneRenderPassFactory = Callable[" in resize_reflow_source
-    assert '"TerminalBottomPaneRenderPassFactory",' in resize_reflow_source
-    assert "def run_terminal_bottom_pane_footprint_external_repaint" in resize_reflow_source
-    assert "TerminalExternalRepaintRunner = Callable[" in resize_reflow_source
-    assert '"TerminalExternalRepaintRunner",' in resize_reflow_source
-    assert "run_external_repaint: TerminalExternalRepaintRunner" in resize_reflow_source
-    assert "run_external_repaint: Callable[[Callable[[], Any]], Any]" not in resize_reflow_source
-    assert "Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], None]" in resize_reflow_source
-    assert "repaint_footprint: Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], Any]" not in resize_reflow_source
-    assert "current_size: Callable[[], os.terminal_size]" in resize_reflow_source
-    assert "current_size: Callable[[], Any]" not in resize_reflow_source
-    assert "last_terminal_size: os.terminal_size" in resize_reflow_source
-    assert "last_terminal_size: Any" not in resize_reflow_source
-    assert "last_terminal_size: os.terminal_size | None = None" in resize_reflow_source
-    assert "def activated(self, size: os.terminal_size)" in resize_reflow_source
-    assert "previous_size: os.terminal_size | None" in resize_reflow_source
-    assert "current_size: os.terminal_size" in resize_reflow_source
-    assert "previous_size: Any" not in resize_reflow_source
-    assert "current_size: Any" not in resize_reflow_source
-    assert "def bottom_pane_footprint_transition(\n    size: os.terminal_size," in resize_reflow_source
-    assert "def bottom_pane_footprint_transition_for_footprints(\n    size: os.terminal_size," in resize_reflow_source
-    assert "def plan_terminal_bottom_pane_footprint_reflow(\n    *,\n    terminal_size: os.terminal_size," in resize_reflow_source
-    assert "def run_terminal_bottom_pane_footprint_reflow(\n    *,\n    terminal_active: bool,\n    terminal_size: os.terminal_size," in resize_reflow_source
-    assert "def terminal_history_bottom_row(\n    terminal_size: os.terminal_size," in resize_reflow_source
-    assert "def terminal_history_bottom_row_for_context(\n    terminal_size: os.terminal_size," in resize_reflow_source
-    assert "def terminal_history_bottom_row_for_view_state(\n    terminal_size: os.terminal_size," in resize_reflow_source
-    assert "def run_terminal_bottom_pane_footprint_render_cycle_for_view_state" in resize_reflow_source
-    assert "terminal_size: Any" not in resize_reflow_source
-    assert "def _run_replay_history_scrollback(self) -> None:" in resize_reflow_source
-    assert "def _run_replay_history_scrollback(self) -> Any:" not in resize_reflow_source
-    assert "def run_terminal_bottom_pane_footprint_render_cycle_for_context" in resize_reflow_source
-    assert "class TerminalBottomPanePopupHeightContextProtocol" in resize_reflow_source
-    assert "class TerminalBottomPaneFootprintContextProtocol" in resize_reflow_source
-    assert "class TerminalBottomPaneRenderContextProviderProtocol" in resize_reflow_source
-    assert 'getattr(bottom_pane_context, "popup_height", 0)' not in resize_reflow_source
-    assert 'getattr(bottom_pane_context, "popup_is_active_view", False)' not in resize_reflow_source
-    assert "popup_height=int(bottom_pane_context.popup_height)" in resize_reflow_source
-    assert "popup_is_active_view=bool(bottom_pane_context.popup_is_active_view)" in resize_reflow_source
-    assert "popup_height=max(0, int(bottom_pane_context.popup_height))" in resize_reflow_source
-    assert "replay_history_scrollback=self._run_replay_history_scrollback" in resize_reflow_source
-    assert "def _run_replay_history_scrollback" in resize_reflow_source
+    tui_source = (REPO_ROOT / "pycodex/tui/tui/__init__.py").read_text(encoding="utf-8-sig")
+    controller_source = (REPO_ROOT / "pycodex/tui/bottom_pane/terminal_controller.py").read_text(
+        encoding="utf-8-sig"
+    )
+    runtime_source = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(encoding="utf-8-sig")
+    status_surface_source = (REPO_ROOT / "pycodex/tui/chatwidget/status_surfaces.py").read_text(
+        encoding="utf-8-sig"
+    )
+    insert_history_source = (REPO_ROOT / "pycodex/tui/insert_history.py").read_text(encoding="utf-8-sig")
 
+    # Rust app::resize_reflow owns terminal-size transcript rebuild only. The
+    # inline viewport policy and draw lifecycle belong to tui.rs.
+    forbidden_app_footprint_symbols = {
+        "TerminalBottomPaneFootprintTracker",
+        "TerminalBottomPaneFootprintCycleRunner",
+        "TerminalBottomPaneFootprintRenderPass",
+        "bottom_pane_footprint_transition",
+        "bottom_pane_footprint",
+        "terminal_history_bottom_row",
+        "repaint_history_viewport_for_footprint",
+        "popup_is_active_view",
+    }
+    assert all(symbol not in resize_reflow_source for symbol in forbidden_app_footprint_symbols)
+    assert "class TerminalResizeCoordinator" in resize_reflow_source
+    assert "def plan_terminal_size_change_reflow" in resize_reflow_source
+    assert "def replay_terminal_history_scrollback_for_resize" in resize_reflow_source
+
+    assert "class TerminalInlineViewport" in tui_source
+    assert "def update_inline_viewport_for_resize_reflow" in tui_source
+    assert "def draw_with_resize_reflow" in tui_source
+    assert "class TerminalBottomPaneViewportCycleRunner" in tui_source
+    assert "def create_terminal_bottom_pane_viewport_cycle_runner" in tui_source
+    assert "self.viewport.draw_with_resize_reflow(" in tui_source
+    assert "def prepare_history_insert" in tui_source
+    assert "def prepare_resize_reflow" in tui_source
+    assert "def resize_reflow_replay_callback_factory" in tui_source
+    replay_factory = tui_source.split(
+        "def resize_reflow_replay_callback_factory(",
+        1,
+    )[1].split("\n    def ", 1)[0]
+    assert replay_factory.index("self.prepare_resize_reflow(") < replay_factory.index(
+        "return replay_history_scrollback()"
+    )
+
+    assert "from ..tui import create_terminal_bottom_pane_viewport_cycle_runner" in controller_source
+    assert "from ..app.resize_reflow" not in controller_source
+    assert "repaint_footprint" not in controller_source
+    assert "run_bottom_pane_footprint" not in runtime_source
+    assert "repaint_footprint" not in status_surface_source
+    assert "prepare_history_insert=self._bottom_pane.prepare_history_insert" in runtime_source
+    assert "replay_history_scrollback=self._bottom_pane.resize_reflow_replay_callback(" in runtime_source
+    assert "def _replay_history_scrollback_after_viewport_resize" not in runtime_source
+    assert "prepare_history_insert: Callable[[int], None] | None" in insert_history_source
+    assert "self.prepare_history_insert(max(0, int(inserted_rows)))" in insert_history_source
+
+    assert "viewport_area: Rect" in action_source
+    assert 'getattr(render_pass, "viewport_area", None)' in action_source
+    assert "viewport_area=request.projection_viewport_area()" in projection_source
 
 def test_terminal_bottom_pane_adapter_test_module_does_not_return() -> None:
     # Rust owners: chatwidget::rendering owns bottom-pane frame/buffer content,
@@ -1022,8 +1028,8 @@ def test_terminal_bottom_pane_adapter_test_module_does_not_return() -> None:
     assert "test_terminal_projection_pairs_frame_and_buffer" in projection_tests
     assert "test_terminal_bottom_pane_request_runner_executes_clear_and_render" in projection_tests
     assert "test_terminal_bottom_pane_request_runner_flushes_writer" in projection_tests
-    assert "test_terminal_bottom_pane_request_runner_builds_resize_reflow_clear_factory" in projection_tests
-    assert "test_terminal_bottom_pane_request_runner_builds_resize_reflow_render_factory" in projection_tests
+    assert "test_terminal_bottom_pane_request_runner_builds_tui_viewport_clear_factory" in projection_tests
+    assert "test_terminal_bottom_pane_request_runner_builds_tui_viewport_render_factory" in projection_tests
     assert "test_terminal_projection_frame_update_diff_uses_custom_terminal_owner" in projection_tests
     assert "test_terminal_projection_paints_status_composer_footer_and_cursor" in projection_tests
     assert "test_terminal_projection_uses_bridge_cursor_lifecycle_by_default" in projection_tests
@@ -1035,7 +1041,7 @@ def test_terminal_bottom_pane_adapter_test_module_does_not_return() -> None:
     assert "test_terminal_projection_clears_previous_larger_popup_footprint" in projection_tests
     assert "test_terminal_projection_frame_update_does_not_flush_without_policy" in projection_tests
     assert "test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks" in controller_tests
-    assert "test_terminal_bottom_pane_controller_reflows_history_when_popup_footprint_grows" in controller_tests
+    assert "test_terminal_bottom_pane_controller_resizes_tui_viewport_for_active_view" in controller_tests
     assert "test_live_status_surface_controls_bottom_pane_footprint" in status_tests
     assert "test_run_live_status_show_and_hide_return_surface_state_and_execute_effects" in status_tests
 
@@ -1198,6 +1204,8 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
             "composer",
             "handle_composer_event",
         "history_bottom_row",
+        "prepare_history_insert",
+        "resize_reflow_replay_callback",
         "clear",
         "clear_without_resize_check",
         "restore_cursor",
@@ -1315,8 +1323,9 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
         "_open_command_view",
         "_on_selection_events",
         "_request_runner",
-        "_footprint_runner",
+        "_viewport_runner",
         "_history_bottom_row",
+        "_resize_reflow_replay_callback",
         "_clear_bottom_pane",
         "_render_for_view_state",
     ):
@@ -1334,11 +1343,12 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
     assert "TerminalBottomPaneRenderPassProtocol" not in imported_names
     assert "TerminalBottomPaneFootprintRenderPass" not in imported_names
     assert "TerminalBottomPaneFootprintTracker" not in imported_names
-    assert "create_terminal_bottom_pane_footprint_cycle_runner" in imported_names
+    assert "create_terminal_bottom_pane_viewport_cycle_runner" in imported_names
+    assert "create_terminal_bottom_pane_footprint_cycle_runner" not in imported_names
     assert "create_terminal_bottom_pane_footprint_tracker" not in imported_names
     assert "create_live_viewport_renderer" not in imported_names
     assert "TerminalBottomPaneRenderContextProtocol" not in imported_names
-    assert "from .terminal_footprint import TerminalBottomPaneFootprint" in source
+    assert "from .terminal_footprint import TerminalBottomPaneFootprint" not in source
     assert "terminal_history_bottom_row" not in imported_names
     assert "terminal_history_bottom_row_for_context" not in imported_names
     assert "terminal_history_bottom_row_for_view_state" not in imported_names
@@ -1416,20 +1426,24 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
     assert "self._footprint_tracker.render_with_reflow_passes" not in source
     assert "TerminalBottomPaneFootprintTracker()" not in source
     assert "self._footprint_tracker" not in source
-    assert "self._footprint_runner = create_terminal_bottom_pane_footprint_cycle_runner()" in source
-    assert "self._history_bottom_row = self._footprint_runner.history_bottom_row_callback(" in source
+    assert "self._viewport_runner = create_terminal_bottom_pane_viewport_cycle_runner(" in source
+    assert "self._history_bottom_row = self._viewport_runner.history_bottom_row_callback(" in source
     assert "self._history_bottom_row(reserve_active_bottom_pane)" in source
-    assert "self._footprint_runner.history_bottom_row(" not in source
-    assert "self._clear_bottom_pane = self._footprint_runner.clear_callback(" in source
+    assert "self._viewport_runner.history_bottom_row(" not in source
+    assert "self._resize_reflow_replay_callback = (" in source
+    assert "self._viewport_runner.resize_reflow_replay_callback_factory(" in source
+    assert "return self._resize_reflow_replay_callback(replay_history_scrollback)" in source
+    assert "self._viewport_runner.prepare_resize_reflow(" not in source
+    assert "self._clear_bottom_pane = self._viewport_runner.clear_callback(" in source
     assert "clear_factory=self._request_runner.clear_factory_callback(" in source
     assert "def _clear_for_live_status(" not in source
     assert "self._clear_bottom_pane(check_resize)" in source
-    assert "self._footprint_runner.clear(" not in source
-    assert "self._render_for_view_state = self._footprint_runner.render_for_view_state_callback(" in source
+    assert "self._viewport_runner.clear(" not in source
+    assert "self._render_for_view_state = self._viewport_runner.render_for_view_state_callback(" in source
     assert "render_factory=self._request_runner.render_pass_factory_callback(" in source
     assert "def _render_pass_for_live_status(" not in source
     assert "self._render_for_view_state(" in source
-    assert "self._footprint_runner.render_for_view_state(" not in source
+    assert "self._viewport_runner.render_for_view_state(" not in source
     assert "run_terminal_bottom_pane_footprint_render_cycle(" not in source
     assert "run_terminal_bottom_pane_footprint_render_cycle_for_context(" not in source
     assert "run_terminal_bottom_pane_footprint_render_cycle_for_view_state(" not in source
@@ -1915,6 +1929,26 @@ def test_model_popup_consumes_opaque_selection_events_at_owner_boundary() -> Non
     assert "events: Tuple[Any, ...]," not in source
     assert "def open_command_view(" not in source
     assert "if isinstance(event, ModelPopupEvent):" in source
+
+
+def test_permissions_popup_routing_matches_rust_module_ownership() -> None:
+    # Rust permission_popups::open_permissions_popup is the slash entry point;
+    # permissions_menu is reached only from its explicit-profile-mode branch.
+    slash_dispatch = (
+        REPO_ROOT / "pycodex/tui/chatwidget/slash_dispatch.py"
+    ).read_text(encoding="utf-8-sig")
+    permission_popups = (
+        REPO_ROOT / "pycodex/tui/chatwidget/permission_popups.py"
+    ).read_text(encoding="utf-8-sig")
+    list_selection = (
+        REPO_ROOT / "pycodex/tui/bottom_pane/list_selection_view.py"
+    ).read_text(encoding="utf-8-sig")
+
+    assert "TerminalPermissionsPopupController" in permission_popups
+    assert "from .permissions_menu import TerminalPermissionsPopupController" not in slash_dispatch
+    assert "from .permission_popups import (" in slash_dispatch
+    assert "if self._explicit_profile_mode:" in permission_popups
+    assert "view.accept()" in list_selection
 
 
 def _literal_all(tree: ast.AST) -> set[str]:

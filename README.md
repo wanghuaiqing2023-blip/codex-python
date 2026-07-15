@@ -20,7 +20,6 @@ interfaces, wire formats, and user-visible behavior stay as close as possible.
 - `codex/` — upstream reference implementation.
 - `pycodex/` — Python port.
 - `tests/` — parity-focused unit/integration tests.
-- `porting_notes/` — implementation notes and turn-by-turn migration log.
 - `PORTING_STATUS.md` — high-level progress summary.
 - `AGENTS.md` — repository instructions and active porting priorities.
 
@@ -79,9 +78,9 @@ python -m unittest discover -s tests
 1. Read the upstream Rust behavior in `codex/` first.
 2. Implement a behavior-focused Python slice in `pycodex/`.
 3. Add/update tests in `tests/`.
-4. Record meaningful progress in:
-   - `PORTING_STATUS.md`
-   - `porting_notes/turns/`
+4. Record meaningful module-status changes in `PORTING_STATUS.md`. Keep
+   durable implementation evidence in the owning module's `README.md`,
+   Rust-derived tests, or a focused alignment document.
 
 ## Notes
 

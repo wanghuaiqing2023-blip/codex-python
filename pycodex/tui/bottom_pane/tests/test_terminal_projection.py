@@ -653,7 +653,7 @@ def test_terminal_bottom_pane_request_runner_executes_clear_and_render() -> None
 
 def test_terminal_bottom_pane_request_runner_builds_clear_and_render_pass_requests() -> None:
     # Rust owners: codex-tui::bottom_pane owns clear/render request semantics,
-    # app::resize_reflow owns render-pass timing, and custom_terminal owns the
+    # tui owns viewport draw timing, and custom_terminal owns the
     # projection lifecycle. terminal_controller should call this runner boundary
     # instead of importing request builders or render-pass protocols.
     class RenderContext:
@@ -702,9 +702,9 @@ def test_terminal_bottom_pane_request_runner_builds_clear_and_render_pass_reques
     assert "\x1b[12;1Hgpt-test high" in render_writer.getvalue()
 
 
-def test_terminal_bottom_pane_request_runner_builds_resize_reflow_clear_callback() -> None:
-    # Rust owners: app::resize_reflow owns clear-cycle remembered footprint
-    # state, bottom_pane owns clear request semantics, and custom_terminal owns
+def test_terminal_bottom_pane_request_runner_builds_tui_viewport_clear_callback() -> None:
+    # Rust owners: tui owns viewport clear timing, bottom_pane owns clear
+    # request semantics, and custom_terminal owns
     # the request lifecycle. The projection runner should package terminal
     # environment values into the callback so terminal_controller does not
     # define a local clear-request closure.
@@ -728,8 +728,8 @@ def test_terminal_bottom_pane_request_runner_builds_resize_reflow_clear_callback
     assert writer.flush_count == 1
 
 
-def test_terminal_bottom_pane_request_runner_builds_resize_reflow_clear_factory() -> None:
-    # Rust owners: app::resize_reflow owns clear-cycle timing and asks for a
+def test_terminal_bottom_pane_request_runner_builds_tui_viewport_clear_factory() -> None:
+    # Rust owners: tui owns viewport clear timing and asks for a
     # live-status/check-resize clear factory; terminal_projection owns packaging
     # that factory into bottom-pane requests so terminal_controller stays glue.
     writer = FlushTrackingStringIO()
@@ -757,8 +757,8 @@ def test_terminal_bottom_pane_request_runner_builds_resize_reflow_clear_factory(
     assert writer.flush_count == 1
 
 
-def test_terminal_bottom_pane_request_runner_builds_resize_reflow_render_callback() -> None:
-    # Rust owners: app::resize_reflow owns render-pass timing, bottom_pane owns
+def test_terminal_bottom_pane_request_runner_builds_tui_viewport_render_callback() -> None:
+    # Rust owners: tui owns viewport render-pass timing, bottom_pane owns
     # render context, and custom_terminal owns the request lifecycle. The
     # projection runner should package those values into a callback so
     # terminal_controller does not define pass/context unpacking closures.
@@ -792,8 +792,8 @@ def test_terminal_bottom_pane_request_runner_builds_resize_reflow_render_callbac
     assert "\x1b[12;1Hgpt-test high" in writer.getvalue()
 
 
-def test_terminal_bottom_pane_request_runner_builds_resize_reflow_render_factory() -> None:
-    # Rust owners: app::resize_reflow owns render-pass timing and asks for a
+def test_terminal_bottom_pane_request_runner_builds_tui_viewport_render_factory() -> None:
+    # Rust owners: tui owns viewport render-pass timing and asks for a
     # live-status/external-blank-row render factory; terminal_projection owns
     # packaging that factory into bottom-pane render requests.
     class RenderContext:

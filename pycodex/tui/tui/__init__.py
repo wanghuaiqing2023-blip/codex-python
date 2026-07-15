@@ -11,11 +11,16 @@ ratatui concrete types.
 from __future__ import annotations
 
 import inspect
+import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Iterator, List, Optional
+from typing import Any, Callable, Iterator, List, Optional, Protocol
 
+from ...terminal_detection import terminal_info
 from .._porting import RustTuiModule
+from ..bottom_pane.terminal_footprint import (
+    TerminalBottomPaneFootprint,
+)
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -126,6 +131,7 @@ class SemanticTerminal:
     def draw(self, draw_fn: Callable[[Any], Any]) -> Any:
         result = draw_fn(self)
         self.drawn_frames.append(result)
+        self.last_known_screen_size = self.size()
         return result
 
 
@@ -405,7 +411,12 @@ class Tui:
         enhanced_keys_supported: bool = False,
         stderr_guard: Any = None,
     ) -> "Tui":
-        return cls(terminal if terminal is not None else SemanticTerminal(), enhanced_keys_supported, stderr_guard)
+        return cls(
+            terminal=terminal if terminal is not None else SemanticTerminal(),
+            enhanced_keys=enhanced_keys_supported,
+            stderr_guard=stderr_guard,
+            is_zellij=terminal_info().is_zellij(),
+        )
 
     def set_alt_screen_enabled(self, enabled: bool) -> None:
         self.alt_screen_enabled = bool(enabled)
@@ -517,8 +528,14 @@ class Tui:
         self.terminal.operations.append("clear_pet_picker_preview_image")
 
     def draw_with_resize_reflow(self, draw_fn: Optional[Callable[[Any], Any]] = None, height: Optional[int] = None) -> Any:
-        self.update_inline_viewport_for_resize_reflow(self.terminal.viewport_area.height if height is None else height)
-        return self.draw(draw_fn)
+        desired_height = self.terminal.viewport_area.height if height is None else height
+        needs_full_repaint = self.update_inline_viewport_for_resize_reflow(desired_height)
+        self.flush_pending_history_lines()
+        if needs_full_repaint:
+            self.terminal.invalidate_viewport()
+        if draw_fn is None:
+            draw_fn = lambda _frame: None
+        return self.terminal.draw(draw_fn)
 
     def pending_viewport_area(self) -> Optional[Rect]:
         if self.terminal.last_known_cursor_pos == self.terminal.cursor_position:
@@ -576,19 +593,342 @@ def clear_for_viewport_change(terminal: Any, new_area: Rect) -> None:
 def update_inline_viewport_for_resize_reflow(terminal: Any, height: int) -> bool:
     screen = terminal.size()
     old_screen = terminal.last_known_screen_size
-    old_viewport = terminal.viewport_area
-    was_bottom_aligned = old_viewport.bottom() == old_screen.height
-    new_height = max(0, min(int(height), screen.height))
-    if was_bottom_aligned:
-        new_y = max(0, screen.height - new_height)
-    else:
-        new_y = min(old_viewport.y, max(0, screen.height - new_height))
-    new_area = Rect(0, new_y, screen.width, new_height)
-    needs_full_repaint = new_area != old_viewport
+    terminal_height_shrank = screen.height < old_screen.height
+    terminal_height_grew = screen.height > old_screen.height
+    previous_area = terminal.viewport_area
+    viewport_was_bottom_aligned = previous_area.bottom() == old_screen.height
+
+    area = Rect(
+        previous_area.x,
+        previous_area.y,
+        screen.width,
+        max(0, min(int(height), screen.height)),
+    )
+    if area.bottom() > screen.height:
+        scroll_by = area.bottom() - screen.height
+        if not terminal_height_shrank:
+            terminal.scroll_region_up(range(0, area.top()), scroll_by)
+        area = Rect(area.x, screen.height - area.height, area.width, area.height)
+    elif terminal_height_grew and viewport_was_bottom_aligned:
+        area = Rect(area.x, screen.height - area.height, area.width, area.height)
+
+    needs_full_repaint = area != previous_area
     if needs_full_repaint:
-        clear_for_viewport_change(terminal, new_area)
-    terminal.last_known_screen_size = screen
+        clear_position = Position(0, min(previous_area.y, area.y))
+        terminal.set_viewport_area(area)
+        terminal.clear_after_position(clear_position)
     return needs_full_repaint
+
+
+@dataclass
+class TerminalInlineViewport:
+    """Real-terminal adapter for Rust ``Tui::draw_with_resize_reflow``.
+
+    The policy and state live in ``tui``. ANSI operations remain delegated to
+    ``custom_terminal`` through the callbacks supplied by the projection
+    runner.
+    """
+
+    terminal_size: Callable[[], os.terminal_size]
+    scroll_region_up_effect: Callable[[int, int, int], None]
+    scroll_region_down_effect: Callable[[int, int, int], None]
+    clear_after_position_effect: Callable[[int, int], None]
+    invalidate_viewport_effect: Callable[[], None]
+    viewport_area: Rect | None = None
+    last_known_screen_size: Rect | None = None
+
+    def _ensure_initialized(self) -> None:
+        if self.viewport_area is not None and self.last_known_screen_size is not None:
+            return
+        size = self.terminal_size()
+        screen = Rect(0, 0, max(0, int(size.columns)), max(0, int(size.lines)))
+        self.last_known_screen_size = screen
+        self.viewport_area = Rect(0, screen.height, screen.width, 0)
+
+    def size(self) -> Rect:
+        size = self.terminal_size()
+        return Rect(0, 0, max(0, int(size.columns)), max(0, int(size.lines)))
+
+    def scroll_region_up(self, region: range, scroll_by: int) -> None:
+        self.scroll_region_up_effect(region.start, region.stop, scroll_by)
+
+    def set_viewport_area(self, area: Rect) -> None:
+        self.viewport_area = area
+
+    def clear_after_position(self, position: Position) -> None:
+        self.clear_after_position_effect(position.y, position.x)
+
+    def update_inline_viewport_for_resize_reflow(self, height: int) -> bool:
+        self._ensure_initialized()
+        changed = update_inline_viewport_for_resize_reflow(self, height)
+        if changed:
+            self.invalidate_viewport_effect()
+        return changed
+
+    def prepare_history_insert(self, inserted_rows: int) -> None:
+        """Move a non-bottom-aligned viewport down before history insertion.
+
+        This mirrors ``insert_history``'s standard-mode area update while
+        retaining viewport state in the terminal/TUI boundary.
+        """
+
+        self._ensure_initialized()
+        assert self.viewport_area is not None
+        screen = self.size()
+        area = self.viewport_area
+        if area.bottom() >= screen.height:
+            return
+        scroll_amount = min(max(0, int(inserted_rows)), screen.height - area.bottom())
+        if scroll_amount == 0:
+            return
+        self.scroll_region_down_effect(area.top(), screen.height, scroll_amount)
+        self.viewport_area = Rect(area.x, area.y + scroll_amount, area.width, area.height)
+        self.invalidate_viewport_effect()
+
+    def reset_top_after_resize_replay_clear(self) -> None:
+        """Reset viewport geometry after app::resize_reflow clears the terminal.
+
+        Rust ``App::clear_terminal_for_resize_replay`` resets the inline
+        viewport to row zero before retained HistoryCells are emitted again.
+        The terminal adapter keeps that geometry transition in ``tui`` while
+        app::resize_reflow remains responsible for the hard-clear side effect.
+        """
+
+        self._ensure_initialized()
+        assert self.viewport_area is not None
+        area = self.viewport_area
+        if area.y == 0:
+            return
+        self.viewport_area = Rect(area.x, 0, area.width, area.height)
+        self.invalidate_viewport_effect()
+
+    def draw_with_resize_reflow(
+        self,
+        height: int,
+        draw_fn: Callable[[Rect], Any],
+    ) -> Any:
+        self.update_inline_viewport_for_resize_reflow(height)
+        assert self.viewport_area is not None
+        result = draw_fn(self.viewport_area)
+        self.last_known_screen_size = self.size()
+        return result
+
+
+class TerminalBottomPaneRenderContextProtocol(Protocol):
+    popup_height: int
+    active_tail_height: int
+    composer_height: int
+
+
+class TerminalBottomPaneRenderContextProviderProtocol(Protocol):
+    def render_context_for_size(
+        self,
+        size: os.terminal_size,
+        composer_cursor_visible: Callable[[], bool],
+    ) -> TerminalBottomPaneRenderContextProtocol:
+        ...
+
+
+@dataclass(frozen=True)
+class TerminalBottomPaneViewportRenderPass:
+    """TUI-owned frame inputs for one inline-viewport draw."""
+
+    check_resize: bool
+    viewport_area: Rect
+    clear_popup_height: int = 0
+    clear_live_status_active: bool = False
+    clear_active_tail_height: int = 0
+    clear_composer_height: int = 1
+
+
+@dataclass
+class TerminalBottomPaneViewportCycleRunner:
+    """Run bottom-pane frames through Rust's ``tui`` viewport lifecycle."""
+
+    viewport: TerminalInlineViewport
+    resize: Callable[[], None]
+    footprint: TerminalBottomPaneFootprint = field(default_factory=TerminalBottomPaneFootprint)
+
+    @staticmethod
+    def _footprint_for_context(
+        live_status: Any,
+        context: TerminalBottomPaneRenderContextProtocol,
+    ) -> TerminalBottomPaneFootprint:
+        return TerminalBottomPaneFootprint.from_surface(
+            live_status,
+            popup_height=int(context.popup_height),
+            active_tail_height=int(context.active_tail_height),
+            composer_height=int(context.composer_height),
+        )
+
+    def history_bottom_row(
+        self,
+        size: os.terminal_size,
+        *,
+        live_status: Any,
+        bottom_pane_state: TerminalBottomPaneRenderContextProviderProtocol,
+        composer_cursor_visible: Callable[[], bool],
+        reserve_active_bottom_pane: bool = False,
+    ) -> int:
+        context = bottom_pane_state.render_context_for_size(size, composer_cursor_visible)
+        desired = self._footprint_for_context(live_status, context).height_for_size(size)
+        if self.viewport.viewport_area is None:
+            top = max(0, int(size.lines) - desired)
+        else:
+            top = self.viewport.viewport_area.y
+        # Rust insert_history always uses terminal.viewport_area.top(). The
+        # viewport draw cycle, not a second synthetic history boundary, owns
+        # reserving rows when status or another bottom-pane surface appears.
+        del reserve_active_bottom_pane
+        return max(1, top)
+
+    def history_bottom_row_callback(
+        self,
+        *,
+        terminal_size: Callable[[], os.terminal_size],
+        live_status: Callable[[], Any],
+        bottom_pane_state: TerminalBottomPaneRenderContextProviderProtocol,
+        composer_cursor_visible: Callable[[], bool],
+    ) -> Callable[[bool], int]:
+        def history_bottom_row(reserve_active_bottom_pane: bool = False) -> int:
+            return self.history_bottom_row(
+                terminal_size(),
+                live_status=live_status(),
+                bottom_pane_state=bottom_pane_state,
+                composer_cursor_visible=composer_cursor_visible,
+                reserve_active_bottom_pane=reserve_active_bottom_pane,
+            )
+
+        return history_bottom_row
+
+    def prepare_history_insert(self, inserted_rows: int) -> None:
+        self.viewport.prepare_history_insert(inserted_rows)
+
+    def prepare_resize_reflow(
+        self,
+        size: os.terminal_size,
+        *,
+        live_status: Any,
+        bottom_pane_state: TerminalBottomPaneRenderContextProviderProtocol,
+        composer_cursor_visible: Callable[[], bool],
+    ) -> Rect:
+        """Resize the TUI viewport before app-owned transcript replay.
+
+        Rust queues reflowed history before ``draw_with_resize_reflow``, whose
+        first terminal effect is updating the viewport. The real-terminal
+        adapter writes replay rows immediately, so this explicit handoff keeps
+        the same observable ordering without moving geometry into ``app``.
+        """
+
+        context = bottom_pane_state.render_context_for_size(size, composer_cursor_visible)
+        desired_height = self._footprint_for_context(live_status, context).height_for_size(size)
+        self.viewport.update_inline_viewport_for_resize_reflow(desired_height)
+        assert self.viewport.viewport_area is not None
+        return self.viewport.viewport_area
+
+    def resize_reflow_replay_callback_factory(
+        self,
+        *,
+        terminal_size: Callable[[], os.terminal_size],
+        live_status: Callable[[], Any],
+        bottom_pane_state: TerminalBottomPaneRenderContextProviderProtocol,
+        composer_cursor_visible: Callable[[], bool],
+    ) -> Callable[[Callable[[], Any]], Callable[[], Any]]:
+        def bind_replay(replay_history_scrollback: Callable[[], Any]) -> Callable[[], Any]:
+            def resize_reflow_replay() -> Any:
+                self.prepare_resize_reflow(
+                    terminal_size(),
+                    live_status=live_status(),
+                    bottom_pane_state=bottom_pane_state,
+                    composer_cursor_visible=composer_cursor_visible,
+                )
+                self.viewport.reset_top_after_resize_replay_clear()
+                return replay_history_scrollback()
+
+            return resize_reflow_replay
+
+        return bind_replay
+
+    def clear_callback(
+        self,
+        *,
+        live_status: Callable[[], Any],
+        clear_factory: Callable[[Any, bool, TerminalBottomPaneFootprint], Callable[[], bool]],
+    ) -> Callable[[bool], bool]:
+        def clear(check_resize: bool = True) -> bool:
+            if check_resize:
+                self.resize()
+            return bool(clear_factory(live_status(), False, self.footprint)())
+
+        return clear
+
+    def render_for_view_state_callback(
+        self,
+        *,
+        terminal_size: Callable[[], os.terminal_size],
+        live_status: Callable[[], Any],
+        bottom_pane_state: TerminalBottomPaneRenderContextProviderProtocol,
+        composer_cursor_visible: Callable[[], bool],
+        render_factory: Callable[
+            [Any, bool],
+            Callable[[TerminalBottomPaneViewportRenderPass, TerminalBottomPaneRenderContextProtocol], bool],
+        ],
+    ) -> Callable[[bool, bool], bool]:
+        def render_for_view_state(
+            check_resize: bool = True,
+            clear_external_blank_rows: bool = False,
+        ) -> bool:
+            if check_resize:
+                self.resize()
+            size = terminal_size()
+            current_live_status = live_status()
+            context = bottom_pane_state.render_context_for_size(size, composer_cursor_visible)
+            current = self._footprint_for_context(current_live_status, context)
+            render = render_factory(current_live_status, clear_external_blank_rows)
+
+            def draw(viewport_area: Rect) -> bool:
+                render_pass = TerminalBottomPaneViewportRenderPass(
+                    check_resize=False,
+                    viewport_area=viewport_area,
+                    clear_popup_height=self.footprint.popup_height,
+                    clear_live_status_active=self.footprint.live_status_active,
+                    clear_active_tail_height=self.footprint.active_tail_height,
+                    clear_composer_height=self.footprint.composer_height,
+                )
+                return bool(render(render_pass, context))
+
+            rendered = bool(
+                self.viewport.draw_with_resize_reflow(
+                    current.height_for_size(size),
+                    draw,
+                )
+            )
+            if rendered:
+                self.footprint = current
+            return rendered
+
+        return render_for_view_state
+
+
+def create_terminal_bottom_pane_viewport_cycle_runner(
+    *,
+    terminal_size: Callable[[], os.terminal_size],
+    resize: Callable[[], None],
+    scroll_region_up: Callable[[int, int, int], None],
+    scroll_region_down: Callable[[int, int, int], None],
+    clear_after_position: Callable[[int, int], None],
+    invalidate_viewport: Callable[[], None],
+) -> TerminalBottomPaneViewportCycleRunner:
+    return TerminalBottomPaneViewportCycleRunner(
+        viewport=TerminalInlineViewport(
+            terminal_size=terminal_size,
+            scroll_region_up_effect=scroll_region_up,
+            scroll_region_down_effect=scroll_region_down,
+            clear_after_position_effect=clear_after_position,
+            invalidate_viewport_effect=invalidate_viewport,
+        ),
+        resize=resize,
+    )
 
 
 def flush_pending_history_lines(
@@ -598,7 +938,7 @@ def flush_pending_history_lines(
 ) -> None:
     if not pending_history_lines:
         return
-    if is_zellij:
+    if is_zellij and any(batch.wrap_policy == "Terminal" for batch in pending_history_lines):
         terminal.operations.append("zellij_raw_mode_restore")
     for pending in pending_history_lines:
         terminal.operations.append(("insert_history_lines", tuple(pending.lines), pending.wrap_policy))
@@ -664,10 +1004,14 @@ __all__ = [
     "SemanticTerminal",
     "TARGET_FRAME_INTERVAL",
     "Terminal",
+    "TerminalBottomPaneViewportCycleRunner",
+    "TerminalBottomPaneViewportRenderPass",
+    "TerminalInlineViewport",
     "Tui",
     "TuiEvent",
     "always_notification_condition_emits_when_focused",
     "clear_for_viewport_change",
+    "create_terminal_bottom_pane_viewport_cycle_runner",
     "cursor_position_with_crossterm",
     "detect_keyboard_enhancement_supported",
     "drop",

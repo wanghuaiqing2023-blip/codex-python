@@ -297,7 +297,6 @@ class TerminalLiveStatusActionPlan:
 
     transition: TerminalLiveStatusTransition
     check_resize: bool = False
-    repaint_footprint: bool = False
     render_bottom_pane: bool = False
     flush_writer: bool = False
     inline_status_text: str | None = None
@@ -356,7 +355,6 @@ def terminal_live_status_show_plan(
         return TerminalLiveStatusActionPlan(
             transition=transition,
             check_resize=layout_active,
-            repaint_footprint=True,
             render_bottom_pane=True,
         )
     return TerminalLiveStatusActionPlan(
@@ -380,7 +378,6 @@ def terminal_live_status_hide_plan(
     if stdin_is_terminal:
         return TerminalLiveStatusActionPlan(
             transition=transition,
-            repaint_footprint=True,
             render_bottom_pane=redraw_bottom_pane,
             flush_writer=not redraw_bottom_pane,
         )
@@ -395,13 +392,10 @@ def run_terminal_live_status_action_plan(
     writer: TextIO,
     plan: TerminalLiveStatusActionPlan,
     *,
-    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
     render_bottom_pane: Callable[[], None],
 ) -> None:
     """Execute terminal side effects selected by a live-status action plan."""
 
-    if plan.repaint_footprint:
-        repaint_footprint(plan.transition.previous)
     if plan.render_bottom_pane:
         render_bottom_pane()
         return
@@ -421,7 +415,6 @@ def run_terminal_live_status_show(
     stdin_is_terminal: bool,
     layout_active: bool,
     check_resize: Callable[[], None],
-    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
     render_bottom_pane: Callable[[], None],
     apply_state: Callable[[TerminalLiveStatusSurface], None] | None = None,
 ) -> TerminalLiveStatusSurface:
@@ -440,7 +433,6 @@ def run_terminal_live_status_show(
     run_terminal_live_status_action_plan(
         writer,
         plan,
-        repaint_footprint=repaint_footprint,
         render_bottom_pane=render_bottom_pane,
     )
     return plan.transition.current
@@ -452,7 +444,6 @@ def run_terminal_live_status_hide(
     *,
     stdin_is_terminal: bool,
     redraw_bottom_pane: bool = True,
-    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
     render_bottom_pane: Callable[[], None],
     apply_state: Callable[[TerminalLiveStatusSurface], None] | None = None,
 ) -> TerminalLiveStatusSurface:
@@ -470,7 +461,6 @@ def run_terminal_live_status_hide(
     run_terminal_live_status_action_plan(
         writer,
         plan,
-        repaint_footprint=repaint_footprint,
         render_bottom_pane=render_bottom_pane,
     )
     return plan.transition.current
@@ -485,7 +475,6 @@ def run_terminal_live_status_text_show(
     stdin_is_terminal: bool,
     layout_active: bool,
     check_resize: Callable[[], None],
-    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
     render_bottom_pane: Callable[[], None],
     apply_state: Callable[[TerminalLiveStatusSurface], None] | None = None,
 ) -> TerminalLiveStatusSurface:
@@ -502,7 +491,6 @@ def run_terminal_live_status_text_show(
         stdin_is_terminal=stdin_is_terminal,
         layout_active=layout_active,
         check_resize=check_resize,
-        repaint_footprint=repaint_footprint,
         render_bottom_pane=render_bottom_pane,
         apply_state=apply_state,
     )
@@ -588,9 +576,9 @@ class TerminalStatusSurfaceWriter:
     """Stateful adapter for terminal live-status and active-turn status.
 
     Rust ``chatwidget::status_surfaces`` owns status text and refresh state,
-    while ``bottom_pane`` owns status-indicator footprint effects.  The
-    terminal runner supplies only environment callbacks for terminal activity,
-    resize, repaint, and bottom-pane rendering.
+    while ``tui`` owns inline-viewport effects. The terminal runner supplies
+    only environment callbacks for terminal activity, resize, and bottom-pane
+    rendering.
     """
 
     writer: TextIO
@@ -600,7 +588,6 @@ class TerminalStatusSurfaceWriter:
     stdin_is_terminal: Callable[[], bool] = lambda: False
     layout_active: Callable[[], bool] = lambda: False
     check_resize: Callable[[], None] = lambda: None
-    repaint_footprint: Callable[[TerminalLiveStatusSurface], None] = lambda _previous: None
     render_bottom_pane: Callable[[], None] = lambda: None
     terminal_title_requires_action: bool = False
 
@@ -644,7 +631,6 @@ class TerminalStatusSurfaceWriter:
             stdin_is_terminal=self.stdin_is_terminal(),
             layout_active=self.layout_active(),
             check_resize=self.check_resize,
-            repaint_footprint=self.repaint_footprint,
             render_bottom_pane=self.render_bottom_pane,
             apply_state=self._apply_live_status,
         )
@@ -703,7 +689,6 @@ class TerminalStatusSurfaceWriter:
             self.live_status,
             stdin_is_terminal=self.stdin_is_terminal(),
             redraw_bottom_pane=redraw_bottom_pane,
-            repaint_footprint=self.repaint_footprint,
             render_bottom_pane=self.render_bottom_pane,
             apply_state=self._apply_live_status,
         )
