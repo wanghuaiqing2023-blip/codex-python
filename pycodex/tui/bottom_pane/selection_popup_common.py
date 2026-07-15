@@ -377,9 +377,20 @@ def render_terminal_popup_lines(
     consume these DTOs instead of reimplementing popup row rendering.
     """
 
+    render_width = max(1, width)
+    # Rust ListSelectionView pairs wrapped rendering with the matching height
+    # measurement. The measure helper subtracts one cell, so pass width + 1
+    # just as list_selection_view.rs does for its render area's width.
+    render_height = measure_rows_height_with_col_width_mode(
+        rows_all,
+        state,
+        max_results,
+        render_width + 1,
+        column_width,
+    )
     buffer: list[Line] = []
     render_rows_with_col_width_mode(
-        Rect(0, 0, max(1, width), max(1, max_results)),
+        Rect(0, 0, render_width, render_height),
         buffer,
         rows_all,
         state,

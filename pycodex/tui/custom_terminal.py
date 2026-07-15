@@ -783,6 +783,18 @@ class LiveViewportProjectionCycleRunner:
     ) -> _ExternalRepaintResult:
         return self.live_viewport.run_external_repaint(repaint)
 
+    def scroll_region_up(self, start: int, end: int, scroll_by: int) -> None:
+        self.live_viewport.scroll_region_up(start, end, scroll_by)
+
+    def scroll_region_down(self, start: int, end: int, scroll_by: int) -> None:
+        self.live_viewport.scroll_region_down(start, end, scroll_by)
+
+    def clear_after_position(self, row: int, column: int = 0) -> None:
+        self.live_viewport.clear_after_position(row, column)
+
+    def invalidate_viewport(self) -> None:
+        self.live_viewport.invalidate_viewport()
+
 
 @dataclass
 class LiveViewportProjectionRequestRunner(Generic[_ProjectionRequest]):
@@ -816,6 +828,18 @@ class LiveViewportProjectionRequestRunner(Generic[_ProjectionRequest]):
         repaint: Callable[[], _ExternalRepaintResult],
     ) -> _ExternalRepaintResult:
         return self.cycle_runner.run_external_repaint(repaint)
+
+    def scroll_region_up(self, start: int, end: int, scroll_by: int) -> None:
+        self.cycle_runner.scroll_region_up(start, end, scroll_by)
+
+    def scroll_region_down(self, start: int, end: int, scroll_by: int) -> None:
+        self.cycle_runner.scroll_region_down(start, end, scroll_by)
+
+    def clear_after_position(self, row: int, column: int = 0) -> None:
+        self.cycle_runner.clear_after_position(row, column)
+
+    def invalidate_viewport(self) -> None:
+        self.cycle_runner.invalidate_viewport()
 
 
 def create_live_viewport_projection_cycle_runner(
@@ -871,6 +895,46 @@ def set_scroll_region(writer: TextIO, top: int, bottom: int) -> None:
 
 def reset_scroll_region(writer: TextIO) -> None:
     writer.write(f"{ESC}[r")
+
+
+def scroll_region_up(writer: TextIO, start: int, end: int, scroll_by: int) -> None:
+    """Scroll a zero-based, end-exclusive terminal region upward.
+
+    Rust's ``tui::update_inline_viewport_for_resize_reflow`` delegates this
+    effect to the custom-terminal backend. Keep the ANSI details here so the
+    TUI module owns viewport policy without owning backend escape sequences.
+    """
+
+    region_start = max(0, int(start))
+    region_end = max(region_start, int(end))
+    amount = max(0, int(scroll_by))
+    if amount == 0 or region_end == region_start:
+        return
+    set_scroll_region(writer, region_start + 1, region_end)
+    move_cursor(writer, region_end, 1)
+    writer.write("\r\n" * amount)
+    reset_scroll_region(writer)
+
+
+def scroll_region_down(writer: TextIO, start: int, end: int, scroll_by: int) -> None:
+    """Scroll a zero-based, end-exclusive terminal region downward."""
+
+    region_start = max(0, int(start))
+    region_end = max(region_start, int(end))
+    amount = max(0, int(scroll_by))
+    if amount == 0 or region_end == region_start:
+        return
+    set_scroll_region(writer, region_start + 1, region_end)
+    move_cursor(writer, region_start + 1, 1)
+    writer.write(f"{ESC}M" * amount)
+    reset_scroll_region(writer)
+
+
+def clear_after_position(writer: TextIO, row: int, column: int = 0) -> None:
+    """Clear from a zero-based terminal position through the visible screen."""
+
+    move_cursor(writer, max(0, int(row)) + 1, max(0, int(column)) + 1)
+    writer.write(f"{ESC}[J")
 
 
 def enable_bracketed_paste(writer: TextIO) -> None:
@@ -1078,6 +1142,23 @@ class LiveViewportRenderer:
     def _reset_buffer_state(self) -> None:
         self._buffer_state.reset()
 
+    def invalidate_viewport(self) -> None:
+        """Force the next draw to repaint the complete inline viewport."""
+
+        self._reset_buffer_state()
+
+    def scroll_region_up(self, start: int, end: int, scroll_by: int) -> None:
+        scroll_region_up(self.writer, start, end, scroll_by)
+        self._reset_buffer_state()
+
+    def scroll_region_down(self, start: int, end: int, scroll_by: int) -> None:
+        scroll_region_down(self.writer, start, end, scroll_by)
+        self._reset_buffer_state()
+
+    def clear_after_position(self, row: int, column: int = 0) -> None:
+        clear_after_position(self.writer, row, column)
+        self._reset_buffer_state()
+
     def check_resize(self, resize: Callable[[], None]) -> None:
         """Run a resize check and invalidate previous frame state.
 
@@ -1243,6 +1324,7 @@ __all__ = [
     "apply_live_viewport_update",
     "apply_live_viewport_update_with_cursor_move",
     "check_live_viewport_resize",
+    "clear_after_position",
     "clear_inline_status_line",
     "clear_live_viewport",
     "clear_live_viewport_request",
@@ -1271,6 +1353,8 @@ __all__ = [
     "run_live_viewport_projection_cycle",
     "run_prepared_live_viewport_projection_cycle",
     "run_live_viewport_update_cycle",
+    "scroll_region_down",
+    "scroll_region_up",
     "set_cursor_style_ansi",
     "terminal_clear_scrollback_cursor_position",
     "terminal_viewport_clear_should_run",

@@ -201,8 +201,10 @@ class TerminalSlashCommandViewDispatcher:
 
         from .model_popups import TerminalModelPopupController
         from .keymap_picker import TerminalKeymapPopupController
-        from .permissions_menu import TerminalPermissionsPopupController
-        from .permission_popups import TerminalAutoReviewDenialsPopupController
+        from .permission_popups import (
+            TerminalAutoReviewDenialsPopupController,
+            TerminalPermissionsPopupController,
+        )
         from .review_popups import TerminalReviewPopupController
         from .settings_popups import TerminalSettingsPopupController
         from ..resume_picker import TerminalResumePopupController

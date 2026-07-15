@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Protocol
 
 from .._porting import RustTuiModule
-from ..line_truncation import Line, Span, _display_width
+from ..line_truncation import Line, Span
 from ..terminal_hyperlinks import HyperlinkLine, annotate_web_urls, plain_hyperlink_lines
+from ..wrapping import RtOptions, adaptive_wrap_lines as rust_adaptive_wrap_lines
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -85,78 +86,6 @@ def plain_lines(lines: Iterable[Line | str | Iterable[Span | str] | Any]) -> lis
     return [plain_line(line) for line in lines]
 
 
-def _span_width(span: Span) -> int:
-    return _display_width(span.content)
-
-
-def _line_width(line: Line) -> int:
-    return sum(_span_width(span) for span in line.spans)
-
-
-def _split_span_for_width(span: Span, max_width: int) -> tuple[Span | None, Span | None]:
-    if max_width <= 0:
-        return None, span
-    used = 0
-    split_at = 0
-    for index, char in enumerate(span.content):
-        width = _display_width(char)
-        if used + width > max_width:
-            break
-        used += width
-        split_at = index + 1
-    if split_at == 0:
-        return None, span
-    head = Span(span.content[:split_at], span.style)
-    tail_text = span.content[split_at:]
-    return head, (Span(tail_text, span.style) if tail_text else None)
-
-
-def _wrap_line_with_prefixes(
-    line: Line,
-    width: int,
-    initial_prefix: Line,
-    subsequent_prefix: Line,
-) -> list[Line]:
-    if width <= 0:
-        return []
-
-    out: list[Line] = []
-    source_spans = list(line.spans)
-    first = True
-
-    while first or source_spans:
-        prefix = initial_prefix if first else subsequent_prefix
-        prefix_width = _line_width(prefix)
-        available = max(0, width - prefix_width)
-        rendered_spans: list[Span] = list(prefix.spans)
-        used = 0
-
-        while source_spans and used < available:
-            current = source_spans.pop(0)
-            current_width = _span_width(current)
-            if used + current_width <= available:
-                rendered_spans.append(current)
-                used += current_width
-                continue
-            head, tail = _split_span_for_width(current, available - used)
-            if head is not None:
-                rendered_spans.append(head)
-                used += _span_width(head)
-            if tail is not None:
-                source_spans.insert(0, tail)
-            break
-
-        if not source_spans and used == 0 and not first:
-            break
-        out.append(Line.from_spans(rendered_spans))
-        first = False
-
-        if available == 0 and source_spans:
-            break
-
-    return out
-
-
 def adaptive_wrap_lines(
     text: Iterable[Line | str | Iterable[Span | str] | Any] | str | Line,
     width: int,
@@ -167,12 +96,12 @@ def adaptive_wrap_lines(
 
     if width <= 0:
         return []
-    initial = _coerce_line(initial_prefix)
-    subsequent = _coerce_line(subsequent_prefix)
-    wrapped: list[Line] = []
-    for line in _coerce_lines(text):
-        wrapped.extend(_wrap_line_with_prefixes(line, width, initial, subsequent))
-    return wrapped
+    options = (
+        RtOptions.new(width)
+        .initial_indent(_coerce_line(initial_prefix))
+        .subsequent_indent(_coerce_line(subsequent_prefix))
+    )
+    return rust_adaptive_wrap_lines(_coerce_lines(text), options)
 
 
 @dataclass

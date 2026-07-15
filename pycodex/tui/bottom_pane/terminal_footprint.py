@@ -38,7 +38,7 @@ class TerminalBottomPaneFootprint:
 
     Rust ``bottom_pane`` computes desired heights from the active view and
     composer/footer state. The real-terminal adapter keeps the same boundary
-    by reporting a compact footprint value to ``app::resize_reflow``.
+    by reporting a compact footprint value to the ``tui`` viewport owner.
     """
 
     live_status_active: bool = False
@@ -152,6 +152,7 @@ def terminal_bottom_pane_layout_rows(
     clear_active_tail_height: int = 0,
     composer_height: int = 1,
     clear_composer_height: int = 1,
+    viewport_area: object | None = None,
 ) -> TerminalBottomPaneLayoutRows:
     """Return terminal row assignments for the bottom-pane frame.
 
@@ -161,24 +162,55 @@ def terminal_bottom_pane_layout_rows(
     bottom-pane state.
     """
 
-    clear_rows = tuple(
-        bottom_pane_rows_for_size(
-            size,
-            live_status_active=live_status_active or clear_live_status_active,
-            popup_height=max(int(popup_height), int(clear_popup_height)),
-            active_tail_height=max(int(active_tail_height), int(clear_active_tail_height)),
-            composer_height=max(int(composer_height), int(clear_composer_height)),
+    viewport_top = max(0, int(getattr(viewport_area, "y", 0)))
+    viewport_height = max(
+        0,
+        min(
+            int(getattr(viewport_area, "height", size.lines)),
+            max(0, int(size.lines) - viewport_top),
+        ),
+    )
+    layout_size = os.terminal_size((size.columns, viewport_height))
+    clear_height = bottom_pane_height(
+        live_status_active=live_status_active or clear_live_status_active,
+        popup_height=max(int(popup_height), int(clear_popup_height)),
+        active_tail_height=max(int(active_tail_height), int(clear_active_tail_height)),
+        composer_height=max(int(composer_height), int(clear_composer_height)),
+    )
+    clear_size = os.terminal_size(
+        (
+            size.columns,
+            min(max(0, int(size.lines) - viewport_top), max(viewport_height, clear_height)),
         )
     )
-    base_rows = bottom_pane_rows_for_size(
-        size,
-        live_status_active=live_status_active,
-        popup_height=popup_height,
-        composer_height=composer_height,
+
+    def offset_rows(rows: list[int]) -> list[int]:
+        return [viewport_top + row for row in rows]
+
+    clear_rows = tuple(
+        offset_rows(
+            bottom_pane_rows_for_size(
+                clear_size,
+                live_status_active=live_status_active or clear_live_status_active,
+                popup_height=max(int(popup_height), int(clear_popup_height)),
+                active_tail_height=max(int(active_tail_height), int(clear_active_tail_height)),
+                composer_height=max(int(composer_height), int(clear_composer_height)),
+            )
+        )
     )
-    active_tail_rows = tuple(clear_rows[: max(0, int(active_tail_height))])
+    base_rows = offset_rows(
+        bottom_pane_rows_for_size(
+            layout_size,
+            live_status_active=live_status_active,
+            popup_height=popup_height,
+            active_tail_height=active_tail_height,
+            composer_height=composer_height,
+        )
+    )
+    active_tail_rows = tuple(base_rows[: max(0, int(active_tail_height))])
+    content_rows = base_rows[len(active_tail_rows) :]
     if popup_height:
-        rows = base_rows
+        rows = content_rows
         cursor = 0
         live_status = None
         if live_status_active:
@@ -195,14 +227,18 @@ def terminal_bottom_pane_layout_rows(
             active_tail_rows=active_tail_rows,
         )
 
-    composer_end = len(base_rows) - 2
+    composer_end = len(content_rows) - 2
     composer_start = max(0, composer_end - max(1, int(composer_height)))
     return TerminalBottomPaneLayoutRows(
         clear_rows=clear_rows,
-        live_status_row=status_row(size, live_status_active=live_status_active),
-        composer_rows=tuple(base_rows[composer_start:composer_end]),
+        live_status_row=(
+            viewport_top + status_row(layout_size, live_status_active=True)
+            if live_status_active
+            else None
+        ),
+        composer_rows=tuple(content_rows[composer_start:composer_end]),
         popup_rows=(),
-        footer_row=footer_row(size),
+        footer_row=viewport_top + footer_row(layout_size),
         active_tail_rows=active_tail_rows,
     )
 

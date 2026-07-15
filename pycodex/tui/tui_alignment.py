@@ -90,6 +90,17 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         ),
     ),
     TuiAlignmentEntry(
+        python_module="pycodex/tui/tui/__init__.py",
+        rust_modules=("codex-tui::tui",),
+        rust_sources=("codex/codex-rs/tui/src/tui.rs",),
+        python_tests=("pycodex/tui/tui/tests/test_tui.py",),
+        notes=(
+            "Owns inline viewport geometry, draw_with_resize_reflow ordering, "
+            "and history-insert viewport movement. app::resize_reflow owns "
+            "transcript replay preparation, not bottom-pane footprint policy."
+        ),
+    ),
+    TuiAlignmentEntry(
         python_module="pycodex/tui/tui/event_stream.py",
         rust_modules=("codex-tui::tui::event_stream",),
         rust_sources=("codex/codex-rs/tui/src/tui/event_stream.rs",),
@@ -278,6 +289,27 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         ),
     ),
     TuiAlignmentEntry(
+        python_module="pycodex/tui/chatwidget/permission_popups.py",
+        rust_modules=("codex-tui::chatwidget::permission_popups",),
+        rust_sources=("codex/codex-rs/tui/src/chatwidget/permission_popups.rs",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_permission_popups.py",),
+        notes=(
+            "Owns the ordinary /permissions popup, built-in permission modes, "
+            "and full-access confirmation. It delegates to permissions_menu "
+            "only when explicit permission-profile mode is enabled."
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/chatwidget/permissions_menu.py",
+        rust_modules=("codex-tui::chatwidget::permissions_menu",),
+        rust_sources=("codex/codex-rs/tui/src/chatwidget/permissions_menu.rs",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_permissions_menu.py",),
+        notes=(
+            "Owns the explicit permission-profile menu and is not the "
+            "unconditional /permissions command entry point."
+        ),
+    ),
+    TuiAlignmentEntry(
         python_module="pycodex/tui/chatwidget/model_popups.py",
         rust_modules=("codex-tui::chatwidget::model_popups",),
         rust_sources=("codex/codex-rs/tui/src/chatwidget/model_popups.rs",),
@@ -381,7 +413,7 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         python_module="pycodex/tui/bottom_pane/terminal_footprint.py",
         python_tests=(
             "pycodex/tui/bottom_pane/tests/test_terminal_footprint.py",
-            "pycodex/tui/app/tests/test_resize_reflow.py",
+            "pycodex/tui/tui/tests/test_tui.py",
         ),
         role="terminal-footprint-adapter",
         notes=(
@@ -403,16 +435,16 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                 ),
             ),
             AdapterResponsibility(
-                name="history viewport footprint value",
-                rust_module="codex-tui::app::resize_reflow",
-                rust_source="codex/codex-rs/tui/src/app/resize_reflow.rs",
+                name="inline viewport desired height value",
+                rust_module="codex-tui::tui",
+                rust_source="codex/codex-rs/tui/src/tui.rs",
                 python_tests=(
                     "pycodex/tui/bottom_pane/tests/test_terminal_footprint.py",
-                    "pycodex/tui/app/tests/test_resize_reflow.py",
+                    "pycodex/tui/tui/tests/test_tui.py",
                 ),
                 description=(
-                    "Provides compact row reservations consumed by resize_reflow "
-                    "for footprint transition comparison and history repaint."
+                    "Provides compact desired-height row reservations consumed "
+                    "by tui for inline viewport updates and history bounds."
                 ),
             ),
             AdapterResponsibility(
@@ -449,7 +481,7 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                     "state from composer/footer/status/popup context so "
                     "terminal_controller and terminal adapters do not own "
                     "TTY/layout gating, render-context field unpacking, or "
-                    "resize-owned render-pass field unpacking."
+                    "tui-owned viewport render-pass field unpacking."
                 ),
             ),
         ),
@@ -501,7 +533,7 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                     "supplies the projection-owner callback to the "
                     "custom_terminal request lifecycle. It also exposes "
                     "request-runner methods that build clear/render-pass "
-                    "requests plus the resize-reflow clear/render-pass "
+                    "requests plus the tui viewport clear/render-pass "
                     "callbacks and factories through terminal_action owner "
                     "helpers so "
                     "terminal_controller does not import request builders, "
@@ -585,29 +617,22 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                 ),
             ),
             AdapterResponsibility(
-                name="footprint reflow trigger",
-                rust_module="codex-tui::app::resize_reflow",
-                rust_source="codex/codex-rs/tui/src/app/resize_reflow.rs",
+                name="inline viewport bridge",
+                rust_module="codex-tui::tui",
+                rust_source="codex/codex-rs/tui/src/tui.rs",
                 python_tests=(
                     "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
-                    "pycodex/tui/app/tests/test_resize_reflow.py",
+                    "pycodex/tui/tui/tests/test_tui.py",
+                    "pycodex/tui/tui/tests/test_terminal_runtime.py",
                 ),
                 description=(
-                    "Provides bottom-pane owner state and cursor callbacks, a "
-                    "render callback backed by the terminal_projection request "
-                    "runner boundary, and the external repaint runner to "
-                    "resize_reflow. The controller "
-                    "requests the footprint cycle runner from the resize_reflow "
-                    "owner so clear callback binding, footprint-change "
-                    "detection, render-context acquisition, history viewport "
-                    "bounds, footprint timing, no-op detection, remembered "
-                    "footprint state, and external repaint dispatch stay "
-                    "inside app::resize_reflow. It also "
-                    "exposes no-resize clear/render callback methods for "
-                    "runtime collaborators whose owner already handles resize "
-                    "timing, instead of making terminal_runtime spell those "
-                    "callback policies out with local lambdas or tracker "
-                    "construction in the controller."
+                    "Binds bottom-pane owner state and cursor callbacks to "
+                    "tui's viewport-cycle runner. The runner owns desired-height "
+                    "draws, terminal-resize viewport updates, and pre-insert "
+                    "scroll movement; the controller only exposes bound "
+                    "prepare_history_insert and resize_reflow_replay callbacks "
+                    "plus no-resize clear/render entry points. app::resize_reflow "
+                    "remains limited to source-backed transcript replay."
                 ),
             ),
             AdapterResponsibility(
@@ -620,9 +645,9 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                 ),
                 description=(
                     "Invalidates the previous live-pane buffer when resize, history replay, "
-                    "or footprint repaint side effects change the visible terminal outside "
+                    "or external repaint side effects change the visible terminal outside "
                     "the normal bottom-pane diff render, by requesting "
-                    "custom_terminal's owner-managed projection-cycle runner instead "
+                    "custom_terminal's projection backend callbacks instead "
                     "of constructing LiveViewportRenderer or resetting raw buffer state."
                 ),
             ),
@@ -662,6 +687,10 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         rust_modules=("codex-tui::custom_terminal",),
         rust_sources=("codex/codex-rs/tui/src/custom_terminal.rs",),
         python_tests=("tests/test_tui_custom_terminal.py",),
+        notes=(
+            "Owns terminal scroll-region operations and frame-buffer diff output; "
+            "codex-tui::tui owns inline viewport geometry and resize decisions."
+        ),
     ),
     TuiAlignmentEntry(
         python_module="pycodex/tui/insert_history.py",
@@ -669,9 +698,39 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         rust_sources=("codex/codex-rs/tui/src/insert_history.rs",),
         python_tests=("tests/test_tui_insert_history.py",),
         notes=(
-            "Owns finalized and resize-replayed scrollback insertion helpers; "
-            "resize_reflow decides when replay happens, but terminal_runtime "
-            "must not rebuild insert-history clear/render flag combinations."
+            "Owns finalized and resize-replayed scrollback insertion helpers. "
+            "Before ordinary insertion it asks tui to move a non-bottom inline "
+            "viewport; app::resize_reflow decides only when transcript replay happens."
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/wrapping.py",
+        rust_modules=("codex-tui::wrapping",),
+        rust_sources=("codex/codex-rs/tui/src/wrapping.rs",),
+        python_tests=("tests/test_tui_wrapping.py",),
+        notes=(
+            "Owns adaptive line wrapping, word boundaries, and styled initial/"
+            "subsequent indentation used by history-cell rendering."
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/history_cell/base.py",
+        rust_modules=("codex-tui::history_cell::base",),
+        rust_sources=("codex/codex-rs/tui/src/history_cell/base.rs",),
+        python_tests=("pycodex/tui/history_cell/tests/test_base.py",),
+        notes=(
+            "Owns shared HistoryCell protocols, prefixed wrapping, composite "
+            "separation, and hyperlink-preserving base cells."
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/history_cell/approvals.py",
+        rust_modules=("codex-tui::history_cell::approvals",),
+        rust_sources=("codex/codex-rs/tui/src/history_cell/approvals.rs",),
+        python_tests=("pycodex/tui/history_cell/tests/test_approvals.py",),
+        notes=(
+            "Owns approval-decision wording, symbols, and span styling for "
+            "command, patch, network, policy, guardian, and timeout outcomes."
         ),
     ),
     TuiAlignmentEntry(
@@ -936,6 +995,17 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         python_tests=("pycodex/tui/chatwidget/tests/test_interaction.py",),
     ),
     TuiModuleOwner(
+        python_owner="pycodex/tui/tui/__init__.py",
+        rust_module="codex-tui::tui",
+        rust_source="codex/codex-rs/tui/src/tui.rs",
+        implementation_files=("pycodex/tui/tui/__init__.py",),
+        python_tests=("pycodex/tui/tui/tests/test_tui.py",),
+        notes=(
+            "Owns inline viewport state and Rust draw_with_resize_reflow order: "
+            "update viewport, flush pending history, invalidate, then draw."
+        ),
+    ),
+    TuiModuleOwner(
         python_owner="pycodex/tui/tui/event_stream.py",
         rust_module="codex-tui::tui::event_stream",
         rust_source="codex/codex-rs/tui/src/tui/event_stream.rs",
@@ -990,10 +1060,9 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         implementation_files=("pycodex/tui/custom_terminal.py",),
         python_tests=("tests/test_tui_custom_terminal.py",),
         notes=(
-            "Owns generic live viewport requests, updates, projection envelopes, "
-            "prepared projection-cycle unpacking, cursor policy, diff/flush "
-            "lifecycle, and external repaint invalidation for Python's hybrid "
-            "terminal backend."
+            "Owns terminal backend scrolling, projection envelopes, cursor policy, "
+            "diff/flush lifecycle, and external repaint invalidation. Inline "
+            "viewport geometry and resize policy remain in codex-tui::tui."
         ),
     ),
     TuiModuleOwner(
@@ -1087,6 +1156,30 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
             "streaming, and resize-replayed history rows. app::resize_reflow "
             "owns replay timing; terminal_runtime only wires the callback."
         ),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/wrapping.py",
+        rust_module="codex-tui::wrapping",
+        rust_source="codex/codex-rs/tui/src/wrapping.rs",
+        implementation_files=("pycodex/tui/wrapping.py",),
+        python_tests=("tests/test_tui_wrapping.py",),
+        notes="Owns adaptive wrapping and styled indentation semantics.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/history_cell/base.py",
+        rust_module="codex-tui::history_cell::base",
+        rust_source="codex/codex-rs/tui/src/history_cell/base.rs",
+        implementation_files=("pycodex/tui/history_cell/base.py",),
+        python_tests=("pycodex/tui/history_cell/tests/test_base.py",),
+        notes="Owns shared HistoryCell implementations and wrapping delegation.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/history_cell/approvals.py",
+        rust_module="codex-tui::history_cell::approvals",
+        rust_source="codex/codex-rs/tui/src/history_cell/approvals.rs",
+        implementation_files=("pycodex/tui/history_cell/approvals.py",),
+        python_tests=("pycodex/tui/history_cell/tests/test_approvals.py",),
+        notes="Owns approval outcome wording, symbols, and semantic styles.",
     ),
     TuiModuleOwner(
         python_owner="pycodex/tui/history_cell/messages.py",
@@ -1235,12 +1328,16 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         rust_source="codex/codex-rs/tui/src/chatwidget.rs",
         implementation_files=(
             "pycodex/tui/chatwidget/model_popups.py",
+            "pycodex/tui/chatwidget/permission_popups.py",
+            "pycodex/tui/chatwidget/permissions_menu.py",
             "pycodex/tui/chatwidget/rendering.py",
             "pycodex/tui/chatwidget/slash_dispatch.py",
             "pycodex/tui/chatwidget/status_surfaces.py",
         ),
         python_tests=(
             "pycodex/tui/chatwidget/tests/test_model_popups.py",
+            "pycodex/tui/chatwidget/tests/test_permission_popups.py",
+            "pycodex/tui/chatwidget/tests/test_permissions_menu.py",
             "pycodex/tui/chatwidget/tests/test_slash_dispatch.py",
             "pycodex/tui/chatwidget/tests/test_status_surfaces.py",
         ),
@@ -1294,6 +1391,7 @@ CRITICAL_TERMINAL_TUI_MODULES: frozenset[str] = frozenset(
         "pycodex/tui/app_event.py",
         "pycodex/tui/app_event_sender.py",
         "pycodex/tui/app/runtime.py",
+        "pycodex/tui/tui/__init__.py",
         "pycodex/tui/tui/event_stream.py",
         "pycodex/tui/ratatui_bridge/buffer.py",
         "pycodex/tui/ratatui_bridge/backend.py",
@@ -1310,6 +1408,8 @@ CRITICAL_TERMINAL_TUI_MODULES: frozenset[str] = frozenset(
         "pycodex/tui/bottom_pane/command_popup.py",
         "pycodex/tui/bottom_pane/slash_commands.py",
         "pycodex/tui/chatwidget/slash_dispatch.py",
+        "pycodex/tui/chatwidget/permission_popups.py",
+        "pycodex/tui/chatwidget/permissions_menu.py",
         "pycodex/tui/chatwidget/model_popups.py",
         "pycodex/tui/chatwidget/rendering.py",
         "pycodex/tui/chatwidget/turn_runtime.py",
@@ -1327,6 +1427,9 @@ CRITICAL_TERMINAL_TUI_MODULES: frozenset[str] = frozenset(
         "pycodex/tui/app/resize_reflow.py",
         "pycodex/tui/custom_terminal.py",
         "pycodex/tui/insert_history.py",
+        "pycodex/tui/wrapping.py",
+        "pycodex/tui/history_cell/base.py",
+        "pycodex/tui/history_cell/approvals.py",
         "pycodex/tui/history_cell/messages.py",
         "pycodex/tui/history_cell/session.py",
         "pycodex/tui/chatwidget/protocol_requests.py",

@@ -1,9 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import io
-import os
 from types import SimpleNamespace
 
-from pycodex.tui.app.resize_reflow import bottom_pane_footprint_transition
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
 from pycodex.tui.bottom_pane.title_setup import TerminalTitleItem
 from pycodex.tui.chatwidget.status_surfaces import (
@@ -208,18 +206,17 @@ def test_run_terminal_live_status_text_show_builds_text_and_delegates_surface_ef
         stdin_is_terminal=True,
         layout_active=True,
         check_resize=lambda: calls.append("resize"),
-        repaint_footprint=lambda previous: calls.append(previous),
         render_bottom_pane=lambda: calls.append("render"),
     )
 
     assert shown == TerminalLiveStatusSurface.active_status("\u2022 retry \u2514 slow")
-    assert calls == ["resize", initial, "render"]
+    assert calls == ["resize", "render"]
 
 
-def test_terminal_status_surface_writer_updates_state_before_repaint() -> None:
+def test_terminal_status_surface_writer_updates_state_before_render() -> None:
     # Rust owner: chatwidget::status_surfaces owns status state refresh while
-    # bottom_pane owns footprint repaint effects. The terminal runner should
-    # not duplicate this apply-before-repaint ordering.
+    # tui owns viewport resize effects. The terminal runner should not
+    # duplicate this apply-before-render ordering.
     writer = io.StringIO()
     calls: list[object] = []
     holder: dict[str, TerminalStatusSurfaceWriter] = {}
@@ -229,19 +226,16 @@ def test_terminal_status_surface_writer_updates_state_before_repaint() -> None:
         stdin_is_terminal=lambda: True,
         layout_active=lambda: True,
         check_resize=lambda: calls.append("resize"),
-        repaint_footprint=lambda previous: calls.append(
-            ("repaint", previous, holder["status"].live_status)
+        render_bottom_pane=lambda: calls.append(
+            ("render", holder["status"].live_status)
         ),
-        render_bottom_pane=lambda: calls.append("render"),
     )
     holder["status"] = status
-    initial = status.live_status
-
     status.show_live_status("retry", "slow")
 
     expected = TerminalLiveStatusSurface.active_status("\u2022 retry \u2514 slow")
     assert status.live_status == expected
-    assert calls == ["resize", ("repaint", initial, expected), "render"]
+    assert calls == ["resize", ("render", expected)]
 
 
 def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None:
@@ -255,7 +249,6 @@ def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None
         stdin_is_terminal=lambda: True,
         layout_active=lambda: True,
         check_resize=lambda: calls.append("resize"),
-        repaint_footprint=lambda _previous: calls.append("repaint"),
         render_bottom_pane=lambda: calls.append("render"),
     )
 
@@ -292,7 +285,6 @@ def test_terminal_status_surface_writer_hides_live_status_surface() -> None:
         writer,
         stdin_is_terminal=lambda: True,
         layout_active=lambda: True,
-        repaint_footprint=lambda _previous: calls.append("repaint"),
         render_bottom_pane=lambda: calls.append("render"),
     )
 
@@ -302,13 +294,13 @@ def test_terminal_status_surface_writer_hides_live_status_surface() -> None:
     status.hide_live_status()
 
     assert status.live_status == TerminalLiveStatusSurface.inactive()
-    assert calls[-2:] == ["repaint", "render"]
+    assert calls[-1:] == ["render"]
 
     status.show_live_status("Working")
     calls.clear()
     status.clear_live_status()
     assert status.live_status == TerminalLiveStatusSurface.inactive()
-    assert calls[-2:] == ["repaint", "render"]
+    assert calls[-1:] == ["render"]
 
 
 def test_terminal_turn_status_state_owns_tick_gate_state() -> None:
@@ -532,7 +524,6 @@ def test_approval_mode_display_matches_auto_review_special_case() -> None:
 def test_live_status_surface_controls_bottom_pane_footprint() -> None:
     # Rust owner: codex-tui::bottom_pane owns whether status indicator state
     # expands the live bottom pane; the terminal runner only applies the plan.
-    size = os.terminal_size((80, 24))
     inactive = TerminalLiveStatusSurface.inactive()
     non_tty_active = TerminalLiveStatusSurface.active_status()
     active = TerminalLiveStatusSurface.active_status("\u2022 Working")
@@ -545,17 +536,6 @@ def test_live_status_surface_controls_bottom_pane_footprint() -> None:
     assert not non_tty_active.footprint_active
     assert active.render_text == "\u2022 Working"
     assert active.footprint_active
-    assert active.rows_for_size(size) == [19, 20, 21, 22, 23, 24]
-
-    grow = bottom_pane_footprint_transition(size, inactive, active)
-    same = bottom_pane_footprint_transition(size, active, TerminalLiveStatusSurface.active_status("\u2022 Thinking"))
-    shrink = bottom_pane_footprint_transition(size, active, inactive)
-
-    assert grow.old_rows == (21, 22, 23, 24)
-    assert grow.new_rows == (19, 20, 21, 22, 23, 24)
-    assert grow.changed
-    assert not same.changed
-    assert shrink.changed
 
 
 def test_live_status_transition_helpers_preserve_previous_and_current_state() -> None:
@@ -601,7 +581,6 @@ def test_live_status_show_plan_routes_terminal_and_inline_side_effects() -> None
 
     assert tty.transition.current == TerminalLiveStatusSurface.active_status("\u2022 Working")
     assert tty.check_resize is True
-    assert tty.repaint_footprint is True
     assert tty.render_bottom_pane is True
     assert tty.inline_status_text is None
     assert inline.transition.current == TerminalLiveStatusSurface.active_status("\u2022 Working")
@@ -634,16 +613,13 @@ def test_live_status_hide_plan_routes_terminal_and_inline_side_effects() -> None
     )
 
     assert redraw.transition.current == TerminalLiveStatusSurface.inactive()
-    assert redraw.repaint_footprint is True
     assert redraw.render_bottom_pane is True
     assert redraw.flush_writer is False
-    assert flush_only.repaint_footprint is True
     assert flush_only.render_bottom_pane is False
     assert flush_only.flush_writer is True
     assert inline.clear_inline_status is True
     assert inline.flush_writer is True
     assert inactive.changed is False
-    assert inactive.repaint_footprint is False
 
 
 def test_run_live_status_action_plan_executes_terminal_callbacks() -> None:
@@ -658,11 +634,10 @@ def test_run_live_status_action_plan_executes_terminal_callbacks() -> None:
     run_terminal_live_status_action_plan(
         io.StringIO(),
         plan,
-        repaint_footprint=lambda previous: calls.append(previous),
         render_bottom_pane=lambda: calls.append("render"),
     )
 
-    assert calls == [active, "render"]
+    assert calls == ["render"]
 
 
 def test_run_live_status_action_plan_executes_inline_writer_effects() -> None:
@@ -681,13 +656,11 @@ def test_run_live_status_action_plan_executes_inline_writer_effects() -> None:
     run_terminal_live_status_action_plan(
         writer,
         shown,
-        repaint_footprint=lambda previous: None,
         render_bottom_pane=lambda: None,
     )
     run_terminal_live_status_action_plan(
         writer,
         hidden,
-        repaint_footprint=lambda previous: None,
         render_bottom_pane=lambda: None,
     )
 
@@ -711,7 +684,6 @@ def test_run_live_status_show_and_hide_return_surface_state_and_execute_effects(
         stdin_is_terminal=True,
         layout_active=True,
         check_resize=lambda: calls.append("resize"),
-        repaint_footprint=lambda previous: calls.append(previous),
         render_bottom_pane=lambda: calls.append("render"),
     )
     hidden = run_terminal_live_status_hide(
@@ -719,19 +691,18 @@ def test_run_live_status_show_and_hide_return_surface_state_and_execute_effects(
         shown,
         stdin_is_terminal=True,
         redraw_bottom_pane=False,
-        repaint_footprint=lambda previous: calls.append(previous),
         render_bottom_pane=lambda: calls.append("render"),
     )
 
     assert shown == TerminalLiveStatusSurface.active_status("\u2022 Working")
     assert hidden == TerminalLiveStatusSurface.inactive()
-    assert calls == ["resize", initial, "render", shown]
+    assert calls == ["resize", "render"]
     assert writer.flush_count == 1
 
 
-def test_run_live_status_show_applies_state_before_repaint() -> None:
+def test_run_live_status_show_applies_state_before_render() -> None:
     applied: list[TerminalLiveStatusSurface] = []
-    observed_during_repaint: list[TerminalLiveStatusSurface] = []
+    observed_during_render: list[TerminalLiveStatusSurface] = []
 
     shown = run_terminal_live_status_show(
         io.StringIO(),
@@ -741,13 +712,12 @@ def test_run_live_status_show_applies_state_before_repaint() -> None:
         layout_active=False,
         check_resize=lambda: None,
         apply_state=applied.append,
-        repaint_footprint=lambda previous: observed_during_repaint.extend(applied),
-        render_bottom_pane=lambda: None,
+        render_bottom_pane=lambda: observed_during_render.extend(applied),
     )
 
     assert shown == TerminalLiveStatusSurface.active_status("\u2022 Working")
     assert applied == [shown]
-    assert observed_during_repaint == [shown]
+    assert observed_during_render == [shown]
 
 
 def test_run_live_status_show_and_hide_handle_inline_surface() -> None:
@@ -760,14 +730,12 @@ def test_run_live_status_show_and_hide_handle_inline_surface() -> None:
         stdin_is_terminal=False,
         layout_active=False,
         check_resize=lambda: writer.write("<resize>"),
-        repaint_footprint=lambda previous: writer.write("<repaint>"),
         render_bottom_pane=lambda: writer.write("<render>"),
     )
     hidden = run_terminal_live_status_hide(
         writer,
         shown,
         stdin_is_terminal=False,
-        repaint_footprint=lambda previous: writer.write("<repaint>"),
         render_bottom_pane=lambda: writer.write("<render>"),
     )
 

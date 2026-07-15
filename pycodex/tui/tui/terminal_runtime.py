@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
+from ...terminal_detection import terminal_info
 from ..app.runtime import ActiveThreadRuntime, TuiAppRuntime
 from ..app.history_ui import (
     TerminalClearUiExecutor,
@@ -141,10 +142,6 @@ class TerminalTuiRunner:
             stdin_is_terminal=lambda: self._stdin_is_terminal,
             layout_active=lambda: self._resize.layout_active,
             check_resize=lambda: self._resize.check_size_change(),
-            repaint_footprint=lambda previous: self._resize.run_bottom_pane_footprint_reflow(
-                previous=previous,
-                current=self._status.live_status,
-            ),
         )
         self._bottom_pane = TerminalBottomPaneController(
             stdout,
@@ -157,10 +154,6 @@ class TerminalTuiRunner:
             footer_right_text=self._idle_footer.right_text,
             open_command_view=self._slash_command_views.open_command_view,
             on_selection_events=self._slash_command_views.handle_selection_events,
-            repaint_footprint=lambda previous, current: self._resize.run_bottom_pane_frame_footprint_reflow(
-                previous,
-                current,
-            ),
             cursor_visible=self._status.composer_cursor_visible,
             set_terminal_title_requires_action=self._status.set_terminal_title_requires_action,
             command_popup_flags=command_popup_flags_from_config(self.app_runtime.chat_widget.config),
@@ -202,12 +195,13 @@ class TerminalTuiRunner:
             terminal_columns=self._terminal_columns.columns,
             check_resize=lambda: self._resize.check_size_change(),
             history_bottom_row=self._bottom_pane.history_bottom_row,
+            prepare_history_insert=self._bottom_pane.prepare_history_insert,
             clear_bottom_pane=self._bottom_pane.clear_without_resize_check,
             render_bottom_pane=self._bottom_pane.render_without_resize_check,
             append_transcript_cell=self._transcript.append,
             insert_mode=(
                 InsertHistoryMode.ZELLIJ_RAW
-                if self._stdout_is_terminal
+                if self._stdout_is_terminal and terminal_info().is_zellij()
                 else InsertHistoryMode.STANDARD
             ),
             terminal_rows=lambda: terminal_size().lines,
@@ -232,8 +226,9 @@ class TerminalTuiRunner:
             reset_terminal_scroll_region=self._scroll_region.reset,
             render_bottom_pane=self._bottom_pane.render_without_resize_check,
             repaint_history_viewport=self._resize_history.repaint_viewport,
-            repaint_history_viewport_for_footprint=self._resize_history.repaint_viewport_for_footprint,
-            replay_history_scrollback=self._resize_history.replay_scrollback,
+            replay_history_scrollback=self._bottom_pane.resize_reflow_replay_callback(
+                self._resize_history.replay_scrollback
+            ),
             run_external_repaint=self._bottom_pane.run_external_repaint,
             render_after_external_repaint=self._bottom_pane.render_after_history_repaint,
             on_width_change=lambda width: self._assistant_stream.set_width(width),

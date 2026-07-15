@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pycodex.features import Feature, Features
 from pycodex.tui.chatwidget.permission_popups import (
     ActivePermissionProfile,
     AppEvent,
@@ -9,6 +10,7 @@ from pycodex.tui.chatwidget.permission_popups import (
     AskForApproval,
     PermissionProfile,
     PermissionProfileSelection,
+    TerminalPermissionsPopupController,
     builtin_approval_presets,
     open_approvals_popup,
     open_auto_review_denials_popup,
@@ -19,14 +21,8 @@ from pycodex.tui.chatwidget.permission_popups import (
     preset_matches_current,
 )
 from pycodex.tui.app_command import AppCommand
-
-
-class Features:
-    def __init__(self, enabled=()) -> None:
-        self.enabled_set = set(enabled)
-
-    def enabled(self, feature: str) -> bool:
-        return feature in self.enabled_set
+from pycodex.tui.bottom_pane.bottom_pane_view import ViewCompletion
+from pycodex.tui.bottom_pane.list_selection_view import ListSelectionView
 
 
 class Pane:
@@ -71,7 +67,7 @@ class Widget:
 
 def test_open_permissions_popup_builds_current_agent_and_guardian_auto_review_item() -> None:
     widget = Widget()
-    widget.config.features = Features({"GuardianApproval"})
+    widget.config.features = Features({Feature.GUARDIAN_APPROVAL})
 
     params = open_permissions_popup(widget, include_read_only=False)
 
@@ -113,6 +109,102 @@ def test_open_permissions_popup_delegates_explicit_permission_profile_mode() -> 
 
     assert open_permissions_popup(widget) is expected
     assert widget.bottom_pane.params is None
+
+
+def test_terminal_permissions_controller_uses_generic_popup_and_numeric_accept(
+    monkeypatch,
+) -> None:
+    # Rust owners:
+    # - chatwidget::permission_popups is the ordinary /permissions entry point.
+    # - bottom_pane::list_selection_view accepts the Nth enabled item as soon
+    #   as its digit is pressed.
+    import pycodex.tui.chatwidget.permission_popups as permission_popups_module
+
+    monkeypatch.setattr(permission_popups_module.os, "name", "nt")
+    applied = []
+    runtime = SimpleNamespace(
+        session_config=SimpleNamespace(
+            cwd="/repo",
+            approval_policy=AskForApproval.ON_REQUEST,
+            approvals_reviewer=ApprovalsReviewer.USER,
+            permission_profile=PermissionProfile.read_only(),
+            active_permission_profile=ActivePermissionProfile(":read-only", "Read Only"),
+            features=Features({Feature.GUARDIAN_APPROVAL}),
+        )
+    )
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=runtime,
+        cwd="/repo",
+        chat_widget=SimpleNamespace(
+            config=SimpleNamespace(explicit_permission_profile_mode=False),
+            add_error_message=lambda _message: None,
+        ),
+        apply_permission_profile_selection=applied.append,
+        persist_full_access_warning_acknowledged=lambda: None,
+        dispatch_app_event=lambda _event: None,
+    )
+    controller = TerminalPermissionsPopupController(app_runtime)
+
+    params = controller.open_view()
+
+    assert [item.name for item in params.items] == [
+        "Read Only",
+        "Default",
+        "Auto-review",
+        "Full Access",
+    ]
+    events = []
+    view = ListSelectionView.new(params, events)
+    view.handle_key_event("2")
+    assert view.completion() is ViewCompletion.ACCEPTED
+
+    transition = controller.handle_events(tuple(events))
+    assert transition is not None and transition.after_pop is not None
+    transition.after_pop()
+
+    assert len(applied) == 1
+    assert applied[0].profile_id == ":workspace"
+    assert applied[0].display_label == "Default"
+
+
+def test_terminal_permissions_controller_keeps_rust_full_access_confirmation(
+    monkeypatch,
+) -> None:
+    import pycodex.tui.chatwidget.permission_popups as permission_popups_module
+
+    monkeypatch.setattr(permission_popups_module.os, "name", "nt")
+    runtime = SimpleNamespace(
+        session_config=SimpleNamespace(
+            cwd="/repo",
+            approval_policy=AskForApproval.ON_REQUEST,
+            approvals_reviewer=ApprovalsReviewer.USER,
+            permission_profile=PermissionProfile.read_only(),
+            active_permission_profile=ActivePermissionProfile(":read-only", "Read Only"),
+            features=Features(),
+        )
+    )
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=runtime,
+        cwd="/repo",
+        chat_widget=SimpleNamespace(
+            config=SimpleNamespace(explicit_permission_profile_mode=False),
+            add_error_message=lambda _message: None,
+        ),
+        dispatch_app_event=lambda _event: None,
+    )
+    controller = TerminalPermissionsPopupController(app_runtime)
+    root = controller.open_view()
+    full_access = next(item for item in root.items if item.name == "Full Access")
+
+    transition = controller.handle_events(tuple(full_access.actions))
+
+    assert transition is not None
+    assert transition.next_view.header == "Enable full access?"
+    assert [item.name for item in transition.next_view.items] == [
+        "Yes, continue anyway",
+        "Yes, and don't ask again",
+        "Cancel",
+    ]
 
 
 def test_permission_mode_actions_require_confirmation_for_unacknowledged_full_access() -> None:

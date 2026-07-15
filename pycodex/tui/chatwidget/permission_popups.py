@@ -11,8 +11,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
+from pycodex.features import Feature
 from pycodex.protocol import ApprovalsReviewer
 
 from .._porting import RustTuiModule
@@ -37,6 +39,7 @@ __all__ = [
     "SelectionItem",
     "SelectionViewParams",
     "TerminalAutoReviewDenialsPopupController",
+    "TerminalPermissionsPopupController",
     "approve_recent_auto_review_denial",
     "approval_preset_actions",
     "builtin_approval_presets",
@@ -204,7 +207,7 @@ def open_permissions_popup(widget: Any, include_read_only: bool | None = None) -
 
     current_approval = _approval(getattr(widget.config.permissions, "approval_policy", AskForApproval.ON_REQUEST))
     current_profile = widget.config.permissions.permission_profile
-    guardian_enabled = bool(widget.config.features.enabled("GuardianApproval"))
+    guardian_enabled = bool(widget.config.features.enabled(Feature.GUARDIAN_APPROVAL))
     current_reviewer = _reviewer(getattr(widget.config, "approvals_reviewer", ApprovalsReviewer.USER))
     cwd = getattr(widget.config, "cwd", ".")
     items = []  # type: List[SelectionItem]
@@ -387,6 +390,98 @@ class TerminalAutoReviewDenialsPopupController:
 
             return TerminalSelectionTransition(after_pop=apply)
         return None
+
+
+class TerminalPermissionsPopupController:
+    """Terminal adapter for Rust ``ChatWidget::open_permissions_popup``.
+
+    The generic permission popup belongs to ``permission_popups``. Only the
+    explicit profile mode delegates to ``permissions_menu``, matching the Rust
+    module boundary instead of making the profile menu the unconditional slash
+    command entry point.
+    """
+
+    def __init__(self, app_runtime: Any) -> None:
+        self.app_runtime = app_runtime
+        self._profile_controller: Any = None
+        self._explicit_profile_mode = False
+        self._widget: Any = None
+
+    def open_view(self) -> Any:
+        from ..bottom_pane.list_selection_view import coerce_selection_view_params
+
+        self._explicit_profile_mode = bool(
+            _runtime_value(self.app_runtime, "explicit_permission_profile_mode", False)
+        )
+        if self._explicit_profile_mode:
+            from .permissions_menu import TerminalPermissionsPopupController as ProfileController
+
+            if self._profile_controller is None:
+                self._profile_controller = ProfileController(self.app_runtime)
+            return self._profile_controller.open_view()
+
+        self._widget = _terminal_permission_popup_widget(self.app_runtime)
+        return coerce_selection_view_params(open_permissions_popup(self._widget))
+
+    def handle_events(self, events: tuple[object, ...]) -> Any:
+        from ..app_event import PermissionProfileSelection as RuntimePermissionProfileSelection
+        from ..bottom_pane.list_selection_view import coerce_selection_view_params
+        from ..bottom_pane.view_stack import TerminalSelectionTransition
+
+        if self._explicit_profile_mode and self._profile_controller is not None:
+            return self._profile_controller.handle_events(events)
+
+        for event in events:
+            kind = getattr(event, "kind", None)
+            payload = dict(getattr(event, "payload", {}) or {})
+            if kind == "OpenFullAccessConfirmation":
+                widget = self._widget or _terminal_permission_popup_widget(self.app_runtime)
+                next_view = open_full_access_confirmation(
+                    widget,
+                    payload["preset"],
+                    bool(payload.get("return_to_permissions", False)),
+                    payload.get("profile_selection"),
+                )
+                return TerminalSelectionTransition(
+                    next_view=coerce_selection_view_params(next_view)
+                )
+            if kind in {"OpenPermissionsPopup", "OpenApprovalsPopup"}:
+                return TerminalSelectionTransition(next_view=self.open_view())
+
+        selection = _runtime_permission_selection(events)
+        if selection is None:
+            for event in events:
+                self.app_runtime.dispatch_app_event(event)
+            return None
+
+        runtime_selection = RuntimePermissionProfileSelection(
+            profile_id=selection["profile_id"],
+            approval_policy=selection["approval_policy"],
+            approvals_reviewer=selection["approvals_reviewer"],
+            display_label=selection["display_label"],
+        )
+        acknowledge = any(
+            getattr(event, "kind", None) == "UpdateFullAccessWarningAcknowledged"
+            for event in events
+        )
+        remember = any(
+            getattr(event, "kind", None) == "PersistFullAccessWarningAcknowledged"
+            for event in events
+        )
+
+        def apply() -> None:
+            try:
+                self.app_runtime.apply_permission_profile_selection(runtime_selection)
+                if acknowledge:
+                    _set_full_access_warning_acknowledged(self.app_runtime)
+                if remember:
+                    self.app_runtime.persist_full_access_warning_acknowledged()
+            except Exception as exc:
+                self.app_runtime.chat_widget.add_error_message(
+                    f"Failed to save permissions: {exc}"
+                )
+
+        return TerminalSelectionTransition(after_pop=apply)
 
 
 def approval_preset_actions(
@@ -682,3 +777,148 @@ def _world_writable_warning_details(widget: Any) -> Optional[Tuple[Any, Any, Any
         return None
     sample_paths, extra_count, failed_scan = value
     return sample_paths, extra_count, failed_scan
+
+
+def _runtime_value(app_runtime: Any, name: str, default: Any = None) -> Any:
+    runtime = getattr(app_runtime, "active_thread_runtime", None)
+    for source in (
+        runtime,
+        getattr(runtime, "session_config", None),
+        getattr(runtime, "config", None),
+        getattr(getattr(app_runtime, "chat_widget", None), "config", None),
+    ):
+        value = getattr(source, name, None) if source is not None else None
+        if value is not None:
+            return value
+    return default
+
+
+class _TerminalPopupPane:
+    def __init__(self) -> None:
+        self.params: Any = None
+
+    def show_selection_view(self, params: Any) -> None:
+        self.params = params
+
+
+class _DisabledFeatures:
+    def enabled(self, _feature: Any) -> bool:
+        return False
+
+
+def _terminal_permission_popup_widget(app_runtime: Any) -> Any:
+    cwd = str(_runtime_value(app_runtime, "cwd", getattr(app_runtime, "cwd", ".")))
+    active = _runtime_value(app_runtime, "active_permission_profile", None)
+    profile = _popup_permission_profile(
+        _runtime_value(app_runtime, "permission_profile", None),
+        active,
+        cwd,
+    )
+    raw_notices = _runtime_value(app_runtime, "notices", None)
+    hide_full_access_warning = bool(
+        getattr(
+            raw_notices,
+            "hide_full_access_warning",
+            _runtime_value(app_runtime, "hide_full_access_warning", False),
+        )
+    )
+    config = SimpleNamespace(
+        explicit_permission_profile_mode=False,
+        cwd=cwd,
+        permissions=SimpleNamespace(
+            approval_policy=_runtime_value(
+                app_runtime, "approval_policy", AskForApproval.ON_REQUEST
+            ),
+            permission_profile=profile,
+        ),
+        features=_runtime_value(app_runtime, "features", _DisabledFeatures()),
+        approvals_reviewer=_runtime_value(
+            app_runtime, "approvals_reviewer", ApprovalsReviewer.USER
+        ),
+        notices=SimpleNamespace(
+            hide_full_access_warning=hide_full_access_warning,
+        ),
+        windows_sandbox_level=_runtime_value(app_runtime, "windows_sandbox_level", None),
+    )
+    return SimpleNamespace(
+        config=config,
+        bottom_pane=_TerminalPopupPane(),
+        review=getattr(getattr(app_runtime, "chat_widget", None), "review", None),
+    )
+
+
+def _popup_permission_profile(profile: Any, active: Any, cwd: str) -> PermissionProfile:
+    active_id = str(getattr(active, "id", active) or "")
+    if active_id == ":read-only":
+        return PermissionProfile.read_only()
+    if active_id == ":workspace":
+        return PermissionProfile.auto(cwd)
+    if active_id == ":danger-full-access":
+        return PermissionProfile.disabled()
+
+    profile_type = str(getattr(profile, "type", "")).lower()
+    if profile_type == "disabled":
+        return PermissionProfile.disabled()
+    if profile_type == "managed":
+        policy_getter = getattr(profile, "file_system_sandbox_policy", None)
+        policy = policy_getter() if callable(policy_getter) else None
+        can_write = getattr(policy, "can_write_path_with_cwd", None)
+        if callable(can_write) and bool(can_write(cwd, cwd)):
+            return PermissionProfile.auto(cwd)
+        return PermissionProfile.read_only()
+    if isinstance(profile, PermissionProfile):
+        return profile
+    return PermissionProfile.auto(cwd)
+
+
+def _runtime_permission_selection(events: tuple[object, ...]) -> Optional[Dict[str, Any]]:
+    label: Optional[str] = None
+    for event in events:
+        if getattr(event, "kind", None) != "InsertHistoryCell":
+            continue
+        message = str(dict(getattr(event, "payload", {}) or {}).get("message") or "")
+        prefix = "Permissions updated to "
+        if message.startswith(prefix):
+            label = message[len(prefix) :]
+
+    for event in events:
+        kind = getattr(event, "kind", None)
+        payload = dict(getattr(event, "payload", {}) or {})
+        if kind == "SelectPermissionProfile":
+            selection = payload.get("selection")
+            profile_id = getattr(selection, "profile_id", None)
+            if profile_id is not None:
+                return {
+                    "profile_id": str(profile_id),
+                    "approval_policy": getattr(selection, "approval_policy", None),
+                    "approvals_reviewer": getattr(selection, "approvals_reviewer", None),
+                    "display_label": str(getattr(selection, "display_label", profile_id)),
+                }
+        if kind != "CodexOp":
+            continue
+        active = payload.get("active_permission_profile")
+        profile_id = getattr(active, "id", None)
+        if profile_id is None:
+            continue
+        reviewer = payload.get("approvals_reviewer", ApprovalsReviewer.USER)
+        display_label = label or getattr(active, "name", None) or str(profile_id)
+        if _reviewer(reviewer) is ApprovalsReviewer.AUTO_REVIEW:
+            display_label = "Auto-review"
+        return {
+            "profile_id": str(profile_id),
+            "approval_policy": payload.get("approval_policy"),
+            "approvals_reviewer": reviewer,
+            "display_label": str(display_label),
+        }
+    return None
+
+
+def _set_full_access_warning_acknowledged(app_runtime: Any) -> None:
+    config = getattr(getattr(app_runtime, "chat_widget", None), "config", None)
+    if config is None:
+        return
+    notices = getattr(config, "notices", None)
+    if notices is None:
+        notices = SimpleNamespace()
+        setattr(config, "notices", notices)
+    setattr(notices, "hide_full_access_warning", True)

@@ -255,5 +255,7 @@ When implementing functionality:
 - Keep Python structure aligned with Rust crate/module coordinates where practical, and document any intentional split/merge close to the code.
 - Prefer narrow, behavior-focused slices that move Python closer to Rust Codex.
 - Keep the implementation dependency-light and standard-library-first.
-- Update `PORTING_STATUS.md` and `porting_notes/turns/` for meaningful progress.
+- Update `PORTING_STATUS.md` only for meaningful module-status changes. Keep
+  durable evidence in module `README.md` files, Rust-derived Python tests, and
+  focused alignment documents; do not create per-turn migration logs.
 - Validate only the touched behavior unless broader validation is explicitly requested.

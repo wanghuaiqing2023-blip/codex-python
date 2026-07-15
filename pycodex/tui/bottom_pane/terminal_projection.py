@@ -122,13 +122,12 @@ class TerminalBottomPaneRequestRunner:
         check_resize: bool = True,
         clear_footprint: TerminalBottomPaneFootprint | None = None,
     ) -> Callable[[], bool]:
-        """Return the resize-reflow clear callback bound to this runner.
+        """Return the TUI viewport clear callback bound to this runner.
 
-        Rust owners: ``codex-tui::app::resize_reflow`` owns the clear-cycle
-        remembered footprint state, while ``codex-tui::bottom_pane`` owns the
-        clear request. This projection runner packages terminal environment
-        callbacks into a request so terminal controllers do not define local
-        clear-request closures.
+        Rust owners: ``codex-tui::tui`` owns viewport draw timing, while
+        ``codex-tui::bottom_pane`` owns the clear request. This projection
+        runner packages terminal environment callbacks into a request so
+        terminal controllers do not define local clear-request closures.
         """
 
         def clear() -> bool:
@@ -148,12 +147,12 @@ class TerminalBottomPaneRequestRunner:
         stdin_is_terminal: Callable[[], bool],
         layout_active: Callable[[], bool],
     ) -> Callable[[object, bool, TerminalBottomPaneFootprint], Callable[[], bool]]:
-        """Return the resize-reflow clear factory bound to this runner.
+        """Return the TUI viewport clear factory bound to this runner.
 
-        Rust owners: ``codex-tui::app::resize_reflow`` asks for a
-        live-status/check-resize clear factory, while this projection adapter
-        owns translating that request into bottom-pane clear requests and the
-        custom-terminal lifecycle.
+        Rust owners: ``codex-tui::tui`` asks for a live-status/check-resize
+        clear factory, while this projection adapter owns translating that
+        request into bottom-pane clear requests and the custom-terminal
+        lifecycle.
         """
 
         def clear_factory(
@@ -183,7 +182,7 @@ class TerminalBottomPaneRequestRunner:
         footer_right_text: str = "",
         clear_external_blank_rows: bool = False,
     ) -> bool:
-        """Build and run a resize-owned bottom-pane render pass request."""
+        """Build and run a TUI-owned bottom-pane viewport render request."""
 
         return self.run(
             terminal_bottom_pane_render_request_for_pass(
@@ -208,10 +207,10 @@ class TerminalBottomPaneRequestRunner:
         footer_right_text: Callable[[], str] = lambda: "",
         clear_external_blank_rows: bool = False,
     ) -> Callable[[TerminalBottomPaneRenderPassProtocol, TerminalBottomPaneRenderContextProtocol], bool]:
-        """Return the resize-reflow render callback bound to this runner.
+        """Return the TUI viewport render callback bound to this runner.
 
-        Rust owners: ``codex-tui::app::resize_reflow`` supplies render-pass
-        timing and ``codex-tui::bottom_pane`` supplies render context. This
+        Rust owners: ``codex-tui::tui`` supplies viewport draw timing and
+        ``codex-tui::bottom_pane`` supplies render context. This
         projection runner owns packaging those owner values into the
         custom-terminal request lifecycle so terminal controllers do not define
         local pass/context unpacking closures.
@@ -242,10 +241,10 @@ class TerminalBottomPaneRequestRunner:
         footer_text: Callable[[], str],
         footer_right_text: Callable[[], str] = lambda: "",
     ) -> Callable[[object, bool], Callable[[TerminalBottomPaneRenderPassProtocol, TerminalBottomPaneRenderContextProtocol], bool]]:
-        """Return the resize-reflow render-pass factory bound to this runner.
+        """Return the TUI viewport render-pass factory bound to this runner.
 
-        Rust owners: ``codex-tui::app::resize_reflow`` asks for a live-status
-        and external-blank-row render factory, while this projection adapter
+        Rust owners: ``codex-tui::tui`` asks for a live-status and
+        external-blank-row render factory, while this projection adapter
         owns translating render passes and contexts into custom-terminal
         request lifecycle calls.
         """
@@ -273,6 +272,18 @@ class TerminalBottomPaneRequestRunner:
         repaint: Callable[[], _ExternalRepaintResult],
     ) -> _ExternalRepaintResult:
         return self._request_runner.run_external_repaint(repaint)
+
+    def scroll_region_up(self, start: int, end: int, scroll_by: int) -> None:
+        self._request_runner.scroll_region_up(start, end, scroll_by)
+
+    def scroll_region_down(self, start: int, end: int, scroll_by: int) -> None:
+        self._request_runner.scroll_region_down(start, end, scroll_by)
+
+    def clear_after_position(self, row: int, column: int = 0) -> None:
+        self._request_runner.clear_after_position(row, column)
+
+    def invalidate_viewport(self) -> None:
+        self._request_runner.invalidate_viewport()
 
 
 def terminal_bottom_pane_cursor_move(frame: TerminalBottomPaneFrame) -> LiveViewportCursorMove:
@@ -342,6 +353,7 @@ def terminal_bottom_pane_frame_projection(
     clear_live_status_active: bool = False,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    viewport_area: object | None = None,
 ) -> TerminalBottomPaneFrameProjection:
     """Build the bottom-pane frame and buffer projection for custom_terminal.
 
@@ -358,6 +370,7 @@ def terminal_bottom_pane_frame_projection(
         clear_live_status_active=clear_live_status_active,
         clear_active_tail_height=clear_active_tail_height,
         clear_composer_height=clear_composer_height,
+        viewport_area=viewport_area,
     )
     return TerminalBottomPaneFrameProjection(
         frame=frame,
@@ -375,6 +388,7 @@ def terminal_bottom_pane_live_viewport_update_for_cursor_policy(
     clear_external_blank_rows: bool = False,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    viewport_area: object | None = None,
 ) -> LiveViewportProjection | None:
     """Project an action plan using the terminal cursor routing policy."""
 
@@ -391,6 +405,7 @@ def terminal_bottom_pane_live_viewport_update_for_cursor_policy(
         clear_external_blank_rows=clear_external_blank_rows,
         clear_active_tail_height=clear_active_tail_height,
         clear_composer_height=clear_composer_height,
+        viewport_area=viewport_area,
     )
 
 
@@ -436,6 +451,7 @@ def _terminal_bottom_pane_request_live_viewport_update(
         clear_external_blank_rows=cleanup.clear_external_blank_rows,
         clear_active_tail_height=cleanup.clear_active_tail_height,
         clear_composer_height=cleanup.clear_composer_height,
+        viewport_area=request.projection_viewport_area(),
     )
 
 
@@ -480,6 +496,7 @@ def terminal_bottom_pane_live_viewport_update(
     clear_external_blank_rows: bool = False,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    viewport_area: object | None = None,
 ) -> LiveViewportProjection | None:
     """Project a bottom-pane action plan into a generic live-viewport update."""
 
@@ -504,6 +521,7 @@ def terminal_bottom_pane_live_viewport_update(
             clear_live_status_active=clear_live_status_active,
             clear_active_tail_height=clear_active_tail_height,
             clear_composer_height=clear_composer_height,
+            viewport_area=viewport_area,
         )
         return terminal_bottom_pane_frame_live_viewport_update(
             projection.frame,

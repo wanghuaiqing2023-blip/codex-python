@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from pycodex.tui.bottom_pane.chat_composer import terminal_composer_line_text
 from pycodex.tui.bottom_pane.custom_prompt_view import CustomPromptView
 from pycodex.tui.bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
-from pycodex.tui.bottom_pane.terminal_footprint import TerminalBottomPaneFootprint
 from pycodex.tui.bottom_pane.terminal_controller import (
     TerminalBottomPaneController,
 )
@@ -191,7 +190,8 @@ def test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks() ->
 
     controller.sync_draft("hello")
     assert controller.render(check_resize=True) is True
-    assert calls[-3:] == ["footer", "resize", "size"]
+    assert "resize" in calls
+    assert calls[-3:] == ["footer", "size", "size"]
     output = writer.getvalue()
     assert "\x1b[7;1H\u2022 Working" in output
     assert "\x1b[10;1H\u203a hello" in output
@@ -203,7 +203,7 @@ def test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks() ->
 
 def test_terminal_bottom_pane_controller_exposes_no_resize_callbacks_for_runtime_glue() -> None:
     # Rust owner: codex-tui::bottom_pane coordinates live-pane clear/render
-    # callbacks while app::resize_reflow owns resize timing. terminal_runtime
+    # callbacks while tui owns viewport draw timing. terminal_runtime
     # should consume these callback boundaries instead of spelling out
     # check_resize=False lambdas for history/composer/resize collaborators.
     writer = FlushTrackingStringIO()
@@ -298,13 +298,10 @@ def test_terminal_bottom_pane_controller_hides_cursor_for_active_selection_view(
     assert "Select Model and Effort" in output
 
 
-def test_terminal_bottom_pane_controller_reflows_history_when_popup_footprint_grows() -> None:
-    # Rust owner: bottom_pane computes active view height, while
-    # app::resize_reflow repairs the transcript viewport when that bottom-pane
-    # footprint changes. Opening any selection popup must use that shared
-    # footprint path rather than a /model-specific clear.
+def test_terminal_bottom_pane_controller_resizes_tui_viewport_for_active_view() -> None:
+    # Rust owners: bottom_pane computes active-view desired height and
+    # tui::draw_with_resize_reflow grows the inline viewport before drawing.
     writer = FlushTrackingStringIO()
-    transitions: list[tuple[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint]] = []
     controller = TerminalBottomPaneController(
         writer,
         stdin_is_terminal=lambda: True,
@@ -320,16 +317,54 @@ def test_terminal_bottom_pane_controller_reflows_history_when_popup_footprint_gr
                 SelectionItem(name="gpt-5.4", description="Strong model"),
             ],
         ),
-        repaint_footprint=lambda previous, current: transitions.append((previous, current)),
     )
 
     controller.render(check_resize=False)
+    writer.seek(0)
+    writer.truncate(0)
     controller.sync_draft("/model")
     controller.handle_composer_event("enter")
     assert controller.composer.current_text() == ""
     controller.render(check_resize=False)
 
-    assert transitions
-    previous, current = transitions[-1]
-    assert previous.popup_height == 0
-    assert current.popup_height > 0
+    output = writer.getvalue()
+    assert output.startswith("\x1b[1;14r\x1b[14;1H\r\n\x1b[r\x1b[14;1H\x1b[J")
+    assert "\x1b[15;1HSelect Model and Effort" in output
+    assert "\x1b[18;1Hgpt-test high" in output
+
+
+def test_terminal_bottom_pane_controller_resizes_tui_viewport_for_composer_slash_popup() -> None:
+    # Rust owners: bottom_pane::chat_composer includes the command popup in
+    # BottomPane::desired_height, and tui::draw_with_resize_reflow resizes the inline
+    # viewport before drawing that larger frame. Composer popups must follow
+    # the same footprint path as active BottomPaneViews.
+    writer = FlushTrackingStringIO()
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((96, 18)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+    )
+
+    assert controller.render(check_resize=False)
+    writer.seek(0)
+    writer.truncate(0)
+    controller.sync_draft("/")
+    assert controller.render(check_resize=False)
+
+    popup_output = writer.getvalue()
+    assert popup_output.startswith("\x1b[1;14r\x1b[14;1H" + "\r\n" * 6)
+    assert "\x1b[9;1H› /" in popup_output
+    assert "\x1b[10;1H" in popup_output and "/model" in popup_output
+
+    writer.seek(0)
+    writer.truncate(0)
+    controller.sync_draft("plain text")
+    assert controller.render(check_resize=False)
+
+    shrink_output = writer.getvalue()
+    assert "\x1b[1;" not in shrink_output
+    assert "\x1b[10;1H› plain text" in shrink_output

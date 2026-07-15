@@ -683,13 +683,32 @@ def _handle_key_event(view: ListSelectionView, key_event: Any) -> None:
         view.set_search_query(view.search_query + " ")
     elif key == "space":
         view.toggle_selected()
-    elif len(key) == 1 and key.isdigit():
-        actual = view.actual_idx_for_enabled_number(int(key))
+    elif len(key) == 1 and not view.is_searchable:
+        actual = next(
+            (
+                idx
+                for idx, item in enumerate(view.active_items())
+                if view.item_is_enabled(item)
+                and _display_shortcut_matches(item.display_shortcut, key_event, key)
+            ),
+            None,
+        )
+        if actual is None and key.isdigit():
+            actual = view.actual_idx_for_enabled_number(int(key))
         if actual is not None and actual in view.filtered_indices:
             view.state.selected_idx = view.filtered_indices.index(actual)
-            view.fire_selection_changed()
+            view.accept()
     elif len(key) == 1 and view.is_searchable:
         view.set_search_query(view.search_query + key)
+
+
+def _display_shortcut_matches(shortcut: Any, key_event: Any, key: str) -> bool:
+    if shortcut is None:
+        return False
+    is_press = getattr(shortcut, "is_press", None)
+    if callable(is_press):
+        return bool(is_press(key_event))
+    return _key_name(shortcut) == key
 
 
 def handle_key_event(view: ListSelectionView, key_event: Any) -> None:

@@ -380,7 +380,7 @@ def _wrap_line(line: Line, opts: RtOptions, preserve_urls: bool = False, split_n
     pieces = _wrap_text(text, opts, preserve_urls=preserve_urls, split_non_url=split_non_url)
     result: List[Line] = []
     cursor = 0
-    for rendered, body in pieces:
+    for index, (rendered, body) in enumerate(pieces):
         body_start = text.find(body, cursor) if body else cursor
         if body_start < 0:
             body_start = cursor
@@ -389,7 +389,15 @@ def _wrap_line(line: Line, opts: RtOptions, preserve_urls: bool = False, split_n
         spans = []
         indent = rendered[: max(0, len(rendered) - len(body))]
         if indent:
-            spans.append(Span(indent))
+            indent_line = (
+                opts.initial_indent_line
+                if index == 0
+                else opts.subsequent_indent_line
+            )
+            if concat_line(indent_line) == indent:
+                spans.extend(indent_line.spans)
+            else:
+                spans.append(Span(indent))
         spans.extend(body_line.spans)
         result.append(Line(spans, style=line.style, alignment=line.alignment))
         cursor = body_end
