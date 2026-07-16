@@ -1089,7 +1089,9 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(result.to_response_item().output.to_text(), "post hook feedback")
         self.assertEqual([message.content[0].text for message in recorded], ["context from mapping session"])
 
-    def test_dispatch_tool_call_applies_tool_completed_goal_runtime_after_finish(self) -> None:
+    def test_dispatch_tool_call_applies_core_goal_runtime_after_unclaimed_finish(self) -> None:
+        # Rust: core/src/tools/registry.rs::dispatch_tool_call applies
+        # GoalRuntimeEvent::ToolCompleted only after an unclaimed terminal finish.
         class GoalSession:
             def __init__(self):
                 self.events = []
@@ -1123,6 +1125,23 @@ class ToolRouterTests(unittest.TestCase):
             [{"type": "tool_completed", "turn_context": turn, "tool_name": "echo"}],
         )
 
+    def test_dispatch_tool_call_goal_runtime_failure_is_best_effort(self) -> None:
+        class GoalSession:
+            async def goal_runtime_apply(self, _event):
+                raise RuntimeError("goal accounting unavailable")
+
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{}"),
+            session=GoalSession(),
+            turn=SimpleNamespace(turn_id="turn-1"),
+        )
+
+        result = asyncio.run(dispatch_tool_call(ToolRegistry.from_tools([EchoHandler()]), invocation))
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+
     def test_dispatch_tool_call_skips_goal_runtime_when_finish_is_claimed(self) -> None:
         session = SimpleNamespace(events=[])
 
@@ -1150,7 +1169,7 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(result.to_response_item().output.to_text(), "ok")
         self.assertEqual(session.events, [])
 
-    def test_dispatch_tool_call_applies_goal_runtime_from_mapping_session(self) -> None:
+    def test_dispatch_tool_call_does_not_use_mapping_goal_runtime_bypass(self) -> None:
         events = []
         turn = SimpleNamespace(turn_id="turn-1")
         invocation = ToolInvocation(
@@ -1164,7 +1183,7 @@ class ToolRouterTests(unittest.TestCase):
         result = asyncio.run(dispatch_tool_call(ToolRegistry.from_tools([EchoHandler()]), invocation))
 
         self.assertEqual(result.to_response_item().output.to_text(), "ok")
-        self.assertEqual(events, [{"type": "tool_completed", "turn_context": turn, "tool_name": "echo"}])
+        self.assertEqual(events, [])
 
     def test_environment_tool_router_dispatches_exec_command(self) -> None:
         if sys.platform == "win32":

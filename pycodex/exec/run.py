@@ -15,7 +15,7 @@ from pathlib import Path
 import sys
 from typing import Any, BinaryIO, TextIO
 
-from pycodex.protocol import ReviewRequest, ReviewTarget, UserInput
+from pycodex.protocol import ReviewRequest, ReviewTarget, ThreadSettingsOverrides, UserInput
 
 from .cli import ExecCli, ReviewArgs
 
@@ -72,11 +72,23 @@ class InitialOperation:
     kind: str
     items: tuple[UserInput, ...] = ()
     output_schema: JsonValue | None = None
+    thread_settings: ThreadSettingsOverrides | None = None
     review_request: ReviewRequest | None = None
 
     @classmethod
-    def user_turn(cls, items: tuple[UserInput, ...], output_schema: JsonValue | None = None) -> "InitialOperation":
-        return cls(kind="user_turn", items=items, output_schema=output_schema)
+    def user_turn(
+        cls,
+        items: tuple[UserInput, ...],
+        output_schema: JsonValue | None = None,
+        *,
+        thread_settings: ThreadSettingsOverrides | None = None,
+    ) -> "InitialOperation":
+        return cls(
+            kind="user_turn",
+            items=items,
+            output_schema=output_schema,
+            thread_settings=thread_settings,
+        )
 
     @classmethod
     def review(cls, review_request: ReviewRequest) -> "InitialOperation":

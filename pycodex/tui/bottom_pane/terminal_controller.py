@@ -54,6 +54,13 @@ class TerminalBottomPaneController:
         self._set_terminal_title_requires_action = set_terminal_title_requires_action or (lambda _required: None)
         composer_cursor_visible = cursor_visible or (lambda: True)
         self._view_state = TerminalBottomPaneViewState.new(command_popup_flags)
+
+        def visible_live_status() -> TerminalLiveStatusSurface:
+            if not self._view_state.status_indicator_visible:
+                return TerminalLiveStatusSurface.inactive()
+            return live_status()
+
+        self._visible_live_status = visible_live_status
         self._request_runner = TerminalBottomPaneRequestRunner(
             writer,
             terminal_size=terminal_size,
@@ -69,20 +76,20 @@ class TerminalBottomPaneController:
         )
         self._history_bottom_row = self._viewport_runner.history_bottom_row_callback(
             terminal_size=self._request_runner.terminal_size,
-            live_status=live_status,
+            live_status=self._visible_live_status,
             bottom_pane_state=self._view_state,
             composer_cursor_visible=composer_cursor_visible,
         )
         self._resize_reflow_replay_callback = (
             self._viewport_runner.resize_reflow_replay_callback_factory(
                 terminal_size=self._request_runner.terminal_size,
-                live_status=live_status,
+                live_status=self._visible_live_status,
                 bottom_pane_state=self._view_state,
                 composer_cursor_visible=composer_cursor_visible,
             )
         )
         self._clear_bottom_pane = self._viewport_runner.clear_callback(
-            live_status=live_status,
+            live_status=self._visible_live_status,
             clear_factory=self._request_runner.clear_factory_callback(
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
@@ -90,7 +97,7 @@ class TerminalBottomPaneController:
         )
         self._render_for_view_state = self._viewport_runner.render_for_view_state_callback(
             terminal_size=self._request_runner.terminal_size,
-            live_status=live_status,
+            live_status=self._visible_live_status,
             bottom_pane_state=self._view_state,
             composer_cursor_visible=composer_cursor_visible,
             render_factory=self._request_runner.render_pass_factory_callback(
@@ -167,6 +174,11 @@ class TerminalBottomPaneController:
 
     def has_active_view(self) -> bool:
         return self._view_state.active_view is not None
+
+    def live_status_footprint_active(self) -> bool:
+        """Return the status footprint actually rendered by ``BottomPane``."""
+
+        return self._visible_live_status().footprint_active
 
     def handle_active_view_input(self, event: object, event_text: str = "") -> bool:
         """Route one task-time terminal event to the active bottom-pane view."""

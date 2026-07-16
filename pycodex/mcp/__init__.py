@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from collections.abc import Mapping
 from typing import Any
 
 CODEX_APPS_MCP_SERVER_NAME = "codex_apps"
@@ -152,7 +153,76 @@ def discover_supported_scopes(*_args: Any, **_kwargs: Any) -> list[str]:
 
 
 class McpConnectionManager:
-    pass
+    """Session-owned MCP connection boundary.
+
+    The Python core does not yet launch external MCP transports, but product
+    sessions still need the Rust manager contract so tool/resource exposure is
+    derived from configured servers instead of a test-only ``None`` service.
+    Connected transports can populate tools and resources through this same
+    boundary without changing ``Session::built_tools``.
+    """
+
+    def __init__(
+        self,
+        servers: Mapping[str, Any] | None = None,
+        *,
+        tools: Mapping[str, Any] | list[Any] | tuple[Any, ...] | None = None,
+        resources: Mapping[str, Any] | None = None,
+        resource_templates: Mapping[str, Any] | None = None,
+        resource_contents: Mapping[tuple[str, str], Any] | None = None,
+    ) -> None:
+        self._servers = dict(servers or {})
+        self._tools = dict(tools) if isinstance(tools, Mapping) else tuple(tools or ())
+        self._resources = dict(resources or {})
+        self._resource_templates = dict(resource_templates or {})
+        self._resource_contents = dict(resource_contents or {})
+
+    def replace_servers(self, servers: Mapping[str, Any] | None) -> None:
+        self._servers = dict(servers or {})
+
+    def configured_servers(self) -> dict[str, Any]:
+        return dict(self._servers)
+
+    def has_servers(self) -> bool:
+        return bool(self._servers)
+
+    def list_all_tools(self) -> Mapping[str, Any] | tuple[Any, ...]:
+        return dict(self._tools) if isinstance(self._tools, dict) else tuple(self._tools)
+
+    def list_resources(self, server: str, cursor: str | None = None) -> Any:
+        from pycodex.core.tools.handlers.mcp_resource import ListResourcesResult
+
+        _require_server(self._servers, server)
+        return ListResourcesResult(tuple(self._resources.get(server, ())), cursor)
+
+    def list_all_resources(self) -> Mapping[str, Any]:
+        return {server: tuple(self._resources.get(server, ())) for server in sorted(self._servers)}
+
+    def list_resource_templates(self, server: str, cursor: str | None = None) -> Any:
+        from pycodex.core.tools.handlers.mcp_resource import ListResourceTemplatesResult
+
+        _require_server(self._servers, server)
+        return ListResourceTemplatesResult(tuple(self._resource_templates.get(server, ())), cursor)
+
+    def list_all_resource_templates(self) -> Mapping[str, Any]:
+        return {
+            server: tuple(self._resource_templates.get(server, ()))
+            for server in sorted(self._servers)
+        }
+
+    def read_resource(self, server: str, uri: str) -> Any:
+        _require_server(self._servers, server)
+        try:
+            return self._resource_contents[(server, uri)]
+        except KeyError as exc:
+            raise ValueError(f"resource not found: {server} {uri}") from exc
+
+
+def _require_server(servers: Mapping[str, Any], server: str) -> None:
+    if not isinstance(server, str) or not server.strip():
+        raise ValueError("server must be a non-empty string")
+    if server not in servers:
+        raise ValueError(f"unknown MCP server: {server}")
 
 
 class ElicitationReviewer:

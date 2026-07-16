@@ -36,7 +36,13 @@ from pycodex.core.tools.handlers.tool_search import ToolSearchHandler
 from pycodex.core.tools.tool_search_entry import (
     ToolSearchInfo,
 )
-from pycodex.core.tools.spec_plan import add_request_permissions_tool
+from pycodex.core.tools.spec_plan import (
+    add_core_utility_tools_for_turn_context,
+    add_request_permissions_tool,
+    spawn_agent_tool_options_from_turn_context,
+    wait_agent_timeout_options_from_turn_context,
+)
+from pycodex.exec.session import ExecSessionConfig
 from pycodex.features import Feature, Features
 from pycodex.protocol import ApplyPatchToolType, ConfigShellToolType
 from pycodex.protocol import TurnEnvironmentSelection
@@ -88,6 +94,57 @@ class ExtensionExecutor:
 
 
 class SpecPlanTests(unittest.TestCase):
+    def test_collaboration_tool_options_use_resolved_config_and_turn_models(self) -> None:
+        # Rust: core/src/tools/spec_plan.rs::add_collaboration_tools uses the
+        # current TurnContext models plus Config role and timeout defaults.
+        model = SimpleNamespace(model="gpt-visible", show_in_picker=True)
+        context = SimpleNamespace(
+            config=ExecSessionConfig(model="gpt-visible", model_provider_id="openai", cwd=Path("C:/repo")),
+            available_models=(model,),
+        )
+
+        spawn_options = spawn_agent_tool_options_from_turn_context(context)
+        wait_options = wait_agent_timeout_options_from_turn_context(context)
+
+        self.assertEqual(spawn_options.available_models, (model,))
+        self.assertTrue(spawn_options.include_usage_hint)
+        self.assertIn("default: {", spawn_options.agent_type_description)
+        self.assertIn("explorer: {", spawn_options.agent_type_description)
+        self.assertIn("worker: {", spawn_options.agent_type_description)
+        self.assertEqual(wait_options.min_timeout_ms, 10_000)
+        self.assertEqual(wait_options.default_timeout_ms, 30_000)
+        self.assertEqual(wait_options.max_timeout_ms, 3_600_000)
+
+    def test_goal_core_tools_precede_request_user_input_and_reserve_extension_names(self) -> None:
+        # Rust: codex-core::tools::spec_plan::add_core_utility_tools registers
+        # Goal handlers after PlanHandler; later extension duplicates are skipped.
+        planned = PlannedTools()
+        options = ToolPlanOptions(goal_tools_enabled=True)
+        add_core_utility_tools_for_turn_context(
+            planned,
+            SimpleNamespace(
+                environments=(),
+                model_info=SimpleNamespace(apply_patch_tool_type=None),
+            ),
+            options,
+        )
+        add_extension_tools(
+            planned,
+            (
+                ExtensionExecutor("get_goal"),
+                ExtensionExecutor("create_goal"),
+                ExtensionExecutor("update_goal"),
+            ),
+            options,
+        )
+
+        specs, registry = build_model_visible_specs_and_registry(planned, options)
+        self.assertEqual(
+            [spec["name"] for spec in specs[:5]],
+            ["update_plan", "get_goal", "create_goal", "update_goal", "request_user_input"],
+        )
+        self.assertEqual(registry.tool_names().count(ToolName.plain("get_goal")), 1)
+
     def test_merge_into_namespaces_coalesces_and_sorts_functions(self) -> None:
         merged = merge_into_namespaces(
             [

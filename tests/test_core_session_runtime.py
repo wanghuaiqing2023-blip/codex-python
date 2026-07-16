@@ -1,5 +1,6 @@
 ﻿import json
 import asyncio
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from pycodex.core.context import GoalContext
 from pycodex.core.tools.handlers.utils import apply_granted_turn_permissions, record_granted_request_permissions
 from pycodex.core.http_transport import run_user_turn_http_sampling_from_session
 from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.state.service import SessionServices
 from pycodex.core.context_manager.history import (
     estimate_item_token_count,
     estimate_response_item_model_visible_bytes,
@@ -149,6 +151,30 @@ def events_of_type(session: InMemoryCodexSession, event_type: str):
 
 
 class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_default_turn_copies_models_manager_presets_into_context(self) -> None:
+        # Rust: core/src/session/turn_context.rs::TurnContext::new obtains
+        # available_models from SessionServices.models_manager.
+        model = SimpleNamespace(model="gpt-visible", show_in_picker=True)
+
+        class ModelsManager:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def try_list_models(self):
+                self.calls += 1
+                return [model]
+
+        models_manager = ModelsManager()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            services=SessionServices(models_manager=models_manager),
+        )
+
+        turn = await session.new_default_turn()
+
+        self.assertEqual(turn.available_models, (model,))
+        self.assertEqual(models_manager.calls, 1)
+
     async def test_windows_sandbox_level_flows_from_session_to_turn_and_settings(self) -> None:
         # Fixed Rust owner/anchor:
         # codex-core::session::Session stores windows_sandbox_level and
@@ -366,7 +392,10 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<environment_context>", item.content[0].text)
         self.assertIn("<current_date>2026-02-27</current_date>", item.content[0].text)
         self.assertIn("<timezone>Europe/Berlin</timezone>", item.content[0].text)
-        self.assertEqual(len(session.persisted_rollout_items), 2)
+        self.assertEqual(
+            len([item for item in session.persisted_rollout_items if item.type == "turn_context"]),
+            2,
+        )
 
     async def test_in_memory_session_omits_environment_update_when_disabled(self) -> None:
         # Rust test: build_settings_update_items_omits_environment_item_when_disabled.
@@ -398,7 +427,10 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await session.record_context_updates_and_set_reference_context_item(second_turn)
 
         self.assertEqual(len(session.recorded_batches), first_batch_count)
-        self.assertEqual(len(session.persisted_rollout_items), 2)
+        self.assertEqual(
+            len([item for item in session.persisted_rollout_items if item.type == "turn_context"]),
+            2,
+        )
         reference = await session.reference_context_item()
         self.assertIsNotNone(reference)
         self.assertEqual(reference.current_date, "2026-02-27")
@@ -1161,6 +1193,17 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<current_date>", context_text)
         self.assertIn("<timezone>", context_text)
 
+    @unittest.skipUnless(os.name == "nt", "Windows IANA mapping is platform-specific")
+    async def test_in_memory_session_default_turn_uses_iana_timezone_on_windows(self) -> None:
+        # Rust: codex-core::session::turn_context::local_time_context uses
+        # iana_time_zone::get_timezone rather than a localized display name.
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        turn = await session.new_default_turn()
+
+        self.assertIn("/", turn.timezone)
+        self.assertNotIn("Standard Time", turn.timezone)
+
     async def test_in_memory_session_update_settings_applies_final_output_json_schema(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")
         schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
@@ -1707,10 +1750,13 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(reference)
         self.assertEqual(reference.approval_policy, granular)
 
-    async def test_in_memory_session_reference_context_jsonifies_collaboration_mode(self) -> None:
-        collaboration_mode = SimpleNamespace(
-            mode="default",
-            settings=SimpleNamespace(developer_instructions="Plan before editing."),
+    async def test_in_memory_session_reference_context_preserves_typed_collaboration_mode(self) -> None:
+        collaboration_mode = CollaborationMode(
+            ModeKind.DEFAULT,
+            Settings(
+                model="gpt-5.1-codex-mini",
+                developer_instructions="Plan before editing.",
+            ),
         )
         session = InMemoryCodexSession(
             cwd="C:/work/project",
@@ -1724,10 +1770,13 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(reference)
         self.assertEqual(
             reference.collaboration_mode,
-            {
-                "mode": "default",
-                "settings": {"developer_instructions": "Plan before editing."},
-            },
+            CollaborationMode(
+                ModeKind.DEFAULT,
+                Settings(
+                    model="gpt-5.1-codex-mini",
+                    developer_instructions="Plan before editing.",
+                ),
+            ),
         )
 
     async def test_in_memory_session_reference_context_defaults_collaboration_mode(self) -> None:
@@ -1741,7 +1790,10 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(reference)
         self.assertEqual(
             reference.collaboration_mode,
-            {"mode": "default", "settings": {"model": "gpt-5.2-codex"}},
+            CollaborationMode(
+                ModeKind.DEFAULT,
+                Settings(model="gpt-5.2-codex"),
+            ),
         )
 
     async def test_in_memory_session_initial_context_includes_developer_instructions_after_permissions(self) -> None:
@@ -1795,14 +1847,14 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await session.record_context_updates_and_set_reference_context_item(turn)
 
         self.assertEqual(session.recorded_batches[0][0].role, "developer")
-        self.assertEqual(session.recorded_batches[0][1].role, "user")
-        self.assertEqual(session.recorded_batches[0][2].role, "developer")
+        self.assertEqual(session.recorded_batches[0][1].role, "developer")
+        self.assertEqual(session.recorded_batches[0][2].role, "user")
         first_sections = [content.text for content in session.recorded_batches[0][0].content]
-        final_sections = [content.text for content in session.recorded_batches[0][2].content]
+        separate_sections = [content.text for content in session.recorded_batches[0][1].content]
         self.assertIn("<permissions instructions>", first_sections[0])
         self.assertEqual(first_sections[1], "<collaboration_mode>Plan before editing.</collaboration_mode>")
-        self.assertIn("<environment_context>", session.recorded_batches[0][1].content[0].text)
-        self.assertEqual(final_sections, ["Review shell approvals carefully."])
+        self.assertEqual(separate_sections, ["Review shell approvals carefully."])
+        self.assertIn("<environment_context>", session.recorded_batches[0][2].content[0].text)
 
     async def test_in_memory_session_initial_context_includes_realtime_start(self) -> None:
         model_info = type(
@@ -2118,8 +2170,11 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         reference = await session.reference_context_item()
 
         self.assertEqual(len(session.recorded_batches), first_batch_count)
-        self.assertEqual(first_rollout_count, 1)
-        self.assertEqual(len(session.persisted_rollout_items), 2)
+        self.assertGreater(first_rollout_count, 1)
+        self.assertEqual(
+            len([item for item in session.persisted_rollout_items if item.type == "turn_context"]),
+            2,
+        )
         self.assertEqual(session.persisted_rollout_items[-1].type, "turn_context")
         self.assertEqual(session.persisted_rollout_items[-1].payload, reference)
 
@@ -2159,7 +2214,10 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<permissions instructions>", session.history[1].content[0].text)
         self.assertEqual(session.history[2].role, "user")
         self.assertIn("<environment_context>", session.history[2].content[0].text)
-        self.assertEqual(len(session.persisted_rollout_items), 2)
+        self.assertEqual(
+            len([item for item in session.persisted_rollout_items if item.type == "turn_context"]),
+            2,
+        )
         self.assertEqual(session.persisted_rollout_items[-1].payload, await session.reference_context_item())
 
     async def test_in_memory_session_can_set_and_replace_reference_context_item(self) -> None:

@@ -7,6 +7,7 @@ from pycodex.tui.chatwidget.protocol import (
 from pycodex.tui.exec_cell import ExecCell
 from pycodex.tui.history_cell.messages import ReasoningSummaryCell
 from pycodex.tui.history_cell.patches import PatchHistoryCell
+from pycodex.tui.history_cell.plans import PlanUpdateCell, line_text
 from pycodex.tui.history_cell.separators import FinalMessageSeparator
 from pycodex.tui.history_cell.base import PrefixedWrappedHistoryCell, line_text
 
@@ -35,6 +36,42 @@ def test_structured_history_projection_follows_rust_chatwidget_owner_order() -> 
     assert [type(cell) for cell in inserted] == [ReasoningSummaryCell, ExecCell, PatchHistoryCell, FinalMessageSeparator]
     assert any(isinstance(cell, ExecCell) for cell in active if cell is not None)
     assert active[-1] is None
+
+
+def test_turn_plan_updated_reaches_turn_runtime_and_plan_history_cell() -> None:
+    # Rust: chatwidget::protocol maps app-server plan statuses, then
+    # chatwidget::turn_runtime::on_plan_update inserts history_cell::new_plan_update.
+    inserted: list[object] = []
+    runtime = ChatWidgetProtocolRuntime()
+    runtime.bind_history_projection(
+        HistoryProjectionSink(inserted.append, lambda _cell: None, lambda: None)
+    )
+
+    runtime.handle(
+        ServerNotification(
+            "TurnPlanUpdated",
+            {
+                "explanation": "Adapting plan",
+                "plan": [
+                    {"step": "Inspect context", "status": "completed"},
+                    {"step": "Verify event bridge", "status": "inProgress"},
+                    {"step": "Report evidence", "status": "pending"},
+                ],
+            },
+        )
+    )
+
+    assert runtime.transcript.saw_plan_update_this_turn is True
+    assert runtime.transcript.last_plan_progress == (1, 3)
+    assert len(inserted) == 1
+    assert isinstance(inserted[0], PlanUpdateCell)
+    assert [line_text(line) for line in inserted[0].raw_lines()] == [
+        "Updated Plan",
+        "Adapting plan",
+        "Completed: Inspect context",
+        "InProgress: Verify event bridge",
+        "Pending: Report evidence",
+    ]
 
 
 def test_typed_exec_approval_request_reaches_tool_request_owner_and_sink() -> None:

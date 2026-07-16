@@ -17,6 +17,8 @@ from ..bottom_pane.status_line_setup import StatusLineItem
 from ..bottom_pane.title_setup import TerminalTitleItem
 from ..custom_terminal import clear_inline_status_line, write_inline_status_line
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
+from ..status_indicator_widget import StatusDetailsCapitalization, StatusIndicatorWidget
+from ..terminal_hyperlinks import line_text
 from ..terminal_title import clear_terminal_title, set_terminal_title
 from .rate_limits import get_limits_duration
 from .status_state import TerminalTitleStatusKind
@@ -590,6 +592,9 @@ class TerminalStatusSurfaceWriter:
     check_resize: Callable[[], None] = lambda: None
     render_bottom_pane: Callable[[], None] = lambda: None
     terminal_title_requires_action: bool = False
+    animations_enabled: bool = True
+    status_indicator: StatusIndicatorWidget | None = None
+    status_indicator_visible: Callable[[], bool] = lambda: True
 
     @property
     def turn_active(self) -> bool:
@@ -607,6 +612,11 @@ class TerminalStatusSurfaceWriter:
 
         self.render_bottom_pane = render_bottom_pane
 
+    def bind_status_indicator_visible(self, visible: Callable[[], bool]) -> None:
+        """Bind Rust ``BottomPane`` active-view visibility for animation ticks."""
+
+        self.status_indicator_visible = visible
+
     def set_terminal_title_requires_action(self, required: bool) -> None:
         """Project the active view's Rust action-required title contract."""
 
@@ -621,6 +631,10 @@ class TerminalStatusSurfaceWriter:
 
     def start_turn(self, started_at: float) -> None:
         self.turn_started_at = float(started_at)
+        # Rust BottomPane creates a fresh StatusIndicatorWidget when a new
+        # task starts, so elapsed time and animation phase never leak across
+        # turns.
+        self.status_indicator = None
 
     def show_live_status(self, header: str, details: str | None = None) -> None:
         self.live_status = run_terminal_live_status_text_show(
@@ -651,18 +665,45 @@ class TerminalStatusSurfaceWriter:
             suppressed=False,
         )
         if was_active:
+            self._ensure_status_indicator().update_header(header)
             self.render_turn_status(force=True)
         else:
             self.show_live_status(header)
 
-    def render_turn_status(self, *, force: bool = False, now: float | None = None) -> None:
-        self.turn_status = run_terminal_turn_status_render(
-            self.turn_status,
-            started_at=self.turn_started_at,
-            force=force,
-            now=now,
-            write_live_status=self.show_live_status,
+    def ensure_turn_status(self) -> None:
+        """Restore the status indicator while the current turn remains active.
+
+        Rust ``chatwidget::command_lifecycle`` calls
+        ``BottomPane::ensure_status_indicator`` when a command starts. The
+        terminal adapter keeps that lifecycle decision in the same module
+        chain instead of permanently suppressing the status after tool output.
+        """
+
+        if not self.turn_status.active:
+            return
+        self.turn_status = TerminalTurnStatusState(
+            active=True,
+            last_second=self.turn_status.last_second,
+            suppressed=False,
         )
+        self.render_turn_status(force=True)
+
+    def render_turn_status(self, *, force: bool = False, now: float | None = None) -> None:
+        render_now = time.monotonic() if now is None else float(now)
+        elapsed = terminal_turn_elapsed_seconds(self.turn_started_at, now=render_now)
+        if not self.turn_status.should_render(elapsed, force=force):
+            return
+        widget = self._ensure_status_indicator()
+        widget.update_header("Working")
+        widget.update_details(
+            None,
+            StatusDetailsCapitalization.Preserve,
+            widget.details_max_lines,
+        )
+        lines = widget.render_lines(4096, height=1, now=render_now)
+        if lines:
+            self._show_raw_live_status(line_text(lines[0]))
+        self.turn_status = self.turn_status.after_render(elapsed)
 
     def render_turn_status_force(self) -> None:
         """Render active-turn status immediately for turn start."""
@@ -670,15 +711,16 @@ class TerminalStatusSurfaceWriter:
         self.render_turn_status(force=True)
 
     def refresh_turn_status_if_due(self, *, now: float | None = None) -> None:
-        self.turn_status = run_terminal_turn_status_refresh(
-            self.turn_status,
-            started_at=self.turn_started_at,
-            now=now,
-            write_live_status=self.show_live_status,
-        )
+        # Rust's status widget schedules a frame every 32 ms while animations
+        # are enabled. The terminal event loop already wakes every 100 ms, so
+        # each idle wake is a frame opportunity; reduced motion keeps the
+        # previous once-per-second gate.
+        if self.status_indicator_visible():
+            self.render_turn_status(force=self.animations_enabled, now=now)
 
     def clear_turn_status(self) -> None:
         self.turn_status = terminal_turn_status_cleared(self.turn_status)
+        self.status_indicator = None
 
     def suppress_turn_status(self) -> None:
         self.turn_status = terminal_turn_status_suppressed(self.turn_status)
@@ -703,6 +745,27 @@ class TerminalStatusSurfaceWriter:
 
     def _apply_live_status(self, state: TerminalLiveStatusSurface) -> None:
         self.live_status = state
+
+    def _ensure_status_indicator(self) -> StatusIndicatorWidget:
+        if self.status_indicator is None:
+            self.status_indicator = StatusIndicatorWidget.new(
+                animations_enabled=self.animations_enabled,
+            )
+            if self.turn_started_at:
+                self.status_indicator.last_resume_at = self.turn_started_at
+        return self.status_indicator
+
+    def _show_raw_live_status(self, text: str) -> None:
+        self.live_status = run_terminal_live_status_show(
+            self.writer,
+            self.live_status,
+            text,
+            stdin_is_terminal=self.stdin_is_terminal(),
+            layout_active=self.layout_active(),
+            check_resize=self.check_resize,
+            render_bottom_pane=self.render_bottom_pane,
+            apply_state=self._apply_live_status,
+        )
 
 
 @dataclass(frozen=True)

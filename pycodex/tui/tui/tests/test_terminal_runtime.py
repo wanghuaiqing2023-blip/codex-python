@@ -237,6 +237,24 @@ class _QueuedSubmitRuntime(_FakeActiveThreadRuntime):
         return _ListEventStream(events)
 
 
+class _CoreCreatedWorkRuntime(_QueuedSubmitRuntime):
+    def __init__(
+        self,
+        event_batches: list[list[ServerNotification]],
+        pending_operation: AppCommand,
+    ) -> None:
+        super().__init__(event_batches)
+        self.pending_operation: tuple[str, AppCommand] | None = (
+            "Pursuing goal: finish parity",
+            pending_operation,
+        )
+
+    def take_pending_internal_operation(self) -> tuple[str, AppCommand] | None:
+        pending = self.pending_operation
+        self.pending_operation = None
+        return pending
+
+
 class _QueuedObservingSubmitRuntime(_FakeActiveThreadRuntime):
     def __init__(
         self,
@@ -2642,7 +2660,7 @@ def test_terminal_runtime_status_height_change_keeps_previous_answer_visible(mon
     assert "\u2022 second answer" in stdout.getvalue()
 
 
-def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(monkeypatch) -> None:
+def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::bottom_pane status is a live active-turn surface; elapsed
     #   time changes there while no history cell is inserted.
@@ -2674,8 +2692,78 @@ def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(
         assert f"\u2022 Working ({seconds}s \u2022 esc to interrupt)" in screen
         assert "gpt-test high" in screen
     assert "\u2022 after idle" in output
-
-
+
+
+def test_terminal_runtime_restores_working_after_commentary_and_command(monkeypatch) -> None:
+    # Rust module contracts:
+    # - chatwidget::streaming restores the status indicator after a commentary
+    #   stream becomes idle while the turn is still active.
+    # - chatwidget::command_lifecycle ensures the indicator when a command
+    #   starts and keeps it visible after command completion.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((96, 24)))
+    stdout = io.StringIO()
+    snapshots: dict[str, str] = {}
+
+    def capture_waiting_surfaces(index: int) -> None:
+        if index == 3:
+            snapshots["after_commentary"] = vt_screen_text(stdout.getvalue(), rows=24, cols=96)
+        if index == 5:
+            snapshots["after_command"] = vt_screen_text(stdout.getvalue(), rows=24, cols=96)
+
+    command_start = {
+        "item": {
+            "kind": "CommandExecution",
+            "id": "cmd-1",
+            "command": "echo ok",
+            "source": "Agent",
+            "status": "InProgress",
+        }
+    }
+    command_complete = {
+        "turn_id": "turn-1",
+        "item": {
+            "kind": "CommandExecution",
+            "id": "cmd-1",
+            "command": "echo ok",
+            "source": "Agent",
+            "status": "Completed",
+            "aggregated_output": "ok\n",
+            "exit_code": 0,
+        },
+    }
+    runtime = _ObservingSubmitRuntime(
+        [
+            ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+            ServerNotification("AgentMessageDelta", {"delta": "I will check this."}),
+            ServerNotification(
+                "ItemCompleted",
+                {
+                    "turn_id": "turn-1",
+                    "item": {
+                        "kind": "AgentMessage",
+                        "phase": "Commentary",
+                        "content": [{"type": "text", "text": "I will check this."}],
+                    },
+                },
+            ),
+            ServerNotification("ItemStarted", command_start),
+            ServerNotification("ItemCompleted", command_complete),
+            ServerNotification("TurnCompleted", {"turn": {"id": "turn-1", "status": "Completed"}}),
+        ],
+        capture_waiting_surfaces,
+    )
+
+    assert run_terminal_tui(
+        active_thread_runtime=runtime,
+        stdout=stdout,
+        stdin=_TtyStringIO("check\n/quit\n"),
+    ) == 0
+
+    assert "Working (" in snapshots["after_commentary"]
+    assert "Working (" in snapshots["after_command"]
+    assert "Ran echo ok" in snapshots["after_command"]
+
+
 def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::chatwidget::streaming::on_stream_error owns the live
@@ -2864,6 +2952,46 @@ def test_terminal_runtime_command_completion_replaces_active_cell_once(monkeypat
     assert screen.count("Ran echo ok") == 1
     assert "Running echo ok" not in screen
     assert sum("Ran echo ok" in cell for cell in runner._history.state.projection_cells) == 1
+
+
+def test_core_created_operation_runs_after_current_turn_stream_closes(monkeypatch: Any) -> None:
+    # Rust module collaboration:
+    # codex-core::tasks starts active-goal continuation work after TurnComplete;
+    # codex-tui observes it as another ordinary turn, without re-entering the
+    # current event handler or requiring another slash-command dispatch.
+    hidden_operation = AppCommand("UserTurn", {"hidden_goal_context": True})
+    runtime = _CoreCreatedWorkRuntime(
+        [
+            [
+                ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+                ServerNotification("TurnCompleted", {"turn": {"id": "turn-1", "status": "Completed"}}),
+            ],
+            [
+                ServerNotification("TurnStarted", {"turn": {"id": "turn-2"}}),
+                ServerNotification("TurnCompleted", {"turn": {"id": "turn-2", "status": "Completed"}}),
+            ],
+        ],
+        hidden_operation,
+    )
+    source = _FakeTerminalInputSource(
+        [
+            TerminalInputEvent("text", "start"),
+            TerminalInputEvent("enter"),
+            TerminalInputEvent("text", "/quit"),
+            TerminalInputEvent("enter"),
+        ]
+    )
+    _patch_terminal_input_source(monkeypatch, source)
+
+    assert run_terminal_tui(
+        active_thread_runtime=runtime,
+        stdout=io.StringIO(),
+        stdin=_TtyStringIO(""),
+    ) == 0
+
+    assert len(runtime.submitted) == 2
+    assert runtime.submitted[0][1].kind == "UserTurn"
+    assert runtime.submitted[1][1] is hidden_operation
 
 
 def test_terminal_runtime_renders_structured_complex_task_history(monkeypatch) -> None:

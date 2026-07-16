@@ -262,7 +262,10 @@ class CoreMultiAgentsV1HandlerTests(unittest.TestCase):
         args = V1WaitArgs.from_json(f'{{"targets":["{VALID_A}"],"timeout_ms":999999}}')
         self.assertEqual(tuple(str(target) for target in args.receiver_thread_ids()), (VALID_A,))
         self.assertEqual(args.resolve_timeout_ms(1000, 30000, 600000), 600000)
-        self.assertEqual(V1WaitArgs.from_json(f'{{"targets":["{VALID_A}"],"timeout_ms":1}}').resolve_timeout_ms(), 1000)
+        self.assertEqual(
+            V1WaitArgs.from_json(f'{{"targets":["{VALID_A}"],"timeout_ms":1}}').resolve_timeout_ms(),
+            10000,
+        )
         with self.assertRaisesRegex(FunctionCallError, "greater than zero"):
             V1WaitArgs.from_json(f'{{"targets":["{VALID_A}"],"timeout_ms":0}}').resolve_timeout_ms()
         with self.assertRaisesRegex(FunctionCallError, "agent ids must be non-empty"):
@@ -284,7 +287,7 @@ class CoreMultiAgentsV1HandlerTests(unittest.TestCase):
 
         handler = V1WaitAgentHandler(wait_agent=wait_agent)
         self.assertEqual(handler.handle(invocation).to_mapping(), {"status": {}, "timed_out": True})
-        self.assertEqual(seen, [((VALID_A,), 2000)])
+        self.assertEqual(seen, [((VALID_A,), 10000)])
         self.assertIsNotNone(handler.search_info())
 
     def test_v1_wait_agent_wrapper_surface_matches_rust(self) -> None:

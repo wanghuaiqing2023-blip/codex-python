@@ -9,12 +9,15 @@ wiring, and the post-construction sync calls.
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
+from pycodex.protocol import CollaborationMode, CollaborationModeMask, ModeKind, Settings
+
 from .._porting import RustTuiModule
-from .settings import CollaborationMode, CollaborationModeMask, ModeKind, SettingsConfig
+from ..collaboration_modes import default_mask
+from .settings import SettingsConfig
 from .transcript import TranscriptState
 
 RUST_MODULE = RustTuiModule(
@@ -174,7 +177,10 @@ def new_with_op_target(
     model_for_header = model or DEFAULT_MODEL_DISPLAY_NAME
     active_collaboration_mask = _initial_collaboration_mask(common.config, common.model_catalog, model)
     header_model = active_collaboration_mask.model if active_collaboration_mask and active_collaboration_mask.model else model_for_header
-    current_collaboration_mode = CollaborationMode(mode=ModeKind.DEFAULT, model_value=header_model)
+    current_collaboration_mode = CollaborationMode(
+        mode=ModeKind.DEFAULT,
+        settings=Settings(model=header_model),
+    )
     active_cell = _placeholder_session_header_cell(common.config)
     bottom_pane_factory = factories.get("bottom_pane", _default_bottom_pane)
     session_header_factory = factories.get("session_header", _default_session_header)
@@ -258,12 +264,10 @@ def _initial_collaboration_mask(
     model_catalog: Any,
     model_override: Optional[str],
 ) -> Optional[CollaborationModeMask]:
-    mask_factory = getattr(config, "initial_collaboration_mask", None)
-    if callable(mask_factory):
-        return mask_factory(model_catalog, model_override)
-    if model_override is None:
-        return None
-    return CollaborationModeMask(name=ModeKind.DEFAULT.display_name(), mode=ModeKind.DEFAULT, model=model_override)
+    mask = default_mask(model_catalog)
+    if mask is None or model_override is None:
+        return mask
+    return replace(mask, model=model_override)
 
 
 def _placeholder_session_header_cell(config: SettingsConfig) -> dict[str, Any]:

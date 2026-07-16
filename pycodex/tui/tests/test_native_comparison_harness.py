@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from pycodex.core.config.edit import read_toml_mapping
 from pycodex.tui.chatwidget.constructor import PLACEHOLDERS as CHAT_PLACEHOLDERS
 from pycodex.tui.tests.harness.native_compare import (
     ConptyInputStep,
@@ -273,6 +274,48 @@ class _SseFixtureServer:
             raise RuntimeError("server not started")
         host, port = self._server.server_address
         return f"http://{host}:{port}/v1"
+
+
+def _normalized_first_turn_request_context(request: dict[str, object]) -> dict[str, object]:
+    """Normalize only nondeterministic identifiers in a captured Responses request."""
+
+    uuid_pattern = re.compile(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+    )
+    isolated_home_pattern = re.compile(r"pycodex-native-home-[^/\\\s)]+")
+    goal_timestamp_pattern = re.compile(r'("(?:createdAt|updatedAt)"\s*:\s*)\d+')
+
+    def normalize(value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+            normalized = uuid_pattern.sub("<uuid>", normalized)
+            normalized = goal_timestamp_pattern.sub(r"\1<timestamp>", normalized)
+            return isolated_home_pattern.sub("pycodex-native-home-<temp>", normalized)
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): normalize(item) for key, item in value.items()}
+        return value
+
+    tools = request.get("tools")
+    tool_names = [
+        (
+            f"{tool.get('type')}:{tool.get('name')}"
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+            else str(tool.get("type"))
+        )
+        for tool in tools
+        if isinstance(tool, dict)
+    ] if isinstance(tools, list) else []
+    return {
+        "model": request.get("model"),
+        "instructions": normalize(request.get("instructions")),
+        "input": normalize(request.get("input")),
+        "reasoning": normalize(request.get("reasoning")),
+        "parallel_tool_calls": request.get("parallel_tool_calls"),
+        "tool_names": tool_names,
+        "tools": normalize(tools),
+    }
 
 
 def _assert_live_multi_turn_shutdown_summary(transcript, *, first: str, second: str) -> None:
@@ -2793,7 +2836,9 @@ def test_windows_conpty_native_and_python_local_sse_exec_command_output_when_ena
     )
 
     def run_pair_member(command_spec: TuiComparisonCommand, prompt_marker: str) -> object:
-        with _SseFixtureServer((tool_body, final_body)) as server:
+        # Delay both model responses so the active-turn status must remain
+        # visible before and after command execution.
+        with _SseFixtureServer((tool_body, final_body), response_delay_seconds=1.2) as server:
             config = (
                 'model = "mock-model"\n'
                 'model_provider = "pycodex_mock"\n'
@@ -2835,7 +2880,14 @@ def test_windows_conpty_native_and_python_local_sse_exec_command_output_when_ena
                         ),
                         ConptyInputStep(
                             "",
-                            ready_text_sequence=("Ran", "PYCODEX_EXEC_NATIVE", final_answer, prompt_marker),
+                            ready_text_sequence=(
+                                "Ran",
+                                "PYCODEX_EXEC_NATIVE",
+                                "Working",
+                                "esc to interrupt",
+                                final_answer,
+                                prompt_marker,
+                            ),
                             ready_timeout=40.0,
                         ),
                         ConptyInputStep(
@@ -2880,6 +2932,8 @@ def test_windows_conpty_native_and_python_local_sse_exec_command_output_when_ena
         expected = (
             "Ran",
             "PYCODEX_EXEC_NATIVE",
+            "Working",
+            "esc to interrupt",
             final_answer,
             prompt_marker,
         )
@@ -5580,7 +5634,7 @@ def test_windows_conpty_native_and_python_model_popup_open_when_enabled() -> Non
     input_steps = (
         ConptyInputStep(
             "/model\r",
-            ready_pattern=READY_COMPOSER_PATTERN,
+            ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
             ready_timeout=30.0,
             ready_quiet_period=0.5,
             chunk_delay=0.02,
@@ -5745,7 +5799,7 @@ def test_windows_conpty_native_and_python_model_popup_accept_current_opens_reaso
     input_steps = (
         ConptyInputStep(
             "/model\r",
-            ready_pattern=READY_COMPOSER_PATTERN,
+            ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
             ready_timeout=30.0,
             ready_quiet_period=0.5,
             chunk_delay=0.02,
@@ -5826,13 +5880,14 @@ def test_windows_conpty_native_and_python_model_reasoning_keyboard_selection_whe
         native_exe=native_exe,
         extra_args=extra_args,
     )
-    env, temp_home = _isolated_codex_home_env()
+    rust_env, rust_temp_home = _isolated_codex_home_env()
+    python_env, python_temp_home = _isolated_codex_home_env()
     rows = 32
     cols = 120
     input_steps = (
         ConptyInputStep(
             "/model\r",
-            ready_pattern=READY_COMPOSER_PATTERN,
+            ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
             ready_timeout=30.0,
             ready_quiet_period=0.5,
             chunk_delay=0.02,
@@ -5853,11 +5908,11 @@ def test_windows_conpty_native_and_python_model_reasoning_keyboard_selection_whe
         ),
     )
 
-    with temp_home:
+    with rust_temp_home, python_temp_home:
         rust_transcript = run_windows_conpty_tui_command(
             rust,
             input_steps=input_steps,
-            env=env,
+            env=rust_env,
             timeout=10,
             stop_pattern=r"gpt-5\.5\s+high",
             stop_timeout=10,
@@ -5867,7 +5922,7 @@ def test_windows_conpty_native_and_python_model_reasoning_keyboard_selection_whe
         python_transcript = run_windows_conpty_tui_command(
             python,
             input_steps=input_steps,
-            env=env,
+            env=python_env,
             timeout=10,
             stop_pattern=r"gpt-5\.5\s+high",
             stop_timeout=10,
@@ -5885,6 +5940,103 @@ def test_windows_conpty_native_and_python_model_reasoning_keyboard_selection_whe
         )
         assert "Traceback" not in output
         assert "ConPTY command terminated after stop pattern" in transcript.normalized_stderr()
+
+
+def test_windows_conpty_python_model_selection_persists_across_restart_when_enabled() -> None:
+    # Rust source contract:
+    # - codex-tui::chatwidget::model_popups emits PersistModelSelection after
+    #   the live model and reasoning updates.
+    # - codex-tui::app::event_dispatch persists both keys through
+    #   config_update::write_config_batch before reporting "Model changed".
+    # - codex-core::config::edit::blocking_set_model_top_level proves those
+    #   top-level values are the defaults loaded by the next process.
+    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
+    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
+    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY smoke only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    repo_root = _repo_root()
+    python = build_inline_tui_command(
+        "python",
+        repo_root=repo_root,
+        extra_args=("--disable", "apps", "--disable", "plugins"),
+    )
+    env, temp_home = _isolated_codex_home_env()
+    config_path = Path(env["CODEX_HOME"]) / "config.toml"
+    config_path.write_text(
+        'model = "gpt-5.2"\n'
+        'model_reasoning_effort = "medium"\n'
+        + config_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    rows = 32
+    cols = 120
+    input_steps = (
+        ConptyInputStep(
+            "/model\r",
+            ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
+            ready_timeout=30.0,
+            ready_quiet_period=0.5,
+            chunk_delay=0.02,
+        ),
+        ConptyInputStep(
+            "\x1b[H\r",
+            ready_text="Select Model",
+            ready_timeout=10.0,
+            ready_quiet_period=0.3,
+            chunk_delay=0.02,
+        ),
+        ConptyInputStep(
+            "\x1b[B\r",
+            ready_text="Select Reasoning Level",
+            ready_timeout=10.0,
+            ready_quiet_period=0.3,
+            chunk_delay=0.02,
+        ),
+    )
+
+    with temp_home:
+        selected = run_windows_conpty_tui_command(
+            python,
+            input_steps=input_steps,
+            env=env,
+            timeout=10,
+            stop_pattern=r"Model changed to \S+ \S+",
+            stop_timeout=15,
+            terminate_on_stop_pattern=True,
+            size=TerminalSize(rows=rows, cols=cols),
+        )
+        persisted = read_toml_mapping(config_path)
+        persisted_model = str(persisted.get("model") or "")
+        persisted_effort = str(persisted.get("model_reasoning_effort") or "")
+        restarted = run_windows_conpty_tui_command(
+            python,
+            input_steps=(),
+            env=env,
+            timeout=10,
+            stop_pattern=rf"model:\s+{re.escape(persisted_model)} {re.escape(persisted_effort)}",
+            stop_timeout=15,
+            terminate_on_stop_pattern=True,
+            size=TerminalSize(rows=rows, cols=cols),
+        )
+
+    assert re.search(r"Model changed to \S+ \S+", selected.normalized_stdout())
+    assert persisted_model and persisted_model != "gpt-5.2"
+    assert persisted_effort
+    assert re.search(
+        rf"model:\s+{re.escape(persisted_model)} {re.escape(persisted_effort)}",
+        restarted.normalized_stdout(),
+    )
+    assert "Traceback" not in selected.normalized_stdout()
+    assert "Traceback" not in restarted.normalized_stdout()
 
 
 def test_windows_conpty_native_and_python_review_popup_open_when_enabled() -> None:
@@ -7826,5 +7978,505 @@ def test_windows_conpty_native_and_python_live_complex_tool_prompt_when_enabled(
         if record.get("displayed") is True
     }
     assert summary_sources & {"summary_delta", "completed_reasoning"}
+
+
+def test_windows_conpty_native_and_python_first_request_context_and_tools_match_when_enabled(
+    tmp_path: Path,
+) -> None:
+    """Compare the real first-turn model context at the product PTY boundary.
+
+    Rust owners: codex-tui::app selects SessionSource::Cli and codex-core's
+    Session::built_tools plus request assembly produce the Responses body.
+    Python must reach the corresponding modules rather than a TUI-local tool
+    list or Goal-specific prompt path.
+    """
+
+    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
+        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
+    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
+    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
+    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY comparison only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+    native_exe = native_codex_exe_from_env()
+    if not native_exe.exists():
+        pytest.skip(f"native codex executable not found: {native_exe}")
+
+    repo_root = _repo_root()
+    prompt = "DYNAMIC_CONTEXT_TOOL_PARITY"
+    answer = "DYNAMIC_CONTEXT_TOOL_PARITY_DONE"
+    response = _responses_sse(
+        {"type": "response.created", "response": {"id": "resp-context-parity"}},
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "id": "msg-context-parity",
+                "content": [{"type": "output_text", "text": answer}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-context-parity",
+                "usage": {
+                    "input_tokens": 5,
+                    "input_tokens_details": None,
+                    "output_tokens": 2,
+                    "output_tokens_details": None,
+                    "total_tokens": 7,
+                },
+            },
+        },
+    )
+
+    extra_args = (
+        "--enable",
+        "goals",
+        "--enable",
+        "unified_exec",
+        "--disable",
+        "apps",
+        "--disable",
+        "plugins",
+    )
+    rust, python = build_rust_python_inline_pair(
+        repo_root=repo_root,
+        native_exe=native_exe,
+        extra_args=extra_args,
+        sandbox_mode="read-only",
+        approval_policy="on-request",
+    )
+
+    def run_member(command: TuiComparisonCommand, label: str) -> dict[str, object]:
+        with _SseFixtureServer(response) as server:
+            config = (
+                'model = "gpt-5.4"\n'
+                'model_provider = "pycodex_mock"\n'
+                'approval_policy = "on-request"\n'
+                'sandbox_mode = "read-only"\n'
+                'suppress_unstable_features_warning = true\n\n'
+                "[features]\n"
+                "goals = true\n"
+                "unified_exec = true\n"
+                "apps = false\n"
+                "plugins = false\n\n"
+                "[model_providers.pycodex_mock]\n"
+                'name = "Mock provider for context and tool parity"\n'
+                f'base_url = "{server.base_url}"\n'
+                'wire_api = "responses"\n'
+                "request_max_retries = 0\n"
+                "stream_max_retries = 0\n"
+                "supports_websockets = false\n\n"
+                f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+                'trust_level = "trusted"\n'
+            )
+            env, temp_home = _isolated_codex_home_env_with_config(config)
+            with temp_home:
+                transcript = run_windows_conpty_tui_command(
+                    command,
+                    input_steps=(
+                        ConptyInputStep(
+                            prompt,
+                            ready_pattern=READY_COMPOSER_PATTERN,
+                            ready_timeout=30.0,
+                            ready_quiet_period=0.2,
+                        ),
+                        ConptyInputStep("\r", ready_text=prompt, ready_timeout=10.0),
+                        ConptyInputStep("", ready_text=answer, ready_timeout=40.0, ready_quiet_period=0.3),
+                        ConptyInputStep("/quit\r", ready_timeout=0.2, chunk_delay=0.02),
+                    ),
+                    env=env,
+                    timeout=50,
+                    size=TerminalSize(rows=36, cols=140),
+                )
+            transcript.write_artifacts(tmp_path, prefix=f"{label}-request-context", rows=36, cols=140)
+            assert server.request_bodies, (
+                f"{label} emitted no Responses request; output={transcript.normalized_combined()!r}"
+            )
+            request = json.loads(server.request_bodies[0].decode("utf-8"))
+            (tmp_path / f"{label}-request-context.json").write_text(
+                json.dumps(request, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            return request
+
+    rust_request = run_member(rust, "rust")
+    python_request = run_member(python, "python")
+    rust_context = _normalized_first_turn_request_context(rust_request)
+    python_context = _normalized_first_turn_request_context(python_request)
+
+    assert python_context == rust_context
+
+
+def test_windows_conpty_native_and_python_goal_continuation_context_match_when_enabled(
+    tmp_path: Path,
+) -> None:
+    """Compare the core-created Goal continuation request across both products."""
+
+    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
+        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
+    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
+    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
+    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY comparison only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+    native_exe = native_codex_exe_from_env()
+    if not native_exe.exists():
+        pytest.skip(f"native codex executable not found: {native_exe}")
+
+    objective = "verify dynamic goal continuation parity"
+    prompt = "DYNAMIC_GOAL_CONTEXT_PARITY"
+    final_answer = "DYNAMIC_GOAL_CONTEXT_PARITY_DONE"
+
+    def tool_body(response_id: str, item_id: str, call_id: str, name: str, arguments: dict[str, object]) -> bytes:
+        return _responses_sse(
+            {"type": "response.created", "response": {"id": response_id}},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "id": item_id,
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": json.dumps(arguments, separators=(",", ":")),
+                },
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "usage": {
+                        "input_tokens": 100,
+                        "input_tokens_details": {"cached_tokens": 20},
+                        "output_tokens": 10,
+                        "output_tokens_details": None,
+                        "total_tokens": 110,
+                    },
+                },
+            },
+        )
+
+    def message_body(response_id: str, message_id: str, text: str) -> bytes:
+        return _responses_sse(
+            {"type": "response.created", "response": {"id": response_id}},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": message_id,
+                    "content": [{"type": "output_text", "text": text}],
+                },
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "usage": {
+                        "input_tokens": 20,
+                        "input_tokens_details": {"cached_tokens": 5},
+                        "output_tokens": 6,
+                        "output_tokens_details": None,
+                        "total_tokens": 26,
+                    },
+                },
+            },
+        )
+
+    bodies = (
+        tool_body(
+            "resp-goal-create",
+            "fc-goal-create",
+            "call-goal-create",
+            "create_goal",
+            {"objective": objective, "token_budget": 1000},
+        ),
+        message_body("resp-goal-progress", "msg-goal-progress", "Initial goal progress."),
+        tool_body(
+            "resp-goal-complete",
+            "fc-goal-complete",
+            "call-goal-complete",
+            "update_goal",
+            {"status": "complete"},
+        ),
+        message_body("resp-goal-final", "msg-goal-final", final_answer),
+    )
+
+    repo_root = _repo_root()
+    rust, python = build_rust_python_inline_pair(
+        repo_root=repo_root,
+        native_exe=native_exe,
+        extra_args=("--enable", "goals", "--enable", "unified_exec", "--disable", "apps", "--disable", "plugins"),
+        sandbox_mode="read-only",
+        approval_policy="on-request",
+    )
+
+    def run_member(command: TuiComparisonCommand, label: str) -> dict[str, object]:
+        with _SseFixtureServer(bodies, response_delay_seconds=0.6) as server:
+            config = (
+                'model = "gpt-5.4"\n'
+                'model_provider = "pycodex_mock"\n'
+                'approval_policy = "on-request"\n'
+                'sandbox_mode = "read-only"\n'
+                'suppress_unstable_features_warning = true\n\n'
+                "[features]\n"
+                "goals = true\n"
+                "unified_exec = true\n"
+                "apps = false\n"
+                "plugins = false\n\n"
+                "[model_providers.pycodex_mock]\n"
+                'name = "Mock provider for Goal continuation parity"\n'
+                f'base_url = "{server.base_url}"\n'
+                'wire_api = "responses"\n'
+                "request_max_retries = 0\n"
+                "stream_max_retries = 0\n"
+                "supports_websockets = false\n\n"
+                f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+                'trust_level = "trusted"\n'
+            )
+            env, temp_home = _isolated_codex_home_env_with_config(config)
+            with temp_home:
+                transcript = run_windows_conpty_tui_command(
+                    command,
+                    input_steps=(
+                        ConptyInputStep(
+                            prompt,
+                            ready_pattern=READY_COMPOSER_PATTERN,
+                            ready_timeout=30.0,
+                            ready_quiet_period=0.2,
+                        ),
+                        ConptyInputStep("\r", ready_text=prompt, ready_timeout=10.0),
+                        ConptyInputStep("", ready_text=final_answer, ready_timeout=60.0, ready_quiet_period=0.3),
+                        ConptyInputStep("/quit\r", ready_timeout=0.2, chunk_delay=0.02),
+                    ),
+                    env=env,
+                    timeout=70,
+                    size=TerminalSize(rows=40, cols=150),
+                )
+            transcript.write_artifacts(tmp_path, prefix=f"{label}-goal-context", rows=40, cols=150)
+            requests = [json.loads(body.decode("utf-8")) for body in server.request_bodies]
+            continuation = next(
+                (request for request in requests if "<goal_context>" in json.dumps(request.get("input"), ensure_ascii=False)),
+                None,
+            )
+            assert continuation is not None, (
+                f"{label} emitted no GoalContext request; requests={len(requests)}; "
+                f"output={transcript.normalized_combined()!r}"
+            )
+            (tmp_path / f"{label}-goal-context.json").write_text(
+                json.dumps(continuation, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            return continuation
+
+    rust_request = run_member(rust, "rust")
+    python_request = run_member(python, "python")
+    rust_text = json.dumps(rust_request.get("input"), ensure_ascii=False)
+    python_text = json.dumps(python_request.get("input"), ensure_ascii=False)
+    rust_tokens = re.search(r"Tokens used: (\d+)", rust_text)
+    python_tokens = re.search(r"Tokens used: (\d+)", python_text)
+
+    assert rust_tokens is not None and int(rust_tokens.group(1)) > 0
+    assert python_tokens is not None and int(python_tokens.group(1)) > 0
+    assert _normalized_first_turn_request_context(python_request) == _normalized_first_turn_request_context(
+        rust_request
+    )
+
+
+def test_windows_conpty_native_and_python_gpt56_update_plan_pipeline_match_when_enabled(
+    tmp_path: Path,
+) -> None:
+    """Compare gpt-5.6 request context and the visible update-plan event pipeline."""
+
+    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
+        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
+    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
+    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
+    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY comparison only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+    native_exe = native_codex_exe_from_env()
+    if not native_exe.exists():
+        pytest.skip(f"native codex executable not found: {native_exe}")
+
+    prompt = "DYNAMIC_GPT56_UPDATE_PLAN_PARITY"
+    answer = "DYNAMIC_GPT56_UPDATE_PLAN_DONE"
+    plan = [
+        {"step": "Inspect dynamic context", "status": "completed"},
+        {"step": "Verify update-plan event bridge", "status": "in_progress"},
+        {"step": "Report parity evidence", "status": "pending"},
+    ]
+    responses = (
+        _responses_sse(
+            {"type": "response.created", "response": {"id": "resp-plan-call"}},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "id": "fc-plan-call",
+                    "type": "function_call",
+                    "call_id": "call-plan-parity",
+                    "name": "update_plan",
+                    "arguments": json.dumps(
+                        {"explanation": "Adapting plan", "plan": plan},
+                        separators=(",", ":"),
+                    ),
+                },
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-plan-call",
+                    "usage": {
+                        "input_tokens": 20,
+                        "input_tokens_details": {"cached_tokens": 0},
+                        "output_tokens": 5,
+                        "output_tokens_details": None,
+                        "total_tokens": 25,
+                    },
+                },
+            },
+        ),
+        _responses_sse(
+            {"type": "response.created", "response": {"id": "resp-plan-answer"}},
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "msg-plan-answer",
+                    "content": [{"type": "output_text", "text": answer}],
+                },
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp-plan-answer",
+                    "usage": {
+                        "input_tokens": 25,
+                        "input_tokens_details": {"cached_tokens": 0},
+                        "output_tokens": 4,
+                        "output_tokens_details": None,
+                        "total_tokens": 29,
+                    },
+                },
+            },
+        ),
+    )
+
+    repo_root = _repo_root()
+    rust, python = build_rust_python_inline_pair(
+        repo_root=repo_root,
+        native_exe=native_exe,
+        extra_args=("--enable", "goals", "--enable", "unified_exec", "--disable", "apps", "--disable", "plugins"),
+        sandbox_mode="read-only",
+        approval_policy="on-request",
+    )
+
+    def run_member(
+        command: TuiComparisonCommand,
+        label: str,
+    ) -> tuple[list[dict[str, object]], TuiProcessTranscript]:
+        with _SseFixtureServer(responses, response_delay_seconds=0.3) as server:
+            config = (
+                'model = "gpt-5.6-sol"\n'
+                'model_provider = "pycodex_mock"\n'
+                'approval_policy = "on-request"\n'
+                'sandbox_mode = "read-only"\n'
+                'suppress_unstable_features_warning = true\n\n'
+                "[features]\n"
+                "goals = true\n"
+                "unified_exec = true\n"
+                "apps = false\n"
+                "plugins = false\n\n"
+                "[model_providers.pycodex_mock]\n"
+                'name = "Mock provider for gpt-5.6 plan parity"\n'
+                f'base_url = "{server.base_url}"\n'
+                'wire_api = "responses"\n'
+                "request_max_retries = 0\n"
+                "stream_max_retries = 0\n"
+                "supports_websockets = false\n\n"
+                f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+                'trust_level = "trusted"\n'
+            )
+            env, temp_home = _isolated_codex_home_env_with_config(config)
+            with temp_home:
+                transcript = run_windows_conpty_tui_command(
+                    command,
+                    input_steps=(
+                        ConptyInputStep(
+                            prompt,
+                            ready_pattern=READY_COMPOSER_PATTERN,
+                            ready_timeout=30.0,
+                            ready_quiet_period=0.2,
+                        ),
+                        ConptyInputStep("\r", ready_text=prompt, ready_timeout=10.0),
+                        ConptyInputStep("", ready_text=answer, ready_timeout=50.0, ready_quiet_period=0.3),
+                        ConptyInputStep("/quit\r", ready_timeout=0.2, chunk_delay=0.02),
+                    ),
+                    env=env,
+                    timeout=60,
+                    size=TerminalSize(rows=40, cols=150),
+                )
+            transcript.write_artifacts(tmp_path, prefix=f"{label}-gpt56-plan", rows=40, cols=150)
+            requests = [json.loads(body.decode("utf-8")) for body in server.request_bodies]
+            assert len(requests) >= 2, (
+                f"{label} did not complete the update_plan round trip; "
+                f"requests={len(requests)} output={transcript.normalized_combined()!r}"
+            )
+            for index, request in enumerate(requests[:2], start=1):
+                (tmp_path / f"{label}-gpt56-plan-request-{index}.json").write_text(
+                    json.dumps(request, ensure_ascii=False, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+            return requests[:2], transcript
+
+    rust_requests, rust_transcript = run_member(rust, "rust")
+    python_requests, python_transcript = run_member(python, "python")
+
+    for transcript in (rust_transcript, python_transcript):
+        output = transcript.normalized_stdout()
+        assert "Updated Plan" in output
+        assert "Inspect dynamic context" in output
+        assert "Verify update-plan event bridge" in output
+        assert answer in output
+
+    assert _normalized_first_turn_request_context(python_requests[0]) == _normalized_first_turn_request_context(
+        rust_requests[0]
+    )
+    assert _normalized_first_turn_request_context(python_requests[1]) == _normalized_first_turn_request_context(
+        rust_requests[1]
+    )
+    plan_tools = [
+        tool
+        for tool in rust_requests[0].get("tools", [])
+        if isinstance(tool, dict) and tool.get("name") == "update_plan"
+    ]
+    assert len(plan_tools) == 1
+    second_input = json.dumps(python_requests[1].get("input"), ensure_ascii=False)
+    assert '"name": "update_plan"' in second_input
+    assert "Plan updated" in second_input
 
 

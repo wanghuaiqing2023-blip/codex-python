@@ -201,6 +201,30 @@ def test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks() ->
     assert calls[-1] == "size"
 
 
+def test_terminal_bottom_pane_controller_active_view_replaces_live_status() -> None:
+    # Rust owner: codex-tui::bottom_pane::BottomPane::as_renderable returns the
+    # active BottomPaneView instead of composing it with status and composer.
+    writer = FlushTrackingStringIO()
+    live = TerminalLiveStatusSurface.active_status("\u2022 Working")
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=lambda: live,
+        terminal_size=lambda: os.terminal_size((80, 16)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+    )
+
+    assert controller.live_status_footprint_active() is True
+    controller.show_view(CustomPromptView.new("Edit", "Prompt", "text", None, lambda _text: None))
+
+    assert controller.live_status_footprint_active() is False
+    assert controller.render(check_resize=False) is True
+    assert "Working" not in writer.getvalue()
+    assert "Edit" in writer.getvalue()
+
+
 def test_terminal_bottom_pane_controller_exposes_no_resize_callbacks_for_runtime_glue() -> None:
     # Rust owner: codex-tui::bottom_pane coordinates live-pane clear/render
     # callbacks while tui owns viewport draw timing. terminal_runtime

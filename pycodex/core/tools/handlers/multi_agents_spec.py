@@ -403,7 +403,7 @@ def hide_spawn_agent_metadata_options(properties: dict[str, JsonValue]) -> None:
 def spawn_agent_tool_description(available_models_description: str | None, return_value_description: str, include_usage_hint: bool, usage_hint_text: str | None) -> str:
     base = f"\n        {available_models_description or ''}\n        Spawn a sub-agent for a well-scoped task. {return_value_description} {SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}"
     if include_usage_hint and usage_hint_text is not None:
-        return f"{base}\n{usage_hint_text}"
+        return f"\n        {base}\n{usage_hint_text}"
     if include_usage_hint:
         agent_role_usage_hint = (
             "Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself."
@@ -411,7 +411,7 @@ def spawn_agent_tool_description(available_models_description: str | None, retur
             else ""
         )
         return (
-            base
+            f"\n        {base}"
             + "\nThis spawn_agent tool provides you access to sub-agents that inherit your current model by default. Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason. You should follow the rules and guidelines below to use this tool.\n\n"
             + "Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work.\n"
             + "Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.\n"

@@ -306,6 +306,12 @@ class TerminalBottomPaneViewState:
         return self.view_stack.active_view()
 
     @property
+    def status_indicator_visible(self) -> bool:
+        """Match Rust ``BottomPane::as_renderable`` active-view precedence."""
+
+        return self.active_view is None
+
+    @property
     def views(self) -> list[BottomPaneView]:
         return self.view_stack.views
 

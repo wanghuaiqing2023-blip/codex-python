@@ -20,6 +20,7 @@ from ..app_server_approval_conversions import file_update_changes_to_display
 from ..history_cell.messages import new_reasoning_summary_block
 from ..history_cell.notices import new_error_event
 from ..history_cell.patches import new_patch_apply_failure, new_patch_event
+from ..history_cell.plans import new_plan_update
 from ..history_cell.separators import FinalMessageSeparator
 from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
@@ -40,8 +41,11 @@ from .status_state import StatusIndicatorState, TerminalTitleStatusKind
 from .streaming import MessagePhase, StreamingWidgetState
 from .turn_runtime import (
     ChatWidgetTurnRuntime,
+    PlanItem as TurnPlanItem,
     RateLimitErrorKind as TurnRateLimitErrorKind,
+    StepStatus as TurnPlanStepStatus,
     TurnAbortReason,
+    UpdatePlanArgs as TurnUpdatePlanArgs,
     app_server_rate_limit_error_kind,
     is_app_server_cyber_policy_error,
 )
@@ -129,6 +133,8 @@ class TerminalNotificationAction:
     clear_live_status: bool = False
     finalize_active_stream: bool = False
     clear_turn_status: bool = False
+    ensure_turn_status: bool = False
+    restore_turn_status_after_action: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,6 +144,7 @@ class TerminalNotificationEffectPlan:
     hide_live_status: bool = False
     clear_live_status: bool = False
     finalize_active_stream: bool = False
+    ensure_turn_status: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,8 @@ class TerminalProtocolEventDispatcher:
         hide_live_status: Callable[[], Any],
         clear_live_status: Callable[[], Any],
         finalize_active_stream: Callable[[], Any],
+        ensure_turn_status: Callable[[], Any],
+        restore_turn_status: Callable[[], Any],
     ) -> None:
         self.handle_notification_callback = handle_notification
         self.handle_request_callback = handle_request
@@ -178,6 +187,8 @@ class TerminalProtocolEventDispatcher:
         self.hide_live_status = hide_live_status
         self.clear_live_status = clear_live_status
         self.finalize_active_stream = finalize_active_stream
+        self.ensure_turn_status = ensure_turn_status
+        self.restore_turn_status = restore_turn_status
 
     def handle_event(self, notification: Any) -> TerminalNotificationAction:
         if isinstance(notification, ServerRequest):
@@ -191,6 +202,7 @@ class TerminalProtocolEventDispatcher:
             assistant_delta=self.assistant_delta,
             assistant_completed=self.assistant_completed,
             retry_error=self.retry_error,
+            restore_turn_status=self.restore_turn_status,
         )
 
     def close_turn(self) -> None:
@@ -208,6 +220,7 @@ class TerminalProtocolEventDispatcher:
             hide_live_status=self.hide_live_status,
             clear_live_status=self.clear_live_status,
             finalize_active_stream=self.finalize_active_stream,
+            ensure_turn_status=self.ensure_turn_status,
         )
 
 
@@ -699,6 +712,22 @@ class ChatWidgetProtocolRuntime:
     def on_warning(self, message: Any) -> None:
         self.turn.on_warning(message)
 
+    def on_plan_update(self, update: Mapping[str, Any] | Any) -> None:
+        plan = [
+            TurnPlanItem(
+                step=str(_get(item, "step", "")),
+                status=TurnPlanStepStatus(_status_value(_get(item, "status", "pending"))),
+            )
+            for item in (_get(update, "plan", ()) or ())
+        ]
+        core_update = TurnUpdatePlanArgs(
+            plan=plan,
+            explanation=_get(update, "explanation", None),
+        )
+        self.turn.on_plan_update(core_update)
+        self.add_to_history(new_plan_update(core_update))
+        self.request_redraw()
+
     def on_stream_error(self, message: str, additional_details: str | None = None) -> None:
         self.streaming.on_stream_error(message, additional_details)
 
@@ -1053,9 +1082,8 @@ def terminal_notification_action(notification: Any) -> TerminalNotificationActio
         return (
             TerminalNotificationAction(
                 "structured_history",
-                suppress_turn_status=True,
-                clear_live_status=True,
                 finalize_active_stream=True,
+                ensure_turn_status=item_kind == "CommandExecution",
             )
             if item_kind in {"CommandExecution", "FileChange"}
             else TerminalNotificationAction("noop")
@@ -1063,11 +1091,14 @@ def terminal_notification_action(notification: Any) -> TerminalNotificationActio
     if kind == "ItemCompleted":
         completed_message = completed_agent_message_from_notification(notification)
         if completed_message:
+            item = _get(_payload(notification), "item", {})
+            phase = _message_phase(_get(item, "phase", None))
             return TerminalNotificationAction(
                 "assistant_completed",
                 completed_message,
                 suppress_turn_status=True,
                 hide_live_status=True,
+                restore_turn_status_after_action=phase is MessagePhase.Commentary,
             )
         item = _get(_payload(notification), "item", {})
         item_kind = _get(item, "kind", None) or _get(item, "type", None)
@@ -1076,8 +1107,6 @@ def terminal_notification_action(notification: Any) -> TerminalNotificationActio
         return (
             TerminalNotificationAction(
                 "structured_history",
-                suppress_turn_status=True,
-                clear_live_status=True,
                 finalize_active_stream=True,
             )
             if item_kind in {"CommandExecution", "FileChange"}
@@ -1111,6 +1140,7 @@ def run_terminal_notification_action(
     assistant_completed: Callable[[str], Any],
     retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
+    restore_turn_status: Callable[[], Any] | None = None,
 ) -> None:
     """Dispatch a terminal scrollback product action through runner callbacks."""
 
@@ -1122,6 +1152,8 @@ def run_terminal_notification_action(
         retry_error(action.text, action.details)
     elif action.kind == "turn_completed" and turn_completed is not None:
         turn_completed()
+    if action.restore_turn_status_after_action and restore_turn_status is not None:
+        restore_turn_status()
 
 
 def terminal_notification_effect_plan(
@@ -1138,6 +1170,7 @@ def terminal_notification_effect_plan(
         hide_live_status=hide_live_status,
         clear_live_status=bool(action.clear_live_status) and not hide_live_status,
         finalize_active_stream=bool(action.finalize_active_stream) and assistant_stream_active,
+        ensure_turn_status=bool(action.ensure_turn_status),
     )
 
 
@@ -1159,6 +1192,7 @@ def run_terminal_notification_effect_plan(
     hide_live_status: Callable[[], Any],
     clear_live_status: Callable[[], Any],
     finalize_active_stream: Callable[[], Any],
+    ensure_turn_status: Callable[[], Any] = lambda: None,
 ) -> None:
     """Apply a terminal notification effect plan through runner callbacks."""
 
@@ -1172,6 +1206,8 @@ def run_terminal_notification_effect_plan(
         clear_live_status()
     if plan.finalize_active_stream:
         finalize_active_stream()
+    if plan.ensure_turn_status:
+        ensure_turn_status()
 
 
 def run_terminal_notification(
@@ -1183,6 +1219,7 @@ def run_terminal_notification(
     assistant_completed: Callable[[str], Any],
     retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
+    restore_turn_status: Callable[[], Any] | None = None,
 ) -> TerminalNotificationAction:
     """Dispatch one terminal scrollback notification through protocol-owned steps."""
 
@@ -1199,6 +1236,7 @@ def run_terminal_notification(
         assistant_completed=assistant_completed,
         retry_error=retry_error,
         turn_completed=turn_completed,
+        restore_turn_status=restore_turn_status,
     )
     return action
 
@@ -1213,6 +1251,7 @@ def run_terminal_app_notification(
     assistant_completed: Callable[[str], Any],
     retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
+    restore_turn_status: Callable[[], Any] | None = None,
 ) -> TerminalNotificationAction:
     """Synchronize app notification handling before terminal dispatch.
 
@@ -1236,6 +1275,7 @@ def run_terminal_app_notification(
         assistant_completed=assistant_completed,
         retry_error=retry_error,
         turn_completed=turn_completed,
+        restore_turn_status=restore_turn_status,
     )
     return action
 
@@ -1258,7 +1298,7 @@ def _plan_update_args(payload: Any) -> Dict[str, Any]:
     return {
         "explanation": _get(payload, "explanation", None),
         "plan": [
-            {"step": _get(step, "step"), "status": _status_name(_get(step, "status"))}
+            {"step": _get(step, "step"), "status": _status_value(_get(step, "status"))}
             for step in (_get(payload, "plan", ()) or ())
         ],
     }

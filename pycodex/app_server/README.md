@@ -386,10 +386,13 @@ merge behavior, missing-clear no-op behavior, table/array path lookup,
 user-config path restriction, expected-version conflicts, legacy `profile` and
 `profiles.*` write rejection, read origins/layer projection, and override
 metadata detection for effective higher-precedence layers. Rust's
-comment-preserving TOML persistence, exact edit span metadata, core config
-validation, feature requirement validation, managed policy validation, selected
-profile filesystem loading, and real writes remain dependency/runtime
-boundaries. Focused parity validation passed with 15 tests plus py_compile.
+comment/order-preserving TOML document edits and exact edit span metadata remain
+deferred, while Python now reloads the latest user layer and persists changed
+values through the core atomic config editor. Core config validation, feature
+requirement validation, managed policy validation, and selected-profile loading
+remain dependency/runtime boundaries. Focused validation covers both the
+service and the Rust-shaped TUI request-handle -> config-processor ->
+config-manager-service path, including process-restart persistence.
 `src/fs_watch.rs` is now complete. Python covers the app-server-owned
 filesystem watch bookkeeping: `(connection_id, watch_id)` scoped entries,
 non-recursive watch-path registration shape, duplicate watch ID rejection

@@ -75,6 +75,7 @@ from pycodex.rollout import (
     SessionMeta,
     ThreadSortKey,
     append_event_msg_to_rollout,
+    append_rollout_item_to_path,
     append_turn_to_latest_thread_rollout,
     append_turn_to_thread_rollout,
     append_turn_to_rollout,
@@ -88,6 +89,8 @@ from pycodex.rollout import (
     read_session_meta_line,
 )
 from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.mcp import McpManager
+from pycodex.core.state.service import SessionServices
 from pycodex.core.shell import default_user_shell
 from pycodex.core.tools.handlers.shell_spec import (
     CommandToolOptions,
@@ -120,9 +123,14 @@ from pycodex.core.unified_exec import (
     TRAILING_OUTPUT_GRACE_MS as CORE_UNIFIED_EXEC_TRAILING_OUTPUT_GRACE_MS,
     UNIFIED_EXEC_OUTPUT_MAX_BYTES as CORE_UNIFIED_EXEC_OUTPUT_MAX_BYTES,
     UNIFIED_EXEC_OUTPUT_MAX_TOKENS as CORE_UNIFIED_EXEC_OUTPUT_MAX_TOKENS,
+    UnifiedExecProcessManager,
     clamp_yield_time,
     resolve_write_stdin_yield_time,
 )
+from pycodex.core_plugins import PluginsManager
+from pycodex.core_skills import SkillsManager
+from pycodex.mcp import McpConnectionManager
+from pycodex.utils.home_dir import find_codex_home
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
 from pycodex.core.tools.runtimes import (
@@ -131,6 +139,7 @@ from pycodex.core.tools.runtimes import (
     canonicalize_command_for_approval,
 )
 from pycodex.shell_command import command_might_be_dangerous, is_dangerous_powershell_words
+from pycodex.models_manager.model_info import local_personality_messages_for_slug
 from pycodex.protocol import (
     AskForApproval,
     BaseInstructions,
@@ -155,13 +164,16 @@ from pycodex.protocol import (
     PermissionGrantScope,
     RequestPermissionsResponse,
     SandboxPermissions,
+    SessionSource,
     TurnEnvironmentSelection,
     TurnContextItem,
     UserInput,
     approval_policy_display_value,
+    Personality,
 )
 from pycodex.protocol import TurnAbortReason, TurnAbortedEvent, TurnItem
 from pycodex.protocol.models import AdditionalPermissionProfile, FunctionCallOutputPayload
+from pycodex.model_provider import create_model_provider
 from pycodex.model_provider_info import CHATGPT_CODEX_BASE_URL, ModelProviderInfo
 from pycodex.tools.tool_config import shell_type_for_model_and_features
 
@@ -224,6 +236,17 @@ class LocalHttpModelInfo:
     context_window: int | None = 272_000
     max_context_window: int | None = 272_000
     effective_context_window_percent: int = 95
+
+    @property
+    def model_messages(self) -> Any:
+        return local_personality_messages_for_slug(self.slug)
+
+    def get_model_instructions(self, personality: Personality | None = None) -> str:
+        model_messages = self.model_messages
+        if model_messages is not None and model_messages.instructions_template is not None:
+            personality_message = model_messages.get_personality_message(personality) or ""
+            return model_messages.instructions_template.replace("{{ personality }}", personality_message)
+        return self.base_instructions
 
     def service_tier_for_request(self, service_tier: str | None) -> str | None:
         return service_tier
@@ -1616,6 +1639,8 @@ def persist_local_http_exec_rollout(
     )
     if rollout_path is None:
         return None
+    if _append_canonical_result_rollout_items(rollout_path, result, timestamp=timestamp):
+        return rollout_path
     input_payload = _local_http_input_rollout_payload(input_items)
     append_turn_to_rollout(
         rollout_path,
@@ -1646,6 +1671,13 @@ def persist_local_http_exec_resume_rollout(
     input_payload = _local_http_input_rollout_payload(input_items)
     response_payloads = _local_http_response_rollout_payloads(result)
     if thread_id is not None:
+        existing_path = find_thread_path_by_id_str(codex_home, thread_id)
+        if existing_path is not None and _append_canonical_result_rollout_items(
+            existing_path,
+            result,
+            timestamp=timestamp,
+        ):
+            return existing_path
         path = append_turn_to_thread_rollout(
             codex_home,
             thread_id,
@@ -1659,6 +1691,18 @@ def persist_local_http_exec_resume_rollout(
             _append_local_http_interrupted_event_to_rollout(path, result, timestamp=timestamp)
         return path
     if resume_last:
+        existing_path = resolve_local_http_exec_resume_rollout_path(
+            codex_home,
+            config,
+            resume_last=True,
+            include_all=include_all,
+        )
+        if existing_path is not None and _append_canonical_result_rollout_items(
+            existing_path,
+            result,
+            timestamp=timestamp,
+        ):
+            return existing_path
         path = append_turn_to_latest_thread_rollout(
             codex_home,
             input_payload,
@@ -1817,14 +1861,15 @@ async def run_exec_resume_user_turn_http_sampling(
     operation = plan.initial_operation
     input_items = operation.items if operation.kind == "user_turn" else ()
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    append_turn_to_rollout(
-        rollout_path,
-        _local_http_input_rollout_payload(input_items),
-        _local_http_response_rollout_payloads(result),
-        timestamp=timestamp,
-        cwd=config.cwd,
-    )
-    _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
+    if not _append_canonical_result_rollout_items(rollout_path, result, timestamp=timestamp):
+        append_turn_to_rollout(
+            rollout_path,
+            _local_http_input_rollout_payload(input_items),
+            _local_http_response_rollout_payloads(result),
+            timestamp=timestamp,
+            cwd=config.cwd,
+        )
+        _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
     return result
 
 
@@ -1885,14 +1930,15 @@ async def run_exec_resume_user_turn_core_http_sampling(
     operation = plan.initial_operation
     input_items = operation.items if operation.kind == "user_turn" else ()
     timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    append_turn_to_rollout(
-        rollout_path,
-        _local_http_input_rollout_payload(input_items),
-        _local_http_response_rollout_payloads(result),
-        timestamp=timestamp,
-        cwd=config.cwd,
-    )
-    _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
+    if not _append_canonical_result_rollout_items(rollout_path, result, timestamp=timestamp):
+        append_turn_to_rollout(
+            rollout_path,
+            _local_http_input_rollout_payload(input_items),
+            _local_http_response_rollout_payloads(result),
+            timestamp=timestamp,
+            cwd=config.cwd,
+        )
+        _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
     return result
 
 
@@ -1940,6 +1986,42 @@ def _append_local_http_interrupted_event_to_rollout(
         ),
         timestamp=timestamp,
     )
+
+
+def _append_canonical_result_rollout_items(
+    rollout_path: Path,
+    result: UserTurnSamplingResult,
+    *,
+    timestamp: str,
+) -> bool:
+    items = tuple(getattr(result, "rollout_items", ()) or ())
+    if not items or not _canonical_rollout_contains_prompt_visible_result(items, result):
+        return False
+    for item in items:
+        append_rollout_item_to_path(rollout_path, item, timestamp=timestamp)
+    return True
+
+
+def _canonical_rollout_contains_prompt_visible_result(
+    items: tuple[Any, ...],
+    result: UserTurnSamplingResult,
+) -> bool:
+    expected = list(_local_http_response_rollout_payloads(result))
+    if not expected:
+        return True
+    canonical: list[dict[str, Any]] = []
+    for item in items:
+        if getattr(item, "type", None) != "response_item":
+            continue
+        payload = getattr(item, "payload", None)
+        mapping = _response_item_mapping(payload)
+        if mapping is not None:
+            canonical.append(dict(mapping))
+    cursor = 0
+    for candidate in canonical:
+        if cursor < len(expected) and candidate == expected[cursor]:
+            cursor += 1
+    return cursor == len(expected)
 
 
 def _local_http_prompt_visible_rollout_items(result: UserTurnSamplingResult) -> tuple[ResponseItem, ...]:
@@ -2073,24 +2155,56 @@ def _feature_lookup_keys(feature: Feature) -> tuple[Any, ...]:
     return (feature, feature.value, feature.key(), feature.name)
 
 
+def _session_model_provider(provider: Any, auth_manager: Any) -> Any:
+    """Create the shared provider stored by Rust's per-turn context."""
+
+    if provider is None:
+        return None
+    capabilities = getattr(provider, "capabilities", None)
+    if callable(capabilities):
+        return provider
+    info = getattr(provider, "info", None)
+    provider_info = info() if callable(info) else provider
+    if isinstance(provider_info, ModelProviderInfo):
+        return create_model_provider(provider_info, auth_manager)
+    return provider
+
+
 def _in_memory_exec_session(
     config: ExecSessionConfig,
     model_info: Any,
     *,
+    provider: Any = None,
+    auth_manager: Any = None,
+    models_manager: Any = None,
     environments: tuple[TurnEnvironmentSelection, ...] = (),
     event_observer: Any = None,
     thread_id: str | None = None,
     state_db: Any = None,
     goal_tools_enabled: bool = False,
+    session_source: SessionSource | None = None,
 ) -> InMemoryCodexSession:
     reasoning_summary = config.model_reasoning_summary
     if reasoning_summary is None:
         reasoning_summary = getattr(model_info, "default_reasoning_summary", "auto")
+    session_config = replace(
+        config,
+        goal_tools_enabled_value=goal_tools_enabled,
+        model_reasoning_summary=reasoning_summary,
+    )
+    session_provider = _session_model_provider(provider, auth_manager)
+    if models_manager is None:
+        models_manager = _models_manager_for_exec_session(session_config, session_provider)
     return InMemoryCodexSession(
         cwd=config.cwd,
         shell=default_user_shell(),
         thread_id=thread_id or "thread",
         model_info=model_info,
+        provider=session_provider,
+        auth_manager=auth_manager,
+        model_provider_id=config.model_provider_id or "openai",
+        session_config=session_config,
+        services=_exec_session_services(session_config, models_manager=models_manager),
         user_instructions=config.user_instructions,
         developer_instructions=config.developer_instructions,
         base_instructions=_base_instructions_from_model_info(model_info, config.personality),
@@ -2103,6 +2217,12 @@ def _in_memory_exec_session(
         permission_profile=config.permission_profile,
         windows_sandbox_level=config.windows_sandbox_level,
         allow_login_shell=config.allow_login_shell,
+        include_environment_context=config.include_environment_context,
+        include_permissions_instructions=config.include_permissions_instructions,
+        include_apps_instructions=config.include_apps_instructions,
+        include_skill_instructions=config.include_skill_instructions,
+        include_collaboration_mode_instructions=config.include_collaboration_mode_instructions,
+        experimental_realtime_start_instructions=config.experimental_realtime_start_instructions,
         file_system_sandbox_policy=config.permission_profile.file_system_sandbox_policy(),
         features=_ExecConfigFeatures(
             base=config.features,
@@ -2118,13 +2238,42 @@ def _in_memory_exec_session(
         reasoning_effort=config.reasoning_effort,
         reasoning_summary=reasoning_summary,
         service_tier=config.service_tier,
+        personality=config.personality,
+        session_source=session_source or SessionSource.exec(),
     )
+
+
+def _exec_session_services(config: ExecSessionConfig, *, models_manager: Any = None) -> SessionServices:
+    codex_home = Path(find_codex_home())
+    plugins_manager = PluginsManager.new(codex_home)
+    skills_manager = SkillsManager.new(codex_home, config.bundled_skills_enabled())
+    return SessionServices(
+        mcp_connection_manager=McpConnectionManager(config.mcp_servers),
+        models_manager=models_manager,
+        unified_exec_manager=UnifiedExecProcessManager(),
+        skills_manager=skills_manager,
+        plugins_manager=plugins_manager,
+        mcp_manager=McpManager(plugins_manager),
+    )
+
+
+def _models_manager_for_exec_session(config: ExecSessionConfig, provider: Any) -> Any:
+    factory = getattr(provider, "models_manager", None)
+    if callable(factory):
+        return factory(Path(find_codex_home()), config.model_catalog)
+    from pycodex.models_manager import StaticModelsManager, bundled_models_response
+
+    catalog = config.model_catalog if config.model_catalog is not None else bundled_models_response()
+    return StaticModelsManager(model_catalog=catalog)
 
 
 def create_exec_core_session(
     config: ExecSessionConfig,
     model_info: Any,
     *,
+    provider: Any = None,
+    auth_manager: Any = None,
+    models_manager: Any = None,
     event_observer: Any = None,
     thread_id: str | None = None,
     state_db: Any = None,
@@ -2139,11 +2288,15 @@ def create_exec_core_session(
     return _in_memory_exec_session(
         config,
         model_info,
+        provider=provider,
+        auth_manager=auth_manager,
+        models_manager=models_manager,
         environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
         event_observer=event_observer,
         thread_id=thread_id,
         state_db=state_db,
         goal_tools_enabled=state_db is not None,
+        session_source=SessionSource.cli(),
     )
 
 
@@ -2152,12 +2305,28 @@ def refresh_exec_core_session(
     config: ExecSessionConfig,
     model_info: Any,
     *,
+    provider: Any = None,
+    auth_manager: Any = None,
     event_observer: Any = None,
 ) -> None:
     """Project current turn configuration onto a reusable core session."""
 
     session.cwd = Path(config.cwd)
     session.model_info = model_info
+    if provider is not None:
+        session.provider = _session_model_provider(provider, auth_manager)
+    if auth_manager is not None:
+        session.auth_manager = auth_manager
+    session.model_provider_id = config.model_provider_id or "openai"
+    session.session_config = replace(
+        config,
+        goal_tools_enabled_value=session.goal_tools_enabled_value,
+        model_reasoning_summary=(
+            config.model_reasoning_summary
+            if config.model_reasoning_summary is not None
+            else getattr(model_info, "default_reasoning_summary", "auto")
+        ),
+    )
     session.user_instructions = config.user_instructions
     session.developer_instructions = config.developer_instructions
     session.base_instructions = _base_instructions_from_model_info(model_info, config.personality)
@@ -2171,6 +2340,19 @@ def refresh_exec_core_session(
     session.file_system_sandbox_policy = config.permission_profile.file_system_sandbox_policy()
     session.windows_sandbox_level = config.windows_sandbox_level
     session.allow_login_shell = config.allow_login_shell
+    session.features = _ExecConfigFeatures(
+        base=config.features,
+        exec_permission_approvals_enabled=config.exec_permission_approvals_enabled,
+        request_permissions_tool_enabled=config.request_permissions_tool_enabled,
+        goal_tools_enabled=session.goal_tools_enabled_value,
+    )
+    session.include_environment_context = config.include_environment_context
+    session.include_permissions_instructions = config.include_permissions_instructions
+    session.include_apps_instructions = config.include_apps_instructions
+    session.include_skill_instructions = config.include_skill_instructions
+    session.include_collaboration_mode_instructions = config.include_collaboration_mode_instructions
+    session.experimental_realtime_start_instructions = config.experimental_realtime_start_instructions
+    session.personality = config.personality
     session._granted_session_permissions = config.granted_session_permissions
     session.environments = (TurnEnvironmentSelection("local", str(config.cwd)),)
     session.event_observer = event_observer
@@ -2181,6 +2363,14 @@ def refresh_exec_core_session(
         else getattr(model_info, "default_reasoning_summary", "auto")
     )
     session.service_tier = config.service_tier
+    connection_manager = getattr(session.services, "mcp_connection_manager", None)
+    replace_servers = getattr(connection_manager, "replace_servers", None)
+    if callable(replace_servers):
+        replace_servers(config.mcp_servers)
+    for manager_name in ("plugins_manager", "skills_manager"):
+        clear_cache = getattr(getattr(session.services, manager_name, None), "clear_cache", None)
+        if callable(clear_cache):
+            clear_cache()
 
 
 async def run_exec_user_turn_http_sampling(
@@ -2205,6 +2395,7 @@ async def run_exec_user_turn_http_sampling(
     session = _in_memory_exec_session(
         config,
         model_info,
+        provider=provider,
         environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
     )
     if history_items:
@@ -2247,6 +2438,7 @@ async def run_exec_user_turn_core_sampling(
     cancellation_token: Any = None,
     codex_home: Path | str | None = None,
     core_session: InMemoryCodexSession | None = None,
+    auth_manager: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a prepared ``codex exec`` user turn through the in-memory core loop."""
 
@@ -2264,6 +2456,8 @@ async def run_exec_user_turn_core_sampling(
     session = core_session or create_exec_core_session(
         config,
         model_info,
+        provider=provider,
+        auth_manager=auth_manager,
         event_observer=session_event_observer,
         thread_id=_model_client_thread_id(model_client),
         state_db=state_runtime,
@@ -2272,6 +2466,8 @@ async def run_exec_user_turn_core_sampling(
         session,
         config,
         model_info,
+        provider=provider,
+        auth_manager=auth_manager,
         event_observer=session_event_observer,
     )
     try:
@@ -2290,6 +2486,7 @@ async def run_exec_user_turn_core_sampling(
             summary=config.model_reasoning_summary,
             service_tier=config.service_tier,
             output_schema=operation.output_schema,
+            thread_settings=operation.thread_settings,
             max_tool_followups=max_tool_followups,
             cancellation_token=cancellation_token,
         )
@@ -2403,6 +2600,7 @@ async def run_exec_user_turn_core_http_sampling(
         cancellation_token=cancellation_token,
         codex_home=codex_home,
         core_session=core_session,
+        auth_manager=auth_manager,
     )
 
 
@@ -2477,6 +2675,7 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
             cancellation_token=cancellation_token,
             codex_home=codex_home,
             core_session=core_session,
+            auth_manager=auth_manager,
         )
         _goal_debug_trace(
             "goal_ws_preferred_finished",
@@ -2517,6 +2716,8 @@ async def prewarm_exec_core_websocket_session(
     session = _in_memory_exec_session(
         config,
         model_info,
+        provider=provider,
+        auth_manager=auth_manager,
         environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
     )
     request_plan = await build_user_turn_responses_request_from_session(
@@ -2810,7 +3011,7 @@ async def run_exec_tool_output_http_sampling(
 ) -> Any:
     """Run a follow-up model turn with tool output items in history."""
 
-    session = _in_memory_exec_session(config, model_info)
+    session = _in_memory_exec_session(config, model_info, provider=provider)
     turn_context = await session.new_default_turn()
     if previous_result.response_items:
         await session.record_conversation_items(turn_context, previous_result.response_items)
@@ -5827,6 +6028,10 @@ def _merge_local_http_sampling_result(
         request_plans=previous_request_plans + followup_request_plans,
         raw_results=previous_raw_results + followup_raw_results,
         raw_result=followup.raw_result,
+        rollout_items=(
+            tuple(getattr(previous, "rollout_items", ()) or ())
+            + tuple(getattr(followup, "rollout_items", ()) or ())
+        ),
         session_events=(
             tuple(getattr(previous, "session_events", ()) or ())
             + tuple(getattr(followup, "session_events", ()) or ())
@@ -6184,7 +6389,6 @@ __all__ = [
     "tool_timeline_items_from_local_http_exec_result",
     "usage_from_local_http_exec_result",
 ]
-
 
 
 

@@ -4,6 +4,7 @@ from . import remote
 from .config_rules import *  # noqa: F401,F403
 from .injections import *  # noqa: F401,F403
 from .invocation_utils import *  # noqa: F401,F403
+from .manager import *  # noqa: F401,F403
 from .mentions import *  # noqa: F401,F403
 from .model import *  # noqa: F401,F403
 from .rendering import *  # noqa: F401,F403
@@ -28,6 +29,8 @@ __all__ = [
     "SCRIPT_RUNNERS",
     "SkillPolicy",
     "SkillLoadOutcome",
+    "SkillRoot",
+    "SkillsManager",
     "build_implicit_skill_path_indexes",
     "canonicalize_if_exists",
     "command_basename",

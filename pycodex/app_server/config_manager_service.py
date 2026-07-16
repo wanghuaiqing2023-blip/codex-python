@@ -22,6 +22,11 @@ from pycodex.app_server_protocol import (
     WriteStatus,
 )
 from pycodex.config import ConfigLayerEntry, ConfigLayerStack, ConfigLayerStackOrdering
+from pycodex.core.config.edit import (
+    ConfigEdit as CoreConfigEdit,
+    ConfigEditsBuilder as CoreConfigEditsBuilder,
+    read_toml_mapping,
+)
 
 JsonValue = Any
 
@@ -47,14 +52,15 @@ class ConfigManagerService:
     layers: ConfigLayerStack
 
     async def read(self, params: ConfigReadParams) -> ConfigReadResponse:
-        effective = self.layers.effective_config()
+        layers = self._layers_with_latest_user_config()
+        effective = layers.effective_config()
         return ConfigReadResponse(
             config=deepcopy(effective),
-            origins=_protocol_origins(self.layers.origins()),
+            origins=_protocol_origins(layers.origins()),
             layers=(
                 tuple(
                     _protocol_layer(layer)
-                    for layer in self.layers.get_layers(
+                    for layer in layers.get_layers(
                         ConfigLayerStackOrdering.HIGHEST_PRECEDENCE_FIRST,
                         True,
                     )
@@ -63,6 +69,17 @@ class ConfigManagerService:
                 else None
             ),
         )
+
+    async def load_latest_config(self, fallback_cwd: Path | str | None = None) -> dict[str, JsonValue]:
+        """Return the latest effective config for the request processor.
+
+        The in-process TUI has no project-scoped app-server loader, so its
+        thread-agnostic service preserves the injected non-user layers while
+        refreshing the user layer from disk.
+        """
+
+        del fallback_cwd
+        return self._layers_with_latest_user_config().effective_config()
 
     async def read_requirements(self) -> Any | None:
         requirements_toml = getattr(self.layers, "requirements_toml", None)
@@ -86,7 +103,7 @@ class ConfigManagerService:
         expected_version: str | None,
         edits: Sequence[tuple[str, JsonValue, MergeStrategy | str]],
     ) -> ConfigWriteResponse:
-        allowed_path = Path(self.codex_home) / "config.toml"
+        allowed_path = self.user_config_path()
         provided_path = Path(file_path) if file_path is not None else allowed_path
         if not paths_match(allowed_path, provided_path):
             raise ConfigManagerError.write(
@@ -94,7 +111,8 @@ class ConfigManagerService:
                 "Only writes to the user config are allowed",
             )
 
-        user_layer = self.layers.get_active_user_layer() or create_empty_user_layer(allowed_path)
+        layers = self._layers_with_latest_user_config(provided_path)
+        user_layer = layers.get_active_user_layer() or create_empty_user_layer(allowed_path)
         if expected_version is not None and expected_version != user_layer.version:
             raise ConfigManagerError.write(
                 ConfigWriteErrorCode.CONFIG_VERSION_CONFLICT,
@@ -103,14 +121,28 @@ class ConfigManagerService:
 
         user_config = deepcopy(dict(user_layer.config))
         parsed_segments: list[list[str]] = []
+        config_edits: list[CoreConfigEdit] = []
         for key_path, value, strategy in edits:
             segments = parse_key_path(key_path)
             _reject_legacy_profile_write(segments, value)
             parsed_value = parse_value(value)
+            original_value = deepcopy(value_at_path(user_config, segments))
             apply_merge(user_config, segments, parsed_value, MergeStrategy.parse(strategy))
+            updated_value = deepcopy(value_at_path(user_config, segments))
+            if original_value != updated_value:
+                if updated_value is None:
+                    config_edits.append(CoreConfigEdit.clear_path(segments))
+                else:
+                    config_edits.append(CoreConfigEdit.set_path(segments, updated_value))
             parsed_segments.append(segments)
 
-        updated_layers = self.layers.with_user_config(provided_path, user_config)
+        if config_edits:
+            try:
+                await CoreConfigEditsBuilder.for_config_path(provided_path).with_edits(config_edits).apply()
+            except Exception as exc:
+                raise ConfigManagerError(f"failed to persist config.toml: {exc}") from exc
+
+        updated_layers = layers.with_user_config(provided_path, user_config)
         effective = updated_layers.effective_config()
         overridden = first_overridden_edit(updated_layers, effective, parsed_segments)
         return ConfigWriteResponse(
@@ -119,6 +151,67 @@ class ConfigManagerService:
             file_path=provided_path,
             overridden_metadata=overridden,
         )
+
+    def user_config_path(self) -> Path:
+        user_layer = self.layers.get_active_user_layer()
+        if user_layer is not None and user_layer.name.file is not None:
+            return Path(user_layer.name.file)
+        return Path(self.codex_home) / "config.toml"
+
+    def _layers_with_latest_user_config(self, config_path: Path | None = None) -> ConfigLayerStack:
+        path = Path(config_path) if config_path is not None else self.user_config_path()
+        if not path.exists():
+            return self.layers
+        try:
+            user_config = read_toml_mapping(path)
+        except Exception as exc:
+            raise ConfigManagerError(f"failed to load configuration: {exc}") from exc
+        return self.layers.with_user_config(path, user_config)
+
+
+@dataclass(frozen=True)
+class InProcessConfigRequestHandle:
+    """Route TUI config requests through the app-server config service.
+
+    Rust TUI always owns an ``AppServerRequestHandle``. The Python terminal
+    product runs the request processor and service in-process, so this adapter
+    only translates the typed transport envelope.
+    """
+
+    processor: Any
+
+    def request_typed(self, request: Any) -> Any:
+        kind = _field(request, "kind", _field(request, "type", None))
+        if kind != "ConfigBatchWrite":
+            raise RuntimeError(f"unsupported in-process config request: {kind}")
+        return self.processor.batch_write(_config_batch_write_params(_field(request, "params", None)))
+
+
+def _field(source: Any, name: str, default: Any = None) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(name, default)
+    return getattr(source, name, default)
+
+
+def _config_batch_write_params(value: Any) -> ConfigBatchWriteParams:
+    if isinstance(value, ConfigBatchWriteParams):
+        return value
+    if value is None:
+        raise TypeError("ConfigBatchWrite params are required")
+    edits = tuple(
+        ConfigEdit(
+            key_path=str(_field(edit, "key_path", "")),
+            value=_field(edit, "value", None),
+            merge_strategy=MergeStrategy.parse(_field(edit, "merge_strategy", MergeStrategy.REPLACE)),
+        )
+        for edit in (_field(value, "edits", ()) or ())
+    )
+    return ConfigBatchWriteParams(
+        edits=edits,
+        file_path=_field(value, "file_path", None),
+        expected_version=_field(value, "expected_version", None),
+        reload_user_config=bool(_field(value, "reload_user_config", True)),
+    )
 
 
 def create_empty_user_layer(config_toml: Path | str) -> ConfigLayerEntry:
@@ -368,6 +461,7 @@ def _is_empty_requirement(value: Any) -> bool:
 __all__ = [
     "ConfigManagerError",
     "ConfigManagerService",
+    "InProcessConfigRequestHandle",
     "apply_merge",
     "clear_path",
     "compute_override_metadata",

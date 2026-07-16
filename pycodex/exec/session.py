@@ -9,7 +9,7 @@ same request payload shapes that a future Python app-server client will send.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import errno
 import ipaddress
@@ -17,9 +17,12 @@ import json
 import os
 from pathlib import Path
 import socket
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
+from pycodex.core.config import MultiAgentV2Config
+from pycodex.core.config.agent_roles import AgentRoleConfig
 from pycodex.protocol import (
     ActivePermissionProfile,
     AdditionalPermissionProfile,
@@ -41,6 +44,7 @@ from pycodex.protocol import (
     TurnContextItem,
     TurnItem,
     UserInput,
+    WebSearchMode,
     WindowsSandboxLevel,
 )
 
@@ -341,6 +345,7 @@ class ExecSessionConfig:
     developer_instructions: str | None = None
     base_instructions: str | None = None
     personality: Personality | None = None
+    web_search_mode: WebSearchMode = WebSearchMode.CACHED
     instruction_sources: tuple[Path, ...] = ()
     startup_warnings: tuple[str, ...] = ()
     mcp_servers: Mapping[str, JsonValue] | None = None
@@ -373,8 +378,19 @@ class ExecSessionConfig:
     exec_policy_rules: tuple[Any, ...] = ()
     allow_login_shell: bool = True
     features: Any = None
+    multi_agent_v2: MultiAgentV2Config = MultiAgentV2Config()
+    agent_roles: Mapping[str, AgentRoleConfig] = field(default_factory=dict)
     exec_permission_approvals_enabled: bool = False
     request_permissions_tool_enabled: bool = False
+    config_layer_stack: Any = None
+    include_environment_context: bool = True
+    include_permissions_instructions: bool = True
+    include_apps_instructions: bool = True
+    include_skill_instructions: bool = True
+    include_collaboration_mode_instructions: bool = True
+    has_chatgpt_auth: bool = False
+    goal_tools_enabled_value: bool = False
+    experimental_realtime_start_instructions: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.cwd, Path):
@@ -407,6 +423,9 @@ class ExecSessionConfig:
             object.__setattr__(self, "model_catalog", ModelsResponse.from_mapping(self.model_catalog))
         servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
         object.__setattr__(self, "mcp_servers", dict(servers))
+        if not isinstance(self.multi_agent_v2, MultiAgentV2Config):
+            raise TypeError("multi_agent_v2 must be MultiAgentV2Config")
+        object.__setattr__(self, "agent_roles", dict(self.agent_roles))
         if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
             object.__setattr__(
                 self,
@@ -441,6 +460,17 @@ class ExecSessionConfig:
             raise TypeError("exec_permission_approvals_enabled must be a bool")
         if not isinstance(self.request_permissions_tool_enabled, bool):
             raise TypeError("request_permissions_tool_enabled must be a bool")
+        for name in (
+            "include_environment_context",
+            "include_permissions_instructions",
+            "include_apps_instructions",
+            "include_skill_instructions",
+            "include_collaboration_mode_instructions",
+            "has_chatgpt_auth",
+            "goal_tools_enabled_value",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise TypeError(f"{name} must be a bool")
 
     def to_models_manager_config(self) -> Any:
         """Project the Rust ``Config::to_models_manager_config`` contract."""
@@ -459,6 +489,69 @@ class ExecSessionConfig:
             model_supports_reasoning_summaries=self.model_supports_reasoning_summaries,
             model_catalog=self.model_catalog,
         )
+
+    def plugins_config_input(self) -> Any:
+        from pycodex.core_plugins import PluginsConfigInput
+        from pycodex.features import Feature
+
+        return PluginsConfigInput.new(
+            self.config_layer_stack,
+            _config_feature_enabled(self.features, Feature.PLUGINS),
+            _config_feature_enabled(self.features, Feature.REMOTE_PLUGIN),
+            self.chatgpt_base_url or "https://chatgpt.com/backend-api/",
+        )
+
+    @property
+    def permissions(self) -> Any:
+        return SimpleNamespace(allow_login_shell=self.allow_login_shell)
+
+    @property
+    def model_reasoning_effort(self) -> Any:
+        return self.reasoning_effort
+
+    def bundled_skills_enabled(self) -> bool:
+        effective = _effective_config_mapping(self.config_layer_stack)
+        skills = effective.get("skills")
+        if not isinstance(skills, Mapping):
+            return True
+        bundled = skills.get("bundled")
+        if isinstance(bundled, bool):
+            return bundled
+        if isinstance(bundled, Mapping):
+            enabled = bundled.get("enabled")
+            return bool(enabled) if isinstance(enabled, bool) else True
+        return True
+
+    def apps_enabled(self) -> bool:
+        from pycodex.features import Feature
+
+        return self.has_chatgpt_auth and _config_feature_enabled(self.features, Feature.APPS)
+
+    async def to_mcp_config(self, plugins_manager: Any) -> Mapping[str, Any]:
+        servers = dict(self.mcp_servers or {})
+        if plugins_manager is not None:
+            outcome = await plugins_manager.plugins_for_config(self.plugins_config_input())
+            for name, server in outcome.effective_mcp_servers().items():
+                servers.setdefault(name, server)
+        return {"servers": servers, "configured_servers": servers}
+
+
+def _config_feature_enabled(features: Any, feature: Any) -> bool:
+    enabled = getattr(features, "enabled", None)
+    if callable(enabled):
+        try:
+            return bool(enabled(feature))
+        except (KeyError, TypeError, ValueError):
+            return False
+    return bool(getattr(feature, "default_enabled", lambda: False)())
+
+
+def _effective_config_mapping(stack: Any) -> Mapping[str, Any]:
+    reader = getattr(stack, "effective_config", None)
+    if callable(reader):
+        value = reader()
+        return value if isinstance(value, Mapping) else {}
+    return stack if isinstance(stack, Mapping) else {}
 
 
 @dataclass(frozen=True)
@@ -1124,6 +1217,7 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "developerInstructions": config.developer_instructions,
             "baseInstructions": config.base_instructions,
             "personality": config.personality.value if config.personality is not None else None,
+            "webSearchMode": config.web_search_mode.value,
             "instructionSources": [str(path) for path in config.instruction_sources],
             "startupWarnings": list(config.startup_warnings),
             "mcpServers": _to_json(config.mcp_servers),

@@ -25,6 +25,7 @@ from pycodex.core.unified_exec import (
     MIN_EMPTY_YIELD_TIME_MS,
     MIN_YIELD_TIME_MS,
     UnifiedExecError,
+    apply_unified_exec_env,
     clamp_yield_time,
     generate_chunk_id,
     resolve_write_stdin_yield_time,
@@ -958,7 +959,7 @@ def _invocation_truncation_policy(invocation: ToolInvocation) -> TruncationPolic
 def _invocation_exec_env(invocation: ToolInvocation) -> dict[str, str]:
     policy = _invocation_shell_environment_policy(invocation)
     thread_id = _invocation_thread_id(invocation)
-    return create_env(policy, thread_id)
+    return apply_unified_exec_env(create_env(policy, thread_id))
 
 
 def _invocation_shell_environment_policy(invocation: ToolInvocation) -> ShellEnvironmentPolicy:
@@ -1152,5 +1153,4 @@ __all__ = [
     "resolve_write_stdin_yield_time",
     "updated_hook_command",
 ]
-
 

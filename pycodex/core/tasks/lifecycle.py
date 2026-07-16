@@ -24,12 +24,10 @@ async def emit_turn_start_lifecycle(
             contributor,
             "on_turn_start",
             TurnStartInput(
-                {
-                    "turn_id": _turn_id(turn_context),
-                    "collaboration_mode": _field(turn_context, "collaboration_mode"),
-                    "token_usage_at_turn_start": token_usage_at_turn_start,
-                    **_store_fields(session, _turn_store(turn_context)),
-                }
+                turn_id=_turn_id(turn_context),
+                collaboration_mode=_field(turn_context, "collaboration_mode"),
+                token_usage_at_turn_start=token_usage_at_turn_start,
+                **_store_fields(session, _turn_store(turn_context)),
             ),
         )
 
@@ -39,7 +37,7 @@ async def emit_turn_stop_lifecycle(session: Any, turn_store: Any) -> None:
         await _call_contributor(
             contributor,
             "on_turn_stop",
-            TurnStopInput(_store_fields(session, turn_store)),
+            TurnStopInput(**_store_fields(session, turn_store)),
         )
 
 
@@ -48,7 +46,7 @@ async def emit_turn_abort_lifecycle(session: Any, reason: Any, turn_store: Any) 
         await _call_contributor(
             contributor,
             "on_turn_abort",
-            TurnAbortInput({"reason": reason, **_store_fields(session, turn_store)}),
+            TurnAbortInput(reason=reason, **_store_fields(session, turn_store)),
         )
 
 
@@ -58,11 +56,9 @@ async def emit_turn_error_lifecycle(session: Any, turn_context: Any, error: Any)
             contributor,
             "on_turn_error",
             TurnErrorInput(
-                {
-                    "turn_id": _turn_id(turn_context),
-                    "error": error,
-                    **_store_fields(session, _turn_store(turn_context)),
-                }
+                turn_id=_turn_id(turn_context),
+                error=error,
+                **_store_fields(session, _turn_store(turn_context)),
             ),
         )
 

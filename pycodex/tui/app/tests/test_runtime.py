@@ -24,18 +24,27 @@ from pycodex.protocol import (
     ApprovalsReviewer,
     AskForApproval,
     CommandExecutionItem,
+    CollaborationMode,
     ContentItem,
     FunctionCallOutputPayload,
+    ModeKind,
     PermissionProfile,
+    Personality,
     NetworkPermissions,
     NetworkApprovalContext,
     NetworkApprovalProtocol,
+    PlanItemArg,
     ResponseInputItem,
     ResponseItem,
+    ReasoningEffort,
+    ReasoningSummary,
+    Settings,
+    StepStatus,
     ThreadId,
     ReviewDecision,
     ReviewTarget,
     TurnItem,
+    UpdatePlanArgs,
 )
 from pycodex.protocol.request_permissions import (
     PermissionGrantScope,
@@ -587,6 +596,81 @@ def test_thread_goal_status_update_preserves_unmentioned_token_budget(tmp_path) 
 
         assert paused.token_budget == 80_000
         assert runtime.thread_goal_get(thread_id).token_budget == 80_000
+    finally:
+        runtime.close()
+
+
+def test_real_goal_lifecycle_notifications_drive_footer_state(tmp_path) -> None:
+    # Rust owners:
+    # - codex-state::runtime::thread_goals persists each mutation.
+    # - codex-app-server::thread_goal emits ThreadGoalUpdated/ThreadGoalCleared.
+    # - codex-tui::chatwidget::protocol derives the footer from those events.
+    thread_id = str(ThreadId.new())
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=tmp_path,
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        ),
+        model_client=SimpleNamespace(
+            state=SimpleNamespace(thread_id=thread_id, session_id=thread_id),
+        ),
+        provider=SimpleNamespace(id="openai"),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path,
+    )
+    app = TuiAppRuntime(runtime, thread_id=thread_id)
+
+    def route_next_goal_event() -> None:
+        event = runtime.next_app_server_event()
+        assert event is not None
+        app.handle_app_server_event(event)
+
+    try:
+        created = runtime.thread_goal_set(
+            thread_id,
+            objective="finish module parity",
+            status="active",
+            token_budget=80_000,
+        )
+        route_next_goal_event()
+        assert app.chat_widget.current_goal_status_indicator.kind == "Active"
+        assert runtime.goal_continuation_op(created) is not None
+
+        paused = runtime.thread_goal_set(thread_id, status="paused")
+        route_next_goal_event()
+        assert paused.token_budget == 80_000
+        assert app.chat_widget.current_goal_status_indicator.kind == "Paused"
+
+        resumed = runtime.thread_goal_set(thread_id, status="active")
+        route_next_goal_event()
+        assert resumed.token_budget == 80_000
+        assert app.chat_widget.current_goal_status_indicator.kind == "Active"
+        resumed_op = runtime.goal_continuation_op(resumed)
+        assert resumed_op is not None
+        assert resumed_op.payload["hidden_goal_context"] is True
+
+        edited = runtime.thread_goal_set(
+            thread_id,
+            objective="finish strict module parity",
+            status="active",
+        )
+        route_next_goal_event()
+        assert edited.token_budget == 80_000
+        assert app.chat_widget.current_goal_status_indicator.kind == "Active"
+        runtime.goal_continuation_op(edited)
+
+        completed = runtime.thread_goal_set(thread_id, status="complete")
+        route_next_goal_event()
+        assert completed.token_budget == 80_000
+        assert app.chat_widget.current_goal_status_indicator.kind == "Complete"
+
+        assert runtime.thread_goal_clear(thread_id) == {"cleared": True}
+        route_next_goal_event()
+        assert app.chat_widget.current_goal_status_indicator is None
+        assert runtime.thread_goal_get(thread_id) is None
     finally:
         runtime.close()
 
@@ -2195,12 +2279,12 @@ def test_tui_app_runtime_persist_model_selection_writes_config_batch_request() -
     assert runtime.chat_widget.error_messages == []
 
 
-def test_tui_app_runtime_persist_model_selection_falls_back_to_local_config(tmp_path) -> None:
+def test_tui_app_runtime_persist_model_selection_routes_local_runtime_through_config_service(tmp_path) -> None:
     # Rust module boundary:
     # - Rust TUI persists through the app-server request handle.
-    # - The Python terminal product path may run without that embedded
-    #   app-server, so the runtime adapter uses the same core config edit
-    #   contract against the resolved user config file.
+    # - The Python terminal product runs the config processor and service
+    #   in-process behind the same ConfigBatchWrite request-handle boundary; it
+    #   must not special-case /model with a direct config.toml write.
     config = SimpleNamespace(codex_home=tmp_path, config_layer_stack=None)
     active_runtime = SimpleNamespace(session_config=config)
     runtime = TuiAppRuntime(active_thread_runtime=active_runtime)
@@ -2208,6 +2292,8 @@ def test_tui_app_runtime_persist_model_selection_falls_back_to_local_config(tmp_
     ok = runtime.persist_model_selection("gpt-local", "medium")
 
     assert ok is True
+    assert runtime.config_request_handle.__class__.__name__ == "InProcessConfigRequestHandle"
+    assert runtime.config_request_handle.processor.__class__.__name__ == "ConfigRequestProcessor"
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert 'model = "gpt-local"' in text
     assert 'model_reasoning_effort = "medium"' in text
@@ -3082,24 +3168,44 @@ def test_app_command_user_turn_builds_core_exec_plan() -> None:
     # - codex-tui::chatwidget::input_submission sends AppCommand::UserTurn.
     # - codex-tui::app submits that op to the active thread as the turn boundary.
     # - codex-core/session/turn owns UserInput sampling.
+    active_profile = ActivePermissionProfile.read_only()
+    collaboration_mode = CollaborationMode(
+        mode=ModeKind.DEFAULT,
+        settings=Settings(
+            model="gpt-test",
+            reasoning_effort=ReasoningEffort.HIGH,
+            developer_instructions="collaborate",
+        ),
+    )
     op = AppCommand.user_turn(
         [{"kind": "Text", "text": "hello"}],
-        cwd=".",
-        approval_policy=None,
-        active_permission_profile=None,
-        model="",
-        effort=None,
-        summary=None,
-        service_tier=None,
+        cwd="C:/repo",
+        approval_policy=AskForApproval.ON_REQUEST,
+        active_permission_profile=active_profile,
+        model="gpt-test",
+        effort=ReasoningEffort.HIGH,
+        summary=ReasoningSummary.DETAILED,
+        service_tier="priority",
         final_output_json_schema=None,
-        collaboration_mode=None,
-        personality=None,
+        collaboration_mode=collaboration_mode,
+        personality=Personality.PRAGMATIC,
     )
 
     plan = exec_run_plan_for_app_command(op)
 
     assert plan.initial_operation.kind == "user_turn"
     assert plan.initial_operation.items[0].text == "hello"
+    settings = plan.initial_operation.thread_settings
+    assert settings is not None
+    assert settings.cwd == Path("C:/repo")
+    assert settings.approval_policy is AskForApproval.ON_REQUEST
+    assert settings.active_permission_profile == active_profile
+    assert settings.model == "gpt-test"
+    assert settings.effort is ReasoningEffort.HIGH
+    assert settings.summary is ReasoningSummary.DETAILED
+    assert settings.service_tier == "priority"
+    assert settings.collaboration_mode == collaboration_mode
+    assert settings.personality is Personality.PRAGMATIC
     assert plan.prompt_summary == "hello"
 
 
@@ -4192,6 +4298,66 @@ def test_session_event_mapper_accepts_dict_item_completed_agent_message() -> Non
     assert notifications[0].kind == "ItemCompleted"
     assert notifications[0].payload["item"]["kind"] == "AgentMessage"
     assert notifications[0].payload["item"]["content"][0]["text"] == "done-only answer"
+
+
+def test_session_goal_event_maps_to_canonical_goal_notification() -> None:
+    # Rust modules: codex-core::goals emits ThreadGoalUpdated and codex-tui::app
+    # forwards the corresponding app-server notification.
+    goal = SimpleNamespace(
+        thread_id="thread-1",
+        objective="finish parity",
+        status="active",
+        tokens_used=21,
+        time_used_seconds=3,
+    )
+    notifications = _server_notifications_from_session_event(
+        SimpleNamespace(
+            type="thread_goal_updated",
+            payload=SimpleNamespace(thread_id="thread-1", turn_id="turn-goal", goal=goal),
+        ),
+        thread_id="thread-1",
+        turn_id="turn-fallback",
+    )
+
+    assert len(notifications) == 1
+    assert notifications[0].kind == "ThreadGoalUpdated"
+    assert notifications[0].payload == {
+        "thread_id": "thread-1",
+        "turn_id": "turn-goal",
+        "goal": goal,
+    }
+
+
+def test_session_plan_event_maps_through_app_server_notification() -> None:
+    # Rust test: codex-app-server::bespoke_event_handling::
+    # test_handle_turn_plan_update_emits_notification_for_v2.
+    update = UpdatePlanArgs(
+        explanation="need plan",
+        plan=(
+            PlanItemArg("first", StepStatus.PENDING),
+            PlanItemArg("second", StepStatus.IN_PROGRESS),
+            PlanItemArg("third", StepStatus.COMPLETED),
+        ),
+    )
+
+    notifications = _server_notifications_from_session_event(
+        SimpleNamespace(type="plan_update", payload=update),
+        thread_id="thread-1",
+        turn_id="turn-123",
+    )
+
+    assert len(notifications) == 1
+    assert notifications[0].kind == "TurnPlanUpdated"
+    assert notifications[0].payload == {
+        "thread_id": "thread-1",
+        "turn_id": "turn-123",
+        "explanation": "need plan",
+        "plan": [
+            {"step": "first", "status": "pending"},
+            {"step": "second", "status": "inProgress"},
+            {"step": "third", "status": "completed"},
+        ],
+    }
 
 
 def test_session_event_mapper_exposes_terminal_sampling_errors() -> None:

@@ -37,7 +37,7 @@ Commands are run outside the sandbox if they are approved by the user, or match 
 - Pipes: |
 - Logical operators: &&, ||
 - Command separators: ;
-- Subshell boundaries: (...), $()
+- Subshell boundaries: (...), $(...)
 
 Each resulting segment is evaluated independently for sandbox restrictions and approval requirements.
 

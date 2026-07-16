@@ -1835,6 +1835,19 @@ class ProtocolProtocolTests(unittest.TestCase):
         event = ThreadGoalUpdatedEvent(thread_id, goal, turn_id="turn")
         event_payload = {"type": "thread_goal_updated", **event.to_mapping()}
 
+        self.assertEqual(
+            list(goal.to_mapping()),
+            [
+                "threadId",
+                "objective",
+                "status",
+                "tokenBudget",
+                "tokensUsed",
+                "timeUsedSeconds",
+                "createdAt",
+                "updatedAt",
+            ],
+        )
         self.assertEqual(goal.to_mapping()["tokenBudget"], 1000)
         self.assertEqual(ThreadGoal.from_mapping(goal.to_mapping()), goal)
         self.assertEqual(event.to_mapping()["goal"]["status"], "active")

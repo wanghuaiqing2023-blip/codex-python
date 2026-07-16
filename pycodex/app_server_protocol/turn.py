@@ -9,6 +9,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from pycodex.protocol.plan_tool import PlanItemArg, StepStatus
+
 from .thread_data import Turn
 
 JsonValue = Any
@@ -396,6 +398,17 @@ class TurnPlanStep:
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "TurnPlanStep":
         data = _mapping(value, "TurnPlanStep")
         return cls(step=_ensure_str(data["step"], "step"), status=TurnPlanStepStatus.parse(data["status"]))
+
+    @classmethod
+    def from_core(cls, value: PlanItemArg) -> "TurnPlanStep":
+        if not isinstance(value, PlanItemArg):
+            raise TypeError("value must be PlanItemArg")
+        status = {
+            StepStatus.PENDING: TurnPlanStepStatus.PENDING,
+            StepStatus.IN_PROGRESS: TurnPlanStepStatus.IN_PROGRESS,
+            StepStatus.COMPLETED: TurnPlanStepStatus.COMPLETED,
+        }[value.status]
+        return cls(step=value.step, status=status)
 
     def to_mapping(self) -> dict[str, str]:
         return {"step": self.step, "status": self.status.value}

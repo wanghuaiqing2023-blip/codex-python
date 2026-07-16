@@ -192,6 +192,31 @@ def test_collaboration_mode_update_skips_empty_developer_instructions() -> None:
     assert build_collaboration_mode_update_item(None, next_context) is None
 
 
+def test_collaboration_mode_update_compares_deserialized_turn_context_semantically() -> None:
+    """Rust contract: an unchanged typed ``CollaborationMode`` emits no update after rollout replay."""
+
+    mode = CollaborationMode(
+        ModeKind.DEFAULT,
+        Settings("gpt-next", developer_instructions="Keep working."),
+    )
+    previous = TurnContextItem.from_mapping(
+        TurnContextItem(
+            cwd=Path("/repo"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            sandbox_policy=SandboxPolicy.read_only(),
+            model="gpt-next",
+            collaboration_mode=mode,
+        ).to_mapping()
+    )
+    next_context = SimpleNamespace(
+        config=SimpleNamespace(include_collaboration_mode_instructions=True),
+        collaboration_mode=mode,
+    )
+
+    assert previous.collaboration_mode == mode
+    assert build_collaboration_mode_update_item(previous, next_context) is None
+
+
 def test_environment_update_item_emits_contextual_user_diff_when_context_changes() -> None:
     """Rust source contract: environment updates emit only when the context differs except for shell."""
 

@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
 from pycodex.core.config.edit import ConfigEdit, ConfigEditsBuilder
 from pycodex.core.event_mapping import parse_turn_item
+from pycodex.app_server.bespoke_event_handling import turn_plan_updated_notification
 from pycodex.exec.local_runtime import (
     _local_http_prompt_visible_rollout_items,
     create_exec_core_session,
@@ -42,7 +43,7 @@ from pycodex.core.tools.sandboxing import ApprovalStore
 from pycodex.exec.run import ExecRunPlan, InitialOperation
 from pycodex.exec.session import ExecSessionConfig
 from pycodex.model_provider.auth import auth_service_from_snapshot
-from pycodex.protocol import ActivePermissionProfile, ApprovalsReviewer, AskForApproval, ExecApprovalRequestEvent, NetworkPolicyAmendment, NetworkPolicyRuleAction, PermissionProfile, ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
+from pycodex.protocol import ActivePermissionProfile, ApprovalsReviewer, AskForApproval, ExecApprovalRequestEvent, NetworkPolicyAmendment, NetworkPolicyRuleAction, PermissionProfile, ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, ThreadSettingsOverrides, TurnItem, UserInput
 from pycodex.protocol.request_permissions import (
     RequestPermissionProfile,
     RequestPermissionsArgs,
@@ -278,6 +279,51 @@ def _runtime_codex_home(runtime: Any, config: Any = None) -> Path | None:
         return find_codex_home()
     except Exception:
         return None
+
+
+def _config_request_handle_from_runtime(runtime: Any) -> Any:
+    existing = _request_handle_from_runtime(runtime)
+    if existing is not None:
+        return existing
+
+    config = getattr(runtime, "session_config", None) or getattr(runtime, "config", None)
+    layer_stack = _field(config, "config_layer_stack", None)
+    codex_home = _field(runtime, "codex_home", None) or _field(config, "codex_home", None)
+    get_user_config_file = getattr(layer_stack, "get_user_config_file", None)
+    user_config_file = get_user_config_file() if callable(get_user_config_file) else None
+    if codex_home is None and user_config_file is not None:
+        codex_home = Path(user_config_file).parent
+    if codex_home is None:
+        return None
+
+    from pycodex.app_server.config_manager_service import (
+        ConfigManagerService,
+        InProcessConfigRequestHandle,
+    )
+    from pycodex.app_server.request_processors_config_processor import ConfigRequestProcessor
+    from pycodex.config import ConfigLayerEntry, ConfigLayerSource, ConfigLayerStack
+    from pycodex.core.config.edit import read_toml_mapping
+
+    codex_home = Path(codex_home)
+    if layer_stack is None:
+        config_path = codex_home / "config.toml"
+        layer_stack = ConfigLayerStack.new(
+            (
+                ConfigLayerEntry.new(
+                    ConfigLayerSource.user(config_path),
+                    read_toml_mapping(config_path),
+                ),
+            )
+        )
+    config_manager = ConfigManagerService(codex_home, layer_stack)
+    config_processor = ConfigRequestProcessor(
+        outgoing=None,
+        config_manager=config_manager,
+        auth_manager=None,
+        thread_manager=None,
+        analytics_events_client=None,
+    )
+    return InProcessConfigRequestHandle(config_processor)
 
 
 def _effort_config_value(effort: Any) -> str | None:
@@ -1004,14 +1050,18 @@ class CoreExecActiveThreadRuntime:
     _model_history_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _model_history_items: list[ResponseItem] = field(default_factory=list, init=False, repr=False)
     _rollout_path_ready: Event = field(default_factory=Event, init=False, repr=False)
+    _internal_operation_ready: Event = field(default_factory=Event, init=False, repr=False)
+    _rollout_persist_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _last_worker_error: BaseException | None = field(default=None, init=False, repr=False)
     _startup_app_server_events: Queue[Any] = field(default_factory=Queue, init=False, repr=False)
     _state_runtime: Any = field(default=None, init=False, repr=False)
     _core_session: Any = field(default=None, init=False, repr=False)
     _pending_goal_continuation_op: AppCommand | None = field(default=None, init=False, repr=False)
+    _pending_goal_continuation_summary: str | None = field(default=None, init=False, repr=False)
     rollout_path: Path | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
+        self._internal_operation_ready.set()
         self._seed_configured_mcp_startup_events()
         if self.prewarmed_model_session is not None:
             self._startup_prewarm_session = self.prewarmed_model_session
@@ -1058,6 +1108,11 @@ class CoreExecActiveThreadRuntime:
             return self._startup_app_server_events.get(timeout=wait)
         except Empty:
             return None
+
+    def wait_for_internal_operation_ready(self, timeout: float | None = None) -> bool:
+        """Wait until the current turn's in-memory history is safe to reuse."""
+
+        return self._internal_operation_ready.wait(timeout)
 
     def fetch_account_rate_limits(self) -> Any:
         """Fetch Codex backend rate limits through the Rust-shaped boundary.
@@ -1272,7 +1327,13 @@ class CoreExecActiveThreadRuntime:
         if core_session is not None:
             _run_coro_blocking(
                 core_session.goal_runtime_apply(
-                    {"external_set": SimpleNamespace(goal=goal, previous_status=getattr(existing, "status", None))}
+                    {
+                        "type": "external_set",
+                        "external_set": {
+                            "goal": goal,
+                            "previous_status": existing,
+                        },
+                    }
                 )
             )
         return api_goal
@@ -1295,9 +1356,25 @@ class CoreExecActiveThreadRuntime:
             core_session = self._ensure_core_session_sync()
             if core_session is not None:
                 _run_coro_blocking(core_session.goal_runtime_apply("maybe_continue_if_idle"))
+        pending = self.take_pending_internal_operation()
+        return None if pending is None else pending[1]
+
+    def take_pending_internal_operation(self) -> tuple[str, AppCommand] | None:
+        """Take one core-created operation for the app-owned turn runner.
+
+        Rust ``codex-core`` starts a reserved goal continuation task itself and
+        the TUI observes that task through the normal thread event stream.  The
+        in-process Python adapter has an operation-oriented stream, so this is
+        the generic hand-off point from core-created work to the app runner.
+        """
+
         operation = self._pending_goal_continuation_op
+        if operation is None:
+            return None
         self._pending_goal_continuation_op = None
-        return operation
+        summary = self._pending_goal_continuation_summary or "Pursuing goal"
+        self._pending_goal_continuation_summary = None
+        return summary, operation
 
     def _ensure_core_session_sync(self, *, thread_id: str | None = None) -> Any:
         if self._core_session is not None:
@@ -1306,11 +1383,16 @@ class CoreExecActiveThreadRuntime:
             return None
         state_runtime = None
         codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
+        models_manager = None
         if codex_home is not None:
             state_runtime = self._state_runtime_for_thread_goals()
+            models_manager = self.models_manager()
         self._core_session = create_exec_core_session(
             self.session_config,
             self.model_info,
+            provider=self.provider,
+            auth_manager=self.auth_manager,
+            models_manager=models_manager,
             thread_id=thread_id or self.thread_id,
             state_db=state_runtime,
         )
@@ -1327,6 +1409,10 @@ class CoreExecActiveThreadRuntime:
             return
         cwd = Path(getattr(self.session_config, "cwd", None) or Path.cwd())
         self._pending_goal_continuation_op = _goal_context_app_command(text, cwd=cwd)
+        objective = str(getattr(goal, "objective", "")).strip()
+        self._pending_goal_continuation_summary = (
+            f"Pursuing goal: {objective}" if objective else "Pursuing goal"
+        )
         _timing_trace(
             "goal_continuation_op_created",
             objective=getattr(goal, "objective", None),
@@ -1338,9 +1424,12 @@ class CoreExecActiveThreadRuntime:
 
         runtime = self._state_runtime_for_thread_goals()
         thread_id_text = _thread_goal_uuid(thread_id)
+        core_session = self._ensure_core_session_sync(thread_id=thread_id)
+        if core_session is not None:
+            _run_coro_blocking(core_session.goal_runtime_apply("external_mutation_starting"))
         cleared = bool(_run_coro_blocking(runtime.thread_goals.delete_thread_goal(thread_id_text)))
-        if cleared and self._core_session is not None:
-            _run_coro_blocking(self._core_session.goal_runtime_apply("external_clear"))
+        if cleared and core_session is not None:
+            _run_coro_blocking(core_session.goal_runtime_apply("external_clear"))
         if cleared:
             self._startup_app_server_events.put(
                 {
@@ -1535,9 +1624,11 @@ class CoreExecActiveThreadRuntime:
             self._model_history_items = list(history)
         self._core_session = None
         self._pending_goal_continuation_op = None
+        self._pending_goal_continuation_summary = None
         self._tool_approvals = ApprovalStore()
         self.rollout_path = Path(rollout_path) if rollout_path is not None else None
         self._rollout_path_ready.clear()
+        self._internal_operation_ready.set()
 
     def _started_thread_result(
         self,
@@ -1709,6 +1800,7 @@ class CoreExecActiveThreadRuntime:
         active_turn = _ActiveCoreTurn(thread_id=thread_id, turn_id=turn_id, queue=queue)
         queue.put(_turn_started_notification(thread_id, turn_id))
         self._rollout_path_ready.clear()
+        self._internal_operation_ready.clear()
         self._last_worker_error = None
         with self._active_turn_lock:
             self._active_turn = active_turn
@@ -1942,20 +2034,34 @@ class CoreExecActiveThreadRuntime:
                     active_turn.put(ServerNotification("AgentMessageDelta", {"delta": final_text, "thread_id": thread_id, "turn_id": turn_id}))
                     emitted_delta = True
                 if observed_error_message and not emitted_delta:
-                    active_turn.finish(_turn_failed_notification(thread_id, turn_id, observed_error_message, exit_code=1))
+                    terminal_notification = _turn_failed_notification(
+                        thread_id,
+                        turn_id,
+                        observed_error_message,
+                        exit_code=1,
+                    )
                 elif observed_terminal_notification is not None:
-                    active_turn.finish(observed_terminal_notification)
+                    terminal_notification = observed_terminal_notification
                 else:
-                    active_turn.finish(_turn_completed_notification(thread_id, turn_id, result))
-                # Rollout persistence is not part of Rust's visible event
-                # ordering contract. Model-history normalization and rollout
-                # I/O remain in the worker, but never hold command completion
-                # or TurnCompleted behind bookkeeping.
+                    terminal_notification = _turn_completed_notification(thread_id, turn_id, result)
+                # Rust publishes TurnComplete before rollout bookkeeping. Keep
+                # that visible boundary immediate, then separately signal when
+                # in-memory history is safe for a core-created follow-up.
+                active_turn.finish(terminal_notification)
                 self._record_model_history_from_turn(turn_plan, result)
-                self._persist_rollout(turn_plan, result)
+                with self._active_turn_lock:
+                    if self._active_turn is active_turn:
+                        self._active_turn = None
+                self._internal_operation_ready.set()
+                with self._rollout_persist_lock:
+                    self._persist_rollout(turn_plan, result)
             except BaseException as exc:
                 self._last_worker_error = exc
                 _timing_trace("core_active_thread_worker_failed", error=str(exc))
+                with self._active_turn_lock:
+                    if self._active_turn is active_turn:
+                        self._active_turn = None
+                self._internal_operation_ready.set()
                 active_turn.finish(_turn_failed_notification(thread_id, turn_id, str(exc), exit_code=1))
             finally:
                 try:
@@ -1968,6 +2074,7 @@ class CoreExecActiveThreadRuntime:
                 with self._active_turn_lock:
                     if self._active_turn is active_turn:
                         self._active_turn = None
+                self._internal_operation_ready.set()
 
         Thread(target=worker, name="pycodex-tui-core-active-thread", daemon=True).start()
         return QueueActiveThreadEventStream(queue)
@@ -2160,10 +2267,10 @@ class CoreExecActiveThreadRuntime:
         """Return the prompt-visible history for the next core session.
 
         Rust ``codex-core::session::turn`` samples from
-        ``sess.clone_history().await.for_prompt(...)``.  The Python terminal
-        product path creates a fresh in-memory core session per submitted turn,
-        so this active-thread runtime carries the Rust-shaped history between
-        those per-turn sessions.
+        ``sess.clone_history().await.for_prompt(...)``. The Python terminal
+        product path reuses one in-memory core session; this mirror remains the
+        active-thread/app-server-facing snapshot used when creating or restoring
+        that session.
         """
 
         with self._model_history_lock:
@@ -2263,6 +2370,7 @@ class TuiAppRuntime:
     pending_app_events: Queue[Any] = field(default_factory=Queue, repr=False)
     app_event_sender: AppEventSender = field(init=False, repr=False)
     active_collaboration_mode: Any = None
+    config_request_handle: Any = None
     open_url_sink: Callable[[str], Any] = field(default_factory=lambda: webbrowser.open)
     _status_rate_limit_request_id: int = 0
 
@@ -2271,6 +2379,8 @@ class TuiAppRuntime:
         # app loop's unbounded channel. Keep callbacks enqueue-only so the
         # bottom pane can finish its input/completion pass before dispatch.
         self.app_event_sender = AppEventSender(self.pending_app_events)
+        if self.config_request_handle is None:
+            self.config_request_handle = _config_request_handle_from_runtime(self.active_thread_runtime)
         if self.thread_id and (
             self.routing_state.active_thread_id,
             self.routing_state.primary_thread_id,
@@ -2279,6 +2389,7 @@ class TuiAppRuntime:
             self.routing_state.primary_thread_id = self.thread_id
         self._sync_side_routing_state()
         self.sync_chat_widget_config_from_runtime()
+        self._initialize_chat_widget_collaboration_state()
         self.sync_message_history_metadata_from_runtime()
         self.chat_widget.info_message_sink = self.insert_info_history_message
         self.chat_widget.bind_history_projection(
@@ -2327,6 +2438,10 @@ class TuiAppRuntime:
             self.pending_internal_operations.append((str(summary), operation))
             return None
         return self.internal_operation_sink(str(summary), operation)
+
+    def wait_for_internal_operation_ready(self) -> bool:
+        wait = getattr(self.active_thread_runtime, "wait_for_internal_operation_ready", None)
+        return True if not callable(wait) else bool(wait())
 
     def bind_full_screen_approval_sink(self, sink: Callable[[object], Any]) -> None:
         self.full_screen_approval_sink = sink
@@ -2513,6 +2628,7 @@ class TuiAppRuntime:
         )
 
     def submit_user_turn(self, prompt: str) -> ActiveThreadEventStream:
+        collaboration_mode = self._effective_collaboration_mode_for_user_turn()
         op = app_command_for_prompt(
             prompt,
             cwd=self.cwd,
@@ -2521,24 +2637,67 @@ class TuiAppRuntime:
             model=_runtime_model_for_user_turn(self),
             reasoning_effort=_runtime_reasoning_effort_for_user_turn(self),
             service_tier=_runtime_turn_context_value(self, "service_tier"),
-            collaboration_mode=self.active_collaboration_mode,
+            collaboration_mode=collaboration_mode,
         )
         return self.submit_op(op)
+
+    def _initialize_chat_widget_collaboration_state(self) -> Any:
+        """Initialize the product ChatWidget from Rust's default mode mask."""
+
+        from pycodex.protocol import CollaborationMode, ModeKind, Settings
+        from pycodex.tui.collaboration_modes import default_mask
+
+        model = _runtime_model_for_user_turn(self)
+        effort = _runtime_reasoning_effort_for_user_turn(self)
+        current = CollaborationMode(
+            mode=ModeKind.DEFAULT,
+            settings=Settings(model=model, reasoning_effort=effort),
+        )
+        mask = default_mask(None)
+        if mask is not None:
+            mask = replace(mask, model=model, reasoning_effort=effort)
+        setattr(self.chat_widget, "current_collaboration_mode", current)
+        setattr(self.chat_widget, "active_collaboration_mask", mask)
+        mode = current if mask is None else current.apply_mask(mask)
+        self.active_collaboration_mode = mode
+        return mode
+
+    def _effective_collaboration_mode_for_user_turn(self) -> Any:
+        current = getattr(self.chat_widget, "current_collaboration_mode", None)
+        mask = getattr(self.chat_widget, "active_collaboration_mask", None)
+        if current is None:
+            return self._initialize_chat_widget_collaboration_state()
+        model = _runtime_model_for_user_turn(self)
+        effort = _runtime_reasoning_effort_for_user_turn(self)
+        current = current.with_updates(model=model, effort=effort)
+        if mask is not None:
+            mask_updates = {"model": model}
+            if getattr(mask, "mode", None).value == "default":
+                mask_updates["reasoning_effort"] = effort
+            mask = replace(mask, **mask_updates)
+        setattr(self.chat_widget, "current_collaboration_mode", current)
+        setattr(self.chat_widget, "active_collaboration_mask", mask)
+        mode = current if mask is None else current.apply_mask(mask)
+        self.active_collaboration_mode = mode
+        return mode
 
     def activate_plan_mode(self) -> Any:
         """Select Rust collaboration Plan mode for subsequent user turns."""
 
-        from pycodex.protocol import CollaborationMode, ModeKind, Settings
+        from pycodex.tui.collaboration_modes import plan_mask
 
-        mode = CollaborationMode(
-            mode=ModeKind.PLAN,
-            settings=Settings(
-                model=_runtime_model_for_user_turn(self),
-                reasoning_effort=_runtime_reasoning_effort_for_user_turn(self),
-            ),
-        )
+        current = getattr(self.chat_widget, "current_collaboration_mode", None)
+        if current is None:
+            self._initialize_chat_widget_collaboration_state()
+            current = self.chat_widget.current_collaboration_mode
+        model = _runtime_model_for_user_turn(self)
+        mask = plan_mask(None)
+        if mask is None:
+            raise RuntimeError("Plan collaboration mode is unavailable")
+        mask = replace(mask, model=model)
+        setattr(self.chat_widget, "active_collaboration_mask", mask)
+        mode = current.with_updates(model=model).apply_mask(mask)
         self.active_collaboration_mode = mode
-        setattr(self.chat_widget, "active_collaboration_mode", mode)
         self.chat_widget.request_redraw()
         return mode
 
@@ -2771,7 +2930,7 @@ class TuiAppRuntime:
             self.session_changed_sink()
         if turns:
             self._replay_started_thread_turns(turns)
-        self.active_collaboration_mode = None
+        self._initialize_chat_widget_collaboration_state()
         return installed
 
     def fork_startup_session_target(self, target: Any) -> bool:
@@ -3039,6 +3198,19 @@ class TuiAppRuntime:
         summary = f"Pursuing goal: {objective}" if objective else "Pursuing goal"
         self.submit_internal_operation(summary, operation)
 
+    def _continue_core_created_work_after_turn(self) -> None:
+        """Submit core-created work after the current thread turn completes."""
+
+        take = getattr(self.active_thread_runtime, "take_pending_internal_operation", None)
+        if not callable(take):
+            return
+        while True:
+            pending = take()
+            if pending is None:
+                return
+            summary, operation = pending
+            self.submit_internal_operation(summary, operation)
+
     def handle_app_server_event(self, event: Any) -> AppServerEventPlan:
         """Apply Rust ``app::app_server_events`` pre-chatwidget routing.
 
@@ -3197,14 +3369,15 @@ class TuiAppRuntime:
             return False
         effort_text = _effort_config_value(effort)
         try:
-            request_handle = _request_handle_from_runtime(self.active_thread_runtime)
-            if request_handle is not None:
-                _run_coro_blocking(write_config_batch(request_handle, build_model_selection_edits(model_text, effort_text)))
-            else:
-                config = _config_from_runtime(self.active_thread_runtime)
-                if config is None:
-                    raise RuntimeError("missing request handle or config")
-                ConfigEditsBuilder.for_config(config).set_model(model_text, effort_text).apply_blocking()
+            request_handle = self.config_request_handle
+            if request_handle is None:
+                raise RuntimeError("missing app-server config request handle")
+            _run_coro_blocking(
+                write_config_batch(
+                    request_handle,
+                    build_model_selection_edits(model_text, effort_text),
+                )
+            )
         except BaseException as exc:
             self.chat_widget.add_error_message(f"Failed to save default model: {exc}")
             return False
@@ -3531,6 +3704,8 @@ class TuiAppRuntime:
                     self.chat_widget.add_info_message(plan.info_message, None)
                 return
         self.chat_widget.handle(notification)
+        if notification.kind == "TurnCompleted":
+            self._continue_core_created_work_after_turn()
 
     def handle_server_request(self, request: ServerRequest) -> None:
         plan = plan_app_server_event(
@@ -4024,15 +4199,47 @@ def exec_run_plan_for_app_command(op: AppCommand) -> ExecRunPlan:
         return ExecRunPlan(InitialOperation.review(ReviewRequest(target=target)), _review_prompt_summary(target))
     if op.kind != "UserTurn":
         raise ValueError("active thread runtime supports only AppCommand::UserTurn or AppCommand::Review")
+    thread_settings = _thread_settings_overrides_for_app_command(op)
     if op.payload.get("hidden_goal_context"):
         return ExecRunPlan(
-            InitialOperation.user_turn(user_inputs_for_app_command(op), op.payload.get("final_output_json_schema")),
+            InitialOperation.user_turn(
+                user_inputs_for_app_command(op),
+                op.payload.get("final_output_json_schema"),
+                thread_settings=thread_settings,
+            ),
             "Goal continuation",
         )
     return ExecRunPlan(
-        InitialOperation.user_turn(user_inputs_for_app_command(op), op.payload.get("final_output_json_schema")),
+        InitialOperation.user_turn(
+            user_inputs_for_app_command(op),
+            op.payload.get("final_output_json_schema"),
+            thread_settings=thread_settings,
+        ),
         user_turn_prompt(op),
     )
+
+
+def _thread_settings_overrides_for_app_command(op: AppCommand) -> ThreadSettingsOverrides:
+    """Mirror app-server ``build_thread_settings_overrides`` for a TUI turn."""
+
+    payload = op.payload
+    values: dict[str, Any] = {
+        "cwd": payload.get("cwd"),
+        "approval_policy": payload.get("approval_policy"),
+        "approvals_reviewer": payload.get("approvals_reviewer"),
+        "active_permission_profile": payload.get("active_permission_profile"),
+        "model": payload.get("model"),
+        "summary": payload.get("summary"),
+        "collaboration_mode": payload.get("collaboration_mode"),
+        "personality": payload.get("personality"),
+    }
+    effort = payload.get("effort")
+    if effort is not None:
+        values["effort"] = effort
+    service_tier = payload.get("service_tier")
+    if service_tier is not None:
+        values["service_tier"] = service_tier
+    return ThreadSettingsOverrides(**values)
 
 
 def _protocol_thread_goal_from_any(goal: Any) -> ProtocolThreadGoal:
@@ -4211,6 +4418,14 @@ def _server_notifications_from_session_event(
                         "additional_details": _field(payload, "additional_details", None),
                     },
                 },
+            ),
+        )
+    if event_type == "plan_update":
+        notification = turn_plan_updated_notification(thread_id, turn_id, payload)
+        return (
+            ServerNotification(
+                "TurnPlanUpdated",
+                notification.to_mapping(),
             ),
         )
     if event_type == "error":

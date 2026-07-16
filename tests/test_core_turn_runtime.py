@@ -307,8 +307,10 @@ class Session:
         self.recorded_rate_limits = []
         self.recorded_token_usage = []
         self.turn_error_lifecycle = []
+        self.turn_start_lifecycle = []
         self.token_count_turn_contexts = []
         self.goal_runtime_events = []
+        self.goal_usage_limit_turn_ids = []
         self.server_model_warnings = []
         self.model_verifications = []
         self.side_effect_order = []
@@ -376,6 +378,15 @@ class Session:
     async def goal_runtime_apply(self, event: object) -> None:
         self.goal_runtime_events.append(event)
 
+    def _goal_extension_runtime(self):
+        return self
+
+    async def usage_limit_active_goal_for_turn(self, turn_id: str) -> None:
+        self.goal_usage_limit_turn_ids.append(turn_id)
+
+    async def emit_turn_start_lifecycle(self, turn_context: object, token_usage: TokenUsage) -> None:
+        self.turn_start_lifecycle.append((turn_context, token_usage))
+
     async def total_token_usage(self) -> TokenUsage:
         return self.total_token_usage_value
 
@@ -440,10 +451,14 @@ def events_of_type(session: Session, event_type: str) -> tuple[EventMsg, ...]:
     return tuple(event for event in session.emitted_events if event.type == event_type)
 
 
+def goal_runtime_events_of_type(session: Session, event_type: str) -> tuple[object, ...]:
+    return tuple(event for event in session.goal_runtime_events if event.get("type") == event_type)
+
+
 class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_turn_start_applies_goal_runtime_with_token_baseline(self) -> None:
-        # Rust: core/src/tasks/mod.rs::Session::spawn_task records the current
-        # token usage in GoalRuntimeEvent::TurnStarted before task execution.
+    async def test_turn_start_dispatches_extension_lifecycle_with_token_baseline(self) -> None:
+        # Rust: core/src/tasks/mod.rs::Session::start_task and task_complete
+        # dispatch core GoalRuntimeEvent values around extension lifecycle.
         session = Session()
         session.total_token_usage_value = TokenUsage(input_tokens=100, output_tokens=20, total_tokens=120)
         client = ModelClient(
@@ -472,10 +487,14 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             built_tools=lambda _sess, _turn: Router(),
         )
 
-        started = session.goal_runtime_events[0]
-        self.assertEqual(started["type"], "turn_started")
-        self.assertIs(started["turn_context"], session.turn_context)
-        self.assertEqual(started["token_usage"].total_tokens, 120)
+        self.assertEqual(len(session.turn_start_lifecycle), 1)
+        turn_context, token_usage = session.turn_start_lifecycle[0]
+        self.assertIs(turn_context, session.turn_context)
+        self.assertEqual(token_usage.total_tokens, 120)
+        self.assertEqual(
+            tuple(event["type"] for event in session.goal_runtime_events),
+            ("turn_started", "turn_finished", "maybe_continue_if_idle"),
+        )
 
     async def test_build_user_turn_responses_request_records_turn_and_builds_request(self) -> None:
         session = Session()
@@ -1316,6 +1335,53 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded[-1], result.response_items)
         self.assertEqual(session.history[-1].content[0].text, "done")
         self.assertEqual(result.last_agent_message, "done")
+
+    async def test_reused_session_returns_one_turn_of_canonical_rollout_items(self) -> None:
+        # Rust crate/module contract:
+        # codex-core::session::{send_event_raw, record_conversation_items} preserves
+        # protocol-event and response-item order in the live rollout recorder.
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            input_modalities=("text",),
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        session = InMemoryCodexSession(cwd="C:/work", model_info=model_info)
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000010",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        async def run_turn(text: str):
+            return await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input(text),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+        first = await run_turn("first")
+        second = await run_turn("second")
+
+        first_events = [item.payload.type for item in first.rollout_items if item.type == "event_msg"]
+        second_events = [item.payload.type for item in second.rollout_items if item.type == "event_msg"]
+        self.assertEqual(first_events[0], "task_started")
+        self.assertEqual(first_events[-1], "task_complete")
+        self.assertEqual(second_events[0], "task_started")
+        self.assertEqual(second_events[-1], "task_complete")
+        self.assertEqual([event.type for event in first.session_events], first_events)
+        self.assertEqual([event.type for event in second.session_events], second_events)
+        self.assertNotIn("first", json.dumps([item.to_mapping() for item in second.rollout_items], default=str))
+        self.assertIn("second", json.dumps([item.to_mapping() for item in second.rollout_items], default=str))
 
     async def test_run_user_turn_sampling_cancellation_token_aborts_sampler_and_emits_turn_aborted(self) -> None:
         # Rust source/test contract:
@@ -3885,13 +3951,13 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.turn_status, "completed")
         self.assertIsNone(result.last_agent_message)
         self.assertEqual(session.updated_rate_limits, [(session.turn_context, rate_limits)])
-        self.assertIn({"type": "usage_limit_reached", "turn_context": session.turn_context}, session.goal_runtime_events)
+        self.assertEqual(len(goal_runtime_events_of_type(session, "usage_limit_reached")), 1)
         self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "error", "task_complete"))
         self.assertEqual(events_of_type(session, "error")[-1].payload.codex_error_info.type, "usage_limit_exceeded")
         self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
 
     async def test_run_user_turn_sampling_goal_runtime_usage_limit_errors_are_best_effort(self) -> None:
-        """Rust source contract: usage-limit goal runtime updates are best-effort side effects."""
+        """Rust ``core::goals`` usage-limit updates are best-effort side effects."""
 
         session = Session()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
@@ -3903,8 +3969,12 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             service_tier_for_request=lambda tier: tier,
         )
 
-        async def goal_runtime_apply(_event):
-            raise RuntimeError("goal runtime unavailable")
+        original_goal_runtime_apply = session.goal_runtime_apply
+
+        async def goal_runtime_apply(event):
+            if event.get("type") == "usage_limit_reached":
+                raise RuntimeError("goal runtime unavailable")
+            await original_goal_runtime_apply(event)
 
         session.goal_runtime_apply = goal_runtime_apply
 
@@ -5005,7 +5075,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.context_recorded)
         self.assertEqual(tuple(item.type for item in session.history), ("message",))
         self.assertEqual(session.turn_error_lifecycle[0][1].type, "usage_limit_exceeded")
-        self.assertIn({"type": "usage_limit_reached", "turn_context": session.turn_context}, session.goal_runtime_events)
+        self.assertEqual(len(goal_runtime_events_of_type(session, "usage_limit_reached")), 1)
         self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
         self.assertEqual(result.request_plans, ())
 
@@ -5104,7 +5174,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result.last_agent_message)
         self.assertEqual(len(seen_requests), 1)
         self.assertEqual(session.turn_error_lifecycle[0][1].type, "usage_limit_exceeded")
-        self.assertIn({"type": "usage_limit_reached", "turn_context": session.turn_context}, session.goal_runtime_events)
+        self.assertEqual(len(goal_runtime_events_of_type(session, "usage_limit_reached")), 1)
         self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
         self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
 

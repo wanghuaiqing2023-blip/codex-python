@@ -1246,7 +1246,7 @@ class TurnContextItem:
     network: TurnContextNetworkItem | None = None
     file_system_sandbox_policy: FileSystemSandboxPolicy | None = None
     personality: Personality | None = None
-    collaboration_mode: JsonValue | None = None
+    collaboration_mode: CollaborationMode | None = None
     realtime_active: bool | None = None
     effort: JsonValue | None = None
     summary: str = "auto"
@@ -1274,7 +1274,11 @@ class TurnContextItem:
             ),
             model=_required_str(data, "model"),
             personality=Personality.parse(data["personality"]) if isinstance(data.get("personality"), str) else None,
-            collaboration_mode=data.get("collaboration_mode"),
+            collaboration_mode=(
+                _parse_collaboration_mode(data["collaboration_mode"])
+                if data.get("collaboration_mode") is not None
+                else None
+            ),
             realtime_active=data.get("realtime_active"),
             effort=data.get("effort"),
             summary=str(data.get("summary", "auto")),
@@ -1321,7 +1325,7 @@ class TurnContextItem:
         if self.personality is not None:
             data["personality"] = self.personality.value
         if self.collaboration_mode is not None:
-            data["collaboration_mode"] = _to_json(self.collaboration_mode)
+            data["collaboration_mode"] = _collaboration_mode_to_mapping(self.collaboration_mode)
         if self.realtime_active is not None:
             data["realtime_active"] = self.realtime_active
         if self.effort is not None:
@@ -4624,13 +4628,17 @@ class ThreadGoal:
             "threadId": self.thread_id.to_json(),
             "objective": self.objective,
             "status": self.status.value,
-            "tokensUsed": self.tokens_used,
-            "timeUsedSeconds": self.time_used_seconds,
-            "createdAt": self.created_at,
-            "updatedAt": self.updated_at,
         }
         if self.token_budget is not None:
             data["tokenBudget"] = self.token_budget
+        data.update(
+            {
+                "tokensUsed": self.tokens_used,
+                "timeUsedSeconds": self.time_used_seconds,
+                "createdAt": self.created_at,
+                "updatedAt": self.updated_at,
+            }
+        )
         return data
 
 
@@ -4650,9 +4658,10 @@ class ThreadGoalUpdatedEvent:
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
-        data: dict[str, JsonValue] = {"threadId": self.thread_id.to_json(), "goal": self.goal.to_mapping()}
+        data: dict[str, JsonValue] = {"threadId": self.thread_id.to_json()}
         if self.turn_id is not None:
             data["turnId"] = self.turn_id
+        data["goal"] = self.goal.to_mapping()
         return data
 
 

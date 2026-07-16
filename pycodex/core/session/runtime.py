@@ -20,6 +20,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from pycodex.core.context import (
+    AppsInstructions,
+    AvailablePluginsInstructions,
+    AvailableSkillsInstructions,
     CollaborationModeInstructions,
     EnvironmentContext,
     EnvironmentContextEnvironment,
@@ -56,9 +59,18 @@ from pycodex.core.context_manager.history import (
 )
 from pycodex.core.state.session import SessionState
 from pycodex.core.state.additional_context import AdditionalContextStore
+from pycodex.core.state.service import SessionServices
 from pycodex.core.state.turn import PendingRequestPermissions
 from pycodex.core.session.turn.prompt import is_guardian_reviewer_source
+from pycodex.core.session.turn_context import local_time_context
+from pycodex.core.skills import build_available_skills, default_skill_metadata_budget, skills_load_input_from_config
 from pycodex.core.unified_exec import UnifiedExecProcessManager
+from pycodex.extension_api import (
+    ExtensionData,
+    ThreadStartInput,
+    PromptSlot,
+    empty_extension_registry,
+)
 from pycodex.protocol.approvals import (
     ExecApprovalRequestEvent,
     ExecPolicyAmendment,
@@ -88,6 +100,7 @@ from pycodex.protocol import (
     RequestPermissionsResponse,
     ResponseInputItem,
     ResponseItem,
+    Event,
     EventMsg,
     ItemCompletedEvent,
     ItemStartedEvent,
@@ -95,6 +108,7 @@ from pycodex.protocol import (
     ModelRerouteReason,
     ModelVerificationEvent,
     RateLimitSnapshot,
+    ReasoningEffort,
     RolloutItem,
     SandboxEnforcement,
     SandboxPolicy,
@@ -141,8 +155,8 @@ def resume_model_mismatch_warning_event(
     return EventMsg.with_payload("warning", WarningEvent(message))
 
 
-def _default_services() -> SimpleNamespace:
-    return SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager())
+def _default_services() -> SessionServices:
+    return SessionServices(unified_exec_manager=UnifiedExecProcessManager())
 
 
 @dataclass(frozen=True)
@@ -152,9 +166,12 @@ class InMemoryTurnContext:
     cwd: Path
     turn_id: str | None = None
     model_info: Any = None
+    provider: Any = None
+    auth_manager: Any = None
     user_instructions: str | None = None
     developer_instructions: str | None = None
     config: Any = None
+    available_models: tuple[Any, ...] = ()
     permission_profile: PermissionProfile = field(default_factory=PermissionProfile.disabled)
     windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
     approval_policy: Any = AskForApproval.ON_REQUEST
@@ -177,6 +194,8 @@ class InMemoryTurnContext:
     model_verification_emitted: bool = False
     truncation_policy: TruncationPolicyConfig = field(default_factory=lambda: TruncationPolicyConfig.tokens(10_000))
     session_source: SessionSource = field(default_factory=SessionSource.default)
+    extension_data: ExtensionData | None = None
+    turn_skills: Any = None
 
 
 @dataclass
@@ -199,6 +218,7 @@ class InMemoryActiveTurnState:
 @dataclass
 class InMemoryActiveTurn:
     turn_state: InMemoryActiveTurnState = field(default_factory=InMemoryActiveTurnState)
+    task: Any = None
 
 
 @dataclass
@@ -399,7 +419,10 @@ class InMemoryCodexSession:
     thread_id: str = "thread"
     turn_id: str | None = None
     model_info: Any = None
+    provider: Any = None
+    auth_manager: Any = None
     model_provider_id: str = "openai"
+    session_config: Any = None
     services: Any = field(default_factory=_default_services)
     user_instructions: str | None = None
     developer_instructions: str | None = None
@@ -427,6 +450,8 @@ class InMemoryCodexSession:
     features: Any = None
     include_environment_context: bool = True
     include_permissions_instructions: bool = True
+    include_apps_instructions: bool = True
+    include_skill_instructions: bool = True
     include_collaboration_mode_instructions: bool = True
     experimental_realtime_start_instructions: str | None = None
     current_date: str | None = None
@@ -469,6 +494,7 @@ class InMemoryCodexSession:
     loop_tail_calls: list[Any] = field(default_factory=list)
     turn_error_lifecycle: list[Any] = field(default_factory=list)
     conversation_id: ThreadId | None = None
+    _thread_extensions_started: bool = False
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)
@@ -483,6 +509,7 @@ class InMemoryCodexSession:
                 )
         elif not isinstance(self.conversation_id, ThreadId):
             raise TypeError("conversation_id must be a ThreadId or None")
+        self._initialize_extension_services()
         if not isinstance(self.base_instructions, BaseInstructions):
             self.base_instructions = BaseInstructions(str(self.base_instructions))
         if not isinstance(self.model_provider_id, str):
@@ -531,6 +558,10 @@ class InMemoryCodexSession:
             raise TypeError("include_environment_context must be a bool")
         if not isinstance(self.include_permissions_instructions, bool):
             raise TypeError("include_permissions_instructions must be a bool")
+        if not isinstance(self.include_apps_instructions, bool):
+            raise TypeError("include_apps_instructions must be a bool")
+        if not isinstance(self.include_skill_instructions, bool):
+            raise TypeError("include_skill_instructions must be a bool")
         if not isinstance(self.include_collaboration_mode_instructions, bool):
             raise TypeError("include_collaboration_mode_instructions must be a bool")
         if (
@@ -567,6 +598,7 @@ class InMemoryCodexSession:
         self.turn_error_lifecycle = list(self.turn_error_lifecycle)
 
     async def new_default_turn(self) -> InMemoryTurnContext:
+        await self.ensure_thread_extensions_started()
         self._granted_turn_permissions = None
         self.strict_auto_review_enabled = False
         final_output_json_schema = self.final_output_json_schema
@@ -584,25 +616,25 @@ class InMemoryCodexSession:
         if reasoning_effort is None:
             reasoning_effort = _collaboration_mode_reasoning_effort(collaboration_mode)
         current_date, timezone = _turn_local_time_context(self.current_date, self.timezone)
+        turn_id = self.turn_id or str(uuid.uuid4())
+        turn_config = _per_turn_config(
+            self,
+            turn_cwd,
+            model_info,
+            reasoning_effort,
+        )
+        turn_skills = await _load_turn_skills(self, turn_config)
+        available_models = await _available_models_from_services(self.services)
         return InMemoryTurnContext(
             cwd=turn_cwd,
-            turn_id=self.turn_id,
+            turn_id=turn_id,
             model_info=model_info,
+            provider=self.provider,
+            auth_manager=self.auth_manager,
             user_instructions=self.user_instructions,
             developer_instructions=self.developer_instructions,
-            config=SimpleNamespace(
-                model=_model_slug(model_info),
-                include_environment_context=self.include_environment_context,
-                include_permissions_instructions=self.include_permissions_instructions,
-                approvals_reviewer=self.approvals_reviewer,
-                include_collaboration_mode_instructions=self.include_collaboration_mode_instructions,
-                experimental_realtime_start_instructions=self.experimental_realtime_start_instructions,
-                cwd=turn_cwd,
-                permissions=SimpleNamespace(allow_login_shell=self.allow_login_shell),
-                service_tier=self.service_tier,
-                model_reasoning_effort=reasoning_effort,
-                model_reasoning_summary=self.reasoning_summary,
-            ),
+            config=turn_config,
+            available_models=available_models,
             permission_profile=self.permission_profile,
             windows_sandbox_level=self.windows_sandbox_level,
             approval_policy=_approval_policy_cell(self.approval_policy),
@@ -623,22 +655,98 @@ class InMemoryCodexSession:
             goal_tools_enabled=bool(self.goal_tools_enabled_value),
             truncation_policy=_turn_truncation_policy(model_info),
             session_source=self.session_source,
+            extension_data=ExtensionData(turn_id),
+            turn_skills=SimpleNamespace(outcome=turn_skills, implicit_invocation_seen_skills=set()),
         )
+
+    def _initialize_extension_services(self) -> None:
+        services = self.services
+        if services is None:
+            services = _default_services()
+            self.services = services
+        session_id = str(self.conversation_id)
+        extensions = getattr(services, "extensions", None)
+        if extensions is None:
+            extensions = empty_extension_registry()
+        defaults = {
+            "extensions": extensions,
+            "session_extension_data": ExtensionData(session_id),
+            "thread_extension_data": ExtensionData(str(self.thread_id)),
+        }
+        for name, value in defaults.items():
+            if getattr(services, name, None) is None:
+                setattr(services, name, value)
+
+    async def ensure_thread_extensions_started(self) -> None:
+        if self._thread_extensions_started:
+            return
+        self._initialize_extension_services()
+        self._thread_extensions_started = True
+        extensions = getattr(self.services, "extensions", None)
+        getter = getattr(extensions, "thread_lifecycle_contributors", None)
+        contributors = tuple(getter() or ()) if callable(getter) else ()
+        value = ThreadStartInput(
+            config=self.session_config or self,
+            session_source=self.session_source,
+            persistent_thread_state_available=self.state_db is not None,
+            session_store=self.services.session_extension_data,
+            thread_store=self.services.thread_extension_data,
+        )
+        try:
+            for contributor in contributors:
+                callback = getattr(contributor, "on_thread_start", None)
+                if callable(callback):
+                    result = callback(value)
+                    if inspect.isawaitable(result):
+                        await result
+        except BaseException:
+            self._thread_extensions_started = False
+            raise
+
+    async def emit_turn_start_lifecycle(
+        self,
+        turn_context: InMemoryTurnContext,
+        token_usage_at_turn_start: TokenUsage | None = None,
+    ) -> None:
+        from pycodex.core.tasks.lifecycle import emit_turn_start_lifecycle
+
+        await emit_turn_start_lifecycle(
+            self,
+            turn_context,
+            token_usage_at_turn_start or TokenUsage(),
+        )
+
+    async def emit_turn_stop_lifecycle(self, turn_store: ExtensionData) -> None:
+        from pycodex.core.tasks.lifecycle import emit_turn_stop_lifecycle
+
+        await emit_turn_stop_lifecycle(self, turn_store)
+
+    async def emit_turn_abort_lifecycle(self, reason: Any, turn_store: ExtensionData) -> None:
+        from pycodex.core.tasks.lifecycle import emit_turn_abort_lifecycle
+
+        await emit_turn_abort_lifecycle(self, reason, turn_store)
 
     def goal_tools_enabled(self) -> bool:
         return bool(self.goal_tools_enabled_value)
 
     async def get_thread_goal(self) -> Any:
+        """Compatibility entry for upstream ``codex-core::goals``.
+
+        Product Goal tools are contributed by ``codex-goal-extension`` and do
+        not call this legacy core coordinate.
+        """
         from pycodex.core.goals import get_thread_goal
 
         return await get_thread_goal(self)
 
     async def create_thread_goal(self, turn_context: Any, request: Any) -> Any:
+        """Compatibility entry for upstream ``codex-core::goals`` only."""
         from pycodex.core.goals import create_thread_goal
 
         return await create_thread_goal(self, turn_context, request)
 
     async def set_thread_goal(self, turn_context: Any, request: Any) -> Any:
+        """Compatibility entry for upstream ``codex-core::goals`` only."""
         from pycodex.core.goals import set_thread_goal
 
         return await set_thread_goal(self, turn_context, request)
@@ -647,6 +755,22 @@ class InMemoryCodexSession:
         from pycodex.core.goals import goal_runtime_apply
 
         await goal_runtime_apply(self, event)
+
+    async def active_turn_context(self) -> InMemoryTurnContext | None:
+        active_turn = self.active_turn
+        task = None if active_turn is None else active_turn.task
+        return None if task is None else getattr(task, "turn_context", None)
+
+    async def mark_turn_context_active(self, turn_context: InMemoryTurnContext) -> None:
+        if self.active_turn is None:
+            self.active_turn = InMemoryActiveTurn()
+        self.active_turn.task = SimpleNamespace(turn_context=turn_context)
+
+    async def clear_turn_context_active(self, turn_context: InMemoryTurnContext) -> None:
+        active_turn = self.active_turn
+        task = None if active_turn is None else active_turn.task
+        if task is not None and getattr(task, "turn_context", None) is turn_context:
+            active_turn.task = None
 
     async def preview_settings(self, updates: Any) -> ThreadConfigSnapshot:
         return self._snapshot_for_settings(updates)
@@ -818,7 +942,8 @@ class InMemoryCodexSession:
     async def record_context_updates_and_set_reference_context_item(self, turn_context: InMemoryTurnContext) -> None:
         self.context_updates_recorded += 1
         if self._reference_context_item is None:
-            items = _build_initial_context_items(
+            items = await _build_initial_context_items(
+                self,
                 turn_context,
                 _session_shell(self.shell),
                 self._previous_turn_settings,
@@ -947,6 +1072,9 @@ class InMemoryCodexSession:
         batch = tuple(items)
         self.recorded_batches.append(batch)
         self.history.extend(_process_history_items(batch, _turn_truncation_policy_from_context(turn_context)))
+        await self.persist_rollout_items(
+            tuple(RolloutItem.response_item(item) for item in batch)
+        )
 
     def merge_additional_context(self, additional_context: Any) -> tuple[ResponseItem, ...]:
         """Merge app-provided additional context using Rust's session store semantics.
@@ -1054,17 +1182,37 @@ class InMemoryCodexSession:
     async def get_base_instructions(self) -> BaseInstructions:
         return self.base_instructions
 
-    async def send_event(self, _turn_context: InMemoryTurnContext, event: EventMsg | dict[str, Any]) -> None:
-        if isinstance(event, EventMsg):
-            self.emitted_events.append(event)
-        else:
-            self.emitted_events.append(EventMsg.from_mapping(event))
+    async def send_event(self, turn_context: InMemoryTurnContext, event: EventMsg | dict[str, Any]) -> None:
+        msg = event if isinstance(event, EventMsg) else EventMsg.from_mapping(event)
+        turn_id = getattr(turn_context, "sub_id", None) or getattr(turn_context, "turn_id", None) or ""
+        await self.send_event_raw(Event(id=str(turn_id), msg=msg))
+
+    async def send_event_raw(self, event: Event | dict[str, Any]) -> None:
+        resolved = event if isinstance(event, Event) else Event.from_mapping(event)
+        await self.persist_rollout_items((RolloutItem.event_msg(resolved.msg),))
+        self.emitted_events.append(resolved.msg)
         if callable(self.event_observer):
-            result = self.event_observer(self.emitted_events[-1])
+            result = self.event_observer(resolved.msg)
             if inspect.isawaitable(result):
                 await result
-        if self.emitted_events[-1].type == "turn_diff":
-            self.loop_tail_calls.append(("turn_diff", self.emitted_events[-1].payload.unified_diff))
+        if resolved.msg.type == "turn_diff":
+            self.loop_tail_calls.append(("turn_diff", resolved.msg.payload.unified_diff))
+
+    async def deliver_event_raw(self, event: Event | dict[str, Any]) -> None:
+        """Deliver an already-persisted event without recording it again.
+
+        Rust `Session::deliver_event_raw` is used by handlers such as
+        `thread_rollback` after they explicitly persist the rollout marker.
+        """
+
+        resolved = event if isinstance(event, Event) else Event.from_mapping(event)
+        self.emitted_events.append(resolved.msg)
+        if callable(self.event_observer):
+            result = self.event_observer(resolved.msg)
+            if inspect.isawaitable(result):
+                await result
+        if resolved.msg.type == "turn_diff":
+            self.loop_tail_calls.append(("turn_diff", resolved.msg.payload.unified_diff))
 
     async def send_response_processed(self, response_id: str) -> None:
         if not isinstance(response_id, str):
@@ -1084,9 +1232,12 @@ class InMemoryCodexSession:
         turn_context: InMemoryTurnContext,
         codex_error_info: CodexErrorInfo | str | dict[str, Any],
     ) -> None:
+        from pycodex.core.tasks.lifecycle import emit_turn_error_lifecycle
+
         if not isinstance(codex_error_info, CodexErrorInfo):
             codex_error_info = CodexErrorInfo.from_mapping(codex_error_info)
         self.turn_error_lifecycle.append((turn_context, codex_error_info))
+        await emit_turn_error_lifecycle(self, turn_context, codex_error_info)
 
     async def send_token_count_event(self, turn_context: InMemoryTurnContext) -> None:
         self.loop_tail_calls.append(("token_count", turn_context))
@@ -1110,6 +1261,23 @@ class InMemoryCodexSession:
         state = self._session_state_snapshot()
         state.update_token_info_from_usage(token_usage, model_context_window)
         self.token_usage_info = state.token_info()
+        if self.token_usage_info is None:
+            return
+        extensions = getattr(self.services, "extensions", None)
+        getter = getattr(extensions, "token_usage_contributors", None)
+        contributors = tuple(getter() or ()) if callable(getter) else ()
+        for contributor in contributors:
+            callback = getattr(contributor, "on_token_usage", None)
+            if not callable(callback):
+                continue
+            result = callback(
+                self.services.session_extension_data,
+                self.services.thread_extension_data,
+                turn_context.extension_data,
+                self.token_usage_info,
+            )
+            if inspect.isawaitable(result):
+                await result
 
     async def set_total_tokens_full(self, turn_context: InMemoryTurnContext) -> None:
         context_window = _turn_model_context_window(turn_context)
@@ -1774,24 +1942,11 @@ def _turn_local_time_context(
     current_date: str | None,
     timezone_name: str | None,
 ) -> tuple[str, str]:
-    resolved_date, resolved_timezone = _local_time_context()
+    resolved_date, resolved_timezone = local_time_context()
     return (
         current_date if current_date is not None else resolved_date,
         timezone_name if timezone_name is not None else resolved_timezone,
     )
-
-
-def _local_time_context() -> tuple[str, str]:
-    try:
-        local_now = datetime.now().astimezone()
-        tzinfo = local_now.tzinfo
-        timezone_name = getattr(tzinfo, "key", None) or getattr(tzinfo, "zone", None) or local_now.tzname()
-        if not timezone_name:
-            raise ValueError("local timezone name is unavailable")
-        return local_now.strftime("%Y-%m-%d"), str(timezone_name)
-    except Exception:
-        utc_now = datetime.now(utc_timezone.utc)
-        return utc_now.strftime("%Y-%m-%d"), "Etc/UTC"
 
 
 def _turn_cwd(environments: Any, fallback: Path | str) -> Path:
@@ -1880,14 +2035,18 @@ def _turn_context_item_from_turn_context(turn_context: InMemoryTurnContext) -> T
         network=_turn_context_network_item(turn_context.network),
         file_system_sandbox_policy=turn_context.file_system_sandbox_policy,
         personality=turn_context.personality,
-        collaboration_mode=_turn_context_collaboration_mode(turn_context.collaboration_mode),
+        collaboration_mode=_turn_context_collaboration_mode(
+            turn_context.collaboration_mode,
+            default_model=_model_slug(turn_context.model_info),
+        ),
         realtime_active=turn_context.realtime_active,
         effort=_wire_value(turn_context.reasoning_effort),
         summary="auto",
     )
 
 
-def _build_initial_context_items(
+async def _build_initial_context_items(
+    session: InMemoryCodexSession,
     turn_context: InMemoryTurnContext,
     shell: Any,
     previous_turn_settings: Any | None,
@@ -1897,6 +2056,7 @@ def _build_initial_context_items(
 ) -> list[ResponseItem]:
     config = turn_context.config
     developer_sections: list[str] = []
+    contextual_user_sections: list[str] = []
     model_switch_message = build_model_instructions_update_item(previous_turn_settings, turn_context)
     if model_switch_message is not None:
         developer_sections.append(model_switch_message)
@@ -1933,7 +2093,51 @@ def _build_initial_context_items(
             if personality_message is not None:
                 developer_sections.append(PersonalitySpecInstructions.new(personality_message).render())
 
-    contextual_user_sections: list[str] = []
+    if getattr(config, "include_apps_instructions", False) and _apps_enabled(turn_context):
+        apps_instructions = AppsInstructions.from_connectors(_session_connectors(session))
+        if apps_instructions is not None:
+            developer_sections.append(apps_instructions.render())
+
+    if getattr(config, "include_skill_instructions", False):
+        skills_outcome = getattr(getattr(turn_context, "turn_skills", None), "outcome", None)
+        if skills_outcome is not None:
+            available_skills = build_available_skills(
+                skills_outcome,
+                default_skill_metadata_budget(_turn_model_context_window(turn_context)),
+            )
+            if available_skills is not None:
+                warning = getattr(available_skills, "warning_message", None)
+                if warning:
+                    await session.send_event(turn_context, EventMsg.with_payload("warning", WarningEvent(str(warning))))
+                developer_sections.append(
+                    AvailableSkillsInstructions.from_available_skills(available_skills).render()
+                )
+
+    loaded_plugins = await _load_plugins_for_config(session, config)
+    plugin_instructions = AvailablePluginsInstructions.from_plugins(
+        _plugin_capability_summaries(loaded_plugins)
+    )
+    if plugin_instructions is not None:
+        developer_sections.append(plugin_instructions.render())
+
+    separate_developer_sections: list[str] = []
+    extensions = getattr(session.services, "extensions", None)
+    contributors = getattr(extensions, "context_contributors", None)
+    for contributor in tuple(contributors() or ()) if callable(contributors) else ():
+        fragments = contributor.contribute(
+            session.services.session_extension_data,
+            session.services.thread_extension_data,
+        )
+        if inspect.isawaitable(fragments):
+            fragments = await fragments
+        for fragment in tuple(fragments or ()):
+            if fragment.slot in {PromptSlot.DEVELOPER_POLICY, PromptSlot.DEVELOPER_CAPABILITIES}:
+                developer_sections.append(fragment.text)
+            elif fragment.slot is PromptSlot.CONTEXTUAL_USER:
+                contextual_user_sections.append(fragment.text)
+            elif fragment.slot is PromptSlot.SEPARATE_DEVELOPER:
+                separate_developer_sections.append(fragment.text)
+
     if turn_context.user_instructions:
         contextual_user_sections.append(
             UserInstructions(
@@ -1955,14 +2159,135 @@ def _build_initial_context_items(
     developer_message = build_developer_update_item(developer_sections)
     if developer_message is not None:
         items.append(developer_message)
+    if separate_guardian_developer_message and turn_context.developer_instructions:
+        separate_developer_sections.insert(0, str(turn_context.developer_instructions))
+    for section in separate_developer_sections:
+        developer_message = build_developer_update_item([section])
+        if developer_message is not None:
+            items.append(developer_message)
     contextual_user_message = build_contextual_user_message(contextual_user_sections)
     if contextual_user_message is not None:
         items.append(contextual_user_message)
-    if separate_guardian_developer_message and turn_context.developer_instructions:
-        developer_message = build_developer_update_item([str(turn_context.developer_instructions)])
-        if developer_message is not None:
-            items.append(developer_message)
     return items
+
+
+async def _load_turn_skills(session: InMemoryCodexSession, config: Any) -> Any:
+    manager = getattr(session.services, "skills_manager", None)
+    loader = getattr(manager, "skills_for_config", None)
+    if not callable(loader):
+        from pycodex.core_skills import SkillLoadOutcome
+
+        return SkillLoadOutcome()
+    loaded_plugins = await _load_plugins_for_config(session, config)
+    load_input = skills_load_input_from_config(config, _effective_plugin_skill_roots(loaded_plugins))
+    # Product sessions currently use the local executor filesystem; a non-None
+    # handle preserves Rust's rule that repo-scoped roots are only visible when
+    # an executor filesystem is available.
+    result = loader(load_input, True)
+    return await result if inspect.isawaitable(result) else result
+
+
+def _per_turn_config(
+    session: InMemoryCodexSession,
+    turn_cwd: Path,
+    model_info: Any,
+    reasoning_effort: Any,
+) -> Any:
+    base = session.session_config
+    if base is not None and is_dataclass(base):
+        field_names = {item.name for item in fields(base)}
+        changes: dict[str, Any] = {}
+        for name, value in (
+            ("cwd", turn_cwd),
+            ("model", _model_slug(model_info)),
+            ("reasoning_effort", reasoning_effort),
+            ("model_reasoning_summary", session.reasoning_summary),
+        ):
+            if name in field_names:
+                changes[name] = value
+        return replace(base, **changes)
+
+    return SimpleNamespace(
+        model=_model_slug(model_info),
+        include_environment_context=session.include_environment_context,
+        include_permissions_instructions=session.include_permissions_instructions,
+        include_apps_instructions=session.include_apps_instructions,
+        include_skill_instructions=session.include_skill_instructions,
+        approvals_reviewer=session.approvals_reviewer,
+        include_collaboration_mode_instructions=session.include_collaboration_mode_instructions,
+        experimental_realtime_start_instructions=session.experimental_realtime_start_instructions,
+        cwd=turn_cwd,
+        permissions=SimpleNamespace(allow_login_shell=session.allow_login_shell),
+        service_tier=session.service_tier,
+        model_reasoning_effort=reasoning_effort,
+        model_reasoning_summary=session.reasoning_summary,
+        goal_tools_enabled_value=session.goal_tools_enabled_value,
+    )
+
+
+async def _available_models_from_services(services: Any) -> tuple[Any, ...]:
+    manager = getattr(services, "models_manager", None)
+    if manager is None:
+        return ()
+    try_list_models = getattr(manager, "try_list_models", None)
+    if callable(try_list_models):
+        return tuple(try_list_models() or ())
+    list_models = getattr(manager, "list_models", None)
+    if not callable(list_models):
+        return ()
+    from pycodex.models_manager import RefreshStrategy
+
+    result = list_models(RefreshStrategy.ONLINE_IF_UNCACHED)
+    if inspect.isawaitable(result):
+        result = await result
+    return tuple(result or ())
+
+
+async def _load_plugins_for_config(session: InMemoryCodexSession, config: Any) -> Any:
+    manager = getattr(session.services, "plugins_manager", None)
+    loader = getattr(manager, "plugins_for_config", None)
+    if not callable(loader):
+        return ()
+    result = loader(_plugins_config_input(config))
+    return await result if inspect.isawaitable(result) else result
+
+
+def _plugins_config_input(config: Any) -> Any:
+    builder = getattr(config, "plugins_config_input", None)
+    return builder() if callable(builder) else config
+
+
+def _plugin_capability_summaries(outcome: Any) -> tuple[Any, ...]:
+    method = getattr(outcome, "capability_summaries", None)
+    if callable(method):
+        return tuple(method() or ())
+    value = getattr(outcome, "capability_summaries", None)
+    if value is not None:
+        return tuple(value or ())
+    if isinstance(outcome, (tuple, list)):
+        return tuple(outcome)
+    return ()
+
+
+def _effective_plugin_skill_roots(outcome: Any) -> tuple[Any, ...]:
+    method = getattr(outcome, "effective_plugin_skill_roots", None)
+    if callable(method):
+        return tuple(method() or ())
+    return tuple(getattr(outcome, "effective_plugin_skill_roots", ()) or ())
+
+
+def _session_connectors(session: InMemoryCodexSession) -> tuple[Any, ...]:
+    connectors = getattr(session, "available_connectors", ())
+    return tuple(connectors or ())
+
+
+def _apps_enabled(turn_context: InMemoryTurnContext) -> bool:
+    method = getattr(turn_context, "apps_enabled", None)
+    if callable(method):
+        return bool(method())
+    config = getattr(turn_context, "config", None)
+    value = getattr(config, "apps_enabled", False)
+    return bool(value() if callable(value) else value)
 
 
 def _response_item(value: ResponseItem | dict[str, Any]) -> ResponseItem:
@@ -2056,10 +2381,49 @@ def _turn_context_network_item(network: Any) -> TurnContextNetworkItem | None:
     )
 
 
-def _turn_context_collaboration_mode(collaboration_mode: Any) -> Any:
+def _turn_context_collaboration_mode(
+    collaboration_mode: Any,
+    *,
+    default_model: str,
+) -> CollaborationMode | None:
     if collaboration_mode is None:
         return None
-    return _jsonish(collaboration_mode)
+    if isinstance(collaboration_mode, CollaborationMode):
+        return collaboration_mode
+
+    mode = (
+        collaboration_mode.get("mode")
+        if isinstance(collaboration_mode, Mapping)
+        else getattr(collaboration_mode, "mode", ModeKind.DEFAULT)
+    )
+    settings = _collaboration_mode_settings(collaboration_mode)
+    if settings is None:
+        settings = {}
+    model = settings.get("model") if isinstance(settings, Mapping) else getattr(settings, "model", None)
+    reasoning_effort = (
+        settings.get("reasoning_effort")
+        if isinstance(settings, Mapping)
+        else getattr(settings, "reasoning_effort", None)
+    )
+    developer_instructions = (
+        settings.get("developer_instructions")
+        if isinstance(settings, Mapping)
+        else getattr(settings, "developer_instructions", None)
+    )
+    return CollaborationMode(
+        mode=mode if isinstance(mode, ModeKind) else ModeKind.parse(str(mode)),
+        settings=Settings(
+            model=default_model if model is None else str(model),
+            reasoning_effort=(
+                reasoning_effort
+                if isinstance(reasoning_effort, ReasoningEffort) or reasoning_effort is None
+                else ReasoningEffort.parse(str(reasoning_effort))
+            ),
+            developer_instructions=(
+                None if developer_instructions is None else str(developer_instructions)
+            ),
+        ),
+    )
 
 
 def _wire_value(value: Any) -> Any:
@@ -2116,6 +2480,5 @@ def _model_instructions(model_info: Any, personality: Any) -> str:
 def _base_instructions_text(base_instructions: BaseInstructions) -> str:
     text = getattr(base_instructions, "text", None)
     return text if isinstance(text, str) else str(base_instructions)
-
 
 
