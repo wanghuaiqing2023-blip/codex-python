@@ -178,10 +178,12 @@ class CoreGoalsTests(unittest.TestCase):
             updated_at=datetime.now(timezone.utc),
         )
         scheduled = []
+        store = SimpleNamespace(get_thread_goal=lambda _thread_id: state_goal)
         session = SimpleNamespace(
             goal_continuation_callback=lambda item, goal: scheduled.append((item, goal)),
             collaboration_mode=None,
-            turn_id=None,
+            conversation_id=state_goal.thread_id,
+            state_db=SimpleNamespace(thread_goals=lambda: store),
             token_usage_info=None,
         )
 
@@ -274,6 +276,178 @@ class CoreGoalsTests(unittest.TestCase):
         self.assertEqual(completed.status, ThreadGoalStatus.COMPLETE)
         self.assertEqual(completed.tokens_used, 580)
         self.assertGreaterEqual(completed.time_used_seconds, 2)
+
+    def test_budget_limit_steers_once_and_turn_finish_clears_active_accounting(self) -> None:
+        # Rust: core/src/goals.rs::account_thread_goal_progress distinguishes
+        # BudgetLimitSteering::Allowed from Suppressed and reports once per goal.
+        thread_id = ThreadId.new()
+        state_goal = StateThreadGoal(
+            thread_id=thread_id,
+            goal_id="goal-budget",
+            objective="finish within budget",
+            status=StateThreadGoalStatus.ACTIVE,
+            token_budget=10,
+            tokens_used=0,
+            time_used_seconds=0,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        class GoalStore:
+            def __init__(self) -> None:
+                self.goal = state_goal
+
+            async def get_thread_goal(self, _thread_id):
+                return self.goal
+
+            async def account_thread_goal_usage(self, _thread_id, seconds, tokens, _mode, _goal_id):
+                tokens_used = self.goal.tokens_used + tokens
+                self.goal = replace(
+                    self.goal,
+                    tokens_used=tokens_used,
+                    time_used_seconds=self.goal.time_used_seconds + seconds,
+                    status=(
+                        StateThreadGoalStatus.BUDGET_LIMITED
+                        if tokens_used >= 10
+                        else self.goal.status
+                    ),
+                )
+                return SimpleNamespace(updated=True, goal=self.goal)
+
+        class Session(SimpleNamespace):
+            async def total_token_usage(self):
+                return self.current_usage
+
+            async def send_event(self, _turn_context, event):
+                self.events.append(event)
+
+            async def inject_if_running(self, items):
+                self.injected.extend(items)
+                return None
+
+        store = GoalStore()
+        session = Session(
+            conversation_id=thread_id,
+            state_db=SimpleNamespace(thread_goals=lambda: store),
+            current_usage=TokenUsage(),
+            events=[],
+            injected=[],
+        )
+        turn = SimpleNamespace(
+            sub_id="turn-budget",
+            collaboration_mode=SimpleNamespace(mode=ModeKind.DEFAULT),
+        )
+
+        asyncio.run(goal_runtime_apply(session, {"type": "turn_started", "turn_context": turn}))
+        session.current_usage = TokenUsage(input_tokens=12, total_tokens=12)
+        asyncio.run(
+            goal_runtime_apply(
+                session,
+                {"type": "tool_completed", "turn_context": turn, "tool_name": "exec_command"},
+            )
+        )
+        session.current_usage = TokenUsage(input_tokens=15, total_tokens=15)
+        asyncio.run(
+            goal_runtime_apply(
+                session,
+                {"type": "tool_completed", "turn_context": turn, "tool_name": "exec_command"},
+            )
+        )
+
+        self.assertEqual(store.goal.status, StateThreadGoalStatus.BUDGET_LIMITED)
+        self.assertEqual(len(session.injected), 1)
+        self.assertIn("reached its token budget", session.injected[0].content[0].text)
+        self.assertEqual(session.goal_runtime.budget_limit_reported_goal_id, "goal-budget")
+        self.assertEqual(session.goal_runtime.accounting.turn.active_goal_id, "goal-budget")
+
+        session.goal_runtime.accounting.wall_clock.last_accounted_at -= 1.1
+        asyncio.run(
+            goal_runtime_apply(
+                session,
+                {"type": "turn_finished", "turn_context": turn, "turn_completed": True},
+            )
+        )
+        self.assertIsNone(session.goal_runtime.accounting.turn)
+        self.assertIsNone(session.goal_runtime.accounting.wall_clock.active_goal_id)
+
+    def test_thread_resume_restores_persisted_goal_id_without_protocol_synthesis(self) -> None:
+        # Rust: core/src/goals.rs::restore_thread_goal_runtime_after_resume
+        # reads the state goal and marks its exact goal_id active.
+        state_goal = StateThreadGoal(
+            thread_id=ThreadId.new(),
+            goal_id="persisted-goal-id",
+            objective="resume exact state",
+            status=StateThreadGoalStatus.ACTIVE,
+            token_budget=None,
+            tokens_used=3,
+            time_used_seconds=4,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        store = SimpleNamespace(get_thread_goal=lambda _thread_id: state_goal)
+        session = SimpleNamespace(
+            conversation_id=state_goal.thread_id,
+            state_db=SimpleNamespace(thread_goals=lambda: store),
+            collaboration_mode=SimpleNamespace(mode=ModeKind.DEFAULT),
+        )
+
+        asyncio.run(goal_runtime_apply(session, "thread_resumed"))
+
+        self.assertEqual(
+            session.goal_runtime.accounting.wall_clock.active_goal_id,
+            "persisted-goal-id",
+        )
+
+    def test_goal_continuation_waits_for_active_turn_and_trigger_mailbox(self) -> None:
+        # Rust: core/src/goals.rs::goal_continuation_candidate_if_active checks
+        # active_turn and trigger-turn mailbox input before and after DB reads.
+        state_goal = StateThreadGoal(
+            thread_id=ThreadId.new(),
+            goal_id="goal-wait",
+            objective="continue only when idle",
+            status=StateThreadGoalStatus.ACTIVE,
+            token_budget=None,
+            tokens_used=7,
+            time_used_seconds=8,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        class InputQueue:
+            trigger = False
+
+            async def has_trigger_turn_mailbox_items(self):
+                return self.trigger
+
+        store = SimpleNamespace(get_thread_goal=lambda _thread_id: state_goal)
+        queue = InputQueue()
+        scheduled = []
+        active = [SimpleNamespace(sub_id="turn-active")]
+
+        async def active_turn_context():
+            return active[0]
+
+        session = SimpleNamespace(
+            conversation_id=state_goal.thread_id,
+            state_db=SimpleNamespace(thread_goals=lambda: store),
+            collaboration_mode=SimpleNamespace(mode=ModeKind.DEFAULT),
+            input_queue=queue,
+            active_turn_context=active_turn_context,
+            goal_continuation_callback=lambda item, goal: scheduled.append((item, goal)),
+        )
+
+        asyncio.run(goal_runtime_apply(session, "maybe_continue_if_idle"))
+        self.assertEqual(scheduled, [])
+
+        active[0] = None
+        queue.trigger = True
+        asyncio.run(goal_runtime_apply(session, "maybe_continue_if_idle"))
+        self.assertEqual(scheduled, [])
+
+        queue.trigger = False
+        asyncio.run(goal_runtime_apply(session, "maybe_continue_if_idle"))
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0][1].tokens_used, 7)
 
     def test_protocol_goal_from_state_rejects_non_state_goal(self) -> None:
         with self.assertRaisesRegex(TypeError, "goal must be a state ThreadGoal"):

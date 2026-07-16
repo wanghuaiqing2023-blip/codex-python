@@ -2502,7 +2502,7 @@ def _run_tui(
     tui_stdin = sys.stdin if stdin_is_terminal and stdin is getattr(sys.stdin, "buffer", None) else stdin
     tui_stdin_is_terminal = bool(stdin_is_terminal) if stdin_is_terminal is not None else _stream_is_terminal(tui_stdin)
     if not tui_stdin_is_terminal:
-        print("Error: stdin is not a terminal", file=stderr)
+        print(_interactive_tui_non_tty_message(), file=stderr)
         return 1
     from pycodex.tui.tui.terminal_runtime import run_terminal_tui
 
@@ -2539,6 +2539,13 @@ def _interactive_tui_terminal_guard_message(stdin_is_terminal: bool | None, stde
         'TERM is set to "dumb". Refusing to start the interactive TUI because '
         "no terminal is available for a confirmation prompt (stdin/stderr is "
         "not a TTY). Run in a supported terminal or unset TERM."
+    )
+
+
+def _interactive_tui_non_tty_message() -> str:
+    return (
+        "Refusing to start the interactive TUI because stdin is not a terminal. "
+        "Run in a supported terminal."
     )
 
 
@@ -8742,6 +8749,5 @@ def _typed_root_value(root: dict[str, object], key: str, expected_type: type):
     if isinstance(value, expected_type):
         return value
     return None
-
 
 

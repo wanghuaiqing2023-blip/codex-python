@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from pycodex.tui.chatwidget.constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
+from pycodex.tui.bottom_pane.footer import terminal_idle_footer_right_text_from_runtime
 from pycodex.tui.chatwidget.protocol import (
     ChatWidgetProtocolRuntime,
     ReplayKind,
@@ -136,6 +137,49 @@ def test_thread_token_usage_updated_maps_app_server_usage_to_token_info() -> Non
     assert token_info.model_context_window == 200000
 
 
+def test_thread_goal_updated_notification_drives_footer_state() -> None:
+    # Rust module chain:
+    # app-server extension event sink -> chatwidget::protocol::ThreadGoalUpdated
+    # -> chatwidget::goal_status -> bottom_pane::footer.  The footer must not
+    # poll goal persistence or maintain a second Goal state machine.
+    runtime = ChatWidgetProtocolRuntime()
+    app_runtime = SimpleNamespace(chat_widget=runtime)
+    goal = {
+        "thread_id": "thread-1",
+        "objective": "finish parity",
+        "status": "active",
+        "token_budget": 1_000,
+        "tokens_used": 21,
+        "time_used_seconds": 3,
+        "created_at": 1,
+        "updated_at": 2,
+    }
+
+    handle_server_notification(
+        runtime,
+        ServerNotification("ThreadGoalUpdated", {"turn_id": "turn-1", "goal": goal}),
+        None,
+    )
+    assert terminal_idle_footer_right_text_from_runtime(app_runtime) == "Pursuing goal (21 / 1K)"
+
+    handle_server_notification(
+        runtime,
+        ServerNotification("ThreadGoalUpdated", {"turn_id": None, "goal": {**goal, "status": "paused"}}),
+        None,
+    )
+    assert terminal_idle_footer_right_text_from_runtime(app_runtime) == "Goal paused (/goal resume)"
+
+    handle_server_notification(
+        runtime,
+        ServerNotification(
+            "ThreadGoalUpdated",
+            {"turn_id": "turn-2", "goal": {**goal, "status": "complete", "tokens_used": 35}},
+        ),
+        None,
+    )
+    assert terminal_idle_footer_right_text_from_runtime(app_runtime) == "Goal achieved (35 tokens)"
+
+
 def test_handle_turn_completed_completed_interrupted_and_failed_paths() -> None:
     widget = Widget()
     handle_turn_completed_notification(widget, {"turn": {"id": "t1", "status": TurnStatus.COMPLETED, "duration_ms": 10}}, None)
@@ -250,9 +294,8 @@ def test_terminal_notification_action_plans_scrollback_product_events() -> None:
     )
     assert started == TerminalNotificationAction(
         "structured_history",
-        suppress_turn_status=True,
-        clear_live_status=True,
         finalize_active_stream=True,
+        ensure_turn_status=True,
     )
 
     completed = terminal_notification_action(
@@ -260,10 +303,22 @@ def test_terminal_notification_action_plans_scrollback_product_events() -> None:
     )
     assert completed == TerminalNotificationAction(
         "structured_history",
-        suppress_turn_status=True,
-        clear_live_status=True,
         finalize_active_stream=True,
     )
+
+    commentary = terminal_notification_action(
+        ServerNotification(
+            "ItemCompleted",
+            {
+                "item": {
+                    "kind": "AgentMessage",
+                    "phase": "Commentary",
+                    "content": [{"type": "text", "text": "still working"}],
+                }
+            },
+        )
+    )
+    assert commentary.restore_turn_status_after_action is True
 
     retry = terminal_notification_action(
         ServerNotification("Error", {"will_retry": True, "error": {"message": "retry"}})
@@ -392,9 +447,8 @@ def test_run_terminal_notification_dispatches_effects_before_action() -> None:
 
     assert action == TerminalNotificationAction(
         "structured_history",
-        suppress_turn_status=True,
-        clear_live_status=True,
         finalize_active_stream=True,
+        ensure_turn_status=True,
     )
     assert calls == [("effect", "True")]
 
@@ -463,6 +517,8 @@ def test_terminal_protocol_event_dispatcher_owns_effect_callbacks() -> None:
         hide_live_status=lambda: calls.append(("effect", "hide_live")),
         clear_live_status=lambda: calls.append(("effect", "clear_live")),
         finalize_active_stream=lambda: calls.append(("effect", "finalize")),
+        ensure_turn_status=lambda: calls.append(("effect", "ensure")),
+        restore_turn_status=lambda: calls.append(("effect", "restore")),
     )
 
     action = dispatcher.handle_event(ServerNotification("AgentMessageDelta", {"delta": "hello"}))

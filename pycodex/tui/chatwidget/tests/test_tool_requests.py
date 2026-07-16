@@ -110,7 +110,7 @@ def test_guardian_in_progress_updates_pending_footer_and_terminal_clears_it():
     )
 
     assert [line_text(line) for line in model.boxed_history[-1].display_lines(120)] == [
-        "OK Request approved for apply_patch touching 2 files"
+        "\u2714 Request approved for apply_patch touching 2 files"
     ]
     assert model.redraw_requests == 2
 
@@ -128,7 +128,7 @@ def test_guardian_denied_records_recent_denial_and_command_decision():
     denials = list(model.recent_auto_review_denials.entries())
     assert [denial.id for denial in denials] == ["g2"]
     assert [line_text(line) for line in model.boxed_history[-1].display_lines(120)] == [
-        "NO Request denied for codex to run python -m pytest"
+        "\u2717 Request denied for codex to run python -m pytest"
     ]
 
 

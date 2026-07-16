@@ -265,7 +265,9 @@ def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None
 
     assert status.turn_status.active is True
     assert status.turn_status.last_second == 3
-    assert status.live_status.text == "\u2022 Working (3s \u2022 esc to interrupt)"
+    assert status.live_status.text is not None
+    assert status.live_status.text.startswith(("\u2022 Working (3s", "\u25e6 Working (3s"))
+    assert status.live_status.text.endswith("\u2022 esc to interrupt)")
     status.suppress_turn_status()
     suppressed_text = status.live_status.text
     status.refresh_turn_status_if_due(now=14.1)
@@ -273,6 +275,43 @@ def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None
     assert status.turn_status.suppressed is True
     status.clear_turn_status()
     assert status.turn_status == TerminalTurnStatusState.inactive()
+
+
+def test_terminal_status_surface_writer_animates_during_silent_wait(monkeypatch) -> None:
+    # Rust status_indicator_widget schedules redraws while a turn is active;
+    # the terminal event loop's idle tick must project those activity frames.
+    now = [100.0]
+    monkeypatch.setattr("pycodex.tui.motion.time.monotonic", lambda: now[0])
+    status = TerminalStatusSurfaceWriter(io.StringIO())
+    status.start_turn(now[0])
+    status.render_turn_status(force=True, now=now[0])
+    first = status.live_status.render_text
+
+    now[0] += 0.7
+    status.refresh_turn_status_if_due(now=now[0])
+    second = status.live_status.render_text
+
+    assert first is not None and first.startswith("\u2022 Working (0s")
+    assert second is not None and second.startswith("\u25e6 Working (0s")
+
+
+def test_terminal_status_surface_writer_does_not_animate_behind_active_view(monkeypatch) -> None:
+    # Rust only schedules the status widget's next frame when BottomPane
+    # renders it; an active BottomPaneView replaces the status surface.
+    now = [100.0]
+    monkeypatch.setattr("pycodex.tui.motion.time.monotonic", lambda: now[0])
+    visible = [True]
+    status = TerminalStatusSurfaceWriter(io.StringIO())
+    status.bind_status_indicator_visible(lambda: visible[0])
+    status.start_turn(now[0])
+    status.render_turn_status(force=True, now=now[0])
+    first = status.live_status.render_text
+
+    visible[0] = False
+    now[0] += 0.7
+    status.refresh_turn_status_if_due(now=now[0])
+
+    assert status.live_status.render_text == first
 
 
 def test_terminal_status_surface_writer_hides_live_status_surface() -> None:
@@ -355,7 +394,7 @@ def test_guardian_status_temporarily_owns_and_releases_turn_status_surface() -> 
     assert status.turn_status.active is True
     assert status.turn_status.suppressed is False
     assert status.live_status.render_text is not None
-    assert status.live_status.render_text.startswith("\u2022 Working (")
+    assert status.live_status.render_text.startswith(("\u2022 Working (", "\u25e6 Working ("))
 
 
 def test_action_required_view_sets_and_clears_managed_terminal_title() -> None:

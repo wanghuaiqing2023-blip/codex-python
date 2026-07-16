@@ -123,6 +123,9 @@ class TerminalTuiRunner:
         self.exit_code = 0
         self._input_source_provider = TerminalInputSourceProvider(stdin)
         self._deferred_turn_input: deque[TerminalInputEvent] = deque()
+        self._deferred_internal_operations: deque[tuple[str, AppCommand]] = deque()
+        self._turn_event_consume_depth = 0
+        self._draining_internal_operations = False
         self._turn_input_eof_deferred = False
         self._stdin_is_terminal = terminal_stdin_is_terminal(stdin)
         self._stdout_is_terminal = terminal_stdin_is_terminal(stdout)
@@ -142,6 +145,7 @@ class TerminalTuiRunner:
             stdin_is_terminal=lambda: self._stdin_is_terminal,
             layout_active=lambda: self._resize.layout_active,
             check_resize=lambda: self._resize.check_size_change(),
+            animations_enabled=bool(getattr(self.app_runtime.chat_widget.config, "animations", True)),
         )
         self._bottom_pane = TerminalBottomPaneController(
             stdout,
@@ -171,8 +175,11 @@ class TerminalTuiRunner:
                     if callable(history_lookup)
                     else None
                 ),
-            )
+        )
         self._status.bind_render_bottom_pane(self._bottom_pane.render)
+        self._status.bind_status_indicator_visible(
+            lambda: not self._bottom_pane.has_active_view()
+        )
         self._transcript = TerminalTranscriptState()
         self._transcript_overlay = TerminalTranscriptOverlayController(
             cells=lambda: tuple(self._transcript.cells),
@@ -211,7 +218,7 @@ class TerminalTuiRunner:
             history_state=lambda: self._history.state,
             history_wrap_width=lambda: self._history.wrap_width(),
             terminal_active=lambda: self._resize.terminal_layout_active,
-            live_status_footprint_active=lambda: self._status.live_status.footprint_active,
+            live_status_footprint_active=self._bottom_pane.live_status_footprint_active,
             history_bottom_row=self._bottom_pane.history_bottom_row,
             terminal_columns=self._terminal_columns.columns,
             insert_replayed_history_lines=self._history.insert_replayed_lines,
@@ -270,6 +277,8 @@ class TerminalTuiRunner:
             hide_live_status=self._status.hide_live_status,
             clear_live_status=self._status.clear_live_status,
             finalize_active_stream=self._assistant_stream.finalize,
+            ensure_turn_status=self._status.ensure_turn_status,
+            restore_turn_status=self._status.ensure_turn_status,
         )
         self._clear_ui = TerminalClearUiExecutor.for_terminal_runtime(
             app_runtime=self.app_runtime,
@@ -339,12 +348,7 @@ class TerminalTuiRunner:
             set_exit_code=self._set_exit_code,
         )
         self.app_runtime.bind_active_view_sink(self._show_app_view)
-        self.app_runtime.bind_internal_operation_sink(
-            lambda summary, operation: self._turn_submission.submit_operation(
-                summary,
-                lambda: self.app_runtime.submit_op(operation),
-            )
-        )
+        self.app_runtime.bind_internal_operation_sink(self._submit_or_defer_internal_operation)
         self._local_commands = TerminalLocalCommandDispatcher(
             clear=self._clear_ui.run,
             help_=self._history.write_cell,
@@ -546,7 +550,37 @@ class TerminalTuiRunner:
         self.exit_code = int(code)
 
     def _consume_events(self, event_stream: TerminalTurnEventStreamProtocol) -> None:
-        self._turn_events.consume(event_stream)
+        self._turn_event_consume_depth += 1
+        try:
+            self._turn_events.consume(event_stream)
+        finally:
+            self._turn_event_consume_depth -= 1
+        if self._turn_event_consume_depth == 0:
+            self._drain_deferred_internal_operations()
+
+    def _submit_or_defer_internal_operation(self, summary: str, operation: AppCommand) -> bool | None:
+        if self._turn_event_consume_depth > 0 or self._draining_internal_operations:
+            self._deferred_internal_operations.append((str(summary), operation))
+            return None
+        return self._turn_submission.submit_operation(
+            str(summary),
+            lambda: self.app_runtime.submit_op(operation),
+        )
+
+    def _drain_deferred_internal_operations(self) -> None:
+        if self._draining_internal_operations:
+            return
+        self._draining_internal_operations = True
+        try:
+            while self._deferred_internal_operations:
+                summary, operation = self._deferred_internal_operations.popleft()
+                self.app_runtime.wait_for_internal_operation_ready()
+                self._turn_submission.submit_operation(
+                    summary,
+                    lambda operation=operation: self.app_runtime.submit_op(operation),
+                )
+        finally:
+            self._draining_internal_operations = False
 
     def _poll_turn_input(self, timeout: float) -> object | None:
         if self._turn_input_eof_deferred:

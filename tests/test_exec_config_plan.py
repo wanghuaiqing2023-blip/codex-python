@@ -40,13 +40,44 @@ from pycodex.protocol import (
     AltScreenMode,
     AskForApproval,
     GranularApprovalConfig,
+    Personality,
     PermissionProfile,
     SandboxMode,
     WindowsSandboxLevel,
+    WebSearchMode,
 )
 
 
 class ExecConfigPlanTests(unittest.TestCase):
+    def test_config_defaults_personality_and_web_search_like_rust_core(self):
+        # Rust: codex-core::config::ConfigBuilder defaults personality to
+        # Pragmatic when the stable feature is enabled and web search to Cached.
+        plan = build_exec_config_bootstrap_plan(
+            parse_exec_args(["prompt"]),
+            config_toml={},
+            current_dir=Path.cwd(),
+        )
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertIs(plan.personality, Personality.PRAGMATIC)
+        self.assertIs(config.personality, Personality.PRAGMATIC)
+        self.assertIs(plan.web_search_mode, WebSearchMode.CACHED)
+        self.assertIs(config.web_search_mode, WebSearchMode.CACHED)
+
+    def test_explicit_config_precedes_personality_and_web_search_feature_fallbacks(self):
+        plan = build_exec_config_bootstrap_plan(
+            parse_exec_args(["prompt"]),
+            config_toml={
+                "personality": "friendly",
+                "web_search": "live",
+                "features": {"personality": False, "web_search_cached": True},
+            },
+            current_dir=Path.cwd(),
+        )
+
+        self.assertIs(plan.personality, Personality.FRIENDLY)
+        self.assertIs(plan.web_search_mode, WebSearchMode.LIVE)
+
     def test_sandbox_mode_precedence_matches_exec_run_main(self):
         self.assertIs(exec_sandbox_mode_from_cli(parse_exec_args(["--sandbox", "read-only", "prompt"])), SandboxMode.READ_ONLY)
         self.assertIs(exec_sandbox_mode_from_cli(parse_exec_args(["--full-auto", "prompt"])), SandboxMode.WORKSPACE_WRITE)
@@ -416,6 +447,28 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertFalse(config.features.enabled(Feature.COLLAB))
         self.assertTrue(config.exec_permission_approvals_enabled)
         self.assertTrue(config.request_permissions_tool_enabled)
+
+    def test_exec_session_config_resolves_rust_multi_agent_v2_defaults_and_roles(self):
+        # Rust: core/src/config/mod.rs::resolve_multi_agent_v2_config and
+        # agent::role::load_agent_roles build the Config consumed by spec_plan.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            plan = build_exec_config_bootstrap_plan(
+                parse_exec_args(["prompt"]),
+                config_toml={
+                    "features": {"multi_agent_v2": True},
+                    "agents": {"reviewer": {"description": "Reviews changes."}},
+                },
+                current_dir=root,
+            )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertEqual(config.multi_agent_v2.min_wait_timeout_ms, 10_000)
+        self.assertEqual(config.multi_agent_v2.default_wait_timeout_ms, 30_000)
+        self.assertEqual(config.multi_agent_v2.max_wait_timeout_ms, 3_600_000)
+        self.assertTrue(config.multi_agent_v2.usage_hint_enabled)
+        self.assertEqual(config.agent_roles["reviewer"].description, "Reviews changes.")
 
     def test_interactive_defaults_follow_fixed_rust_project_trust(self):
         # Fixed Rust commit 1c7832f:

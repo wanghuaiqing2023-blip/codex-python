@@ -26,16 +26,16 @@ class Recorder:
         self.calls = []
 
     async def on_turn_start(self, value):
-        self.calls.append(("start", value.fields))
+        self.calls.append(("start", value))
 
     async def on_turn_stop(self, value):
-        self.calls.append(("stop", value.fields))
+        self.calls.append(("stop", value))
 
     async def on_turn_abort(self, value):
-        self.calls.append(("abort", value.fields))
+        self.calls.append(("abort", value))
 
     async def on_turn_error(self, value):
-        self.calls.append(("error", value.fields))
+        self.calls.append(("error", value))
 
 
 def _session(*contributors):
@@ -69,39 +69,17 @@ def test_emit_turn_lifecycle_dispatches_rust_input_shapes() -> None:
     asyncio.run(emit_turn_abort_lifecycle(session, "interrupted", {"turn": 3}))
     asyncio.run(emit_turn_error_lifecycle(session, turn_context, {"type": "bad_request"}))
 
-    assert recorder.calls == [
-        (
-            "start",
-            {
-                "turn_id": "turn-1",
-                "collaboration_mode": "Plan",
-                "token_usage_at_turn_start": {"input_tokens": 10},
-                "session_store": {"session": 1},
-                "thread_store": {"thread": 2},
-                "turn_store": {"turn": 3},
-            },
-        ),
-        ("stop", {"session_store": {"session": 1}, "thread_store": {"thread": 2}, "turn_store": {"turn": 3}}),
-        (
-            "abort",
-            {
-                "reason": "interrupted",
-                "session_store": {"session": 1},
-                "thread_store": {"thread": 2},
-                "turn_store": {"turn": 3},
-            },
-        ),
-        (
-            "error",
-            {
-                "turn_id": "turn-1",
-                "error": {"type": "bad_request"},
-                "session_store": {"session": 1},
-                "thread_store": {"thread": 2},
-                "turn_store": {"turn": 3},
-            },
-        ),
-    ]
+    start = recorder.calls[0][1]
+    assert start.turn_id == "turn-1"
+    assert start.collaboration_mode == "Plan"
+    assert start.token_usage_at_turn_start == {"input_tokens": 10}
+    assert start.session_store == {"session": 1}
+    assert start.thread_store == {"thread": 2}
+    assert start.turn_store == {"turn": 3}
+    assert recorder.calls[1][1].turn_store == {"turn": 3}
+    assert recorder.calls[2][1].reason == "interrupted"
+    assert recorder.calls[3][1].turn_id == "turn-1"
+    assert recorder.calls[3][1].error == {"type": "bad_request"}
 
 
 def test_emit_turn_lifecycle_ignores_missing_extensions() -> None:

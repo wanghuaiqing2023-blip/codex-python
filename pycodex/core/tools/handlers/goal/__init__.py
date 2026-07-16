@@ -457,40 +457,37 @@ def _handle_update_goal_with_session(
     request: SetGoalRequest,
     status: ThreadGoalStatus,
 ) -> FunctionToolOutput | Any:
-    apply = getattr(session, "goal_runtime_apply", None)
-    if callable(apply):
-        try:
-            applied = apply({"type": "tool_completed_goal", "turn_context": getattr(invocation_or_payload, "turn", None)})
-        except Exception as err:
-            raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
-        if inspect.isawaitable(applied):
-            return _await_update_goal_with_session(applied, invocation_or_payload, session, request, status)
-    setter = getattr(session, "set_thread_goal")
-    try:
-        goal = setter(getattr(invocation_or_payload, "turn", None), request)
-    except Exception as err:
-        raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
-    if inspect.isawaitable(goal):
-        return _await_goal_response(
-            goal,
-            include_completion_budget_report=status is ThreadGoalStatus.COMPLETE,
-        )
-    return goal_response(
-        _checked_goal_result(goal),
-        include_completion_budget_report=status is ThreadGoalStatus.COMPLETE,
+    return _await_update_goal_with_session(
+        invocation_or_payload,
+        session,
+        request,
+        status,
     )
 
 
 async def _await_update_goal_with_session(
-    applied: Any,
     invocation_or_payload: Any,
     session: Any,
     request: SetGoalRequest,
     status: ThreadGoalStatus,
 ) -> FunctionToolOutput:
+    turn_context = getattr(invocation_or_payload, "turn", None)
+    runtime = getattr(session, "goal_runtime_apply", None)
+    if callable(runtime):
+        try:
+            result = runtime(
+                {
+                    "type": "tool_completed_goal",
+                    "turn_context": turn_context,
+                }
+            )
+            if inspect.isawaitable(result):
+                await result
+        except Exception as err:
+            raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
+    setter = getattr(session, "set_thread_goal")
     try:
-        await applied
-        goal = session.set_thread_goal(getattr(invocation_or_payload, "turn", None), request)
+        goal = setter(turn_context, request)
         if inspect.isawaitable(goal):
             goal = await goal
     except Exception as err:

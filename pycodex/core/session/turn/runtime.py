@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import inspect
 import json
+import logging
 import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -20,6 +21,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+LOG = logging.getLogger(__name__)
 
 from pycodex.core.client import (
     ModelClient,
@@ -59,10 +62,15 @@ from pycodex.core.responses_retry import (
     RetryableResponseStreamAction,
     response_stream_retry_decision,
 )
-from pycodex.core.tools.spec_plan import build_environment_tool_router_from_turn_context
+from pycodex.core.mcp_tool_exposure import build_mcp_tool_exposure
 from pycodex.core.tools.network_approval import CancellationToken as ToolCancellationToken
 from pycodex.core.tools.parallel import ToolCallRuntime
-from pycodex.core.tools.router import FunctionCallError, ToolRouter
+from pycodex.core.tools.router import (
+    FunctionCallError,
+    ToolRouter,
+    ToolRouterParams,
+    extension_tool_executors,
+)
 from pycodex.core.tools.context import (
     ApplyPatchToolOutput,
     CommandExecutionToolOutput,
@@ -164,6 +172,7 @@ class UserTurnSamplingResult:
     raw_tool_output_items: tuple[Any, ...] = ()
     raw_results: tuple[Any, ...] = ()
     raw_result: Any = None
+    rollout_items: tuple[Any, ...] = ()
     session_events: tuple[Any, ...] = ()
     stream_events: tuple[Any, ...] = ()
     stream_event_dispatch_plans: tuple[Any, ...] = ()
@@ -280,6 +289,8 @@ async def run_user_turn_sampling_from_session(
     if sampler is None or not callable(sampler):
         raise TypeError("sampler must be callable")
     max_tool_followups = _validate_max_tool_followups(max_tool_followups)
+    rollout_start_index = len(tuple(getattr(sess, "persisted_rollout_items", ()) or ()))
+    event_start_index = len(tuple(getattr(sess, "emitted_events", ()) or ()))
     try:
         prepared = await _prepare_user_turn_request_from_session(
             sess,
@@ -303,6 +314,11 @@ async def run_user_turn_sampling_from_session(
             emit_turn_started_lifecycle=True,
             cancellation_token=cancellation_token,
         )
+        prepared = replace(
+            prepared,
+            rollout_start_index=rollout_start_index,
+            event_start_index=event_start_index,
+        )
     except _PreSamplingCompactError as exc:
         prepared = _PreparedUserTurnRequest(
             turn_context=exc.turn_context,
@@ -315,6 +331,8 @@ async def run_user_turn_sampling_from_session(
             output_schema=output_schema,
             output_schema_strict=output_schema_strict,
             request_plan=TurnResponsesRequestPlan(prompt=None, request={}),
+            rollout_start_index=rollout_start_index,
+            event_start_index=event_start_index,
         )
         await _handle_auto_compact_error(sess, exc.turn_context, exc.error)
         return await _completed_user_turn_sampling_result(
@@ -343,6 +361,8 @@ async def run_user_turn_sampling_from_session(
             output_schema=output_schema,
             output_schema_strict=output_schema_strict,
             request_plan=TurnResponsesRequestPlan(prompt=None, request={}),
+            rollout_start_index=rollout_start_index,
+            event_start_index=event_start_index,
         )
         return await _completed_user_turn_sampling_result(
             prepared,
@@ -970,7 +990,12 @@ def _user_turn_sampling_result(
         request_plans=tuple(request_plans),
         raw_results=tuple(raw_results),
         raw_result=raw_result,
-        session_events=tuple(getattr(sess, "emitted_events", ()) or ()),
+        rollout_items=tuple(getattr(sess, "persisted_rollout_items", ()) or ())[
+            prepared.rollout_start_index :
+        ],
+        session_events=tuple(getattr(sess, "emitted_events", ()) or ())[
+            prepared.event_start_index :
+        ],
         stream_events=tuple(all_stream_events),
         stream_event_dispatch_plans=tuple(all_stream_event_dispatch_plans),
         stream_event_apply_plans=tuple(stream_event_apply_plans),
@@ -1103,6 +1128,8 @@ class _PreparedUserTurnRequest:
     output_schema: Any
     output_schema_strict: bool | None
     request_plan: TurnResponsesRequestPlan
+    rollout_start_index: int = 0
+    event_start_index: int = 0
 
 
 class _PreSamplingCompactError(Exception):
@@ -3742,20 +3769,28 @@ async def _handle_terminal_sampling_error(sess: Any, turn_context: Any, error: C
 
 
 async def _apply_usage_limit_goal_runtime(sess: Any, turn_context: Any) -> None:
+    await _apply_goal_runtime_event_best_effort(
+        sess,
+        {
+            "type": "usage_limit_reached",
+            "turn_context": turn_context,
+        },
+        "failed to apply goal runtime usage-limit event",
+    )
+
+
+async def _apply_goal_runtime_event_best_effort(
+    sess: Any,
+    event: Mapping[str, Any],
+    warning: str,
+) -> None:
     apply = sess.get("goal_runtime_apply") if isinstance(sess, Mapping) else getattr(sess, "goal_runtime_apply", None)
     if not callable(apply):
         return
     try:
-        await _maybe_await(
-            apply(
-                {
-                    "type": "usage_limit_reached",
-                    "turn_context": turn_context,
-                }
-            )
-        )
-    except Exception:
-        return
+        await _maybe_await(apply(event))
+    except Exception as exc:
+        LOG.warning("%s: %s", warning, exc)
 
 
 async def _maybe_run_mid_turn_auto_compact(sess: Any, turn_context: Any) -> bool:
@@ -4112,25 +4147,23 @@ async def _send_terminal_error_event(sess: Any, turn_context: Any, error: CodexE
 
 async def _emit_turn_started_lifecycle(sess: Any, turn_context: Any) -> None:
     await _mark_turn_timing_started(sess, turn_context)
+    await _mark_session_turn_context_active(sess, turn_context)
     token_usage_reader = getattr(sess, "total_token_usage", None)
     token_usage = await _maybe_await(token_usage_reader()) if callable(token_usage_reader) else None
     if not isinstance(token_usage, TokenUsage):
         token_usage = TokenUsage()
-    goal_runtime_apply = getattr(sess, "goal_runtime_apply", None)
-    if callable(goal_runtime_apply):
-        try:
-            await _maybe_await(
-                goal_runtime_apply(
-                    {
-                        "type": "turn_started",
-                        "turn_context": turn_context,
-                        "token_usage": token_usage,
-                    }
-                )
-            )
-        except Exception:
-            # Rust logs and continues when goal state cannot be opened at turn start.
-            pass
+    await _apply_goal_runtime_event_best_effort(
+        sess,
+        {
+            "type": "turn_started",
+            "turn_context": turn_context,
+            "token_usage": token_usage,
+        },
+        "failed to apply goal runtime turn-start event",
+    )
+    lifecycle = getattr(sess, "emit_turn_start_lifecycle", None)
+    if callable(lifecycle):
+        await _maybe_await(lifecycle(turn_context, token_usage))
     sender = getattr(sess, "send_event", None)
     if callable(sender):
         await _maybe_await(
@@ -4169,6 +4202,19 @@ async def _emit_turn_complete_lifecycle(
                 turn_context,
                 f"Failed to save the conversation transcript; Codex will continue retrying. Error: {exc}",
             )
+    lifecycle = getattr(sess, "emit_turn_stop_lifecycle", None)
+    turn_store = getattr(turn_context, "extension_data", None)
+    if callable(lifecycle) and turn_store is not None:
+        await _maybe_await(lifecycle(turn_store))
+    await _apply_goal_runtime_event_best_effort(
+        sess,
+        {
+            "type": "turn_finished",
+            "turn_context": turn_context,
+            "turn_completed": True,
+        },
+        "failed to apply goal runtime turn-finished event",
+    )
     sender = getattr(sess, "send_event", None)
     if callable(sender):
         await _maybe_await(
@@ -4186,6 +4232,24 @@ async def _emit_turn_complete_lifecycle(
                 ),
             )
         )
+    await _clear_session_turn_context_active(sess, turn_context)
+    await _apply_goal_runtime_event_best_effort(
+        sess,
+        {"type": "maybe_continue_if_idle"},
+        "failed to apply goal runtime maybe-continue event",
+    )
+
+
+async def _mark_session_turn_context_active(sess: Any, turn_context: Any) -> None:
+    marker = getattr(sess, "mark_turn_context_active", None)
+    if callable(marker):
+        await _maybe_await(marker(turn_context))
+
+
+async def _clear_session_turn_context_active(sess: Any, turn_context: Any) -> None:
+    clearer = getattr(sess, "clear_turn_context_active", None)
+    if callable(clearer):
+        await _maybe_await(clearer(turn_context))
 
 
 async def _emit_turn_aborted_lifecycle(
@@ -4193,6 +4257,18 @@ async def _emit_turn_aborted_lifecycle(
     turn_context: Any,
     reason: TurnAbortReason = TurnAbortReason.INTERRUPTED,
 ) -> None:
+    lifecycle = getattr(sess, "emit_turn_abort_lifecycle", None)
+    turn_store = getattr(turn_context, "extension_data", None)
+    if callable(lifecycle) and turn_store is not None:
+        await _maybe_await(lifecycle(reason, turn_store))
+    await _apply_goal_runtime_event_best_effort(
+        sess,
+        {
+            "type": "task_aborted",
+            "turn_context": turn_context,
+        },
+        "failed to apply goal runtime abort event",
+    )
     sender = getattr(sess, "send_event", None)
     if callable(sender):
         await _maybe_await(
@@ -4207,6 +4283,7 @@ async def _emit_turn_aborted_lifecycle(
                 ),
             )
         )
+    await _clear_session_turn_context_active(sess, turn_context)
 
 
 async def _mark_turn_timing_started(sess: Any, turn_context: Any) -> None:
@@ -4932,7 +5009,11 @@ async def _handle_tool_call_items(
 ) -> tuple[ResponseItem, ...]:
     if not isinstance(router, ToolRouter):
         return ()
-    runtime = ToolCallRuntime(router)
+    services = getattr(sess, "services", None)
+    extensions = getattr(services, "extensions", None)
+    lifecycle_getter = getattr(extensions, "tool_lifecycle_contributors", None)
+    lifecycle_contributors = tuple(lifecycle_getter() or ()) if callable(lifecycle_getter) else ()
+    runtime = ToolCallRuntime(router, lifecycle_contributors=lifecycle_contributors)
     cancellation_token = getattr(turn_context, "cancellation_token", None)
     if _token_cancelled(cancellation_token):
         raise CodexErr.simple("turn_aborted")
@@ -4968,6 +5049,10 @@ async def _handle_tool_call_items(
                             turn_context,
                             session=sess,
                             turn=turn_context,
+                            session_store=getattr(services, "session_extension_data", None),
+                            thread_store=getattr(services, "thread_extension_data", None),
+                            turn_store=getattr(turn_context, "extension_data", None),
+                            turn_id=_turn_context_turn_id(turn_context),
                             cancellation_token=tool_cancellation_token,
                         )
                     ),
@@ -5429,23 +5514,85 @@ async def _drain_cancelled_tool_tasks(tasks: Sequence[tuple[int, Any]]) -> None:
 
 
 async def _default_built_tools(_sess: Any, _turn_context: Any) -> Any:
-    model_info = getattr(_turn_context, "model_info", None)
-    config = getattr(_turn_context, "config", None)
-    permissions = getattr(config, "permissions", None)
-    return build_environment_tool_router_from_turn_context(
-        _turn_context,
-        apply_patch_tool_type=getattr(model_info, "apply_patch_tool_type", None),
-        allow_login_shell=bool(getattr(permissions, "allow_login_shell", False)),
-        exec_permission_approvals_enabled=_feature_enabled(
-            getattr(_turn_context, "features", None),
-            Feature.EXEC_PERMISSION_APPROVALS,
+    return await built_tools(_sess, _turn_context)
+
+
+async def built_tools(sess: Any, turn_context: Any, cancellation_token: Any = None) -> ToolRouter:
+    """Build the complete per-turn router at Rust ``session::turn::built_tools``."""
+
+    del cancellation_token
+    services = getattr(sess, "services", None)
+    mcp_manager = getattr(services, "mcp_connection_manager", None)
+    all_mcp_tools = await _list_all_mcp_tools(mcp_manager)
+    has_mcp_servers = await _mcp_manager_has_servers(mcp_manager, all_mcp_tools)
+
+    config = getattr(turn_context, "config", None)
+    apps_enabled = _bool_config_property(turn_context, "apps_enabled", False)
+    connectors = None
+    if apps_enabled:
+        configured = getattr(sess, "available_connectors", None)
+        connectors = (
+            tuple(configured)
+            if configured is not None
+            else accessible_connectors_from_mcp_tools(all_mcp_tools)
+        )
+        connectors = with_app_enabled_state(
+            connectors,
+            config,
+            getattr(sess, "app_requirements", None),
+        )
+
+    exposure = build_mcp_tool_exposure(
+        all_mcp_tools,
+        connectors,
+        config,
+        search_tool_enabled=bool(
+            getattr(getattr(turn_context, "model_info", None), "supports_search_tool", False)
         ),
-        request_permissions_tool_enabled=_feature_enabled(
-            getattr(_turn_context, "features", None),
-            Feature.REQUEST_PERMISSIONS_TOOL,
-        ),
-        can_request_original_image_detail=_can_request_original_image_detail(model_info),
     )
+    params = ToolRouterParams(
+        mcp_tools=exposure.direct_tools if has_mcp_servers else None,
+        deferred_mcp_tools=exposure.deferred_tools,
+        discoverable_tools=await _discoverable_tools(sess, turn_context),
+        extension_tool_executors=extension_tool_executors(sess),
+        dynamic_tools=getattr(turn_context, "dynamic_tools", ()) or (),
+        mcp_resource_provider=mcp_manager if has_mcp_servers else None,
+    )
+    return ToolRouter.from_turn_context(turn_context, params)
+
+
+async def _list_all_mcp_tools(manager: Any) -> tuple[Any, ...]:
+    if manager is None:
+        return ()
+    reader = getattr(manager, "list_all_tools", None)
+    if not callable(reader):
+        return ()
+    value = await _maybe_await(reader())
+    if isinstance(value, Mapping):
+        return tuple(value.values())
+    return tuple(value or ())
+
+
+async def _mcp_manager_has_servers(manager: Any, tools: tuple[Any, ...]) -> bool:
+    if manager is None:
+        return False
+    reader = getattr(manager, "has_servers", None)
+    if callable(reader):
+        return bool(await _maybe_await(reader()))
+    return bool(tools)
+
+
+async def _discoverable_tools(sess: Any, turn_context: Any) -> tuple[Any, ...] | None:
+    direct = getattr(sess, "discoverable_tools", None)
+    if direct is not None:
+        return tuple(direct)
+    services = getattr(sess, "services", None)
+    manager = getattr(services, "plugins_manager", None)
+    loader = getattr(manager, "discoverable_tools_for_config", None)
+    if not callable(loader):
+        return None
+    value = await _maybe_await(loader(getattr(turn_context, "config", None)))
+    return tuple(value) if value else None
 
 
 def _feature_enabled(features: Any, feature: Feature | str) -> bool:
@@ -5488,6 +5635,7 @@ __all__ = [
     "SamplerFn",
     "UserTurnSamplingRequest",
     "UserTurnSamplingResult",
+    "built_tools",
     "build_user_input_op_responses_request_from_session",
     "build_user_turn_responses_request_from_session",
     "run_user_input_op_sampling_from_session",

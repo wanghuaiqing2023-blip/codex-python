@@ -157,11 +157,11 @@ class CoreMultiAgentsV2HandlerTests(unittest.TestCase):
 
     def test_wait_args_resolve_timeout_bounds(self) -> None:
         self.assertEqual(WaitArgs.from_json("{}").resolve_timeout_ms(1000, 30000, 600000), 30000)
-        self.assertEqual(WaitArgs.from_json('{"timeout_ms":5000}').resolve_timeout_ms(), 5000)
-        with self.assertRaisesRegex(FunctionCallError, "at least 1000"):
-            WaitArgs.from_json('{"timeout_ms":999}').resolve_timeout_ms()
-        with self.assertRaisesRegex(FunctionCallError, "at most 600000"):
-            WaitArgs.from_json('{"timeout_ms":600001}').resolve_timeout_ms()
+        self.assertEqual(WaitArgs.from_json('{"timeout_ms":10000}').resolve_timeout_ms(), 10000)
+        with self.assertRaisesRegex(FunctionCallError, "at least 10000"):
+            WaitArgs.from_json('{"timeout_ms":9999}').resolve_timeout_ms()
+        with self.assertRaisesRegex(FunctionCallError, "at most 3600000"):
+            WaitArgs.from_json('{"timeout_ms":3600001}').resolve_timeout_ms()
 
     def test_wait_agent_result_text_matches_rust(self) -> None:
         self.assertEqual(WaitAgentResult.from_timed_out(False).to_mapping(), {"message": "Wait completed.", "timed_out": False})
@@ -171,7 +171,7 @@ class CoreMultiAgentsV2HandlerTests(unittest.TestCase):
         invocation = ToolInvocation(
             call_id="call-wait",
             tool_name=ToolName.plain("wait_agent"),
-            payload=ToolPayload.function('{"timeout_ms":2000}'),
+            payload=ToolPayload.function('{"timeout_ms":10000}'),
         )
         seen = []
 
@@ -180,7 +180,7 @@ class CoreMultiAgentsV2HandlerTests(unittest.TestCase):
             return False
 
         result = WaitAgentHandler(wait_for_change=wait_for_change).handle(invocation)
-        self.assertEqual(seen, [2000])
+        self.assertEqual(seen, [10000])
         self.assertEqual(result.to_mapping(), {"message": "Wait timed out.", "timed_out": True})
 
     def test_wait_agent_handler_uses_turn_config_timeout_bounds(self) -> None:

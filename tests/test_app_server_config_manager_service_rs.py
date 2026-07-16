@@ -25,6 +25,7 @@ from pycodex.app_server_protocol import (
     WriteStatus,
 )
 from pycodex.config import ConfigLayerEntry, ConfigLayerSource, ConfigLayerStack
+from pycodex.core.config.edit import read_toml_mapping
 
 
 def _stack(codex_home: Path, *layers: ConfigLayerEntry) -> ConfigLayerStack:
@@ -189,6 +190,41 @@ def test_write_value_defaults_to_user_config_path(tmp_path: Path) -> None:
     assert response.status is WriteStatus.OK
     assert response.file_path == tmp_path / "config.toml"
     assert response.overridden_metadata is None
+
+
+def test_batch_write_reloads_latest_user_config_and_persists_to_disk(tmp_path: Path) -> None:
+    # Rust owner/test contract:
+    # - ConfigManagerService::apply_edits reloads thread-agnostic layers for
+    #   every write, then persists changed ConfigEdit values atomically.
+    # - This prevents a long-lived TUI service from replacing unrelated config
+    #   values written after its startup snapshot was created.
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'model = "external-model"\n\n[desktop]\nnotifications = true\n',
+        encoding="utf-8",
+    )
+    stale_layer = ConfigLayerEntry.new(
+        ConfigLayerSource.user(config_path),
+        {"model": "startup-model"},
+    )
+    service = ConfigManagerService(tmp_path, _stack(tmp_path, stale_layer))
+
+    response = asyncio.run(
+        service.batch_write(
+            ConfigBatchWriteParams(
+                edits=(
+                    ConfigEdit("model", "gpt-persisted", MergeStrategy.REPLACE),
+                    ConfigEdit("model_reasoning_effort", "medium", MergeStrategy.REPLACE),
+                )
+            )
+        )
+    )
+
+    persisted = read_toml_mapping(config_path)
+    assert persisted["model"] == "gpt-persisted"
+    assert persisted["model_reasoning_effort"] == "medium"
+    assert persisted["desktop"] == {"notifications": True}
+    assert response.file_path == config_path
 
 
 def test_write_value_reports_override(tmp_path: Path) -> None:

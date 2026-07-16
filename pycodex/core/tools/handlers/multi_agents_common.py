@@ -26,9 +26,9 @@ from pycodex.protocol import (
 
 JsonValue = Any
 
-MIN_WAIT_TIMEOUT_MS = 1_000
+MIN_WAIT_TIMEOUT_MS = 10_000
 DEFAULT_WAIT_TIMEOUT_MS = 30_000
-MAX_WAIT_TIMEOUT_MS = 600_000
+MAX_WAIT_TIMEOUT_MS = 3_600_000
 
 
 def function_arguments(payload: ToolPayload) -> str:

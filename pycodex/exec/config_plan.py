@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import json
@@ -27,12 +27,20 @@ from pycodex.app_server_client import (
     StateDbHandle,
 )
 from pycodex.arg0 import Arg0DispatchPaths
-from pycodex.config import ConfigOverride, apply_single_override
+from pycodex.config import (
+    ConfigLayerEntry,
+    ConfigLayerSource,
+    ConfigLayerStack,
+    ConfigOverride,
+    apply_single_override,
+)
 from pycodex.core.agents_md import (
     DEFAULT_PROJECT_DOC_MAX_BYTES,
     AgentsMdConfig,
     AgentsMdManager,
 )
+from pycodex.core.config import MultiAgentV2Config, resolve_multi_agent_v2_config
+from pycodex.core.config.agent_roles import AgentRoleConfig, load_agent_roles_from_config
 from pycodex.core.config.permissions import (
     BUILT_IN_DANGER_FULL_ACCESS_PROFILE,
     BUILT_IN_READ_ONLY_PROFILE,
@@ -52,6 +60,7 @@ from pycodex.protocol import (
     PermissionProfile,
     Personality,
     SandboxMode,
+    WebSearchMode,
     WindowsSandboxLevel,
 )
 
@@ -166,6 +175,7 @@ class ExecConfigBootstrapPlan:
     developer_instructions: str | None = None
     base_instructions: str | None = None
     personality: Personality | None = None
+    web_search_mode: WebSearchMode = WebSearchMode.CACHED
     model_context_window: int | None = None
     model_auto_compact_token_limit: int | None = None
     tool_output_token_limit: int | None = None
@@ -177,6 +187,8 @@ class ExecConfigBootstrapPlan:
     allow_login_shell: bool = True
     windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
     features: Features | None = None
+    multi_agent_v2: MultiAgentV2Config = MultiAgentV2Config()
+    agent_roles: Mapping[str, AgentRoleConfig] = field(default_factory=dict)
     exec_permission_approvals_enabled: bool = False
     request_permissions_tool_enabled: bool = False
     tui_status_line: tuple[str, ...] | None = None
@@ -185,6 +197,12 @@ class ExecConfigBootstrapPlan:
     tui_keymap: Mapping[str, JsonValue] | None = None
     tui_alternate_screen: AltScreenMode = AltScreenMode.AUTO
     chatgpt_base_url: str | None = None
+    config_layer_stack: ConfigLayerStack | None = None
+    include_environment_context: bool = True
+    include_permissions_instructions: bool = True
+    include_apps_instructions: bool = True
+    include_skill_instructions: bool = True
+    include_collaboration_mode_instructions: bool = True
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
     def __post_init__(self) -> None:
@@ -213,6 +231,7 @@ class ExecConfigBootstrapPlan:
             )
         if self.features is None:
             object.__setattr__(self, "features", Features.with_defaults())
+        object.__setattr__(self, "agent_roles", dict(self.agent_roles))
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {
@@ -1616,7 +1635,8 @@ def build_exec_config_bootstrap_plan(
 
     config_cwd = resolve_exec_config_cwd(cli, current_dir)
     cli_overrides = tuple(cli.cli_config_overrides().parse_overrides())
-    effective_config = _exec_config_with_overrides(config_toml, cli_overrides)
+    config_layer_stack = _exec_config_layer_stack(config_toml, cli_overrides)
+    effective_config = config_layer_stack.effective_config()
     features = _features_from_exec_config(effective_config)
     active_project = _active_project_trust(effective_config, config_cwd)
     windows_sandbox_level = _windows_sandbox_level_from_config(effective_config, features)
@@ -1642,7 +1662,8 @@ def build_exec_config_bootstrap_plan(
         user_instructions=user_instructions,
         developer_instructions=_optional_config_str(effective_config, "developer_instructions"),
         base_instructions=_optional_config_str(effective_config, "base_instructions"),
-        personality=_optional_personality(effective_config.get("personality")),
+        personality=_resolved_personality(effective_config.get("personality"), features),
+        web_search_mode=_resolved_web_search_mode(effective_config, features),
         model_context_window=_optional_positive_int(effective_config.get("model_context_window")),
         model_auto_compact_token_limit=_optional_positive_int(
             effective_config.get("model_auto_compact_token_limit")
@@ -1662,6 +1683,8 @@ def build_exec_config_bootstrap_plan(
         allow_login_shell=_allow_login_shell_from_config(effective_config),
         windows_sandbox_level=windows_sandbox_level,
         features=features,
+        multi_agent_v2=resolve_multi_agent_v2_config(effective_config),
+        agent_roles=load_agent_roles_from_config(effective_config),
         exec_permission_approvals_enabled=features.enabled(Feature.EXEC_PERMISSION_APPROVALS),
         request_permissions_tool_enabled=features.enabled(Feature.REQUEST_PERMISSIONS_TOOL),
         tui_status_line=_tui_config_str_tuple(effective_config, "status_line"),
@@ -1670,6 +1693,20 @@ def build_exec_config_bootstrap_plan(
         tui_keymap=_tui_config_keymap(effective_config),
         tui_alternate_screen=_tui_config_alt_screen_mode(effective_config),
         chatgpt_base_url=_optional_config_str(effective_config, "chatgpt_base_url"),
+        config_layer_stack=config_layer_stack,
+        include_environment_context=_config_bool(
+            effective_config, "include_environment_context", True
+        ),
+        include_permissions_instructions=_config_bool(
+            effective_config, "include_permissions_instructions", True
+        ),
+        include_apps_instructions=_config_bool(
+            effective_config, "include_apps_instructions", True
+        ),
+        include_skill_instructions=_skill_instructions_enabled(effective_config),
+        include_collaboration_mode_instructions=_config_bool(
+            effective_config, "include_collaboration_mode_instructions", True
+        ),
     )
 
 
@@ -1687,6 +1724,7 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         developer_instructions=plan.developer_instructions,
         base_instructions=plan.base_instructions,
         personality=plan.personality,
+        web_search_mode=plan.web_search_mode,
         instruction_sources=plan.instruction_sources,
         startup_warnings=plan.startup_warnings,
         mcp_servers=plan.mcp_servers,
@@ -1715,8 +1753,16 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         chatgpt_base_url=plan.chatgpt_base_url,
         allow_login_shell=plan.allow_login_shell,
         features=plan.features,
+        multi_agent_v2=plan.multi_agent_v2,
+        agent_roles=plan.agent_roles,
         exec_permission_approvals_enabled=plan.exec_permission_approvals_enabled,
         request_permissions_tool_enabled=plan.request_permissions_tool_enabled,
+        config_layer_stack=plan.config_layer_stack,
+        include_environment_context=plan.include_environment_context,
+        include_permissions_instructions=plan.include_permissions_instructions,
+        include_apps_instructions=plan.include_apps_instructions,
+        include_skill_instructions=plan.include_skill_instructions,
+        include_collaboration_mode_instructions=plan.include_collaboration_mode_instructions,
     )
 
 
@@ -1728,6 +1774,44 @@ def _exec_config_with_overrides(
     for override in cli_overrides:
         apply_single_override(config, override.path, override.value)
     return config
+
+
+def _exec_config_layer_stack(
+    config_toml: Mapping[str, JsonValue] | None,
+    cli_overrides: tuple[ConfigOverride, ...],
+) -> ConfigLayerStack:
+    codex_home = find_codex_home()
+    layers = [
+        ConfigLayerEntry.new(
+            ConfigLayerSource.user(codex_home / "config.toml"),
+            copy.deepcopy(dict(config_toml or {})),
+        )
+    ]
+    override_layer: dict[str, JsonValue] = {}
+    for override in cli_overrides:
+        apply_single_override(override_layer, override.path, copy.deepcopy(override.value))
+    if override_layer:
+        layers.append(
+            ConfigLayerEntry.new(ConfigLayerSource.session_flags(), override_layer)
+        )
+    return ConfigLayerStack.new(layers)
+
+
+def _config_bool(
+    config_toml: Mapping[str, JsonValue],
+    key: str,
+    default: bool,
+) -> bool:
+    value = config_toml.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def _skill_instructions_enabled(config_toml: Mapping[str, JsonValue]) -> bool:
+    skills = config_toml.get("skills")
+    if not isinstance(skills, Mapping):
+        return True
+    value = skills.get("include_instructions")
+    return value if isinstance(value, bool) else True
 
 
 def _tui_config_mapping(config_toml: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
@@ -1761,6 +1845,30 @@ def _optional_personality(value: JsonValue) -> Personality | None:
         return Personality.parse(value)
     except ValueError:
         return None
+
+
+def _resolved_personality(value: JsonValue, features: Features) -> Personality | None:
+    configured = _optional_personality(value)
+    if configured is not None:
+        return configured
+    return Personality.PRAGMATIC if features.enabled(Feature.PERSONALITY) else None
+
+
+def _resolved_web_search_mode(
+    config_toml: Mapping[str, JsonValue],
+    features: Features,
+) -> WebSearchMode:
+    configured = config_toml.get("web_search")
+    if isinstance(configured, str):
+        try:
+            return WebSearchMode.parse(configured)
+        except ValueError:
+            pass
+    if features.enabled(Feature.WEB_SEARCH_CACHED):
+        return WebSearchMode.CACHED
+    if features.enabled(Feature.WEB_SEARCH_REQUEST):
+        return WebSearchMode.LIVE
+    return WebSearchMode.CACHED
 
 
 def _tui_config_str_tuple(config_toml: Mapping[str, JsonValue], key: str) -> tuple[str, ...] | None:

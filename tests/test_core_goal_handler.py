@@ -186,7 +186,8 @@ class CoreGoalHandlerTests(unittest.TestCase):
 
     def test_handlers_use_rust_style_async_session_entrypoints(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/goal/{create_goal,get_goal,update_goal}.rs
-        # Rust contract: handlers call session goal APIs with the turn context and apply ToolCompletedGoal before update.
+        # Rust update_goal contract calls GoalRuntimeEvent::ToolCompletedGoal
+        # before writing the terminal status so final usage is preserved.
         calls = []
         thread_id = ThreadId.new()
 
@@ -252,7 +253,8 @@ class CoreGoalHandlerTests(unittest.TestCase):
         self.assertEqual(calls[0], ("create", turn, "port Codex", 1000))
         self.assertEqual(calls[1], ("get",))
         self.assertEqual(calls[2][0], "runtime")
-        self.assertEqual(calls[2][1], {"type": "tool_completed_goal", "turn_context": turn})
+        self.assertEqual(calls[2][1]["type"], "tool_completed_goal")
+        self.assertIs(calls[2][1]["turn_context"], turn)
         self.assertEqual(calls[3], ("set", turn, ThreadGoalStatus.COMPLETE))
 
     def test_create_goal_rejects_existing_goal_with_rust_message(self) -> None:

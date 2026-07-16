@@ -380,6 +380,14 @@ class Settings:
     reasoning_effort: ReasoningEffort | None = None
     developer_instructions: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.model, str):
+            object.__setattr__(self, "model", str(self.model))
+        if self.reasoning_effort is not None and not isinstance(self.reasoning_effort, ReasoningEffort):
+            object.__setattr__(self, "reasoning_effort", ReasoningEffort.parse(str(self.reasoning_effort)))
+        if self.developer_instructions is not None and not isinstance(self.developer_instructions, str):
+            object.__setattr__(self, "developer_instructions", str(self.developer_instructions))
+
 
 @dataclass(frozen=True)
 class CollaborationMode:

@@ -31,7 +31,7 @@ from pycodex.app_server_protocol import (
     TurnPlanUpdatedNotification,
     TurnStatus,
 )
-from pycodex.protocol import ReviewDecision, parse_hook_prompt_message
+from pycodex.protocol import PlanItemArg, ReviewDecision, UpdatePlanArgs, parse_hook_prompt_message
 
 JsonValue = Any
 REVIEW_FALLBACK_MESSAGE = "Reviewer failed to output a response."
@@ -70,11 +70,12 @@ def turn_plan_updated_notification(
     event_turn_id: str,
     plan_update_event: Mapping[str, JsonValue] | Any,
 ) -> TurnPlanUpdatedNotification:
-    plan = tuple(TurnPlanStep.from_mapping(_mapping_step(step)) for step in _field(plan_update_event, "plan", ()))
+    update = _core_plan_update(plan_update_event)
+    plan = tuple(TurnPlanStep.from_core(step) for step in update.plan)
     return TurnPlanUpdatedNotification(
         thread_id=str(conversation_id),
         turn_id=str(event_turn_id),
-        explanation=_field(plan_update_event, "explanation", None),
+        explanation=update.explanation,
         plan=plan,
     )
 
@@ -230,10 +231,20 @@ def _format_review_findings_block(findings: tuple[JsonValue, ...]) -> str:
     return "\n".join(line for line in lines if line.strip())
 
 
-def _mapping_step(step: Mapping[str, JsonValue] | Any) -> Mapping[str, JsonValue]:
-    if isinstance(step, Mapping):
-        return step
-    return {"step": _field(step, "step"), "status": _field(step, "status")}
+def _core_plan_update(value: Mapping[str, JsonValue] | Any) -> UpdatePlanArgs:
+    if isinstance(value, UpdatePlanArgs):
+        return value
+    if isinstance(value, Mapping):
+        return UpdatePlanArgs.from_mapping(dict(value))
+    return UpdatePlanArgs(
+        explanation=_field(value, "explanation", None),
+        plan=tuple(
+            step
+            if isinstance(step, PlanItemArg)
+            else PlanItemArg.from_mapping(dict(step))
+            for step in _field(value, "plan", ())
+        ),
+    )
 
 
 def _unwrap_ok_result(response: JsonValue) -> Mapping[str, JsonValue]:

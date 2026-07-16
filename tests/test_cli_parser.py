@@ -12293,12 +12293,10 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_without_subcommand_non_tty_refuses_after_runtime_setup(self):
         # Rust source/native contract:
         # - codex-cli/src/main.rs::run_interactive_tui dispatches into
-        #   codex_tui::run_main for ordinary non-TERM=dumb sessions.
-        # - codex-tui/src/tui.rs::init then rejects non-terminal stdin with
-        #   `stdin is not a terminal`.
-        # Native evidence:
-        #   `"/quit" | codex.exe --no-alt-screen -C <repo> -s read-only -a never`
-        #   exits 1 and prints `Error: stdin is not a terminal`.
+        #   codex_tui::run_main for ordinary non-TERM=dumb sessions, but the
+        #   Python port rejects the startup path before terminal rendering when
+        #   stdin is redirected so `python -m pycodex` never falls back to a
+        #   deleted legacy projection.
         stdout = io.StringIO()
         stderr = io.StringIO()
         runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
@@ -12315,7 +12313,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(stdout.getvalue(), "")
-        self.assertEqual(stderr.getvalue(), "Error: stdin is not a terminal\n")
+        self.assertEqual(
+            stderr.getvalue(),
+            "Refusing to start the interactive TUI because stdin is not a terminal. "
+            "Run in a supported terminal.\n",
+        )
         build_runtime.assert_called_once()
 
     def test_main_without_subcommand_term_dumb_non_tty_refuses_interactive_tui(self):
@@ -14607,7 +14609,6 @@ class TopLevelCliParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
 
 

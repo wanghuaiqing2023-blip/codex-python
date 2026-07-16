@@ -20,6 +20,10 @@ from pycodex.core.config.schema import (
 
 DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS = 200
 DEFAULT_IGNORE_LARGE_UNTRACKED_FILES = 10 * 1024 * 1024
+DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION = 4
+DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS = 10_000
+DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS = 3_600_000
+DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS = 30_000
 LOCAL_DEV_BUILD_VERSION = "0.0.0"
 CONFIG_TOML_FILE = "config.toml"
 SQLITE_HOME_ENV = "CODEX_SQLITE_HOME"
@@ -43,6 +47,21 @@ class GhostSnapshotConfig:
     ignore_large_untracked_files: int | None = DEFAULT_IGNORE_LARGE_UNTRACKED_FILES
     ignore_large_untracked_dirs: int | None = DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS
     disable_warnings: bool = False
+
+
+@dataclass(frozen=True)
+class MultiAgentV2Config:
+    max_concurrent_threads_per_session: int = DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION
+    min_wait_timeout_ms: int = DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS
+    max_wait_timeout_ms: int = DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS
+    default_wait_timeout_ms: int = DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS
+    usage_hint_enabled: bool = True
+    usage_hint_text: str | None = None
+    root_agent_usage_hint_text: str | None = None
+    subagent_usage_hint_text: str | None = None
+    tool_namespace: str | None = None
+    hide_spawn_agent_metadata: bool = False
+    non_code_mode_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -143,6 +162,41 @@ def ghost_snapshot_config(ghost_snapshot: Mapping[str, Any] | None) -> GhostSnap
         ignore_large_untracked_files=files if files is not None and files > 0 else None,
         ignore_large_untracked_dirs=dirs if dirs is not None and dirs > 0 else None,
         disable_warnings=disable_warnings,
+    )
+
+
+def resolve_multi_agent_v2_config(config_toml: Mapping[str, Any] | None) -> MultiAgentV2Config:
+    """Resolve Rust ``Config::multi_agent_v2`` defaults from ``[features]``."""
+
+    config = config_toml or {}
+    features = config.get("features")
+    raw = features.get("multi_agent_v2") if isinstance(features, Mapping) else None
+    values = raw if isinstance(raw, Mapping) else {}
+    defaults = MultiAgentV2Config()
+    return MultiAgentV2Config(
+        max_concurrent_threads_per_session=_config_int(
+            values,
+            "max_concurrent_threads_per_session",
+            defaults.max_concurrent_threads_per_session,
+        ),
+        min_wait_timeout_ms=_config_int(values, "min_wait_timeout_ms", defaults.min_wait_timeout_ms),
+        max_wait_timeout_ms=_config_int(values, "max_wait_timeout_ms", defaults.max_wait_timeout_ms),
+        default_wait_timeout_ms=_config_int(
+            values,
+            "default_wait_timeout_ms",
+            defaults.default_wait_timeout_ms,
+        ),
+        usage_hint_enabled=_config_bool(values, "usage_hint_enabled", defaults.usage_hint_enabled),
+        usage_hint_text=_config_optional_str(values, "usage_hint_text"),
+        root_agent_usage_hint_text=_config_optional_str(values, "root_agent_usage_hint_text"),
+        subagent_usage_hint_text=_config_optional_str(values, "subagent_usage_hint_text"),
+        tool_namespace=_config_optional_str(values, "tool_namespace"),
+        hide_spawn_agent_metadata=_config_bool(
+            values,
+            "hide_spawn_agent_metadata",
+            defaults.hide_spawn_agent_metadata,
+        ),
+        non_code_mode_only=_config_bool(values, "non_code_mode_only", defaults.non_code_mode_only),
     )
 
 
@@ -297,6 +351,27 @@ def _optional_int(value: Mapping[str, Any], key: str, default: int | None) -> in
     return item
 
 
+def _config_int(value: Mapping[str, Any], key: str, default: int) -> int:
+    item = value.get(key, default)
+    if isinstance(item, bool) or not isinstance(item, int):
+        raise TypeError(f"{key} must be an integer")
+    return item
+
+
+def _config_bool(value: Mapping[str, Any], key: str, default: bool) -> bool:
+    item = value.get(key, default)
+    if not isinstance(item, bool):
+        raise TypeError(f"{key} must be a bool")
+    return item
+
+
+def _config_optional_str(value: Mapping[str, Any], key: str) -> str | None:
+    item = value.get(key)
+    if item is not None and not isinstance(item, str):
+        raise TypeError(f"{key} must be a string or None")
+    return item
+
+
 def _network_permission_is_enabled(network: Any) -> bool:
     checker = getattr(network, "is_enabled", None)
     if callable(checker):
@@ -358,11 +433,16 @@ def _managed_permission_profiles(requirements_toml: Mapping[str, Any]) -> Mappin
 __all__ = [
     "AuthCredentialsStoreMode",
     "CONFIG_TOML_FILE",
+    "DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS",
+    "DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION",
+    "DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS",
+    "DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS",
     "DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS",
     "DEFAULT_IGNORE_LARGE_UNTRACKED_FILES",
     "EffectivePermissionSelection",
     "GhostSnapshotConfig",
     "LOCAL_DEV_BUILD_VERSION",
+    "MultiAgentV2Config",
     "OAuthCredentialsStoreMode",
     "SQLITE_HOME_ENV",
     "ThreadStoreConfig",
@@ -378,6 +458,7 @@ __all__ = [
     "resolve_cli_auth_credentials_store_mode",
     "resolve_default_permissions",
     "resolve_mcp_oauth_credentials_store_mode",
+    "resolve_multi_agent_v2_config",
     "resolve_sqlite_home_env",
     "thread_store_config",
     "validate_required_permission_profile_catalog",

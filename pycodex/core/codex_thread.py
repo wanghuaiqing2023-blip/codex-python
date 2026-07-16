@@ -203,26 +203,38 @@ class CodexThread:
             await _maybe_await(waiter())
 
     async def emit_thread_resume_lifecycle(self) -> None:
+        from pycodex.extension_api import ThreadResumeInput
+
+        services = _nested_get(self.codex, "session", "services")
         contributors = _call_optional(_nested_get(self.codex, "session", "services", "extensions"), "thread_lifecycle_contributors", ())
         for contributor in contributors or ():
             handler = getattr(contributor, "on_thread_resume", None)
             if callable(handler):
-                await _maybe_await(handler({"session_store": None, "thread_store": None}))
+                await _maybe_await(
+                    handler(
+                        ThreadResumeInput(
+                            session_store=getattr(services, "session_extension_data", None),
+                            thread_store=getattr(services, "thread_extension_data", None),
+                        )
+                    )
+                )
 
     async def apply_goal_resume_runtime_effects(self) -> Any:
-        return await self._apply_goal_runtime("thread_resumed")
+        return await self._goal_runtime_apply("thread_resumed")
 
     async def continue_active_goal_if_idle(self) -> Any:
-        return await self._apply_goal_runtime("maybe_continue_if_idle")
+        return await self._goal_runtime_apply("maybe_continue_if_idle")
 
     async def prepare_external_goal_mutation(self) -> None:
-        await self._apply_goal_runtime("external_mutation_starting", swallow_errors=True)
+        await self._goal_runtime_apply("external_mutation_starting")
 
     async def apply_external_goal_set(self, external_set: Any) -> None:
-        await self._apply_goal_runtime({"external_set": external_set}, swallow_errors=True)
+        await self._goal_runtime_apply(
+            {"type": "external_set", "external_set": external_set}
+        )
 
     async def apply_external_goal_clear(self) -> None:
-        await self._apply_goal_runtime("external_clear", swallow_errors=True)
+        await self._goal_runtime_apply("external_clear")
 
     async def ensure_rollout_materialized(self) -> Any:
         return await _call_required(_nested_get(self.codex, "session"), "ensure_rollout_materialized")
@@ -451,14 +463,10 @@ class CodexThread:
             self._set_out_of_band_pause_state(False)
         return self._out_of_band_elicitation_count
 
-    async def _apply_goal_runtime(self, event: Any, swallow_errors: bool = False) -> Any:
+    async def _goal_runtime_apply(self, event: Any) -> Any:
         session = _nested_get(self.codex, "session")
-        try:
-            return await _call_required(session, "goal_runtime_apply", event)
-        except Exception:
-            if swallow_errors:
-                return None
-            raise
+        apply = getattr(session, "goal_runtime_apply", None)
+        return None if not callable(apply) else await _maybe_await(apply(event))
 
     async def _live_thread_for_persistence(self, reason: str) -> Any:
         session = _nested_get(self.codex, "session")

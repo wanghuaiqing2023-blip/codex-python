@@ -140,6 +140,7 @@ from pycodex.protocol import (
     CodexErrorInfo,
     ConfigShellToolType,
     ContentItem,
+    CollaborationMode,
     ErrorEvent,
     EventMsg,
     FileSystemAccessMode,
@@ -150,16 +151,27 @@ from pycodex.protocol import (
     ModelRerouteReason,
     ModelVerification,
     ModelVerificationEvent,
+    ModeKind,
     NetworkPermissions,
+    Personality,
     PermissionProfile,
     PermissionGrantScope,
     RequestPermissionProfile,
     RequestPermissionsResponse,
     ResponseItem,
+    RolloutItem,
+    Settings,
     StreamErrorEvent,
+    ThreadGoal,
+    ThreadGoalStatus,
+    ThreadGoalUpdatedEvent,
+    ThreadId,
+    ThreadSettingsOverrides,
     TokenCountEvent,
     TokenUsage,
     TokenUsageInfo,
+    TurnCompleteEvent,
+    TurnStartedEvent,
     WarningEvent,
 )
 from pycodex.protocol import AskForApproval, CodexErr, GranularApprovalConfig, ReviewRequest, ReviewTarget, UserInput
@@ -1435,6 +1447,56 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
 
 class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_core_sampling_forwards_initial_operation_thread_settings(self) -> None:
+        # Rust composition contract:
+        # codex-app-server::turn_processor builds ThreadSettingsOverrides and
+        # codex-core::session::handlers applies them before creating the turn.
+        cwd = Path.cwd()
+        config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=cwd)
+        settings = ThreadSettingsOverrides(
+            cwd=cwd,
+            model="gpt-override",
+            collaboration_mode=CollaborationMode(
+                mode=ModeKind.DEFAULT,
+                settings=Settings(model="gpt-override"),
+            ),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn(
+                (UserInput.text_input("inspect settings"),),
+                thread_settings=settings,
+            ),
+            "inspect settings",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        captured = {}
+
+        async def fake_sampling(_session, _items, *_args, **kwargs):
+            captured["thread_settings"] = kwargs.get("thread_settings")
+            return UserTurnSamplingResult(request_plan=None, response_items=())
+
+        with patch(
+            "pycodex.exec.local_runtime.run_user_turn_sampling_from_session",
+            fake_sampling,
+        ):
+            await run_exec_user_turn_core_sampling(
+                config,
+                plan,
+                client,
+                provider,
+                model_info,
+                sampler=object(),
+            )
+
+        self.assertIs(captured["thread_settings"], settings)
+
     def test_core_session_uses_configured_instructions_without_host_toolchain_injection(self) -> None:
         # Rust source: codex-core/src/session/mod.rs copies configured developer
         # instructions and obtains project instructions from AgentsMdManager.
@@ -1454,6 +1516,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.user_instructions, "project instructions")
         self.assertEqual(session.developer_instructions, "configured developer instructions")
         self.assertNotIn("windows_toolchain", session.developer_instructions)
+        self.assertEqual(session.session_source.type, "cli")
 
     async def test_reusable_core_session_keeps_hidden_goal_turn_history(self) -> None:
         # Rust source: codex-core/src/goals.rs::maybe_start_goal_continuation_turn
@@ -1653,7 +1716,11 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def sampler(request):
             seen_requests.append(request)
             if len(seen_requests) == 1:
-                tool_names = {tool["name"] for tool in request.request_plan.request["tools"]}
+                tool_names = {
+                    tool["name"]
+                    for tool in request.request_plan.request["tools"]
+                    if "name" in tool
+                }
                 self.assertIn("shell_command", tool_names)
                 self.assertNotIn("exec_command", tool_names)
                 return [
@@ -1725,8 +1792,12 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await run_with_setting(True)
         await run_with_setting(False)
 
-        tools_when_allowed = {tool["name"]: tool for tool in seen_tools_by_setting[True]}
-        tools_when_blocked = {tool["name"]: tool for tool in seen_tools_by_setting[False]}
+        tools_when_allowed = {
+            tool["name"]: tool for tool in seen_tools_by_setting[True] if "name" in tool
+        }
+        tools_when_blocked = {
+            tool["name"]: tool for tool in seen_tools_by_setting[False] if "name" in tool
+        }
         self.assertIn("login", tools_when_allowed["exec_command"]["parameters"]["properties"])
         self.assertNotIn("login", tools_when_blocked["exec_command"]["parameters"]["properties"])
 
@@ -1769,11 +1840,13 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             sampler,
         )
 
-        names = [tool["name"] for tool in requests[0]["tools"]]
+        names = [tool["name"] for tool in requests[0]["tools"] if "name" in tool]
         self.assertIn("shell_command", names)
         self.assertNotIn("exec_command", names)
         self.assertNotIn("write_stdin", names)
-        shell_command = next(tool for tool in requests[0]["tools"] if tool["name"] == "shell_command")
+        shell_command = next(
+            tool for tool in requests[0]["tools"] if tool.get("name") == "shell_command"
+        )
         self.assertIn("timeout_ms", shell_command["parameters"]["properties"])
 
     async def test_run_exec_user_turn_core_sampling_projects_reasoning_summary_none(self) -> None:
@@ -3576,6 +3649,72 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("interrupted the previous turn", items[-1].content[0].text)
         self.assertEqual(events[-1].type, "turn_aborted")
         self.assertEqual(events[-1].payload.reason, "interrupted")
+
+    def test_core_rollout_persists_canonical_goal_event_order(self) -> None:
+        # Rust module contract:
+        # - codex-core::session::{send_event_raw, record_conversation_items}
+        #   records live protocol events and response items in one ordered stream.
+        # - codex-goal-extension::events emits ThreadGoalUpdated through that stream.
+        thread_id = ThreadId.from_string("00000000-0000-0000-0000-000000000010")
+        goal = ThreadGoal(
+            thread_id=thread_id,
+            objective="finish parity",
+            status=ThreadGoalStatus.ACTIVE,
+            tokens_used=21,
+            time_used_seconds=3,
+            created_at=1,
+            updated_at=2,
+            token_budget=1_000,
+        )
+        user_item = ResponseItem.message("user", (ContentItem.input_text("continue"),))
+        assistant_item = ResponseItem.message("assistant", (ContentItem.output_text("done"),))
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(assistant_item,),
+            rollout_items=(
+                RolloutItem.event_msg(
+                    EventMsg.with_payload(
+                        "task_started",
+                        TurnStartedEvent("turn-goal", 200_000),
+                    )
+                ),
+                RolloutItem.response_item(user_item),
+                RolloutItem.event_msg(
+                    EventMsg.with_payload(
+                        "thread_goal_updated",
+                        ThreadGoalUpdatedEvent(thread_id, goal, "turn-goal"),
+                    )
+                ),
+                RolloutItem.response_item(assistant_item),
+                RolloutItem.event_msg(
+                    EventMsg.with_payload(
+                        "task_complete",
+                        TurnCompleteEvent("turn-goal", "done"),
+                    )
+                ),
+            ),
+            turn_status="completed",
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        client = ModelClient(
+            session_id=str(thread_id),
+            thread_id=str(thread_id),
+            installation_id="install",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout_path = persist_local_http_exec_rollout(Path(tmp), config, result, client)
+            self.assertIsNotNone(rollout_path)
+            events = read_event_msgs_from_rollout(rollout_path)
+            responses = read_response_items_from_rollout(rollout_path)
+
+        event_types = [event.type for event in events]
+        self.assertLess(event_types.index("task_started"), event_types.index("thread_goal_updated"))
+        self.assertLess(event_types.index("thread_goal_updated"), event_types.index("task_complete"))
+        persisted_goal = next(event.payload.goal for event in events if event.type == "thread_goal_updated")
+        self.assertEqual(persisted_goal.tokens_used, 21)
+        self.assertEqual([item.role for item in responses[-2:]], ["user", "assistant"])
+        self.assertEqual(responses[-1].content[0].text, "done")
 
     def test_core_rollout_persists_real_turn_and_session_metadata(self) -> None:
         result = UserTurnSamplingResult(
@@ -10408,6 +10547,24 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(model_info.supports_reasoning_summaries)
 
+    def test_local_http_model_info_exposes_rust_style_personality_messages(self) -> None:
+        # Rust source contracts:
+        # - codex-protocol/src/openai_models.rs::ModelInfo::get_model_instructions
+        # - codex-core/src/context_manager/updates.rs::personality_message_for
+        model_info = LocalHttpModelInfo(slug="gpt-5.2-codex", base_instructions="base")
+
+        self.assertIsNotNone(model_info.model_messages)
+        assert model_info.model_messages is not None
+        self.assertIn(
+            "deeply pragmatic, effective software engineer",
+            model_info.model_messages.get_personality_message(Personality.PRAGMATIC) or "",
+        )
+        self.assertIn(
+            "coding agent based on GPT-5",
+            model_info.get_model_instructions(Personality.FRIENDLY),
+        )
+        self.assertNotEqual(model_info.get_model_instructions(Personality.FRIENDLY), "base")
+
     def test_local_http_exec_config_summary_uses_model_provider_and_cwd(self) -> None:
         config = ExecSessionConfig(
             model=None,
@@ -10565,5 +10722,3 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-

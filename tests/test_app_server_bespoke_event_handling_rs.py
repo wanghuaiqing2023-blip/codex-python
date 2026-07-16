@@ -17,9 +17,18 @@ from pycodex.app_server_protocol import (
     McpServerElicitationAction,
     PermissionGrantScope,
     TurnItemsView,
+    TurnPlanStep,
+    TurnPlanStepStatus,
     TurnStatus,
 )
-from pycodex.protocol import HookPromptFragment, ReviewDecision, build_hook_prompt_message
+from pycodex.protocol import (
+    HookPromptFragment,
+    PlanItemArg,
+    ReviewDecision,
+    StepStatus,
+    UpdatePlanArgs,
+    build_hook_prompt_message,
+)
 
 
 def test_turn_diff_updated_notification_matches_rust_payload_shape() -> None:
@@ -38,13 +47,13 @@ def test_turn_plan_updated_notification_maps_update_plan_steps() -> None:
     notification = turn_plan_updated_notification(
         "thread-1",
         "turn-1",
-        {
-            "explanation": "next",
-            "plan": [
-                {"step": "inspect", "status": "completed"},
-                {"step": "patch", "status": "inProgress"},
-            ],
-        },
+        UpdatePlanArgs(
+            explanation="next",
+            plan=(
+                PlanItemArg("inspect", StepStatus.COMPLETED),
+                PlanItemArg("patch", StepStatus.IN_PROGRESS),
+            ),
+        ),
     )
 
     assert notification.thread_id == "thread-1"
@@ -54,6 +63,19 @@ def test_turn_plan_updated_notification_maps_update_plan_steps() -> None:
         ("inspect", "completed"),
         ("patch", "inProgress"),
     ]
+
+
+def test_turn_plan_step_from_core_maps_all_statuses() -> None:
+    # Rust: app-server-protocol v2 turn.rs implements From<CorePlanStepStatus>.
+    expected = (
+        (StepStatus.PENDING, TurnPlanStepStatus.PENDING),
+        (StepStatus.IN_PROGRESS, TurnPlanStepStatus.IN_PROGRESS),
+        (StepStatus.COMPLETED, TurnPlanStepStatus.COMPLETED),
+    )
+
+    for core_status, app_server_status in expected:
+        step = TurnPlanStep.from_core(PlanItemArg("step", core_status))
+        assert step.status is app_server_status
 
 
 def test_turn_completed_notification_uses_not_loaded_empty_turn() -> None:

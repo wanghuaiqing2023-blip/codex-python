@@ -1,7 +1,6 @@
 """Core plugin modules aligned with ``codex-rs/core/src/plugins``."""
 
 from pycodex.core.context import PluginCapabilitySummary
-from pycodex.core.skills import build_skill_name_counts
 
 from .mentions import (
     APP_PATH_PREFIX,
@@ -63,6 +62,10 @@ __all__ = [
 
 
 def __getattr__(name: str):
+    if name == "build_skill_name_counts":
+        from pycodex.core_skills.mentions import build_skill_name_counts
+
+        return build_skill_name_counts
     if name == "test_support":
         from importlib import import_module
 

@@ -490,7 +490,9 @@ async def emit_thread_stop_lifecycle(sess: Any) -> None:
     contributors = await _maybe_await(contributors_getter())
     session_store = getattr(services, "session_extension_data", None)
     thread_store = getattr(services, "thread_extension_data", None)
-    thread_stop_input = {"session_store": session_store, "thread_store": thread_store}
+    from pycodex.extension_api import ThreadStopInput
+
+    thread_stop_input = ThreadStopInput(session_store=session_store, thread_store=thread_store)
     for contributor in contributors:
         on_thread_stop = getattr(contributor, "on_thread_stop", None)
         if callable(on_thread_stop):

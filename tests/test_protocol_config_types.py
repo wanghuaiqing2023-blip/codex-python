@@ -229,6 +229,11 @@ class ProtocolConfigTypeTests(unittest.TestCase):
             ),
         )
 
+    def test_settings_coerce_reasoning_effort_strings_to_enum(self):
+        settings = Settings(model="gpt-5.4", reasoning_effort="low", developer_instructions=None)
+
+        self.assertIs(settings.reasoning_effort, ReasoningEffort.LOW)
+
     def test_profile_v2_name_accepts_plain_ascii_names(self):
         profile = ProfileV2Name.parse("work_1-prod")
 

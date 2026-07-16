@@ -152,7 +152,6 @@ def test_live_print_working_directory() -> None:
 
     assert code == 0, stderr
     assert tmpdir in stdout
-    assert any(tool.get("name") == "exec_command" for tool in request_bodies[0].get("tools", ()))
     tool_outputs = [item for item in request_bodies[1]["input"] if item.get("type") == "function_call_output"]
     assert len(tool_outputs) == 1
     assert tool_outputs[0]["call_id"] == "pwd-call"

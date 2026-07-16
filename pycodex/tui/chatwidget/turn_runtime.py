@@ -68,12 +68,13 @@ class ModeKind(str, Enum):
 @dataclass(frozen=True)
 class PlanItem:
     status: StepStatus
-    text: str = ""
+    step: str = ""
 
 
 @dataclass(frozen=True)
 class UpdatePlanArgs:
     plan: List[PlanItem]
+    explanation: Optional[str] = None
 
 
 @dataclass(frozen=True)

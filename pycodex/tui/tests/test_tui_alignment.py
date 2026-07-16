@@ -1200,6 +1200,7 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
             "show_view",
             "dismiss_app_server_request",
             "has_active_view",
+            "live_status_footprint_active",
             "handle_active_view_input",
             "composer",
             "handle_composer_event",
@@ -1949,6 +1950,77 @@ def test_permissions_popup_routing_matches_rust_module_ownership() -> None:
     assert "from .permission_popups import (" in slash_dispatch
     assert "if self._explicit_profile_mode:" in permission_popups
     assert "view.accept()" in list_selection
+
+
+def test_product_tui_uses_current_rust_core_goal_and_rollout_chain() -> None:
+    # Current Rust module chain:
+    # codex-tui::app -> codex-core::Session(SessionSource::Cli)
+    # -> session::turn::built_tools -> ToolRouter::from_turn_context
+    # -> tools::spec_plan core Goal handlers -> Session GoalRuntime/events.
+    # This guard intentionally spans module seams where a Python-only shortcut
+    # previously bypassed Goal accounting and advertised a different tool set.
+    app_runtime = (REPO_ROOT / "pycodex/tui/app/runtime.py").read_text(encoding="utf-8-sig")
+    terminal_runtime = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(encoding="utf-8-sig")
+    exec_runtime = (REPO_ROOT / "pycodex/exec/local_runtime.py").read_text(encoding="utf-8-sig")
+    session_runtime = (REPO_ROOT / "pycodex/core/session/runtime.py").read_text(encoding="utf-8-sig")
+    turn_runtime = (REPO_ROOT / "pycodex/core/session/turn/runtime.py").read_text(encoding="utf-8-sig")
+    goal_runtime = (REPO_ROOT / "pycodex/core/goals.py").read_text(encoding="utf-8-sig")
+    goal_handlers = (REPO_ROOT / "pycodex/core/tools/handlers/goal/__init__.py").read_text(
+        encoding="utf-8-sig"
+    )
+    spec_plan = (REPO_ROOT / "pycodex/core/tools/spec_plan.py").read_text(encoding="utf-8-sig")
+    protocol = (REPO_ROOT / "pycodex/tui/chatwidget/protocol.py").read_text(encoding="utf-8-sig")
+    request_plan_tests = (REPO_ROOT / "tests/test_exec_session_services_rs.py").read_text(
+        encoding="utf-8-sig"
+    )
+    continuation_tests = (REPO_ROOT / "tests/test_goal_extension_rs.py").read_text(
+        encoding="utf-8-sig"
+    )
+    app_runtime_tests = (REPO_ROOT / "pycodex/tui/app/tests/test_runtime.py").read_text(
+        encoding="utf-8-sig"
+    )
+    terminal_runtime_tests = (
+        REPO_ROOT / "pycodex/tui/tui/tests/test_terminal_runtime.py"
+    ).read_text(encoding="utf-8-sig")
+
+    assert "_core_session: Any = field(default=None, init=False, repr=False)" in app_runtime
+    assert "self._core_session = create_exec_core_session(" in app_runtime
+    assert "core_session=self._core_session" in app_runtime
+    assert "built_tools=self.built_tools" in app_runtime
+    assert "_default_built_tools" not in app_runtime
+    assert "session_source=SessionSource.cli()" in exec_runtime
+    assert "async def built_tools(sess: Any, turn_context: Any" in turn_runtime
+    assert "extension_tool_executors=extension_tool_executors(sess)" in turn_runtime
+    assert "return ToolRouter.from_turn_context(turn_context, params)" in turn_runtime
+    assert "extensions = empty_extension_registry()" in session_runtime
+    assert "GoalExtension" not in session_runtime
+    assert "GoalExtension" not in exec_runtime
+    assert "planned_tools.add(GetGoalHandler())" in spec_plan
+    assert "planned_tools.add(CreateGoalHandler())" in spec_plan
+    assert "planned_tools.add(UpdateGoalHandler())" in spec_plan
+    assert "class GetGoalHandler:" in goal_handlers
+    assert "class CreateGoalHandler:" in goal_handlers
+    assert "class UpdateGoalHandler:" in goal_handlers
+    assert '"type": "maybe_continue_if_idle"' in turn_runtime
+    assert "async def goal_runtime_apply(session: Any, event: GoalRuntimeEvent" in goal_runtime
+    assert "CreateGoalHandler" not in app_runtime
+    assert "UpdateGoalHandler" not in app_runtime
+    assert "def take_pending_internal_operation(" in app_runtime
+    assert 'if notification.kind == "TurnCompleted":' in app_runtime
+    assert "self._continue_core_created_work_after_turn()" in app_runtime
+    assert "self._deferred_internal_operations" in terminal_runtime
+    assert "self._drain_deferred_internal_operations()" in terminal_runtime
+    assert "rollout_items=" in turn_runtime
+    assert "_append_canonical_result_rollout_items(" in exec_runtime
+    assert 'if event_type == "thread_goal_updated":' in app_runtime
+    assert 'elif kind == "ThreadGoalUpdated":' in protocol
+    assert "test_product_session_turn_context_carries_provider_capabilities_and_auth_manager" in request_plan_tests
+    assert "test_product_tui_request_plan_uses_cli_session_and_core_tool_router" in request_plan_tests
+    assert "test_product_goal_continuation_reuses_session_and_persisted_accounting" in continuation_tests
+    assert "interrupt_accounts_active_goal_without_pausing" in continuation_tests
+    assert "usage_limit_runtime_stops_active_goal_and_prevents_idle_continuation" in continuation_tests
+    assert "test_real_goal_lifecycle_notifications_drive_footer_state" in app_runtime_tests
+    assert "test_core_created_operation_runs_after_current_turn_stream_closes" in terminal_runtime_tests
 
 
 def _literal_all(tree: ast.AST) -> set[str]:

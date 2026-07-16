@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pycodex.protocol import ModeKind
 from pycodex.tui.chatwidget.constructor import (
     BottomPaneParams,
     ChatWidgetInit,
@@ -10,7 +11,7 @@ from pycodex.tui.chatwidget.constructor import (
     new_with_op_target,
     select_placeholder,
 )
-from pycodex.tui.chatwidget.settings import FeatureSet, ModeKind, SettingsConfig
+from pycodex.tui.chatwidget.settings import FeatureSet, SettingsConfig
 
 
 def config() -> SettingsConfig:
@@ -74,7 +75,9 @@ def test_new_with_app_event_delegates_to_app_event_target_and_filters_blank_mode
     assert widget.config.model is None
     assert widget.session_header == {"model": "loading"}
     assert widget.current_collaboration_mode.model() == "loading"
-    assert widget.active_collaboration_mask is None
+    assert widget.active_collaboration_mask is not None
+    assert widget.active_collaboration_mask.mode == ModeKind.DEFAULT
+    assert widget.active_collaboration_mask.model is None
     assert widget.show_welcome_banner is True
     assert widget.current_cwd == "/repo"
     assert widget.turn_lifecycle == {"prevent_idle_sleep": True}

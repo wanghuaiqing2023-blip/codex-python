@@ -105,6 +105,7 @@ class ToolRouterParams:
     discoverable_tools: tuple[Any, ...] | None = None
     extension_tool_executors: tuple[Any, ...] = ()
     dynamic_tools: tuple[Any, ...] = ()
+    mcp_resource_provider: Any = None
 
     def __init__(
         self,
@@ -114,6 +115,7 @@ class ToolRouterParams:
         discoverable_tools: Iterable[Any] | None = None,
         extension_tool_executors: Iterable[Any] = (),
         dynamic_tools: Iterable[Any] = (),
+        mcp_resource_provider: Any = None,
     ) -> None:
         object.__setattr__(self, "mcp_tools", None if mcp_tools is None else tuple(mcp_tools))
         object.__setattr__(
@@ -128,6 +130,7 @@ class ToolRouterParams:
         )
         object.__setattr__(self, "extension_tool_executors", tuple(extension_tool_executors))
         object.__setattr__(self, "dynamic_tools", tuple(dynamic_tools))
+        object.__setattr__(self, "mcp_resource_provider", mcp_resource_provider)
 
 
 def _model_visible_specs_from_registry(registry: ToolRegistry) -> tuple[JsonValue, ...]:
@@ -431,7 +434,7 @@ async def dispatch_tool_call_with_terminal_outcome(
             ToolCallOutcome.failed(handler_executed),
             **stores,
         )
-        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        await _apply_core_goal_tool_completed(invocation, finished)
         await _record_tool_result_telemetry(
             invocation,
             success=False,
@@ -455,7 +458,7 @@ async def dispatch_tool_call_with_terminal_outcome(
             ToolCallOutcome.failed(handler_executed),
             **stores,
         )
-        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        await _apply_core_goal_tool_completed(invocation, finished)
         await _record_tool_result_telemetry(
             invocation,
             success=False,
@@ -501,7 +504,7 @@ async def dispatch_tool_call_with_terminal_outcome(
             ToolCallOutcome.failed(True),
             **stores,
         )
-        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        await _apply_core_goal_tool_completed(invocation, finished)
         dispatch_trace.record_failed(err)
         raise
     except TypeError as err:
@@ -513,7 +516,7 @@ async def dispatch_tool_call_with_terminal_outcome(
             ToolCallOutcome.failed(True),
             **stores,
         )
-        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        await _apply_core_goal_tool_completed(invocation, finished)
         dispatch_trace.record_failed(fatal)
         raise ToolPostHookTypeError(str(err)) from err
     except Exception as err:
@@ -525,7 +528,7 @@ async def dispatch_tool_call_with_terminal_outcome(
             ToolCallOutcome.failed(True),
             **stores,
         )
-        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        await _apply_core_goal_tool_completed(invocation, finished)
         dispatch_trace.record_failed(fatal)
         raise fatal from err
     finished = await notify_tool_finish_if_unclaimed(
@@ -535,9 +538,29 @@ async def dispatch_tool_call_with_terminal_outcome(
         ToolCallOutcome.completed(_success_for_logging(result.result)),
         **stores,
     )
-    await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+    await _apply_core_goal_tool_completed(invocation, finished)
     dispatch_trace.record_completed(invocation, result.call_id, result.payload, result.result)
     return result
+
+
+async def _apply_core_goal_tool_completed(invocation: ToolInvocation, finished: bool) -> None:
+    if not finished:
+        return
+    apply = getattr(invocation.session, "goal_runtime_apply", None)
+    if not callable(apply):
+        return
+    try:
+        value = apply(
+            {
+                "type": "tool_completed",
+                "turn_context": invocation.turn,
+                "tool_name": invocation.tool_name.name,
+            }
+        )
+        if inspect.isawaitable(value):
+            await value
+    except Exception as err:
+        LOG.warning("failed to account thread goal progress after tool call: %s", err)
 
 
 async def _apply_pre_tool_use_hook(
@@ -752,36 +775,6 @@ async def _call_additional_context_recorder(recorder: Any, messages: tuple[Respo
     result = recorder(messages)
     if inspect.isawaitable(result):
         await result
-
-
-async def _apply_tool_completed_goal_runtime(
-    invocation: ToolInvocation,
-    finished: bool,
-    **stores: Any,
-) -> None:
-    if not finished:
-        return
-    session = invocation.session if invocation.session is not None else stores.get("session")
-    if session is None:
-        return
-    apply = _field_or_attr(session, "goal_runtime_apply")
-    if apply is None:
-        return
-    if not callable(apply):
-        LOG.warning("failed to account thread goal progress after tool call: session.goal_runtime_apply is not callable")
-        return
-    turn = invocation.turn if invocation.turn is not None else stores.get("turn")
-    event = {
-        "type": "tool_completed",
-        "turn_context": turn,
-        "tool_name": invocation.tool_name.name,
-    }
-    try:
-        result = apply(event)
-        if inspect.isawaitable(result):
-            await result
-    except Exception as err:
-        LOG.warning("failed to account thread goal progress after tool call: %s", err)
 
 
 def _tool_dispatch_trace(invocation: ToolInvocation, **stores: Any) -> ToolDispatchTrace:

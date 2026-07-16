@@ -33,6 +33,11 @@ codex/codex-rs/core/src/rollout.rs
 codex/codex-rs/core/src/tools/
 ```
 
+Context fragments are intentionally implemented in `pycodex.core.context` to
+share their common Python base class. Rust-coordinate modules such as
+`context/fragment.py` and `context/goal_context.py` re-export those classes;
+they must not grow independent duplicate implementations.
+
 ## Alignment Unit
 
 The default acceptance unit is a module-scoped behavior contract, not the whole

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+LOG = logging.getLogger(__name__)
 
 from pycodex.protocol import (
     EventMsg,
@@ -15,6 +18,7 @@ from pycodex.protocol import (
     ThreadGoalStatus,
     ThreadGoalUpdatedEvent,
     TokenUsage,
+    validate_thread_goal_objective,
 )
 from pycodex.state import ThreadGoal as StateThreadGoal
 from pycodex.state import GoalAccountingMode
@@ -239,6 +243,8 @@ class GoalRuntimeEvent:
     turn_context: Any = None
     token_usage: TokenUsage | None = None
     external_set: Any = None
+    tool_name: str | None = None
+    turn_completed: bool = False
 
     @classmethod
     def from_value(cls, value: Any) -> "GoalRuntimeEvent":
@@ -254,11 +260,20 @@ class GoalRuntimeEvent:
                 value.get("turn_context"),
                 value.get("token_usage"),
                 value.get("external_set"),
+                value.get("tool_name"),
+                bool(value.get("turn_completed", False)),
             )
         event_type = getattr(value, "type", None)
         if event_type is None:
             raise TypeError("goal runtime event must provide a type")
-        return cls(str(event_type), getattr(value, "turn_context", None), getattr(value, "token_usage", None))
+        return cls(
+            str(event_type),
+            getattr(value, "turn_context", None),
+            getattr(value, "token_usage", None),
+            getattr(value, "external_set", None),
+            getattr(value, "tool_name", None),
+            bool(getattr(value, "turn_completed", False)),
+        )
 
 
 async def get_thread_goal(session: Any) -> ThreadGoal | None:
@@ -308,6 +323,12 @@ async def set_thread_goal(session: Any, turn_context: Any, request: SetGoalReque
     objective = request.objective.strip() if request.objective is not None else None
     if objective is not None:
         validate_thread_goal_objective(objective)
+    if request.status in {ThreadGoalStatus.COMPLETE, ThreadGoalStatus.BLOCKED}:
+        await account_thread_goal_progress(
+            session,
+            turn_context,
+            allow_budget_limit_steering=False,
+        )
     state_db = await require_state_db_for_thread_goals(session)
     await account_thread_goal_wall_clock_usage(session, state_db)
     goals = _thread_goals(state_db)
@@ -357,18 +378,82 @@ async def goal_runtime_apply(session: Any, event: GoalRuntimeEvent | str | dict[
             runtime_event.turn_context,
             runtime_event.token_usage or TokenUsage(),
         )
+    elif runtime_event.type == "tool_completed":
+        if runtime_event.tool_name != "update_goal":
+            await account_thread_goal_progress(session, runtime_event.turn_context)
     elif runtime_event.type == "tool_completed_goal":
-        await account_thread_goal_progress(session)
-    elif runtime_event.type in {"external_clear", "task_aborted"}:
+        await account_thread_goal_progress(
+            session,
+            runtime_event.turn_context,
+            allow_budget_limit_steering=False,
+        )
+    elif runtime_event.type == "turn_finished":
+        if runtime_event.turn_completed:
+            await account_thread_goal_progress(
+                session,
+                runtime_event.turn_context,
+                allow_budget_limit_steering=False,
+            )
+            _clear_finished_turn_accounting(session, runtime_event.turn_context)
+    elif runtime_event.type == "task_aborted":
+        if runtime_event.turn_context is not None:
+            await account_thread_goal_progress(
+                session,
+                runtime_event.turn_context,
+                allow_budget_limit_steering=False,
+            )
+            _clear_finished_turn_accounting(session, runtime_event.turn_context)
+    elif runtime_event.type == "usage_limit_reached":
+        await _usage_limit_active_thread_goal(session, runtime_event.turn_context)
+    elif runtime_event.type == "external_mutation_starting":
+        await _account_before_external_mutation(session)
+    elif runtime_event.type == "external_clear":
         await clear_stopped_thread_goal_runtime_state(session)
     elif runtime_event.type == "external_set":
         await _apply_external_goal_set(session, runtime_event.external_set)
     elif runtime_event.type == "maybe_continue_if_idle":
         await _maybe_schedule_goal_continuation(session)
     elif runtime_event.type == "thread_resumed":
-        goal = await get_thread_goal(session)
-        if goal is not None and goal.status is ThreadGoalStatus.ACTIVE:
-            _goal_runtime(session).accounting.wall_clock.mark_active_goal(_state_goal_id_from_protocol_goal(session, goal))
+        await _restore_thread_goal_runtime_after_resume(session)
+
+
+def _clear_finished_turn_accounting(session: Any, turn_context: Any) -> None:
+    runtime = _goal_runtime(session)
+    turn = runtime.accounting.turn
+    if turn is not None and turn.turn_id == _turn_id(turn_context):
+        runtime.accounting.turn = None
+
+
+async def _account_before_external_mutation(session: Any) -> None:
+    turn_context = await _active_turn_context(session)
+    if turn_context is not None:
+        await account_thread_goal_progress(
+            session,
+            turn_context,
+            allow_budget_limit_steering=False,
+        )
+        return
+    state_db = await require_state_db_for_thread_goals(session)
+    await account_thread_goal_wall_clock_usage(session, state_db)
+
+
+async def _usage_limit_active_thread_goal(session: Any, turn_context: Any) -> None:
+    await account_thread_goal_progress(
+        session,
+        turn_context,
+        allow_budget_limit_steering=False,
+    )
+    state_db = await require_state_db_for_thread_goals(session)
+    goals = _thread_goals(state_db)
+    limiter = getattr(goals, "usage_limit_active_thread_goal", None)
+    if not callable(limiter):
+        return
+    goal = await _maybe_await(limiter(_thread_id(session)))
+    if goal is None:
+        return
+    protocol_goal = protocol_goal_from_state(goal)
+    await clear_active_goal_accounting(session, turn_context)
+    await emit_thread_goal_updated(session, turn_context, protocol_goal)
 
 
 async def _apply_external_goal_set(session: Any, external_set: Any) -> None:
@@ -377,28 +462,55 @@ async def _apply_external_goal_set(session: Any, external_set: Any) -> None:
         return
     goal = protocol_goal_from_state(state_goal)
     if goal.status is ThreadGoalStatus.ACTIVE:
+        turn_context = await _active_turn_context(session)
         await mark_active_goal_accounting(
             session,
             str(getattr(state_goal, "goal_id", "")),
-            getattr(session, "turn_id", None),
+            _turn_id(turn_context),
             await _total_token_usage(session),
         )
-        await _schedule_goal_continuation(session, goal)
+        previous_goal = _external_set_previous_goal(external_set)
+        if previous_goal is not None and getattr(previous_goal, "objective", None) != state_goal.objective:
+            await _inject_goal_item_if_running(
+                session,
+                goal_context_input_item(objective_updated_prompt(goal)),
+            )
+        await _maybe_schedule_goal_continuation(session)
+    elif goal.status is ThreadGoalStatus.BUDGET_LIMITED:
+        if await _active_turn_context(session) is None:
+            await clear_stopped_thread_goal_runtime_state(session)
     else:
         await clear_stopped_thread_goal_runtime_state(session)
 
 
 async def _maybe_schedule_goal_continuation(session: Any) -> None:
-    goal = await get_thread_goal(session)
-    if goal is not None and goal.status is ThreadGoalStatus.ACTIVE:
-        await _schedule_goal_continuation(session, goal)
+    starter = getattr(session, "maybe_start_turn_for_pending_work", None)
+    if callable(starter):
+        await _maybe_await(starter())
+    if await _active_turn_context(session) is not None or await _has_trigger_turn_mailbox_items(session):
+        return
+    if await _session_ignores_goals(session):
+        return
+    state_db = await require_state_db_for_thread_goals(session)
+    goals = _thread_goals(state_db)
+    state_goal = await _maybe_await(_call_required(goals, "get_thread_goal", _thread_id(session)))
+    if state_goal is None or state_goal.status is not StateThreadGoalStatus.ACTIVE:
+        return
+    candidate_goal_id = state_goal.goal_id
+    candidate = protocol_goal_from_state(state_goal)
+    if await _active_turn_context(session) is not None or await _has_trigger_turn_mailbox_items(session):
+        return
+    current = await _maybe_await(_call_required(goals, "get_thread_goal", _thread_id(session)))
+    if (
+        current is None
+        or current.goal_id != candidate_goal_id
+        or current.status is not StateThreadGoalStatus.ACTIVE
+    ):
+        return
+    await _schedule_goal_continuation(session, candidate)
 
 
 async def _schedule_goal_continuation(session: Any, goal: ThreadGoal) -> None:
-    collaboration_mode = getattr(session, "collaboration_mode", None)
-    mode = getattr(collaboration_mode, "mode", None)
-    if mode is ModeKind.PLAN:
-        return
     callback = getattr(session, "goal_continuation_callback", None)
     if not callable(callback):
         return
@@ -412,6 +524,70 @@ def _external_set_goal(external_set: Any) -> Any:
     if isinstance(external_set, dict):
         return external_set.get("goal")
     return getattr(external_set, "goal", None)
+
+
+def _external_set_previous_goal(external_set: Any) -> Any:
+    if external_set is None:
+        return None
+    if isinstance(external_set, dict):
+        return external_set.get("previous_status")
+    return getattr(external_set, "previous_status", None)
+
+
+async def _restore_thread_goal_runtime_after_resume(session: Any) -> None:
+    if await _session_ignores_goals(session):
+        return
+    state_db = await require_state_db_for_thread_goals(session)
+    state_goal = await _maybe_await(
+        _call_required(_thread_goals(state_db), "get_thread_goal", _thread_id(session))
+    )
+    if state_goal is not None and state_goal.status is StateThreadGoalStatus.ACTIVE:
+        _goal_runtime(session).accounting.wall_clock.mark_active_goal(state_goal.goal_id)
+        return
+    await clear_stopped_thread_goal_runtime_state(session)
+
+
+async def _active_turn_context(session: Any) -> Any:
+    reader = getattr(session, "active_turn_context", None)
+    if callable(reader):
+        value = await _maybe_await(reader())
+        if value is not None:
+            return value
+    active_turn = getattr(session, "active_turn", None)
+    task = None if active_turn is None else getattr(active_turn, "task", None)
+    return None if task is None else getattr(task, "turn_context", None)
+
+
+async def _has_trigger_turn_mailbox_items(session: Any) -> bool:
+    input_queue = getattr(session, "input_queue", None)
+    reader = getattr(input_queue, "has_trigger_turn_mailbox_items", None)
+    return bool(await _maybe_await(reader())) if callable(reader) else False
+
+
+async def _session_ignores_goals(session: Any) -> bool:
+    collaboration_mode = getattr(session, "collaboration_mode", None)
+    if callable(collaboration_mode):
+        collaboration_mode = await _maybe_await(collaboration_mode())
+    mode = getattr(collaboration_mode, "mode", collaboration_mode)
+    return mode is ModeKind.PLAN or mode == ModeKind.PLAN.value
+
+
+async def _turn_context_ignores_goals(turn_context: Any) -> bool:
+    collaboration_mode = getattr(turn_context, "collaboration_mode", None)
+    mode = getattr(collaboration_mode, "mode", collaboration_mode)
+    return mode is ModeKind.PLAN or mode == ModeKind.PLAN.value
+
+
+async def _inject_goal_item_if_running(session: Any, item: ResponseInputItem) -> bool:
+    injector = getattr(session, "inject_if_running", None)
+    if not callable(injector):
+        return False
+    try:
+        result = await _maybe_await(injector([item]))
+    except Exception as exc:
+        LOG.debug("skipping goal steering because no turn is active: %s", exc)
+        return False
+    return result is None or result is True
 
 
 async def require_state_db_for_thread_goals(session: Any) -> Any:
@@ -453,10 +629,21 @@ async def account_thread_goal_wall_clock_usage(session: Any, state_db: Any) -> N
         runtime.accounting.wall_clock.mark_accounted(seconds)
 
 
-async def account_thread_goal_progress(session: Any) -> None:
+async def account_thread_goal_progress(
+    session: Any,
+    turn_context: Any,
+    *,
+    allow_budget_limit_steering: bool = True,
+) -> None:
+    if turn_context is None or await _turn_context_ignores_goals(turn_context):
+        return
     runtime = _goal_runtime(session)
     turn = runtime.accounting.turn
-    if turn is None or not turn.active_this_turn():
+    if (
+        turn is None
+        or turn.turn_id != _turn_id(turn_context)
+        or not turn.active_this_turn()
+    ):
         return
     current = await _total_token_usage(session)
     delta = turn.token_delta_since_last_accounting(current)
@@ -475,9 +662,28 @@ async def account_thread_goal_progress(session: Any) -> None:
             turn.active_goal_id,
         )
     )
-    if bool(getattr(outcome, "updated", False)):
-        turn.mark_accounted(current)
-        runtime.accounting.wall_clock.mark_accounted(time_delta)
+    if not bool(getattr(outcome, "updated", False)):
+        return
+    turn.mark_accounted(current)
+    runtime.accounting.wall_clock.mark_accounted(time_delta)
+    state_goal = getattr(outcome, "goal", None)
+    if state_goal is None:
+        return
+    budget_limited = state_goal.status is StateThreadGoalStatus.BUDGET_LIMITED
+    clear_active_goal = state_goal.status is not StateThreadGoalStatus.ACTIVE and (
+        not budget_limited or not allow_budget_limit_steering
+    )
+    if clear_active_goal:
+        turn.clear_active_goal()
+        runtime.accounting.wall_clock.clear_active_goal()
+    already_reported = runtime.budget_limit_reported_goal_id == state_goal.goal_id
+    if not budget_limited:
+        runtime.budget_limit_reported_goal_id = None
+    protocol_goal = protocol_goal_from_state(state_goal)
+    await emit_thread_goal_updated(session, turn_context, protocol_goal)
+    if allow_budget_limit_steering and budget_limited and not already_reported:
+        await _inject_goal_item_if_running(session, budget_limit_steering_item(protocol_goal))
+        runtime.budget_limit_reported_goal_id = state_goal.goal_id
 
 
 async def mark_thread_goal_turn_started(session: Any, turn_context: Any, token_usage: TokenUsage) -> None:
@@ -750,10 +956,6 @@ async def _total_token_usage(session: Any) -> TokenUsage:
         if isinstance(value, TokenUsage):
             return value
     return TokenUsage()
-
-
-def _state_goal_id_from_protocol_goal(session: Any, goal: ThreadGoal) -> str:
-    return getattr(goal, "goal_id", None) or f"{_thread_id(session)}:{goal.created_at}"
 
 
 def _call_required(target: Any, name: str, *args: Any) -> Any:

@@ -13,6 +13,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from pycodex.features import Feature
+from pycodex.core.config.agent_roles import build_spawn_agent_tool_description
+
 from pycodex.core.tools.code_mode import (
     CodeModeExecuteHandler,
     CodeModeWaitHandler,
@@ -33,9 +36,9 @@ from pycodex.core.tools.hosted_spec import (
     create_web_search_tool,
 )
 from pycodex.core.tools.handlers.agent_jobs import ReportAgentJobResultHandler, SpawnAgentsOnCsvHandler
-from pycodex.core.tools.handlers.goal import CreateGoalHandler, GetGoalHandler, UpdateGoalHandler
 from pycodex.core.tools.handlers.mcp import McpHandler, McpToolRequestCallback
 from pycodex.core.tools.handlers.extension_tools import ExtensionToolAdapter
+from pycodex.core.tools.handlers.goal import CreateGoalHandler, GetGoalHandler, UpdateGoalHandler
 from pycodex.core.tools.handlers.multi_agents import (
     CloseAgentHandler,
     ResumeAgentHandler,
@@ -197,6 +200,11 @@ def build_tool_router(
         getattr(params, "mcp_tools", None) or (),
         getattr(params, "deferred_mcp_tools", None) or (),
     )
+    add_mcp_resource_tools(
+        planned_tools,
+        getattr(params, "mcp_tools", None),
+        getattr(params, "mcp_resource_provider", None),
+    )
     add_dynamic_tools(planned_tools, getattr(params, "dynamic_tools", ()) or ())
     add_extension_tools(
         planned_tools,
@@ -212,7 +220,7 @@ def tool_plan_options_from_turn_context(turn_context: Any) -> ToolPlanOptions:
     config = getattr(turn_context, "config", None)
     model_info = getattr(turn_context, "model_info", None)
     features = getattr(turn_context, "features", None)
-    web_search_mode = _field_value(getattr(config, "web_search_mode", None), "value")
+    web_search_mode = _web_search_mode_from_config(config)
     web_search_tool_type = getattr(model_info, "web_search_tool_type", WebSearchToolType.TEXT)
     if web_search_tool_type is None:
         web_search_tool_type = WebSearchToolType.TEXT
@@ -223,7 +231,7 @@ def tool_plan_options_from_turn_context(turn_context: Any) -> ToolPlanOptions:
         code_mode_only=_feature_enabled(features, "CodeModeOnly", "code_mode_only"),
         provider_web_search=bool(getattr(capabilities, "web_search", False)),
         standalone_web_run_available=False,
-        web_search_mode=web_search_mode if isinstance(web_search_mode, WebSearchMode) else None,
+        web_search_mode=web_search_mode,
         web_search_config=getattr(config, "web_search_config", None),
         web_search_tool_type=web_search_tool_type,
         provider_image_generation=bool(getattr(capabilities, "image_generation", False)),
@@ -391,6 +399,24 @@ def add_mcp_tools(
             McpHandler.new(tool_info, request_callback=request_callback),
             ToolExposure.DEFERRED,
         )
+
+
+def add_mcp_resource_tools(
+    planned_tools: PlannedTools,
+    mcp_tools: Iterable[Any] | None,
+    provider: Any,
+) -> None:
+    if mcp_tools is None or provider is None:
+        return
+    from pycodex.core.tools.handlers.mcp_resource import (
+        ListMcpResourceTemplatesHandler,
+        ListMcpResourcesHandler,
+        ReadMcpResourceHandler,
+    )
+
+    planned_tools.add(ListMcpResourcesHandler(provider))
+    planned_tools.add(ListMcpResourceTemplatesHandler(provider))
+    planned_tools.add(ReadMcpResourceHandler(provider))
 
 
 def add_extension_tools(
@@ -706,10 +732,6 @@ def build_environment_tool_router_from_turn_context(
         request_permissions_tool_enabled=request_permissions_tool_enabled,
         can_request_original_image_detail=can_request_original_image_detail,
     )
-    if _goal_tools_enabled(turn_context):
-        planned_tools.add(GetGoalHandler())
-        planned_tools.add(CreateGoalHandler())
-        planned_tools.add(UpdateGoalHandler())
     return build_tool_router_from_plan(planned_tools, options)
 
 
@@ -1009,15 +1031,15 @@ def _feature_enabled(features: Any, *names: str) -> bool:
     enabled = getattr(features, "enabled", None)
     if callable(enabled):
         for name in names:
-            for candidate in (name, _snake_to_pascal(name), _pascal_to_snake(name)):
+            for candidate in _feature_candidates(name):
                 try:
                     if bool(enabled(candidate)):
                         return True
                 except Exception:
                     continue
     for name in names:
-        for candidate in (name, _snake_to_pascal(name), _pascal_to_snake(name)):
-            value = getattr(features, candidate, None)
+        for candidate in _feature_candidates(name):
+            value = getattr(features, candidate, None) if isinstance(candidate, str) else None
             if isinstance(value, bool) and value:
                 return True
             if isinstance(features, Mapping) and bool(features.get(candidate, False)):
@@ -1025,11 +1047,37 @@ def _feature_enabled(features: Any, *names: str) -> bool:
     return False
 
 
+def _feature_candidates(name: str) -> tuple[Any, ...]:
+    text_candidates = (name, _snake_to_pascal(name), _pascal_to_snake(name))
+    enum_candidates = tuple(
+        feature
+        for feature in Feature
+        if name in {feature.name, feature.value, feature.key()}
+        or any(candidate in {feature.name, feature.value, feature.key()} for candidate in text_candidates)
+    )
+    return (*enum_candidates, *text_candidates)
+
+
 def _field_value(value: Any, attr: str, default: Any = None) -> Any:
     if value is None:
         return default
     field = getattr(value, attr, default)
     return field() if callable(field) else field
+
+
+def _web_search_mode_from_config(config: Any) -> WebSearchMode | None:
+    value = getattr(config, "web_search_mode", None)
+    if isinstance(value, WebSearchMode):
+        return value
+    value = _field_value(value, "value")
+    if isinstance(value, WebSearchMode):
+        return value
+    if isinstance(value, str):
+        try:
+            return WebSearchMode(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _auth_uses_codex_backend(auth_manager: Any) -> bool:
@@ -1064,7 +1112,13 @@ def _can_request_original_image_detail(model_info: Any) -> bool:
     checker = getattr(model_info, "can_request_original_image_detail", None)
     if callable(checker):
         return bool(checker())
-    return bool(getattr(model_info, "original_image_detail_supported", False))
+    return bool(
+        getattr(
+            model_info,
+            "supports_image_detail_original",
+            getattr(model_info, "original_image_detail_supported", False),
+        )
+    )
 
 
 def _goal_tools_enabled(turn_context: Any) -> bool:
@@ -1094,9 +1148,7 @@ def _agent_jobs_worker_tools_enabled(turn_context: Any, features: Any) -> bool:
 def _agent_type_description(turn_context: Any) -> str:
     config = getattr(turn_context, "config", None)
     roles = getattr(config, "agent_roles", None)
-    if isinstance(roles, Mapping) and roles:
-        return "\n".join(str(key) for key in sorted(roles))
-    return ""
+    return build_spawn_agent_tool_description(roles if isinstance(roles, Mapping) else {})
 
 
 def _snake_to_pascal(value: str) -> str:
@@ -1126,6 +1178,7 @@ __all__ = [
     "add_extension_tools",
     "add_hosted_model_tools",
     "add_mcp_tools",
+    "add_mcp_resource_tools",
     "add_request_permissions_tool",
     "add_shell_tools_for_turn_context",
     "add_unified_exec_tools_for_turn_context",
