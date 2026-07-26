@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-windows-sandbox.path_normalization",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "path_normalization",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/path_normalization.rs",
+    "anchors": [
+      "canonical_path_key",
+      "canonicalize_path"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/path_normalization.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/path_normalization.py"
+    ],
+    "anchors": [
+      "canonical_path_key",
+      "canonicalize_path"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -5,12 +5,14 @@ from pathlib import Path
 import pytest
 
 from pycodex.protocol.models import (
+    FileSystemPermissions,
+    NetworkPermissions,
+)
+from pycodex.protocol.permissions import (
     FileSystemAccessMode,
     FileSystemPath,
-    FileSystemPermissions,
     FileSystemSandboxEntry,
     FileSystemSpecialPath,
-    NetworkPermissions,
 )
 from pycodex.protocol.request_permissions import RequestPermissionProfile
 from pycodex.tui.app_server_approval_conversions import (

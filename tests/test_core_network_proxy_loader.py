@@ -4,35 +4,37 @@ import unittest
 from pathlib import Path
 
 from pycodex.execpolicy import Decision
-from pycodex.network_proxy import (
-    ConfigLayerEntry,
-    ConfigLayerSource,
-    LayerMtime,
-    MtimeConfigReloader,
-    NetworkConstraints,
+from pycodex.app_server_protocol.config import ConfigLayerSource
+from pycodex.config.config_requirements import NetworkConstraints
+from pycodex.config.permissions_toml import NetworkToml
+from pycodex.config.state import ConfigLayerEntry
+from pycodex.network_proxy.config import (
     NetworkDomainPermission,
     NetworkMode,
     NetworkProxyConfig,
-    NetworkProxyConstraints,
-    NetworkProxyAuditMetadata,
-    NetworkProxySpec,
-    NetworkToml,
+)
+from pycodex.network_proxy.policy import normalize_host
+from pycodex.network_proxy.runtime import NetworkProxyAuditMetadata
+from pycodex.network_proxy.state import NetworkProxyConstraints
+from pycodex.core.config.network_proxy_spec import NetworkProxySpec
+from pycodex.core.network_proxy_loader import (
+    LayerMtime,
+    MtimeConfigReloader,
     apply_exec_policy_network_rules,
     apply_network_constraints,
-    config_from_layers,
     collect_layer_mtimes,
+    config_from_layers,
     is_user_controlled_layer,
     network_constraints_from_trusted_layers,
     network_tables_from_toml,
-    normalize_host,
     overlay_network_domain_permissions,
     selected_network_from_tables,
 )
 from pycodex.protocol.models import (
     ManagedFileSystemPermissions,
-    NetworkSandboxPolicy,
     PermissionProfile,
 )
+from pycodex.protocol.permissions import NetworkSandboxPolicy
 
 
 class ExecPolicy:
@@ -178,7 +180,7 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         )
 
         self.assertEqual(network.enabled, True)
-        self.assertEqual(network.domains, {"child.example.com": "allow"})
+        self.assertEqual(network.domains.entries, {"child.example.com": "allow"})
 
     def test_selected_network_from_tables_resolves_permission_profile_inheritance(self) -> None:
         # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
@@ -217,7 +219,7 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         self.assertTrue(network.dangerously_allow_all_unix_sockets)
         self.assertTrue(network.allow_local_binding)
         self.assertEqual(
-            network.domains,
+            network.domains.entries,
             {
                 "base.example.com": "allow",
                 "child.example.com": "allow",
@@ -278,7 +280,7 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         constraints = network_constraints_from_trusted_layers(
             [
                 ConfigLayerEntry(
-                    ConfigLayerSource.system("/tmp/system.toml"),
+                    ConfigLayerSource.system("C:/tmp/system.toml"),
                     {
                         "default_permissions": "dev",
                         "permissions": {
@@ -287,7 +289,7 @@ class NetworkProxyLoaderTests(unittest.TestCase):
                     },
                 ),
                 ConfigLayerEntry(
-                    ConfigLayerSource.legacy_managed_config_toml_from_file("/tmp/managed.toml"),
+                    ConfigLayerSource.legacy_managed_config_toml_from_file("C:/tmp/managed.toml"),
                     {"default_permissions": ":workspace"},
                 ),
             ]
@@ -297,13 +299,13 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         self.assertIsNone(constraints.denied_domains)
 
     def test_user_controlled_layer_matches_rust(self) -> None:
-        self.assertTrue(is_user_controlled_layer(ConfigLayerSource.user("/tmp/user.toml")))
-        self.assertTrue(is_user_controlled_layer(ConfigLayerSource.project("/tmp/.codex")))
+        self.assertTrue(is_user_controlled_layer(ConfigLayerSource.user("C:/tmp/user.toml")))
+        self.assertTrue(is_user_controlled_layer(ConfigLayerSource.project("C:/tmp/.codex")))
         self.assertTrue(is_user_controlled_layer(ConfigLayerSource.session_flags()))
-        self.assertFalse(is_user_controlled_layer(ConfigLayerSource.system("/tmp/system.toml")))
+        self.assertFalse(is_user_controlled_layer(ConfigLayerSource.system("C:/tmp/system.toml")))
         self.assertFalse(
             is_user_controlled_layer(
-                ConfigLayerSource.legacy_managed_config_toml_from_file("/tmp/managed.toml")
+                ConfigLayerSource.legacy_managed_config_toml_from_file("C:/tmp/managed.toml")
             )
         )
 
@@ -321,7 +323,11 @@ class NetworkProxyLoaderTests(unittest.TestCase):
             mtimes = collect_layer_mtimes(
                 [
                     ConfigLayerEntry(ConfigLayerSource.system(system)),
-                    ConfigLayerEntry(ConfigLayerSource.user(user), enabled=False),
+                    ConfigLayerEntry.new_disabled(
+                        ConfigLayerSource.user(user),
+                        {},
+                        "disabled for test",
+                    ),
                     ConfigLayerEntry(ConfigLayerSource.project(project_dir)),
                     ConfigLayerEntry(ConfigLayerSource.session_flags()),
                 ]

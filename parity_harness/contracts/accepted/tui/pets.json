@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.pets",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets",
+    "source": "codex/codex-rs/tui/src/pets/mod.rs",
+    "anchors": [
+      "DEFAULT_PET_ID",
+      "DISABLED_PET_ID",
+      "PetImageRenderError",
+      "PetImageRenderState",
+      "ensure_builtin_pack_for_pet",
+      "render_ambient_pet_image",
+      "render_pet_picker_preview_image",
+      "AmbientPetPayload",
+      "SixelClearArea",
+      "clear_sixel_area",
+      "is_kitty_protocol",
+      "render_pet_image"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/pets/__init__.py"
+    ],
+    "anchors": [
+      "DEFAULT_PET_ID",
+      "DISABLED_PET_ID",
+      "PetImageRenderError",
+      "PetImageRenderState",
+      "ensure_builtin_pack_for_pet",
+      "render_ambient_pet_image",
+      "render_pet_picker_preview_image",
+      "AmbientPetPayload",
+      "SixelClearArea",
+      "clear_sixel_area",
+      "is_kitty_protocol",
+      "render_pet_image"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

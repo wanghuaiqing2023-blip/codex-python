@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.realtime_prompt",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "realtime_prompt",
+    "source": "codex/codex-rs/core/src/realtime_prompt.rs",
+    "anchors": [
+      "prepare_realtime_backend_prompt",
+      "BACKEND_PROMPT",
+      "DEFAULT_USER_FIRST_NAME",
+      "USER_FIRST_NAME_PLACEHOLDER",
+      "current_user_first_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/realtime_prompt.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/realtime_prompt.py"
+    ],
+    "anchors": [
+      "prepare_realtime_backend_prompt",
+      "BACKEND_PROMPT",
+      "DEFAULT_USER_FIRST_NAME",
+      "USER_FIRST_NAME_PLACEHOLDER",
+      "current_user_first_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

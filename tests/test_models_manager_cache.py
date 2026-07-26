@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 
@@ -142,6 +143,21 @@ def test_invalid_cache_schema_is_invalid_data_and_load_fresh_returns_none(tmp_pa
     cache_path = tmp_path / "models_cache.json"
     cache_path.write_text('{"models": []}', encoding="utf-8")
     manager = ModelsCacheManager(cache_path, timedelta(hours=24))
+
+    with pytest.raises(OSError):
+        manager.load()
+    assert manager.load_fresh("1.2.3") is None
+
+
+def test_cache_model_missing_required_protocol_field_is_ignored(tmp_path) -> None:
+    # Rust models-manager::cache maps any ModelInfo serde failure to InvalidData;
+    # load_fresh then ignores the incompatible cache so it can be refreshed.
+    cache_path = tmp_path / "models_cache.json"
+    manager = ModelsCacheManager(cache_path, timedelta(hours=24))
+    manager.persist_cache((model_info_from_slug("cached"),), None, "1.2.3")
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    del payload["models"][0]["supports_reasoning_summaries"]
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(OSError):
         manager.load()

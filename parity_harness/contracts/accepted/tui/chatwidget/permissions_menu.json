@@ -1,0 +1,34 @@
+{
+  "contract_id": "codex-tui.chatwidget.permissions_menu",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::permissions_menu",
+    "source": "codex/codex-rs/tui/src/chatwidget/permissions_menu.rs",
+    "anchors": [
+      "open_permission_profiles_popup",
+      "builtin_permission_mode_selection_item",
+      "permission_profile_selection_item"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/permissions_menu.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/permissions_menu.py"
+    ],
+    "anchors": [
+      "open_permission_profiles_popup",
+      "builtin_permission_mode_selection_item",
+      "permission_profile_selection_item"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

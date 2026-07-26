@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-protocol.request_user_input",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "request_user_input",
+    "source": "codex/codex-rs/protocol/src/request_user_input.rs",
+    "anchors": [
+      "RequestUserInputAnswer",
+      "RequestUserInputArgs",
+      "RequestUserInputEvent",
+      "RequestUserInputQuestion",
+      "RequestUserInputQuestionOption",
+      "RequestUserInputResponse"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/request_user_input.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/request_user_input.py"
+    ],
+    "anchors": [
+      "RequestUserInputAnswer",
+      "RequestUserInputArgs",
+      "RequestUserInputEvent",
+      "RequestUserInputQuestion",
+      "RequestUserInputQuestionOption",
+      "RequestUserInputResponse"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_small_modules.py"
+  ]
+}

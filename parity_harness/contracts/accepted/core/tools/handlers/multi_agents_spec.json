@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.handlers.multi_agents_spec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::multi_agents_spec",
+    "source": "codex/codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+    "anchors": [
+      "MULTI_AGENT_V1_NAMESPACE",
+      "SpawnAgentToolOptions",
+      "WaitAgentTimeoutOptions",
+      "create_close_agent_tool_v1",
+      "create_close_agent_tool_v2",
+      "create_followup_task_tool",
+      "create_list_agents_tool",
+      "create_resume_agent_tool",
+      "create_send_input_tool_v1",
+      "create_send_message_tool",
+      "create_spawn_agent_tool_v1",
+      "create_spawn_agent_tool_v2"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/multi_agents_spec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/multi_agents_spec.py"
+    ],
+    "anchors": [
+      "MULTI_AGENT_V1_NAMESPACE",
+      "SpawnAgentToolOptions",
+      "WaitAgentTimeoutOptions",
+      "create_close_agent_tool_v1",
+      "create_close_agent_tool_v2",
+      "create_followup_task_tool",
+      "create_list_agents_tool",
+      "create_resume_agent_tool",
+      "create_send_input_tool_v1",
+      "create_send_message_tool",
+      "create_spawn_agent_tool_v1",
+      "create_spawn_agent_tool_v2"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

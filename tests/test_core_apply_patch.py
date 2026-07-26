@@ -6,39 +6,43 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.apply_patch import (
-    APPLY_PATCH_FREEFORM_DESCRIPTION,
-    APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL,
-    APPLY_PATCH_LARK_GRAMMAR,
     APPLY_PATCH_TOOL_INSTRUCTIONS,
-    APPLY_PATCH_TOOL_NAME,
     CODEX_CORE_APPLY_PATCH_ARG1,
     ApplyPatchAction,
     ApplyPatchArgs,
-    ApplyPatchArgumentDiffConsumer,
     ApplyPatchError,
     ApplyPatchFileChange,
     ApplyPatchFileUpdate,
-    ApplyPatchHandler,
     ApplyPatchParseError,
     Hunk,
     MaybeApplyPatch,
     StreamingPatchParser,
     UpdateFileChunk,
-    build_apply_patch_request,
-    convert_apply_patch_hunks_to_protocol,
-    convert_apply_patch_to_protocol,
-    create_apply_patch_freeform_tool,
     derive_new_contents_from_chunks,
-    file_paths_for_action,
     maybe_parse_apply_patch,
     maybe_parse_apply_patch_verified,
     parse_patch,
-    require_apply_patch_environment_id,
-    resolve_apply_patch_invocation,
     run_apply_patch_standalone,
     unified_diff_from_chunks,
     verify_apply_patch_args,
+)
+from pycodex.core.apply_patch import convert_apply_patch_to_protocol
+from pycodex.core.tools.handlers.apply_patch import (
+    APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL,
+    ApplyPatchArgumentDiffConsumer,
+    ApplyPatchHandler,
+    build_apply_patch_request,
+    convert_apply_patch_hunks_to_protocol,
+    file_paths_for_action,
+    require_apply_patch_environment_id,
+    resolve_apply_patch_invocation,
     write_permissions_for_paths,
+)
+from pycodex.core.tools.handlers.apply_patch_spec import (
+    APPLY_PATCH_FREEFORM_DESCRIPTION,
+    APPLY_PATCH_LARK_GRAMMAR,
+    APPLY_PATCH_TOOL_NAME,
+    create_apply_patch_freeform_tool,
 )
 from pycodex.arg0 import CODEX_CORE_APPLY_PATCH_ARG1 as ARG0_CODEX_CORE_APPLY_PATCH_ARG1
 from pycodex.core import (
@@ -166,32 +170,15 @@ class CoreApplyPatchTests(unittest.TestCase):
             },
         )
 
-    def test_convert_apply_patch_accepts_mapping_shape(self) -> None:
-        self.assertEqual(
+    def test_convert_apply_patch_rejects_mapping_shape(self) -> None:
+        # Rust: core/src/apply_patch.rs accepts only &ApplyPatchAction.
+        with self.assertRaises(TypeError):
             convert_apply_patch_to_protocol(
                 {
                     "cwd": "/repo",
-                    "changes": {
-                        "new.txt": {"type": "add", "content": "new"},
-                        "gone.txt": {"type": "delete", "content": "gone"},
-                        "renamed.txt": {
-                            "type": "update",
-                            "unified_diff": "@@ -1 +1 @@\n-x\n+y\n",
-                            "move_path": "renamed-to.txt",
-                            "new_content": "y\n",
-                        },
-                    },
-                }
-            ),
-            {
-                Path("new.txt"): FileChange.add("new"),
-                Path("gone.txt"): FileChange.delete("gone"),
-                Path("renamed.txt"): FileChange.update(
-                    "@@ -1 +1 @@\n-x\n+y\n",
-                    move_path=Path("renamed-to.txt"),
-                ),
-            },
-        )
+                    "changes": {"new.txt": {"type": "add", "content": "new"}},
+                }  # type: ignore[arg-type]
+            )
 
     def test_convert_apply_patch_rejects_unknown_change_type(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown apply_patch file change type"):

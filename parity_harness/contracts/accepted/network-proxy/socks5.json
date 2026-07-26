@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-network-proxy.socks5",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "socks5",
+    "source": "codex/codex-rs/network-proxy/src/socks5.rs",
+    "anchors": [
+      "run_socks5",
+      "run_socks5_with_std_listener",
+      "emit_socks_block_decision_audit_event",
+      "policy_denied_error"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/socks5.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/socks5.py"
+    ],
+    "anchors": [
+      "run_socks5",
+      "run_socks5_with_std_listener",
+      "emit_socks_block_decision_audit_event",
+      "policy_denied_error"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

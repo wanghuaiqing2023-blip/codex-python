@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.request_user_input",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::request_user_input",
+    "source": "codex/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs",
+    "anchors": [
+      "DESIRED_SPACERS_BETWEEN_SECTIONS",
+      "FooterTip",
+      "RequestUserInputOverlay",
+      "TIP_SEPARATOR",
+      "footer_required_height",
+      "footer_tip_lines",
+      "footer_tip_lines_with_prefix",
+      "new_with_keymap",
+      "notes_ui_visible",
+      "option_rows",
+      "options_preferred_height",
+      "options_required_height"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/request_user_input/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/request_user_input/__init__.py"
+    ],
+    "anchors": [
+      "DESIRED_SPACERS_BETWEEN_SECTIONS",
+      "FooterTip",
+      "RequestUserInputOverlay",
+      "TIP_SEPARATOR",
+      "footer_required_height",
+      "footer_tip_lines",
+      "footer_tip_lines_with_prefix",
+      "new_with_keymap",
+      "notes_ui_visible",
+      "option_rows",
+      "options_preferred_height",
+      "options_required_height"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

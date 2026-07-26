@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-windows-sandbox.elevated_impl",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "elevated_impl",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/elevated_impl.rs",
+    "anchors": [
+      "CaptureResult",
+      "ElevatedSandboxProfileCaptureRequest",
+      "run_windows_sandbox_capture_for_permission_profile"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/elevated_impl/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/elevated_impl/__init__.py"
+    ],
+    "anchors": [
+      "CaptureResult",
+      "ElevatedSandboxProfileCaptureRequest",
+      "run_windows_sandbox_capture_for_permission_profile"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_unified_exec_modules.py"
+  ]
+}

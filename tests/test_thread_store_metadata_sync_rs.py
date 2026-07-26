@@ -19,9 +19,9 @@ from pycodex.protocol import (
 from pycodex.thread_store import (
     ResumeThreadParams,
     ThreadEventPersistenceMode,
-    ThreadMetadataSync,
     ThreadPersistenceMetadata,
 )
+from pycodex.thread_store.thread_metadata_sync import ThreadMetadataSync
 
 
 def thread_id(hex_tail: str = "000000000001") -> ThreadId:

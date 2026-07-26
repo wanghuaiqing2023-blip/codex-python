@@ -117,6 +117,16 @@ class TerminalBottomPaneController:
     def composer(self) -> object:
         return self._view_state.composer
 
+    def set_keymap(self, keymap: object) -> None:
+        """Forward Rust ``BottomPane::set_keymap`` to the composer owner."""
+
+        self._view_state.composer.set_keymap(keymap)
+
+    def set_task_running(self, running: bool) -> None:
+        """Forward Rust ``BottomPane::set_task_running`` to the composer owner."""
+
+        self._view_state.composer.is_task_running = bool(running)
+
     def _record_submission(self, text: str) -> None:
         """Record a submitted composer entry through its Rust-owned history."""
 

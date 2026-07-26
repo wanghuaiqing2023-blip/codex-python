@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pycodex.tui.app_event import AppEvent as RuntimeAppEvent
 from pycodex.tui.chatwidget.settings_popups import (
     AppEvent,
     Personality,
     RealtimeAudioDeviceKind,
+    TerminalSettingsPopupController,
     open_experimental_popup,
     open_personality_popup,
     open_realtime_audio_device_selection,
@@ -148,7 +150,6 @@ def test_realtime_audio_popup_and_device_selection_match_current_state() -> None
     assert [item.name for item in params.items] == ["Microphone", "Speaker"]
     assert params.items[0].description == "Current: System default"
     assert params.items[1].description == "Current: Desk Speaker"
-
     params = open_realtime_audio_device_selection_with_names(
         widget,
         RealtimeAudioDeviceKind.SPEAKER,
@@ -158,9 +159,40 @@ def test_realtime_audio_popup_and_device_selection_match_current_state() -> None
     assert params.items[1].name == "Unavailable: Desk Speaker"
     assert params.items[1].is_disabled is True
     assert params.items[2].actions == [
-        AppEvent("PersistRealtimeAudioDeviceSelection", {"kind": RealtimeAudioDeviceKind.SPEAKER, "name": "Headphones"})
+        AppEvent(
+            "PersistRealtimeAudioDeviceSelection",
+            {"kind": RealtimeAudioDeviceKind.SPEAKER, "name": "Headphones"},
+        )
     ]
 
+
+def test_terminal_settings_popup_uses_rust_realtime_settings_contract() -> None:
+    # Rust: chatwidget::settings_popups::open_realtime_audio_popup.
+    runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(
+                realtime_microphone="Studio Mic",
+                realtime_speaker="Desk Speaker",
+            )
+        )
+    )
+
+    params = TerminalSettingsPopupController(runtime).open_view()
+
+    assert params.title == "Settings"
+    assert params.subtitle == "Configure settings for Codex."
+    assert [item.name for item in params.items] == ["Microphone", "Speaker"]
+    assert [item.is_disabled for item in params.items] == [False, False]
+    assert params.items[0].actions == [
+        RuntimeAppEvent.open_realtime_audio_device_selection(
+            RealtimeAudioDeviceKind.MICROPHONE
+        )
+    ]
+    assert params.items[1].actions == [
+        RuntimeAppEvent.open_realtime_audio_device_selection(
+            RealtimeAudioDeviceKind.SPEAKER
+        )
+    ]
 
 def test_realtime_audio_device_selection_marks_available_current_device() -> None:
     # Rust parity: current configured device is current when present in the listed devices,

@@ -133,18 +133,25 @@ def _warning_message(remaining_percent: float, limit_label: str) -> str:
 
 def _variant_name(value: Any) -> str:
     if isinstance(value, str):
-        return value
+        return _rust_variant_name(value)
     if isinstance(value, dict):
         if "kind" in value:
-            return str(value["kind"])
+            return _rust_variant_name(value["kind"])
         if "type" in value:
-            return str(value["type"])
+            return _rust_variant_name(value["type"])
         if len(value) == 1:
-            return str(next(iter(value)))
+            return _rust_variant_name(next(iter(value)))
     name = getattr(value, "kind", getattr(value, "type", getattr(value, "name", None)))
     if name is not None:
-        return str(name)
+        return _rust_variant_name(name)
     return type(value).__name__
+
+
+def _rust_variant_name(value: Any) -> str:
+    text = str(value)
+    if "_" not in text:
+        return text
+    return "".join(part[:1].upper() + part[1:] for part in text.split("_") if part)
 
 
 def _get(value: Any, key: str) -> Any:

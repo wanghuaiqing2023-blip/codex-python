@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-core.state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "state",
+    "source": "codex/codex-rs/core/src/state/mod.rs",
+    "anchors": [
+      "ActiveTurn",
+      "AdditionalContextStore",
+      "AutoCompactWindowSnapshot",
+      "MailboxDeliveryPhase",
+      "PendingRequestPermissions",
+      "RunningTask",
+      "SessionServices",
+      "SessionState",
+      "TaskKind",
+      "TurnState"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/state/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/state/__init__.py"
+    ],
+    "anchors": [
+      "ActiveTurn",
+      "AdditionalContextStore",
+      "AutoCompactWindowSnapshot",
+      "MailboxDeliveryPhase",
+      "PendingRequestPermissions",
+      "RunningTask",
+      "SessionServices",
+      "SessionState",
+      "TaskKind",
+      "TurnState"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

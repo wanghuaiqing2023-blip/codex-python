@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.chatwidget.settings_popups",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::settings_popups",
+    "source": "codex/codex-rs/tui/src/chatwidget/settings_popups.rs",
+    "anchors": [
+      "open_experimental_popup",
+      "open_personality_popup",
+      "open_realtime_audio_device_selection",
+      "open_realtime_audio_device_selection_with_names",
+      "open_realtime_audio_popup",
+      "open_realtime_audio_restart_prompt",
+      "open_theme_picker",
+      "open_personality_popup_for_current_model",
+      "personality_description",
+      "personality_label"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/settings_popups.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/settings_popups.py"
+    ],
+    "anchors": [
+      "open_experimental_popup",
+      "open_personality_popup",
+      "open_realtime_audio_device_selection",
+      "open_realtime_audio_device_selection_with_names",
+      "open_realtime_audio_popup",
+      "open_realtime_audio_restart_prompt",
+      "open_theme_picker",
+      "open_personality_popup_for_current_model",
+      "personality_description",
+      "personality_label"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

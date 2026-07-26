@@ -1,0 +1,103 @@
+{
+  "contract_id": "codex-config.state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-config",
+    "module": "state",
+    "source": "codex/codex-rs/config/src/state.rs",
+    "anchors": [
+      "ConfigLayerEntry",
+      "ConfigLayerStack",
+      "ConfigLayerStackOrdering",
+      "ConfigLoadOptions",
+      "LoaderOverrides",
+      "as_layer",
+      "config_folder",
+      "effective_config",
+      "effective_user_config",
+      "get_active_user_layer",
+      "get_layers",
+      "get_user_config_file"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/config/state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/config/state.py"
+    ],
+    "anchors": [
+      "ConfigLayerEntry",
+      "ConfigLayerStack",
+      "ConfigLayerStackOrdering",
+      "ConfigLoadOptions",
+      "LoaderOverrides",
+      "as_layer",
+      "config_folder",
+      "effective_config",
+      "effective_user_config",
+      "get_active_user_layer",
+      "get_layers",
+      "get_user_config_file"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_config_manager_rs.py",
+    "tests/test_app_server_config_manager_service_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_app_server_lib_rs.py",
+    "tests/test_app_server_request_processors_config_errors_rs.py",
+    "tests/test_cloud_requirements_lib_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_config_cloud_requirements.py",
+    "tests/test_config_config_toml.py",
+    "tests/test_config_constraint.py",
+    "tests/test_config_diagnostics.py",
+    "tests/test_config_fingerprint.py",
+    "tests/test_config_hook_config.py",
+    "tests/test_config_host_name.py",
+    "tests/test_config_key_aliases.py",
+    "tests/test_config_loader.py",
+    "tests/test_config_marketplace_edit.py",
+    "tests/test_config_merge.py",
+    "tests/test_config_overrides.py",
+    "tests/test_config_permissions_toml.py",
+    "tests/test_config_plugin_edit.py",
+    "tests/test_config_profile_toml.py",
+    "tests/test_config_project_root_markers.py",
+    "tests/test_config_requirements_exec_policy.py",
+    "tests/test_config_skills_config.py",
+    "tests/test_config_state.py",
+    "tests/test_config_strict_config.py",
+    "tests/test_config_thread_config.py",
+    "tests/test_config_tui_keymap.py",
+    "tests/test_config_types.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_core_plugins_manager_rs.py",
+    "tests/test_core_skills_manager_rs.py",
+    "tests/test_exec_session_services_rs.py",
+    "tests/test_hooks_config_rules_rs.py",
+    "tests/test_hooks_engine_discovery_rs.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_login_default_client.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-aws-auth.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-aws-auth",
+    "module": "crate",
+    "source": "codex/codex-rs/aws-auth/src/lib.rs",
+    "anchors": [
+      "AwsAuthConfig",
+      "AwsAuthContext",
+      "AwsAuthError",
+      "AwsRequestToSign",
+      "AwsSignedRequest",
+      "is_retryable",
+      "load",
+      "region",
+      "service",
+      "sign",
+      "sign_at"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/aws_auth/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/aws_auth/__init__.py"
+    ],
+    "anchors": [
+      "AwsAuthConfig",
+      "AwsAuthContext",
+      "AwsAuthError",
+      "AwsRequestToSign",
+      "AwsSignedRequest",
+      "is_retryable",
+      "load",
+      "region",
+      "service",
+      "sign",
+      "sign_at"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

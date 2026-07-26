@@ -518,6 +518,8 @@ def terminal_event_from_char(char: str) -> TerminalInputEvent:
         return TerminalInputEvent("ctrl_f")
     if char == "\x1a":
         return TerminalInputEvent("eof")
+    if len(char) == 1 and 0x01 <= ord(char) <= 0x1A:
+        return TerminalInputEvent(f"ctrl_{chr(ord('a') + ord(char) - 1)}")
     return TerminalInputEvent("text", char)
 
 
@@ -526,6 +528,10 @@ def terminal_input_event_from_key_payload(payload: Any) -> TerminalInputEvent | 
     normalized = _terminal_key_payload_name(text)
     if normalized == "space":
         return TerminalInputEvent("text", " ")
+    if normalized.startswith("f") and normalized[1:].isdigit():
+        number = int(normalized[1:])
+        if 1 <= number <= 12:
+            return TerminalInputEvent("key", normalized)
     if normalized in {
         "up",
         "down",
@@ -541,7 +547,11 @@ def terminal_input_event_from_key_payload(payload: Any) -> TerminalInputEvent | 
         "ctrl_f",
         "ctrl_t",
         "ctrl_u",
-    }:
+    } or (
+        normalized.startswith("ctrl_")
+        and len(normalized) == len("ctrl_") + 1
+        and normalized[-1].isalpha()
+    ):
         return TerminalInputEvent(normalized)
     ansi = _ansi_escape_key(text)
     if ansi is not None:
@@ -940,6 +950,18 @@ def _ansi_escape_key(payload: str) -> str | None:
         "\x1b[6~": "page_down",
         "\x1b[7~": "home",
         "\x1b[8~": "end",
+        "\x1bOP": "f1",
+        "\x1bOQ": "f2",
+        "\x1bOR": "f3",
+        "\x1bOS": "f4",
+        "\x1b[15~": "f5",
+        "\x1b[17~": "f6",
+        "\x1b[18~": "f7",
+        "\x1b[19~": "f8",
+        "\x1b[20~": "f9",
+        "\x1b[21~": "f10",
+        "\x1b[23~": "f11",
+        "\x1b[24~": "f12",
     }.get(payload)
 
 
@@ -959,6 +981,18 @@ def _windows_console_virtual_key(code: int) -> str | None:
         0x27: "right",
         0x28: "down",
         0x2E: "delete",
+        0x70: "f1",
+        0x71: "f2",
+        0x72: "f3",
+        0x73: "f4",
+        0x74: "f5",
+        0x75: "f6",
+        0x76: "f7",
+        0x77: "f8",
+        0x78: "f9",
+        0x79: "f10",
+        0x7A: "f11",
+        0x7B: "f12",
     }.get(code)
 
 

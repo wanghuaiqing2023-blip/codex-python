@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-state.migrations",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "migrations",
+    "source": "codex/codex-rs/state/src/migrations.rs",
+    "anchors": [
+      "GOALS_MIGRATOR",
+      "LOGS_MIGRATOR",
+      "MEMORIES_MIGRATOR",
+      "STATE_MIGRATOR",
+      "runtime_goals_migrator",
+      "runtime_logs_migrator",
+      "runtime_memories_migrator",
+      "runtime_state_migrator",
+      "runtime_migrator"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/migrations.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/migrations.py"
+    ],
+    "anchors": [
+      "GOALS_MIGRATOR",
+      "LOGS_MIGRATOR",
+      "MEMORIES_MIGRATOR",
+      "STATE_MIGRATOR",
+      "runtime_goals_migrator",
+      "runtime_logs_migrator",
+      "runtime_memories_migrator",
+      "runtime_state_migrator",
+      "runtime_migrator"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

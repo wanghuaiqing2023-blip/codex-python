@@ -158,6 +158,7 @@ class MessageProcessorArgs:
     processors: Mapping[str, Any] = field(default_factory=dict)
     skills_watcher: Any = None
     request_serialization_queues: Any = None
+    thread_manager: Any = None
 
 
 @dataclass(frozen=True)
@@ -233,6 +234,8 @@ class MessageProcessor:
         request_routes: Mapping[str, tuple[str, str] | Callable[..., Any]] | None = None,
     ) -> None:
         self.outgoing = args.outgoing
+        self.analytics_events_client = args.analytics_events_client
+        self.thread_manager = args.thread_manager
         self.skills_watcher = args.skills_watcher
         self.request_serialization_queues = args.request_serialization_queues
         self.request_routes = dict(DEFAULT_REQUEST_ROUTES if request_routes is None else request_routes)
@@ -243,7 +246,54 @@ class MessageProcessor:
 
     @classmethod
     def new(cls, args: MessageProcessorArgs) -> "MessageProcessor":
-        return cls(args)
+        from pycodex.app_server.extensions import (
+            app_server_extension_event_sink,
+            guardian_agent_spawner,
+            thread_extensions,
+        )
+        from pycodex.app_server.request_processors_initialize_processor import (
+            InitializeRequestProcessor,
+        )
+        from pycodex.core.thread_manager import ThreadManager
+
+        thread_manager = args.thread_manager
+        if thread_manager is None:
+            deferred_ref = _DeferredReference()
+            extensions = thread_extensions(
+                guardian_agent_spawner(deferred_ref),
+                app_server_extension_event_sink(args.outgoing),
+                args.auth_manager,
+            )
+            thread_manager = ThreadManager.new(
+                session_source=args.session_source,
+                auth_manager=args.auth_manager,
+                environment_manager=args.environment_manager,
+                extensions=extensions,
+                analytics_events_client=args.analytics_events_client,
+                state_db=args.state_db,
+                installation_id=args.installation_id,
+            )
+            deferred_ref.target = thread_manager
+
+        processors = dict(args.processors)
+        processors.setdefault(
+            "initialize_processor",
+            InitializeRequestProcessor.new(
+                args.outgoing,
+                args.analytics_events_client,
+                args.config,
+                args.config_warnings,
+                args.rpc_transport,
+            ),
+        )
+        effective_args = MessageProcessorArgs(
+            **{
+                **vars(args),
+                "processors": processors,
+                "thread_manager": thread_manager,
+            }
+        )
+        return cls(effective_args)
 
     def clear_runtime_references(self) -> None:
         _call_no_wait(getattr(getattr(self, "account_processor", None), "clear_external_auth", None))
@@ -465,6 +515,15 @@ def _request_id_value(value: Any) -> Any:
     if hasattr(value, "to_json") and callable(value.to_json):
         return value.to_json()
     return value
+
+
+class _DeferredReference:
+    """Weak-reference-shaped holder for Rust's ``Arc::new_cyclic`` wiring."""
+
+    target: Any = None
+
+    def __call__(self) -> Any:
+        return self.target
 
 
 __all__ = [

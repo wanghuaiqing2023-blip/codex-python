@@ -1,0 +1,37 @@
+{
+  "contract_id": "codex-protocol.plan_tool",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "plan_tool",
+    "source": "codex/codex-rs/protocol/src/plan_tool.rs",
+    "anchors": [
+      "PlanItemArg",
+      "StepStatus",
+      "UpdatePlanArgs"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/plan_tool.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/plan_tool.py"
+    ],
+    "anchors": [
+      "PlanItemArg",
+      "StepStatus",
+      "UpdatePlanArgs"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate",
+      "owned_symbols": ["UpdatePlanArgs"]
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_parse_command_plan_tool.py"
+  ]
+}

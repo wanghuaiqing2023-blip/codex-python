@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Tuple, Union
 
+from pycodex.features import Feature
+
 from ._porting import RustTuiModule
 from .config_update import SERVICE_TIER_DEFAULT_REQUEST_VALUE
 
@@ -62,7 +64,18 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
 def _feature_enabled(features: Any, feature: str) -> bool:
     enabled = getattr(features, "enabled", None)
     if callable(enabled):
-        return bool(enabled(feature))
+        candidates: tuple[Any, ...] = (
+            (Feature.FAST_MODE, feature)
+            if feature == FAST_MODE_FEATURE
+            else (feature,)
+        )
+        for candidate in candidates:
+            try:
+                if enabled(candidate):
+                    return True
+            except (KeyError, TypeError, ValueError):
+                continue
+        return False
     if isinstance(features, dict):
         return bool(features.get(feature) or features.get("FastMode") or features.get("fastMode"))
     if isinstance(features, (set, frozenset, list, tuple)):

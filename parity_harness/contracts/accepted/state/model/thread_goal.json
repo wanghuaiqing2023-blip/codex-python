@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-state.model.thread_goal",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "model::thread_goal",
+    "source": "codex/codex-rs/state/src/model/thread_goal.rs",
+    "anchors": [
+      "ThreadGoal",
+      "ThreadGoalRow",
+      "ThreadGoalStatus",
+      "as_str",
+      "is_active",
+      "is_terminal"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/model/thread_goal.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/model/thread_goal.py"
+    ],
+    "anchors": [
+      "ThreadGoal",
+      "ThreadGoalRow",
+      "ThreadGoalStatus",
+      "as_str",
+      "is_active",
+      "is_terminal"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

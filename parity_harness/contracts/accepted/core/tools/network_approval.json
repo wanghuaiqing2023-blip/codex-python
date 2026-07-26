@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.network_approval",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::network_approval",
+    "source": "codex/codex-rs/core/src/tools/network_approval.rs",
+    "anchors": [
+      "ActiveNetworkApproval",
+      "DeferredNetworkApproval",
+      "NetworkApprovalMode",
+      "NetworkApprovalService",
+      "NetworkApprovalSpec",
+      "begin_network_approval",
+      "build_blocked_request_observer",
+      "build_network_policy_decider",
+      "cancellation_token",
+      "finish_deferred_network_approval",
+      "finish_immediate_network_approval",
+      "handle_inline_policy_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/network_approval.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/network_approval.py"
+    ],
+    "anchors": [
+      "ActiveNetworkApproval",
+      "DeferredNetworkApproval",
+      "NetworkApprovalMode",
+      "NetworkApprovalService",
+      "NetworkApprovalSpec",
+      "begin_network_approval",
+      "build_blocked_request_observer",
+      "build_network_policy_decider",
+      "cancellation_token",
+      "finish_deferred_network_approval",
+      "finish_immediate_network_approval",
+      "handle_inline_policy_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

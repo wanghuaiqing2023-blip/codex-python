@@ -1,0 +1,17 @@
+{
+  "scope": "utils-sandbox-summary",
+  "rust_root": "codex/codex-rs/utils/sandbox-summary",
+  "python_root": "pycodex/utils/sandbox_summary",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate",
+    "crate::config_summary",
+    "crate::sandbox_summary"
+  ],
+  "uncovered_python_files": [
+    "pycodex/utils/sandbox_summary/__init__.py"
+  ],
+  "allowed_unowned": []
+}

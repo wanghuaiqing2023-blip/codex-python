@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-thread-store.store",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-thread-store",
+    "module": "store",
+    "source": "codex/codex-rs/thread-store/src/store.rs",
+    "anchors": [
+      "ThreadStore",
+      "append_items",
+      "archive_thread",
+      "create_thread",
+      "discard_thread",
+      "flush_thread",
+      "list_items",
+      "list_threads",
+      "list_turns",
+      "load_history",
+      "persist_thread",
+      "read_thread"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/thread_store/store.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/thread_store/store.py"
+    ],
+    "anchors": [
+      "ThreadStore",
+      "append_items",
+      "archive_thread",
+      "create_thread",
+      "discard_thread",
+      "flush_thread",
+      "list_items",
+      "list_threads",
+      "list_turns",
+      "load_history",
+      "persist_thread",
+      "read_thread"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_thread_store_store_error_rs.py"
+  ]
+}

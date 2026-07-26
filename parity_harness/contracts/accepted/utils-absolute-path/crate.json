@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-utils-absolute-path.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-absolute-path",
+    "module": "crate",
+    "source": "codex/codex-rs/utils/absolute-path/src/lib.rs",
+    "anchors": [
+      "AbsolutePathBuf",
+      "AbsolutePathBufGuard",
+      "ancestors",
+      "as_path",
+      "canonicalize",
+      "canonicalize_existing_preserving_symlinks",
+      "canonicalize_preserving_symlinks",
+      "current_dir",
+      "display",
+      "from_absolute_path",
+      "from_absolute_path_checked",
+      "into_path_buf"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/absolute_path/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/absolute_path/__init__.py"
+    ],
+    "anchors": [
+      "AbsolutePathBuf",
+      "AbsolutePathBufGuard",
+      "ancestors",
+      "as_path",
+      "canonicalize",
+      "canonicalize_existing_preserving_symlinks",
+      "canonicalize_preserving_symlinks",
+      "current_dir",
+      "display",
+      "from_absolute_path",
+      "from_absolute_path_checked",
+      "into_path_buf"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

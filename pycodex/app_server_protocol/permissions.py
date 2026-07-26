@@ -15,14 +15,14 @@ from pycodex.protocol.approvals import NetworkPolicyAmendment as CoreNetworkPoli
 from pycodex.protocol.approvals import NetworkPolicyRuleAction as CoreNetworkPolicyRuleAction
 from pycodex.protocol.models import ActivePermissionProfile as CoreActivePermissionProfile
 from pycodex.protocol.models import AdditionalPermissionProfile as CoreAdditionalPermissionProfile
-from pycodex.protocol.models import FileSystemAccessMode as CoreFileSystemAccessMode
-from pycodex.protocol.models import FileSystemPath as CoreFileSystemPath
 from pycodex.protocol.models import FileSystemPermissions as CoreFileSystemPermissions
-from pycodex.protocol.models import FileSystemSandboxEntry as CoreFileSystemSandboxEntry
-from pycodex.protocol.models import FileSystemSpecialPath as CoreFileSystemSpecialPath
 from pycodex.protocol.models import NetworkPermissions as CoreNetworkPermissions
-from pycodex.protocol.models import NetworkSandboxPolicy as CoreNetworkSandboxPolicy
-from pycodex.protocol.models import SandboxPolicy as CoreSandboxPolicy
+from pycodex.protocol.permissions import FileSystemAccessMode as CoreFileSystemAccessMode
+from pycodex.protocol.permissions import FileSystemPath as CoreFileSystemPath
+from pycodex.protocol.permissions import FileSystemSandboxEntry as CoreFileSystemSandboxEntry
+from pycodex.protocol.permissions import FileSystemSpecialPath as CoreFileSystemSpecialPath
+from pycodex.protocol.permissions import NetworkSandboxPolicy as CoreNetworkSandboxPolicy
+from pycodex.protocol.protocol import SandboxPolicy as CoreSandboxPolicy
 from pycodex.protocol.request_permissions import PermissionGrantScope as CorePermissionGrantScope
 from pycodex.protocol.request_permissions import RequestPermissionProfile as CoreRequestPermissionProfile
 

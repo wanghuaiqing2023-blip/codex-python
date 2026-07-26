@@ -426,6 +426,7 @@ def test_terminal_projection_uses_bridge_cursor_lifecycle_by_default() -> None:
 
 def test_terminal_projection_paints_slash_popup_below_composer_with_highlight() -> None:
     # Rust owners: command_popup/selection_popup_common own popup row content,
+    # ChatComposer::render replaces its passive footer with ActivePopup rows,
     # chatwidget::rendering places those rows below the composer, and
     # terminal_projection passes the selected-row style through custom_terminal.
     writer = io.StringIO()
@@ -451,7 +452,7 @@ def test_terminal_projection_paints_slash_popup_below_composer_with_highlight() 
     assert "\x1b[10;1H\x1b[94m/model" in output
     assert "\x1b[7m/model" not in output
     assert "\x1b[11;1H/memories" in output
-    assert "\x1b[12;1Hgpt-test high" in output
+    assert "gpt-test high" not in output
     assert cursor == [(9, len(terminal_composer_line_text("/m")) + 1)]
 
 

@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-core.thread_rollout_truncation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "thread_rollout_truncation",
+    "source": "codex/codex-rs/core/src/thread_rollout_truncation.rs",
+    "anchors": [
+      "fork_turn_positions_in_rollout",
+      "initial_history_has_prior_user_turns",
+      "truncate_rollout_before_nth_user_message_from_start",
+      "truncate_rollout_to_last_n_fork_turns",
+      "user_message_positions_in_rollout",
+      "rollout_item_is_user_turn_boundary"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/thread_rollout_truncation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/thread_rollout_truncation.py"
+    ],
+    "anchors": [
+      "fork_turn_positions_in_rollout",
+      "initial_history_has_prior_user_turns",
+      "truncate_rollout_before_nth_user_message_from_start",
+      "truncate_rollout_to_last_n_fork_turns",
+      "user_message_positions_in_rollout",
+      "rollout_item_is_user_turn_boundary"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

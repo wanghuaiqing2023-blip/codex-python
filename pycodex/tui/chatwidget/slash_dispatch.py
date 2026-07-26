@@ -17,6 +17,8 @@ from typing import Any, Callable, Iterable, List, Mapping, Optional, Protocol, S
 from .._porting import RustTuiModule
 from ..app_event import AppEvent, ThreadGoalSetMode
 from ..slash_command import SlashCommand
+from ..collaboration_modes import plan_mask
+from .settings import collaboration_modes_enabled
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -207,6 +209,7 @@ class TerminalSlashCommandViewDispatcher:
         )
         from .review_popups import TerminalReviewPopupController
         from .settings_popups import TerminalSettingsPopupController
+        from .status_controls import TerminalStatusLineSetupController
         from ..resume_picker import TerminalResumePopupController
 
         review_submitter = submit_review or (
@@ -220,6 +223,7 @@ class TerminalSlashCommandViewDispatcher:
                 SlashCommand.AUTO_REVIEW: TerminalAutoReviewDenialsPopupController(app_runtime),
                 SlashCommand.KEYMAP: TerminalKeymapPopupController(app_runtime),
                 SlashCommand.SETTINGS: TerminalSettingsPopupController(app_runtime),
+                SlashCommand.STATUSLINE: TerminalStatusLineSetupController(app_runtime),
                 SlashCommand.RESUME: TerminalResumePopupController(app_runtime),
             },
             dispatch_app_event=getattr(app_runtime, "handle_app_event", None),
@@ -284,6 +288,7 @@ _VIEW_COMMANDS = {
     SlashCommand.AUTO_REVIEW,
     SlashCommand.KEYMAP,
     SlashCommand.SETTINGS,
+    SlashCommand.STATUSLINE,
 }
 
 _LOCAL_COMMANDS = {
@@ -306,14 +311,14 @@ _CORE_EFFECT_COMMANDS = {
     SlashCommand.PLAN,
     SlashCommand.GOAL,
     SlashCommand.MENTION,
+    SlashCommand.AGENT,
+    SlashCommand.MULTI_AGENTS,
 }
 
 _DEFERRED_EXTENSION_COMMANDS = {
     SlashCommand.IDE,
     SlashCommand.SKILLS,
     SlashCommand.HOOKS,
-    SlashCommand.AGENT,
-    SlashCommand.MULTI_AGENTS,
     SlashCommand.MCP,
     SlashCommand.APPS,
     SlashCommand.PLUGINS,
@@ -329,7 +334,6 @@ _COMPATIBILITY_SHIM_COMMANDS = {
     SlashCommand.BTW,
     SlashCommand.DEBUG_CONFIG,
     SlashCommand.TITLE,
-    SlashCommand.STATUSLINE,
     SlashCommand.THEME,
     SlashCommand.PETS,
     SlashCommand.LOGOUT,
@@ -378,6 +382,7 @@ _VIEW_PYTHON_OWNERS = {
     SlashCommand.AUTO_REVIEW: "pycodex.tui.chatwidget.permission_popups",
     SlashCommand.KEYMAP: "pycodex.tui.chatwidget.keymap_picker",
     SlashCommand.SETTINGS: "pycodex.tui.chatwidget.settings_popups",
+    SlashCommand.STATUSLINE: "pycodex.tui.chatwidget.status_controls",
     SlashCommand.RESUME: "pycodex.tui.resume_picker + pycodex.tui.chatwidget.slash_dispatch",
 }
 
@@ -412,6 +417,23 @@ def _terminal_route(command: SlashCommand, category: str, outcome: str) -> Termi
     )
 
 
+def apply_plan_slash_command(widget: Any) -> bool:
+    """Apply Rust ``ChatWidget::apply_plan_slash_command`` semantics."""
+
+    if not collaboration_modes_enabled(widget):
+        widget.add_info_message(
+            "Collaboration modes are disabled.",
+            "Enable collaboration modes to use /plan.",
+        )
+        return False
+    mask = plan_mask(getattr(widget, "model_catalog", None))
+    if mask is None:
+        widget.add_info_message("Plan mode unavailable right now.", None)
+        return False
+    widget.set_collaboration_mask_from_user_action(mask)
+    return True
+
+
 @dataclass
 class TerminalSlashCommandEffectDispatcher:
     """Execute non-view slash commands at the Rust slash-dispatch boundary."""
@@ -439,7 +461,10 @@ class TerminalSlashCommandEffectDispatcher:
             getattr(getattr(getattr(widget, "turn", None), "bottom_pane", None), "task_running", False)
         )
         if task_running and not command.available_during_task():
-            self._message(f"'/{command.command()}' is unavailable while a task is running.", error=True)
+            self._message(
+                f"'/{command.command()}' is disabled while a task is in progress.",
+                error=True,
+            )
             return self._handled(command)
         return None
 
@@ -482,15 +507,17 @@ class TerminalSlashCommandEffectDispatcher:
         if command is SlashCommand.INIT:
             return self._init(command)
         if command is SlashCommand.PLAN:
-            self.app_runtime.activate_plan_mode()
-            self._message("Plan mode enabled.")
-            if args:
+            applied = apply_plan_slash_command(self.app_runtime.chat_widget)
+            if applied and args:
                 return TerminalPromptDispatchResult("submit", prompt=args, command=command)
             return self._handled(command)
         if command is SlashCommand.GOAL:
             return self._goal(command, args)
         if command is SlashCommand.MENTION:
             return TerminalPromptDispatchResult("compose", prompt="@", command=command)
+        if command in {SlashCommand.AGENT, SlashCommand.MULTI_AGENTS}:
+            self.app_runtime.handle_app_event(AppEvent.open_agent_picker())
+            return self._handled(command)
         if command in {SlashCommand.NEW, SlashCommand.RESUME, SlashCommand.FORK}:
             return self._session_command(command, args)
         if command in _DEFERRED_EXTENSION_COMMANDS:

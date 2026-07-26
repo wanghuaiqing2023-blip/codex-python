@@ -149,7 +149,6 @@ def test_terminal_bottom_pane_frame_composes_owner_projections() -> None:
         TerminalBottomPaneFrameWrite(9, 1, "\u203a /m"),
         TerminalBottomPaneFrameWrite(10, 1, "/model choose", True),
         TerminalBottomPaneFrameWrite(11, 1, "/memories configure", False),
-        TerminalBottomPaneFrameWrite(12, 1, "gpt-test high"),
     )
     assert frame.cursor_row == 9
     assert frame.cursor_column == len(terminal_composer_line_text("/m")) + 1
@@ -170,6 +169,26 @@ def test_terminal_bottom_pane_frame_right_aligns_goal_footer_indicator() -> None
     assert footer.text.startswith("gpt-test low · ~\\repo")
     assert footer.text.endswith("Goal achieved (1m)")
     assert len(footer.text) == 47
+
+
+def test_terminal_bottom_pane_frame_renders_multiline_shortcut_footer() -> None:
+    # Rust owner: bottom_pane::footer renders shortcut-overlay rows and
+    # chatwidget::rendering places the complete footer in the live pane.
+    frame = terminal_bottom_pane_frame(
+        os.terminal_size((48, 12)),
+        TerminalBottomPaneState(
+            draft="",
+            footer_text="gpt-test low",
+            footer_lines=("shortcut one", "shortcut two", "shortcut three"),
+        ),
+    )
+
+    assert frame.clear_rows == (7, 8, 9, 10, 11, 12)
+    assert frame.writes[-3:] == (
+        TerminalBottomPaneFrameWrite(10, 1, "shortcut one"),
+        TerminalBottomPaneFrameWrite(11, 1, "shortcut two"),
+        TerminalBottomPaneFrameWrite(12, 1, "shortcut three"),
+    )
 
 
 def test_terminal_bottom_pane_frame_projects_popup_rows_to_buffer() -> None:
@@ -196,7 +215,7 @@ def test_terminal_bottom_pane_frame_projects_popup_rows_to_buffer() -> None:
         "\u203a /m" + " " * 28,
         "/model choose" + " " * 19,
         "/memories configure" + " " * 13,
-        "gpt-test high" + " " * 19,
+        " " * 32,
     ]
     assert buffer.cell(0, 9).symbol == "/"
     assert buffer.cell(0, 9).style.fg == RatatuiColor.LightBlue

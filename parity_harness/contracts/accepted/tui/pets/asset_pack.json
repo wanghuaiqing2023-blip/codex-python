@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.pets.asset_pack",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets::asset_pack",
+    "source": "codex/codex-rs/tui/src/pets/asset_pack.rs",
+    "anchors": [
+      "builtin_spritesheet_path",
+      "ensure_builtin_pet",
+      "PET_CDN_BASE_URL",
+      "PET_DOWNLOAD_TIMEOUT",
+      "PET_MAX_DOWNLOAD_BYTES",
+      "PET_PACK_DIR",
+      "PET_PACK_VERSION",
+      "builtin_pet_url",
+      "download_bytes_with_limit",
+      "install_downloaded_spritesheet",
+      "pack_dir",
+      "validate_cached_spritesheet"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/asset_pack.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pets/asset_pack.py"
+    ],
+    "anchors": [
+      "builtin_spritesheet_path",
+      "ensure_builtin_pet",
+      "PET_CDN_BASE_URL",
+      "PET_DOWNLOAD_TIMEOUT",
+      "PET_MAX_DOWNLOAD_BYTES",
+      "PET_PACK_DIR",
+      "PET_PACK_VERSION",
+      "builtin_pet_url",
+      "download_bytes_with_limit",
+      "install_downloaded_spritesheet",
+      "pack_dir",
+      "validate_cached_spritesheet"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

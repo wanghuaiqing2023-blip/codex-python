@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.render.highlight",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "render::highlight",
+    "source": "codex/codex-rs/tui/src/render/highlight.rs",
+    "anchors": [
+      "DiffScopeBackgroundRgbs",
+      "ThemeEntry",
+      "adaptive_default_theme_name",
+      "configured_theme_name",
+      "current_syntax_theme",
+      "diff_scope_background_rgbs",
+      "exceeds_highlight_limits",
+      "foreground_style_for_scopes",
+      "highlight_bash_to_lines",
+      "highlight_code_to_lines",
+      "highlight_code_to_styled_spans",
+      "list_available_themes"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/render/highlight.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/render/highlight.py"
+    ],
+    "anchors": [
+      "DiffScopeBackgroundRgbs",
+      "ThemeEntry",
+      "adaptive_default_theme_name",
+      "configured_theme_name",
+      "current_syntax_theme",
+      "diff_scope_background_rgbs",
+      "exceeds_highlight_limits",
+      "foreground_style_for_scopes",
+      "highlight_bash_to_lines",
+      "highlight_code_to_lines",
+      "highlight_code_to_styled_spans",
+      "list_available_themes"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

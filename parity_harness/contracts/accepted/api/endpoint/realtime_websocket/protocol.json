@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-api.endpoint.realtime_websocket.protocol",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-api",
+    "module": "endpoint::realtime_websocket::protocol",
+    "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol.rs",
+    "anchors": [
+      "RealtimeAudioFrame",
+      "RealtimeEvent",
+      "RealtimeEventParser",
+      "RealtimeOutputModality",
+      "RealtimeSessionConfig",
+      "RealtimeSessionMode",
+      "RealtimeTranscriptEntry",
+      "RealtimeVoice",
+      "parse_realtime_event"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_api/endpoint/realtime_websocket/protocol.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/codex_api/endpoint/realtime_websocket/protocol.py"
+    ],
+    "anchors": [
+      "RealtimeAudioFrame",
+      "RealtimeEvent",
+      "RealtimeEventParser",
+      "RealtimeOutputModality",
+      "RealtimeSessionConfig",
+      "RealtimeSessionMode",
+      "RealtimeTranscriptEntry",
+      "RealtimeVoice",
+      "parse_realtime_event"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

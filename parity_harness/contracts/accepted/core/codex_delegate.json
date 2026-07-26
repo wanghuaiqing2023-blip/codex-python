@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.codex_delegate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "codex_delegate",
+    "source": "codex/codex-rs/core/src/codex_delegate.rs",
+    "anchors": [
+      "run_codex_thread_interactive",
+      "run_codex_thread_one_shot",
+      "await_approval_with_cancel",
+      "await_request_permissions_with_cancel",
+      "await_user_input_with_cancel",
+      "forward_event_or_shutdown",
+      "forward_events",
+      "forward_ops",
+      "handle_exec_approval",
+      "handle_patch_approval",
+      "handle_request_permissions",
+      "handle_request_user_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/codex_delegate.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/codex_delegate.py"
+    ],
+    "anchors": [
+      "run_codex_thread_interactive",
+      "run_codex_thread_one_shot",
+      "await_approval_with_cancel",
+      "await_request_permissions_with_cancel",
+      "await_user_input_with_cancel",
+      "forward_event_or_shutdown",
+      "forward_events",
+      "forward_ops",
+      "handle_exec_approval",
+      "handle_patch_approval",
+      "handle_request_permissions",
+      "handle_request_user_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -2,17 +2,19 @@ import asyncio
 
 import pytest
 
-from pycodex.network_proxy import (
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
+    NetworkMode,
+    NetworkProxyConfig,
+)
+from pycodex.network_proxy.proxy import NetworkProxy
+from pycodex.network_proxy.runtime import (
     ConfigState,
     HostBlockDecision,
     HostBlockReason,
-    NetworkMode,
-    NetworkProxy,
-    NetworkProxyConfig,
-    NetworkProxyConstraints,
     NetworkProxyState,
-    StaticNetworkProxyReloader,
 )
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 async def public_dns_lookup(_host: str, port: int):

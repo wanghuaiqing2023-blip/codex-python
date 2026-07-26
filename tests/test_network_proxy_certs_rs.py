@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import pycodex.network_proxy as network_proxy
-from pycodex.network_proxy import (
+import pycodex.network_proxy.certs as network_proxy
+from pycodex.network_proxy.certs import (
     MANAGED_MITM_CA_CERT,
     MANAGED_MITM_CA_DIR,
     MANAGED_MITM_CA_KEY,

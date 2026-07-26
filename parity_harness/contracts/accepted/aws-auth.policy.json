@@ -1,0 +1,11 @@
+{
+  "scope": "aws-auth",
+  "rust_root": "codex/codex-rs/aws-auth",
+  "python_root": "pycodex/aws_auth",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

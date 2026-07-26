@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-core.tools.handlers.extension_tools",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::extension_tools",
+    "source": "codex/codex-rs/core/src/tools/handlers/extension_tools.rs",
+    "anchors": [
+      "ExtensionToolAdapter",
+      "new",
+      "exposure",
+      "handle",
+      "matches_kind",
+      "spec",
+      "supports_parallel_tool_calls",
+      "to_extension_call",
+      "tool_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/extension_tools.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/extension_tools.py"
+    ],
+    "anchors": [
+      "ExtensionToolAdapter",
+      "new",
+      "exposure",
+      "handle",
+      "matches_kind",
+      "spec",
+      "supports_parallel_tool_calls",
+      "to_extension_call",
+      "tool_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

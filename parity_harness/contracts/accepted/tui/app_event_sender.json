@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app_event_sender",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app_event_sender",
+    "source": "codex/codex-rs/tui/src/app_event_sender.rs",
+    "anchors": [
+      "AppEventSender",
+      "compact",
+      "exec_approval",
+      "interrupt",
+      "list_skills",
+      "new",
+      "patch_approval",
+      "realtime_conversation_audio",
+      "request_permissions_response",
+      "resolve_elicitation",
+      "review",
+      "send"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app_event_sender.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app_event_sender.py"
+    ],
+    "anchors": [
+      "AppEventSender",
+      "compact",
+      "exec_approval",
+      "interrupt",
+      "list_skills",
+      "new",
+      "patch_approval",
+      "realtime_conversation_audio",
+      "request_permissions_response",
+      "resolve_elicitation",
+      "review",
+      "send"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.config.otel",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "config::otel",
+    "source": "codex/codex-rs/core/src/config/otel.rs",
+    "anchors": [
+      "resolve_config",
+      "push_invalid_config_warning",
+      "resolve_span_attributes",
+      "resolve_tracestate",
+      "resolve_tracestate_member_fields"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/config/otel.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/config/otel.py"
+    ],
+    "anchors": [
+      "resolve_config",
+      "push_invalid_config_warning",
+      "resolve_span_attributes",
+      "resolve_tracestate",
+      "resolve_tracestate_member_fields"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

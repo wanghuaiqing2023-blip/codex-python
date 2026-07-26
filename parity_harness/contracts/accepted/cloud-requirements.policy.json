@@ -1,0 +1,11 @@
+{
+  "scope": "cloud-requirements",
+  "rust_root": "codex/codex-rs/cloud-requirements",
+  "python_root": "pycodex/cloud_requirements",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

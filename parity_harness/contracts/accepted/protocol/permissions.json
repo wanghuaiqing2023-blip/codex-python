@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-protocol.permissions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "permissions",
+    "source": "codex/codex-rs/protocol/src/permissions.rs",
+    "anchors": [
+      "FileSystemAccessMode",
+      "FileSystemPath",
+      "FileSystemSandboxEntry",
+      "FileSystemSandboxKind",
+      "FileSystemSandboxPolicy",
+      "FileSystemSpecialPath",
+      "NetworkSandboxPolicy",
+      "PROTECTED_METADATA_PATH_NAMES",
+      "ReadDenyMatcher",
+      "can_read",
+      "can_read_path_with_cwd",
+      "can_write"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/permissions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/permissions.py"
+    ],
+    "anchors": [
+      "FileSystemAccessMode",
+      "FileSystemPath",
+      "FileSystemSandboxEntry",
+      "FileSystemSandboxKind",
+      "FileSystemSandboxPolicy",
+      "FileSystemSpecialPath",
+      "NetworkSandboxPolicy",
+      "PROTECTED_METADATA_PATH_NAMES",
+      "ReadDenyMatcher",
+      "can_read",
+      "can_read_path_with_cwd",
+      "can_write"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_permission_models.py",
+    "tests/test_protocol_module_ownership.py"
+  ]
+}

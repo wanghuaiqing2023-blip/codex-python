@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-cli.main",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cli",
+    "module": "bin::codex",
+    "source": "codex/codex-rs/cli/src/main.rs",
+    "anchors": [
+      "main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cli/main/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/cli/main/__init__.py",
+      "pycodex/cli/main/app_exit.py",
+      "pycodex/cli/main/features.py",
+      "pycodex/cli/main/spec.py"
+    ],
+    "anchors": [
+      "main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_cli_parser.py",
+    "tests/test_cli_app_exit.py"
+  ]
+}

@@ -36,7 +36,8 @@ def test_proposed_plan_cell_headers_body_empty_and_raw_lines() -> None:
     cell = new_proposed_plan("", ".")
 
     assert hyperlink_texts(cell.display_hyperlink_lines(80)) == [
-        "> Proposed Plan",
+        "\u2022 Proposed Plan",
+        " ",
         " ",
         "  (empty)",
         " ",
@@ -49,8 +50,16 @@ def test_proposed_plan_cell_renders_source_backed_body_and_links() -> None:
 
     display = cell.display_hyperlink_lines(80)
 
-    assert hyperlink_texts(display) == ["> Proposed Plan", " ", "  - visit https://example.com", " "]
-    assert display[2].hyperlinks[0].destination == "https://example.com"
+    assert hyperlink_texts(display) == [
+        "\u2022 Proposed Plan",
+        " ",
+        " ",
+        "  - visit https://example.com",
+        " ",
+    ]
+    assert display[3].hyperlinks[0].destination == "https://example.com"
+    assert display[0].line.spans[0].style == "dim"
+    assert display[0].line.spans[1].style == "bold"
     assert texts(cell.raw_lines()) == ["- visit https://example.com"]
 
 
@@ -88,7 +97,7 @@ def test_plan_update_display_lines_cover_empty_plan() -> None:
 
     rendered = texts(cell.display_lines(80))
 
-    assert rendered[0] == "> Updated Plan"
+    assert rendered[0] == "\u2022 Updated Plan"
     assert "note" in "\n".join(rendered)
     assert "(no steps provided)" in "\n".join(rendered)
 

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.config_update",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "config_update",
+    "source": "codex/codex-rs/tui/src/config_update.rs",
+    "anchors": [
+      "app_scoped_key_path",
+      "build_feature_enabled_edit",
+      "build_memory_settings_edits",
+      "build_model_selection_edits",
+      "build_oss_provider_edit",
+      "build_service_tier_selection_edits",
+      "build_windows_sandbox_mode_edits",
+      "clear_config_value",
+      "read_effective_config",
+      "replace_config_value",
+      "write_config_batch",
+      "write_skill_enabled"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/config_update.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/config_update.py"
+    ],
+    "anchors": [
+      "app_scoped_key_path",
+      "build_feature_enabled_edit",
+      "build_memory_settings_edits",
+      "build_model_selection_edits",
+      "build_oss_provider_edit",
+      "build_service_tier_selection_edits",
+      "build_windows_sandbox_mode_edits",
+      "clear_config_value",
+      "read_effective_config",
+      "replace_config_value",
+      "write_config_batch",
+      "write_skill_enabled"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

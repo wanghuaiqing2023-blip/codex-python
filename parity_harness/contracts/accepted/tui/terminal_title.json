@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.terminal_title",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "terminal_title",
+    "source": "codex/codex-rs/tui/src/terminal_title.rs",
+    "anchors": [
+      "SetTerminalTitleResult",
+      "clear_terminal_title",
+      "set_terminal_title",
+      "MAX_TERMINAL_TITLE_CHARS",
+      "SetWindowTitle",
+      "execute_winapi",
+      "is_ansi_code_supported",
+      "is_disallowed_terminal_title_char",
+      "sanitize_terminal_title",
+      "write_ansi"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/terminal_title.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/terminal_title.py"
+    ],
+    "anchors": [
+      "SetTerminalTitleResult",
+      "clear_terminal_title",
+      "set_terminal_title",
+      "MAX_TERMINAL_TITLE_CHARS",
+      "SetWindowTitle",
+      "execute_winapi",
+      "is_ansi_code_supported",
+      "is_disallowed_terminal_title_char",
+      "sanitize_terminal_title",
+      "write_ansi"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

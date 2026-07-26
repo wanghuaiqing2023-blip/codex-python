@@ -3,6 +3,7 @@
 Rust source: ``codex/codex-rs/tui/src/keymap_setup/debug.rs``.
 """
 
+from pycodex.tui import keymap_setup
 from pycodex.tui.keymap_setup.debug import (
     DELAYED_MISSING_KEY_HINT,
     MISSING_KEY_HINT_DELAY,
@@ -11,6 +12,11 @@ from pycodex.tui.keymap_setup.debug import (
     key_event_debug_summary,
     key_modifiers_debug_label,
 )
+
+
+def test_parent_module_reexports_debug_view_builder_like_rust() -> None:
+    # Rust keymap_setup.rs: pub(crate) use debug::build_keymap_debug_view.
+    assert keymap_setup.build_keymap_debug_view is build_keymap_debug_view
 
 
 def test_initial_and_delayed_missing_key_hints() -> None:

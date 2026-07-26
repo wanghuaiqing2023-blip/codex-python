@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.config",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "config",
+    "source": "codex/codex-rs/core/src/config/mod.rs",
+    "anchors": [
+      "CONFIG_TOML_FILE",
+      "DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS",
+      "DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION",
+      "DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS",
+      "DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS",
+      "GhostSnapshotConfig",
+      "MultiAgentV2Config",
+      "NetworkProxySpec",
+      "ThreadStoreConfig",
+      "is_builtin_permission_profile_name",
+      "DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS",
+      "DEFAULT_IGNORE_LARGE_UNTRACKED_FILES"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/config/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/config/__init__.py"
+    ],
+    "anchors": [
+      "CONFIG_TOML_FILE",
+      "DEFAULT_MULTI_AGENT_V2_DEFAULT_WAIT_TIMEOUT_MS",
+      "DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION",
+      "DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS",
+      "DEFAULT_MULTI_AGENT_V2_MIN_WAIT_TIMEOUT_MS",
+      "GhostSnapshotConfig",
+      "MultiAgentV2Config",
+      "NetworkProxySpec",
+      "ThreadStoreConfig",
+      "is_builtin_permission_profile_name",
+      "DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS",
+      "DEFAULT_IGNORE_LARGE_UNTRACKED_FILES"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

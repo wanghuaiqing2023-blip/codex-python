@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.guardian.review_session",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "guardian::review_session",
+    "source": "codex/codex-rs/core/src/guardian/review_session.rs",
+    "anchors": [
+      "GuardianReviewSessionManager",
+      "GuardianReviewSessionOutcome",
+      "GuardianReviewSessionParams",
+      "build_guardian_review_session_config",
+      "prompt_cache_key_override_for_review_session",
+      "run_review",
+      "shutdown",
+      "trunk_rollout_path",
+      "GuardianReviewForkSnapshot",
+      "GuardianReviewSession",
+      "GuardianReviewSessionReuseKey",
+      "GuardianReviewState"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/guardian/review_session.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/guardian/review_session.py"
+    ],
+    "anchors": [
+      "GuardianReviewSessionManager",
+      "GuardianReviewSessionOutcome",
+      "GuardianReviewSessionParams",
+      "build_guardian_review_session_config",
+      "prompt_cache_key_override_for_review_session",
+      "run_review",
+      "shutdown",
+      "trunk_rollout_path",
+      "GuardianReviewForkSnapshot",
+      "GuardianReviewSession",
+      "GuardianReviewSessionReuseKey",
+      "GuardianReviewState"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

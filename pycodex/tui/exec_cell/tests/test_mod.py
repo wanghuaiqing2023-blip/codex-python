@@ -3,6 +3,7 @@
 from pycodex.tui import exec_cell
 from pycodex.tui.exec_cell import model, render
 
+# Rust source: codex/codex-rs/tui/src/exec_cell/mod.rs
 
 def test_exec_cell_module_boundary_metadata_matches_rust_mod():
     assert exec_cell.RUST_MODULE.crate == "codex-tui"

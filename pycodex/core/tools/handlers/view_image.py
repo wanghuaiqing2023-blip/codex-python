@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pycodex.core.tools.handlers.utils import resolve_tool_environment
+from pycodex.core.tools.handlers import resolve_tool_environment
+from pycodex.core.tools.handlers import view_image_spec
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import (
@@ -26,20 +27,7 @@ from pycodex.protocol import (
 
 JsonValue = Any
 
-VIEW_IMAGE_TOOL_NAME = "view_image"
 VIEW_IMAGE_UNSUPPORTED_MESSAGE = "view_image is not allowed because you do not support image inputs"
-
-
-@dataclass(frozen=True)
-class ViewImageToolOptions:
-    can_request_original_image_detail: bool = False
-    include_environment_id: bool = False
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.can_request_original_image_detail, bool):
-            raise TypeError("can_request_original_image_detail must be a bool")
-        if not isinstance(self.include_environment_id, bool):
-            raise TypeError("include_environment_id must be a bool")
 
 
 @dataclass(frozen=True)
@@ -106,72 +94,15 @@ class ViewImageOutput:
         return {"image_url": self.image_url, "detail": self.image_detail.value}
 
 
-def create_view_image_tool(
-    options: ViewImageToolOptions = ViewImageToolOptions(),
-) -> dict[str, JsonValue]:
-    if not isinstance(options, ViewImageToolOptions):
-        raise TypeError("options must be ViewImageToolOptions")
-    properties: dict[str, JsonValue] = {
-        "path": {
-            "type": "string",
-            "description": "Local filesystem path to an image file",
-        }
-    }
-    if options.can_request_original_image_detail:
-        properties["detail"] = {
-            "type": "string",
-            "enum": ["high", "original"],
-            "description": (
-                "Optional detail override. Supported values are `high` and `original`; omit this field "
-                "for default high resized behavior. Use `original` to preserve the file's original "
-                "resolution instead of resizing to fit. This is important when high-fidelity image "
-                "perception or precise localization is needed, especially for CUA agents."
-            ),
-        }
-    if options.include_environment_id:
-        properties["environment_id"] = {
-            "type": "string",
-            "description": "Optional selected environment id to target. Omit this to use the primary environment.",
-        }
-    return {
-        "type": "function",
-        "name": VIEW_IMAGE_TOOL_NAME,
-        "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": ["path"],
-            "additionalProperties": False,
-        },
-        "output_schema": {
-            "type": "object",
-            "properties": {
-                "image_url": {
-                    "type": "string",
-                    "description": "Data URL for the loaded image.",
-                },
-                "detail": {
-                    "type": "string",
-                    "enum": ["high", "original"],
-                    "description": "Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.",
-                },
-            },
-            "required": ["image_url", "detail"],
-            "additionalProperties": False,
-        },
-    }
-
-
 class ViewImageHandler:
     def __init__(
         self,
-        options: ViewImageToolOptions = ViewImageToolOptions(),
+        options: view_image_spec.ViewImageToolOptions = view_image_spec.ViewImageToolOptions(),
         *,
         supports_image_inputs: bool = True,
         cwd: Path | None = None,
     ) -> None:
-        if not isinstance(options, ViewImageToolOptions):
+        if not isinstance(options, view_image_spec.ViewImageToolOptions):
             raise TypeError("options must be ViewImageToolOptions")
         if not isinstance(supports_image_inputs, bool):
             raise TypeError("supports_image_inputs must be a bool")
@@ -182,10 +113,10 @@ class ViewImageHandler:
         self.cwd = cwd or Path.cwd()
 
     def tool_name(self) -> ToolName:
-        return ToolName.plain(VIEW_IMAGE_TOOL_NAME)
+        return ToolName.plain(view_image_spec.VIEW_IMAGE_TOOL_NAME)
 
     def spec(self) -> dict[str, JsonValue]:
-        return create_view_image_tool(self.options)
+        return view_image_spec.create_view_image_tool(self.options)
 
     def supports_parallel_tool_calls(self) -> bool:
         return True
@@ -332,7 +263,7 @@ def data_url_for_image(path: Path, file_bytes: bytes) -> str:
 
 def _effective_detail(
     detail: ImageDetail | None,
-    options: ViewImageToolOptions,
+    options: view_image_spec.ViewImageToolOptions,
 ) -> ImageDetail:
     if detail is ImageDetail.ORIGINAL and options.can_request_original_image_detail:
         return ImageDetail.ORIGINAL
@@ -394,13 +325,10 @@ def _optional_str(value: dict[str, JsonValue], key: str) -> str | None:
 
 
 __all__ = [
-    "VIEW_IMAGE_TOOL_NAME",
     "VIEW_IMAGE_UNSUPPORTED_MESSAGE",
     "ViewImageArgs",
     "ViewImageHandler",
     "ViewImageOutput",
-    "ViewImageToolOptions",
-    "create_view_image_tool",
     "data_url_for_image",
     "parse_view_image_arguments",
 ]

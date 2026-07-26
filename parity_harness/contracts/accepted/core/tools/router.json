@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.router",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::router",
+    "source": "codex/codex-rs/core/src/tools/router.rs",
+    "anchors": [
+      "ToolCall",
+      "ToolCallSource",
+      "ToolRouter",
+      "ToolRouterParams",
+      "build_tool_call",
+      "create_diff_consumer",
+      "dispatch_tool_call_with_code_mode_result",
+      "dispatch_tool_call_with_terminal_outcome",
+      "extension_tool_executors",
+      "from_parts",
+      "from_turn_context",
+      "model_visible_specs"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/router.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/router.py"
+    ],
+    "anchors": [
+      "ToolCall",
+      "ToolCallSource",
+      "ToolRouter",
+      "ToolRouterParams",
+      "build_tool_call",
+      "create_diff_consumer",
+      "dispatch_tool_call_with_code_mode_result",
+      "dispatch_tool_call_with_terminal_outcome",
+      "extension_tool_executors",
+      "from_parts",
+      "from_turn_context",
+      "model_visible_specs"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

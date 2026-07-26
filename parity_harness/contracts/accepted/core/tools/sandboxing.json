@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.sandboxing",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::sandboxing",
+    "source": "codex/codex-rs/core/src/tools/sandboxing.rs",
+    "anchors": [
+      "Approvable",
+      "ApprovalCtx",
+      "ApprovalStore",
+      "ExecApprovalRequirement",
+      "PermissionRequestPayload",
+      "SandboxAttempt",
+      "SandboxOverride",
+      "Sandboxable",
+      "ToolCtx",
+      "ToolError",
+      "ToolRuntime",
+      "bash"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/sandboxing.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/sandboxing.py"
+    ],
+    "anchors": [
+      "Approvable",
+      "ApprovalCtx",
+      "ApprovalStore",
+      "ExecApprovalRequirement",
+      "PermissionRequestPayload",
+      "SandboxAttempt",
+      "SandboxOverride",
+      "Sandboxable",
+      "ToolCtx",
+      "ToolError",
+      "ToolRuntime",
+      "bash"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

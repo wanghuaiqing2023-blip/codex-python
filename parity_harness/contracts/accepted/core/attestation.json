@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.attestation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "attestation",
+    "source": "codex/codex-rs/core/src/attestation.rs",
+    "anchors": [
+      "AttestationContext",
+      "AttestationProvider",
+      "X_OAI_ATTESTATION_HEADER",
+      "header_for_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/attestation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/attestation.py"
+    ],
+    "anchors": [
+      "AttestationContext",
+      "AttestationProvider",
+      "X_OAI_ATTESTATION_HEADER",
+      "header_for_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

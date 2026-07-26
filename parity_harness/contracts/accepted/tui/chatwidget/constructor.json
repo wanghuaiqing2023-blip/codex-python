@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-tui.chatwidget.constructor",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::constructor",
+    "source": "codex/codex-rs/tui/src/chatwidget/constructor.rs",
+    "anchors": [
+      "new_with_app_event",
+      "new_with_op_target"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/constructor.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/constructor.py"
+    ],
+    "anchors": [
+      "new_with_app_event",
+      "new_with_op_target"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

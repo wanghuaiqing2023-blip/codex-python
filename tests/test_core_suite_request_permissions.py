@@ -1,10 +1,10 @@
-import asyncio
+﻿import asyncio
 import json
 import subprocess
 from pathlib import Path
 
-from pycodex.core.session.runtime import InMemoryCodexSession
-from pycodex.core.tools.handlers.utils import (
+from pycodex.core.session.session import Session
+from pycodex.core.tools.handlers import (
     apply_granted_turn_permissions,
     normalize_and_validate_additional_permissions,
     permissions_are_preapproved,
@@ -178,7 +178,7 @@ def test_request_permissions_tool_is_auto_denied_when_granular_request_permissio
         called = True
         return RequestPermissionsResponse(RequestPermissionProfile(network=NetworkPermissions(enabled=True)))
 
-    session = InMemoryCodexSession(
+    session = Session(
         cwd=tmp_path,
         approval_policy=GranularApprovalConfig(
             sandbox_approval=True,
@@ -354,3 +354,4 @@ def test_request_permissions_session_grants_carry_across_turns(tmp_path):
     assert first_turn.permissions_preapproved is True
     assert next_turn.permissions_preapproved is True
     assert next_turn.additional_permissions == granted
+

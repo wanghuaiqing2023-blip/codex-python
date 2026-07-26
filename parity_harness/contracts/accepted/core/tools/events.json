@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.events",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::events",
+    "source": "codex/codex-rs/core/src/tools/events.rs",
+    "anchors": [
+      "ToolEmitter",
+      "ToolEventCtx",
+      "ToolEventFailure",
+      "ToolEventStage",
+      "apply_patch",
+      "begin",
+      "emit",
+      "finish",
+      "shell",
+      "unified_exec",
+      "ExecCommandInput",
+      "ExecCommandResult"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/events.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/events.py"
+    ],
+    "anchors": [
+      "ToolEmitter",
+      "ToolEventCtx",
+      "ToolEventFailure",
+      "ToolEventStage",
+      "apply_patch",
+      "begin",
+      "emit",
+      "finish",
+      "shell",
+      "unified_exec",
+      "ExecCommandInput",
+      "ExecCommandResult"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-app-server.extensions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "extensions",
+    "source": "codex/codex-rs/app-server/src/extensions.rs",
+    "anchors": [
+      "thread_extensions",
+      "app_server_extension_event_sink",
+      "guardian_agent_spawner",
+      "emit"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/extensions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/extensions.py"
+    ],
+    "anchors": [
+      "thread_extensions",
+      "app_server_extension_event_sink",
+      "guardian_agent_spawner",
+      "emit"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_extensions_rs.py"
+  ]
+}

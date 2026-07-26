@@ -1471,10 +1471,6 @@ def sampling_output_item_added_apply_plan(
 
     seeded_streamed_assistant_text_plan = None
     seeded_parsed = added_plan.seeded_parsed
-    if added_plan.seeded_item_id is not None and added_plan.seeded_raw_text is not None:
-        seed_item_text = getattr(assistant_message_stream_parsers, "seed_item_text", None)
-        if callable(seed_item_text):
-            seeded_parsed = seed_item_text(added_plan.seeded_item_id, added_plan.seeded_raw_text)
     if plan_mode and added_plan.seeded_item_id is not None and seeded_parsed is not None:
         seeded_streamed_assistant_text_plan = sampling_streamed_assistant_text_delta_plan(
             added_plan.seeded_item_id,
@@ -1559,15 +1555,11 @@ def sampling_output_text_delta_apply_plan(
         raise TypeError("text_delta_plan must be a SamplingOutputTextDeltaPlan or None")
     _ensure_bool(plan_mode, "plan_mode")
     if text_delta_plan.parsed is not None:
-        parsed = text_delta_plan.parsed
-        parse_delta = getattr(assistant_message_stream_parsers, "parse_delta", None)
-        if callable(parse_delta):
-            parsed = parse_delta(text_delta_plan.item_id, text_delta_plan.delta)
         return SamplingOutputTextDeltaApplyPlan(
             item_id=text_delta_plan.item_id,
             streamed_assistant_text_plan=sampling_streamed_assistant_text_delta_plan(
                 text_delta_plan.item_id,
-                parsed,
+                text_delta_plan.parsed,
                 plan_mode=plan_mode,
                 thread_id=text_delta_plan.thread_id,
                 turn_id=text_delta_plan.turn_id,

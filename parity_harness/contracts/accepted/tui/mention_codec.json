@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.mention_codec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "mention_codec",
+    "source": "codex/codex-rs/tui/src/mention_codec.rs",
+    "anchors": [
+      "DecodedHistoryText",
+      "LinkedMention",
+      "decode_history_mentions",
+      "encode_history_mentions",
+      "is_common_env_var",
+      "is_mention_name_char",
+      "is_tool_path",
+      "parse_history_linked_mention",
+      "parse_linked_tool_mention"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/mention_codec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/mention_codec.py"
+    ],
+    "anchors": [
+      "DecodedHistoryText",
+      "LinkedMention",
+      "decode_history_mentions",
+      "encode_history_mentions",
+      "is_common_env_var",
+      "is_mention_name_char",
+      "is_tool_path",
+      "parse_history_linked_mention",
+      "parse_linked_tool_mention"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

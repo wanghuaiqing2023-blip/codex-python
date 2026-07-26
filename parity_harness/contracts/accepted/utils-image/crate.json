@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-utils-image.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-image",
+    "module": "crate",
+    "source": "codex/codex-rs/utils/image/src/lib.rs",
+    "anchors": [
+      "EncodedImage",
+      "ImageProcessingError",
+      "MAX_DIMENSION",
+      "PromptImageMode",
+      "into_data_url",
+      "load_for_prompt_bytes",
+      "can_preserve_source_bytes"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/image/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/image/__init__.py"
+    ],
+    "anchors": [
+      "EncodedImage",
+      "ImageProcessingError",
+      "MAX_DIMENSION",
+      "PromptImageMode",
+      "into_data_url",
+      "load_for_prompt_bytes",
+      "can_preserve_source_bytes"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

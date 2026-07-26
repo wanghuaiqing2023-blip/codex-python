@@ -28,14 +28,18 @@ Python module:
   auth settings conversion boundary, debug-only plugin startup skip, and
   remote-control runtime option forwarding.
 
-## Deferred
+## Runtime integration
 
-- Actual `clap::Parser` execution and arg0 dispatch are outside this pure
-  projection.
+- `run(...)` executes the `main.rs` handoff into
+  `run_main_with_transport_options(...)`; the top-level Python CLI delegates
+  `python -m pycodex app-server` through this owner.
+- Argument parsing and arg0 discovery remain owned by the top-level CLI, while
+  the app-server startup shape and runtime delegation remain in this module.
 - Concrete websocket auth validation belongs to `codex-app-server-transport`;
   this module only preserves the `try_into_settings()` call boundary.
 - Real `run_main_with_transport_options(...)` runtime startup remains owned by
-  `src/lib.rs`, which is tracked separately and now complete at module scope.
+  `src/lib.rs`; stdio startup is now exercised by a process-level integration
+  test.
 - Focused validation passed on 2026-06-19:
   `python -m pytest tests/test_app_server_main_rs.py -q` -> `8 passed`.
   Syntax validation also passed with `python -m py_compile

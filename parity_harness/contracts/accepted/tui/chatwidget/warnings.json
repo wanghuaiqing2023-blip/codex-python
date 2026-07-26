@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.chatwidget.warnings",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::warnings",
+    "source": "codex/codex-rs/tui/src/chatwidget/warnings.rs",
+    "anchors": [
+      "WarningDisplayState",
+      "should_display",
+      "FALLBACK_MODEL_METADATA_WARNING_PREFIX",
+      "FALLBACK_MODEL_METADATA_WARNING_SUFFIX",
+      "fallback_model_metadata_warning_slug"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/warnings.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/warnings.py"
+    ],
+    "anchors": [
+      "WarningDisplayState",
+      "should_display",
+      "FALLBACK_MODEL_METADATA_WARNING_PREFIX",
+      "FALLBACK_MODEL_METADATA_WARNING_SUFFIX",
+      "fallback_model_metadata_warning_slug"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

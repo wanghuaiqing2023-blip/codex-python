@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-core.state.auto_compact_window",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "state::auto_compact_window",
+    "source": "codex/codex-rs/core/src/state/auto_compact_window.rs",
+    "anchors": [
+      "AutoCompactWindow",
+      "AutoCompactWindowSnapshot",
+      "clear_prefill",
+      "ensure_server_observed_prefill_from_usage",
+      "set_estimated_prefill",
+      "snapshot",
+      "start_next",
+      "AutoCompactWindowPrefill"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/state/auto_compact_window.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/state/auto_compact_window.py"
+    ],
+    "anchors": [
+      "AutoCompactWindow",
+      "AutoCompactWindowSnapshot",
+      "clear_prefill",
+      "ensure_server_observed_prefill_from_usage",
+      "set_estimated_prefill",
+      "snapshot",
+      "start_next",
+      "AutoCompactWindowPrefill"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

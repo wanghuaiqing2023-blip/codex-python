@@ -1,0 +1,9 @@
+{
+  "scenario_id": "false-claim",
+  "action": "claim-only",
+  "claim": "completed",
+  "path": "result.txt",
+  "content": "status: ready",
+  "states": {"working": false, "turn": "completed"}
+}
+

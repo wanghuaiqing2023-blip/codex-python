@@ -1,0 +1,21 @@
+{
+  "scope": "code-mode",
+  "rust_root": "codex/codex-rs/code-mode",
+  "python_root": "pycodex/code_mode",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::description",
+    "crate::response",
+    "crate::runtime",
+    "crate::runtime::callbacks",
+    "crate::runtime::globals",
+    "crate::runtime::module_loader",
+    "crate::runtime::timers",
+    "crate::runtime::value",
+    "crate::service"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

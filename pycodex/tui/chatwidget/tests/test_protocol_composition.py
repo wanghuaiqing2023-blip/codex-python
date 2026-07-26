@@ -1,3 +1,4 @@
+from pycodex.protocol import CodexErrorInfo
 from pycodex.tui.chatwidget.protocol import (
     ChatWidgetProtocolRuntime,
     HistoryProjectionSink,
@@ -7,7 +8,7 @@ from pycodex.tui.chatwidget.protocol import (
 from pycodex.tui.exec_cell import ExecCell
 from pycodex.tui.history_cell.messages import ReasoningSummaryCell
 from pycodex.tui.history_cell.patches import PatchHistoryCell
-from pycodex.tui.history_cell.plans import PlanUpdateCell, line_text
+from pycodex.tui.history_cell.plans import PlanUpdateCell, ProposedPlanCell, line_text
 from pycodex.tui.history_cell.separators import FinalMessageSeparator
 from pycodex.tui.history_cell.base import PrefixedWrappedHistoryCell, line_text
 
@@ -72,6 +73,25 @@ def test_turn_plan_updated_reaches_turn_runtime_and_plan_history_cell() -> None:
         "InProgress: Verify event bridge",
         "Pending: Report evidence",
     ]
+
+
+def test_completed_plan_item_projects_proposed_plan_history_cell() -> None:
+    # Rust: chatwidget::streaming::on_plan_item_completed falls back to
+    # history_cell::new_proposed_plan when no finalized streamed cell exists.
+    inserted: list[object] = []
+    runtime = ChatWidgetProtocolRuntime()
+    runtime.config.cwd = "."
+    runtime.bind_history_projection(
+        HistoryProjectionSink(inserted.append, lambda _cell: None, lambda: None)
+    )
+
+    runtime.on_plan_item_completed("- Inspect the parser\n- Implement the fix\n")
+
+    assert len(inserted) == 1
+    assert isinstance(inserted[0], ProposedPlanCell)
+    assert runtime.transcript.latest_proposed_plan_markdown == (
+        "- Inspect the parser\n- Implement the fix\n"
+    )
 
 
 def test_typed_exec_approval_request_reaches_tool_request_owner_and_sink() -> None:
@@ -540,6 +560,66 @@ def test_protocol_non_retry_error_consolidates_streamed_answer_before_failure() 
     assert {"kind": "error", "message": "stream disconnected before completion"} in runtime.turn.history
 
 
+def test_live_stream_recovery_restores_chatwidget_owned_status() -> None:
+    # Rust source/tests:
+    # - codex-tui::chatwidget::protocol::handle_server_notification
+    # - app_server.rs::live_app_server_stream_recovery_restores_previous_status_header
+    # The terminal adapter must consume this state; it must not reconstruct a
+    # second retry lifecycle from Error notifications.
+    runtime = ChatWidgetProtocolRuntime()
+
+    runtime.handle(ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}))
+    runtime.handle(
+        ServerNotification(
+            "Error",
+            {
+                "turn_id": "turn-1",
+                "will_retry": True,
+                "error": {
+                    "message": "Reconnecting... 1/5",
+                    "additional_details": "Idle timeout waiting for SSE",
+                },
+            },
+        )
+    )
+
+    status = runtime.streaming.status_state.current_status
+    assert runtime.streaming.status_indicator_visible is True
+    assert status.header == "Reconnecting... 1/5"
+    assert status.details == "Idle timeout waiting for SSE"
+    assert runtime.streaming.status_state.retry_status_header == "Working"
+
+    runtime.handle(ServerNotification("AgentMessageDelta", {"delta": "recovered"}))
+
+    status = runtime.streaming.status_state.current_status
+    assert status.header == "Working"
+    assert status.details is None
+    assert runtime.streaming.status_state.retry_status_header is None
+
+
+def test_next_turn_restores_status_indicator_hidden_by_completed_turn() -> None:
+    # Rust owners:
+    # - chatwidget::turn_runtime::on_task_started calls update_task_running_state.
+    # - bottom_pane::set_task_running(true) recreates a hidden status widget.
+    runtime = ChatWidgetProtocolRuntime()
+
+    runtime.handle(ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}))
+    runtime.handle(ServerNotification("AgentMessageDelta", {"delta": "first answer"}))
+    runtime.handle(
+        ServerNotification(
+            "TurnCompleted",
+            {"turn": {"id": "turn-1", "status": "Completed"}},
+        )
+    )
+    assert runtime.streaming.status_indicator_visible is False
+
+    runtime.handle(ServerNotification("TurnStarted", {"turn": {"id": "turn-2"}}))
+
+    assert runtime.streaming.status_indicator_visible is True
+    assert runtime.streaming.status_state.current_status.header == "Working"
+    assert runtime.streaming.status_state.current_status.details is None
+
+
 def test_protocol_rate_limit_error_consolidates_streamed_answer_like_on_error() -> None:
     # Source: Rust source contract
     # Rust crate: codex-tui
@@ -556,7 +636,10 @@ def test_protocol_rate_limit_error_consolidates_streamed_answer_like_on_error() 
             {
                 "turn_id": "turn-1",
                 "will_retry": False,
-                "error": {"message": "rate limit", "codex_error_info": {"rate_limit_kind": "generic"}},
+                "error": {
+                    "message": "rate limit",
+                    "codex_error_info": CodexErrorInfo.response_too_many_failed_attempts(429),
+                },
             },
         )
     )
@@ -581,7 +664,10 @@ def test_protocol_server_overloaded_error_does_not_consolidate_stream() -> None:
             {
                 "turn_id": "turn-1",
                 "will_retry": False,
-                "error": {"message": "busy", "codex_error_info": {"rate_limit_kind": "server_overloaded"}},
+                "error": {
+                    "message": "busy",
+                    "codex_error_info": CodexErrorInfo.server_overloaded(),
+                },
             },
         )
     )
@@ -607,7 +693,10 @@ def test_protocol_cyber_policy_error_does_not_consolidate_stream() -> None:
             {
                 "turn_id": "turn-1",
                 "will_retry": False,
-                "error": {"message": "blocked", "codex_error_info": {"cyber_policy": True}},
+                "error": {
+                    "message": "blocked",
+                    "codex_error_info": CodexErrorInfo.cyber_policy(),
+                },
             },
         )
     )

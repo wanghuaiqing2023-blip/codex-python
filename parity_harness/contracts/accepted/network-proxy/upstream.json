@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-network-proxy.upstream",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "upstream",
+    "source": "codex/codex-rs/network-proxy/src/upstream.rs",
+    "anchors": [
+      "UpstreamClient",
+      "direct",
+      "direct_with_allow_local_binding",
+      "from_env_proxy",
+      "from_env_proxy_with_allow_local_binding",
+      "proxy_for_connect",
+      "unix_socket",
+      "ProxyConfig",
+      "from_env",
+      "proxy_for_protocol",
+      "read_proxy_env"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/upstream.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/upstream.py"
+    ],
+    "anchors": [
+      "UpstreamClient",
+      "direct",
+      "direct_with_allow_local_binding",
+      "from_env_proxy",
+      "from_env_proxy_with_allow_local_binding",
+      "proxy_for_connect",
+      "unix_socket",
+      "ProxyConfig",
+      "from_env",
+      "proxy_for_protocol",
+      "read_proxy_env"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

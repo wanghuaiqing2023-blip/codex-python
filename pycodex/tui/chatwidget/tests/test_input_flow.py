@@ -150,20 +150,22 @@ def test_maybe_send_next_drains_slash_and_shell_until_stop():
 
 
 def test_submit_user_message_with_mode_applies_plan_effort_and_blocks_running_mode_switch():
-    mask = CollaborationModeMask(mode=ModeKind.PLAN)
+    mask = CollaborationModeMask(name="Plan", mode=ModeKind.PLAN)
     model = InputFlowModel(plan_mode_reasoning_effort="high")
 
     model.submit_user_message_with_mode("plan text", mask)
 
-    assert mask.reasoning_effort == "high"
-    assert model.collaboration_masks_set == [mask]
+    assert model.collaboration_masks_set[0].reasoning_effort == "high"
     assert model.submitted_messages[0].text == "plan text"
 
     blocked = InputFlowModel(
         agent_turn_running=True,
-        active_collaboration_mask=CollaborationModeMask(mode=ModeKind.OTHER),
+        active_collaboration_mask=CollaborationModeMask(name="Default", mode=ModeKind.DEFAULT),
     )
-    blocked.submit_user_message_with_mode("switch", CollaborationModeMask(mode=ModeKind.PLAN))
+    blocked.submit_user_message_with_mode(
+        "switch",
+        CollaborationModeMask(name="Plan", mode=ModeKind.PLAN),
+    )
     assert blocked.error_messages == ["Cannot switch collaboration mode while a turn is running."]
     assert blocked.submitted_messages == []
 
@@ -171,7 +173,10 @@ def test_submit_user_message_with_mode_applies_plan_effort_and_blocks_running_mo
 def test_submit_user_message_with_mode_queues_when_plan_streaming():
     model = InputFlowModel(plan_streaming_in_tui=True)
 
-    model.submit_user_message_with_mode("queued", CollaborationModeMask(mode=ModeKind.OTHER))
+    model.submit_user_message_with_mode(
+        "queued",
+        CollaborationModeMask(name="Default", mode=ModeKind.DEFAULT),
+    )
 
     assert model.queued_user_message_texts() == ["queued"]
     assert model.submitted_messages == []

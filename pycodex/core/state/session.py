@@ -9,7 +9,7 @@ from typing import Any, Iterable
 from pycodex.core.context_manager.history import ContextManager, TotalTokenUsageBreakdown
 from pycodex.core.state.additional_context import AdditionalContextStore
 from pycodex.core.state.auto_compact_window import AutoCompactWindow, AutoCompactWindowSnapshot
-from pycodex.core.tools.handlers.utils import merge_permission_profiles
+from pycodex.core.tools.handlers import merge_permission_profiles
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     RateLimitSnapshot,

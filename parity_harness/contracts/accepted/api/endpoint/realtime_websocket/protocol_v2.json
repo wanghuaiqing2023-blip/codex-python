@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-api.endpoint.realtime_websocket.protocol_v2",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-api",
+    "module": "endpoint::realtime_websocket::protocol_v2",
+    "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol_v2.rs",
+    "anchors": [
+      "parse_realtime_event_v2",
+      "BACKGROUND_AGENT_TOOL_NAME",
+      "DEFAULT_AUDIO_CHANNELS",
+      "DEFAULT_AUDIO_SAMPLE_RATE",
+      "SILENCE_TOOL_NAME",
+      "TOOL_ARGUMENT_KEYS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_api/endpoint/realtime_websocket/protocol_v2.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/codex_api/endpoint/realtime_websocket/protocol_v2.py"
+    ],
+    "anchors": [
+      "parse_realtime_event_v2",
+      "BACKGROUND_AGENT_TOOL_NAME",
+      "DEFAULT_AUDIO_CHANNELS",
+      "DEFAULT_AUDIO_SAMPLE_RATE",
+      "SILENCE_TOOL_NAME",
+      "TOOL_ARGUMENT_KEYS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

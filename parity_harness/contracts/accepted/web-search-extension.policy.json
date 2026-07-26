@@ -1,0 +1,17 @@
+{
+  "scope": "web-search-extension",
+  "rust_root": "codex/codex-rs/ext/web-search",
+  "python_root": "pycodex/ext/web_search",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::extension",
+    "crate::history",
+    "crate::output",
+    "crate::schema",
+    "crate::tool"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

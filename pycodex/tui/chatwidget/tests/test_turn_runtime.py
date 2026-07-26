@@ -3,6 +3,7 @@
 Rust source: ``codex/codex-rs/tui/src/chatwidget/turn_runtime.rs``.
 """
 
+from pycodex.protocol import CodexErrorInfo
 from pycodex.tui.chatwidget.turn_runtime import (
     ChatWidgetTurnRuntime,
     ModeKind,
@@ -19,6 +20,7 @@ from pycodex.tui.chatwidget.turn_runtime import (
     run_terminal_turn_submission,
     run_terminal_turn_start,
 )
+from pycodex.tui.token_usage import TokenUsage
 
 
 def test_update_task_running_state_derives_from_turn_or_mcp_startup() -> None:
@@ -285,11 +287,17 @@ def test_plan_implementation_prompt_guards_and_context_usage_label() -> None:
     runtime.mode_kind = ModeKind.PLAN
     runtime.transcript.saw_plan_item_this_turn = True
     runtime.transcript.latest_proposed_plan_markdown = "plan"
-    runtime.token_info = TokenUsageInfo(total_token_limit=1000, total_tokens=250)
+    runtime.token_info = TokenUsageInfo(
+        total_token_usage=TokenUsage(total_tokens=37_000),
+        last_token_usage=TokenUsage(total_tokens=37_000),
+        model_context_window=112_000,
+    )
 
     runtime.maybe_prompt_plan_implementation()
 
-    assert runtime.bottom_pane.selection_views[-1]["context_usage_label"] == "25% used"
+    assert runtime.bottom_pane.selection_views[-1].items[1].description == (
+        "Fresh thread. Context: 25% used."
+    )
     assert runtime.notifications[-1]["kind"] == "plan_mode_prompt"
 
     blocked = ChatWidgetTurnRuntime()
@@ -302,7 +310,11 @@ def test_plan_implementation_prompt_guards_and_context_usage_label() -> None:
 
 def test_plan_implementation_context_usage_label_uses_token_fallback() -> None:
     runtime = ChatWidgetTurnRuntime()
-    runtime.token_info = TokenUsageInfo(total_tokens=1536)
+    runtime.token_info = TokenUsageInfo(
+        total_token_usage=TokenUsage(total_tokens=1536),
+        last_token_usage=TokenUsage(),
+        model_context_window=None,
+    )
 
     assert runtime.plan_implementation_context_usage_label() == "1.5K used"
 
@@ -402,13 +414,23 @@ def test_rate_limit_error_maps_workspace_owner_and_member_branches() -> None:
 
 def test_handle_non_retry_error_routes_cyber_rate_limit_and_generic_errors() -> None:
     cyber = ChatWidgetTurnRuntime()
-    cyber.handle_non_retry_error("blocked", {"cyber_policy": True})
+    cyber.handle_non_retry_error("blocked", CodexErrorInfo.cyber_policy())
     assert cyber.history[-1] == {"kind": "cyber_policy_error"}
 
     overloaded = ChatWidgetTurnRuntime()
-    overloaded.handle_non_retry_error("busy", {"rate_limit_kind": "server_overloaded"})
+    overloaded.handle_non_retry_error("busy", CodexErrorInfo.server_overloaded())
     assert overloaded.history[-1] == {"kind": "warning", "message": "busy"}
 
     generic = ChatWidgetTurnRuntime()
-    generic.handle_non_retry_error("plain", None)
-    assert generic.history[-1] == {"kind": "error", "message": "plain"}
+    generic.handle_non_retry_error(
+        "stream disconnected before completion",
+        CodexErrorInfo.response_stream_connection_failed(),
+    )
+    assert generic.history[-1] == {
+        "kind": "error",
+        "message": "stream disconnected before completion",
+    }
+
+    no_info = ChatWidgetTurnRuntime()
+    no_info.handle_non_retry_error("plain", None)
+    assert no_info.history[-1] == {"kind": "error", "message": "plain"}

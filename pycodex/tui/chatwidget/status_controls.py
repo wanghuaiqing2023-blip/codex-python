@@ -243,6 +243,60 @@ class TerminalStatusCommandController:
         return self.status_writer.write_output(output)
 
 
+@dataclass(frozen=True)
+class TerminalStatusLineSetupController:
+    """Open terminal ``/statusline`` through Rust's status setup view."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from ..bottom_pane.status_line_setup import StatusLineItem, StatusLineSetupView
+        from ..bottom_pane.status_surface_preview import (
+            StatusSurfacePreviewData as BottomPaneStatusSurfacePreviewData,
+        )
+        from ..runtime_projection import (
+            _runtime_status_line_item_ids,
+            _runtime_status_line_use_colors,
+            _runtime_status_line_value,
+        )
+
+        widget = getattr(self.app_runtime, "chat_widget", None)
+        status_text = "Working"
+        run_state_status_text = getattr(widget, "run_state_status_text", None)
+        if callable(run_state_status_text):
+            status_text = str(run_state_status_text())
+
+        preview_data = BottomPaneStatusSurfacePreviewData()
+        for item in StatusLineItem.iter():
+            value = _runtime_status_line_value(self.app_runtime, item, status_text)
+            if value is not None:
+                preview_data.set_live(item.preview_item(), value)
+
+        runtime_keymap = getattr(self.app_runtime, "runtime_keymap", None)
+        list_keymap = getattr(runtime_keymap, "list", None)
+        return StatusLineSetupView.new(
+            _runtime_status_line_item_ids(self.app_runtime),
+            _runtime_status_line_use_colors(self.app_runtime),
+            preview_data,
+            self._send_app_event,
+            list_keymap,
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> None:
+        del events
+
+    def _send_app_event(self, event: Any) -> None:
+        from ..app_event import AppEvent
+
+        if isinstance(event, dict):
+            kind = str(event.get("type", ""))
+            payload = {key: value for key, value in event.items() if key != "type"}
+            event = AppEvent(kind, payload)
+        sender = getattr(self.app_runtime, "app_event_sender", None)
+        if isinstance(event, AppEvent) and sender is not None:
+            sender.send(event)
+
+
 def terminal_should_prefetch_rate_limits(app_runtime: Any) -> bool:
     """Match Rust's provider-auth and ChatGPT-account refresh guard."""
 
@@ -544,6 +598,7 @@ __all__ = [
     "StatusControlsConfig",
     "StatusControlsState",
     "TerminalStatusCommandController",
+    "TerminalStatusLineSetupController",
     "StatusDetailsCapitalization",
     "StatusOutputCell",
     "StatusOutputHandle",

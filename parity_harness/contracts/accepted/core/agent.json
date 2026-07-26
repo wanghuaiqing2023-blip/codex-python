@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.agent",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "agent",
+    "source": "codex/codex-rs/core/src/agent/mod.rs",
+    "anchors": [
+      "AgentControl",
+      "AgentStatus",
+      "agent_status_from_event",
+      "exceeds_thread_spawn_depth_limit",
+      "next_thread_spawn_depth"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/agent/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/agent/__init__.py"
+    ],
+    "anchors": [
+      "AgentControl",
+      "AgentStatus",
+      "agent_status_from_event",
+      "exceeds_thread_spawn_depth_limit",
+      "next_thread_spawn_depth"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

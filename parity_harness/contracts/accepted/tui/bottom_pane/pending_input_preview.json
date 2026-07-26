@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.bottom_pane.pending_input_preview",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::pending_input_preview",
+    "source": "codex/codex-rs/tui/src/bottom_pane/pending_input_preview.rs",
+    "anchors": [
+      "PendingInputPreview",
+      "new",
+      "set_edit_binding",
+      "set_interrupt_binding",
+      "PREVIEW_LINE_LIMIT",
+      "as_renderable",
+      "desired_height",
+      "push_section_header",
+      "push_truncated_preview_lines",
+      "render"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/pending_input_preview.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/pending_input_preview.py"
+    ],
+    "anchors": [
+      "PendingInputPreview",
+      "new",
+      "set_edit_binding",
+      "set_interrupt_binding",
+      "PREVIEW_LINE_LIMIT",
+      "as_renderable",
+      "desired_height",
+      "push_section_header",
+      "push_truncated_preview_lines",
+      "render"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

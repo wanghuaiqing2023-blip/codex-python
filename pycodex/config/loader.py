@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from pycodex.network_proxy import ConfigLayerSource
+from pycodex.app_server_protocol.config import ConfigLayerSource
 from pycodex.protocol.config_types import ApprovalsReviewer, AskForApproval, SandboxMode, TrustLevel
 
 from . import toml_compat as _toml
@@ -286,15 +286,7 @@ def insert_layer_by_precedence(layers: list[ConfigLayerEntry], layer: ConfigLaye
 
 
 def source_precedence(source: ConfigLayerSource) -> int:
-    return {
-        "mdm": 0,
-        "legacy_managed_config_toml_from_file": 5,
-        "legacy_managed_config_toml_from_mdm": 5,
-        "system": 1,
-        "user": 2,
-        "project": 3,
-        "session_flags": 4,
-    }.get(source.type, 5)
+    return source.precedence()
 
 
 def sanitize_project_config(config: MutableMapping[str, JsonValue]) -> list[str]:
@@ -774,7 +766,7 @@ def append_legacy_managed_config_layers(
         resolved = resolve_relative_paths_in_config_toml(managed_mdm.managed_config, codex_home)
         layers.append(
             ConfigLayerEntry.new_with_raw_toml(
-                ConfigLayerSource("legacy_managed_config_toml_from_mdm"),
+                ConfigLayerSource.legacy_managed_config_toml_from_mdm(),
                 resolved,
                 managed_mdm.raw_toml,
             )

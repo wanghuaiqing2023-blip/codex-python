@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-core.tools.hook_names",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::hook_names",
+    "source": "codex/codex-rs/core/src/tools/hook_names.rs",
+    "anchors": [
+      "HookToolName",
+      "apply_patch",
+      "bash",
+      "matcher_aliases",
+      "name",
+      "new",
+      "spawn_agent"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/hook_names.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/hook_names.py"
+    ],
+    "anchors": [
+      "HookToolName",
+      "apply_patch",
+      "bash",
+      "matcher_aliases",
+      "name",
+      "new",
+      "spawn_agent"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

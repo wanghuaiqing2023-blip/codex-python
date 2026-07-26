@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app_command",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app_command",
+    "source": "codex/codex-rs/tui/src/app_command.rs",
+    "anchors": [
+      "AppCommand",
+      "approve_guardian_denied_action",
+      "clean_background_terminals",
+      "compact",
+      "exec_approval",
+      "interrupt",
+      "is_review",
+      "list_skills",
+      "override_turn_context",
+      "patch_approval",
+      "realtime_conversation_audio",
+      "realtime_conversation_close"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app_command.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app_command.py"
+    ],
+    "anchors": [
+      "AppCommand",
+      "approve_guardian_denied_action",
+      "clean_background_terminals",
+      "compact",
+      "exec_approval",
+      "interrupt",
+      "is_review",
+      "list_skills",
+      "override_turn_context",
+      "patch_approval",
+      "realtime_conversation_audio",
+      "realtime_conversation_close"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

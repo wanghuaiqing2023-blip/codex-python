@@ -25,7 +25,7 @@ from pycodex.protocol import (
 from pycodex.protocol.error import CodexErr
 from pycodex.protocol.user_input import UserInput
 from pycodex.core.agent.registry import AgentMetadata, AgentRegistry
-from pycodex.core.config.agent_roles import DEFAULT_ROLE_NAME, AgentRoleConfig, resolve_role_config
+from pycodex.core.agent.role import DEFAULT_ROLE_NAME, resolve_role_config
 
 
 AGENT_NAMES = """Euclid
@@ -172,8 +172,7 @@ def agent_nickname_candidates(
     """Return role-specific nickname candidates or the default nickname list."""
 
     resolved_role_name = role_name or DEFAULT_ROLE_NAME
-    roles = _agent_roles_mapping(config_or_roles)
-    role = resolve_role_config(roles, resolved_role_name)
+    role = resolve_role_config(config_or_roles, resolved_role_name)
     if role is not None and role.nickname_candidates is not None:
         return list(role.nickname_candidates)
     return default_agent_nickname_list()
@@ -310,15 +309,6 @@ def _render_user_input_preview(item: UserInput | Mapping[str, Any]) -> str:
 
 def _response_item(item: ResponseItem | Mapping[str, Any]) -> ResponseItem:
     return item if isinstance(item, ResponseItem) else ResponseItem.from_mapping(item)
-
-
-def _agent_roles_mapping(config_or_roles: Any) -> Mapping[str, AgentRoleConfig]:
-    if isinstance(config_or_roles, Mapping):
-        return config_or_roles
-    roles = getattr(config_or_roles, "agent_roles", None)
-    if isinstance(roles, Mapping):
-        return roles
-    raise TypeError("config_or_roles must be a mapping or expose agent_roles")
 
 
 def _filter_compacted_replacement_history(item: RolloutItem, usage_hint_texts: tuple[str, ...]) -> RolloutItem:

@@ -1,0 +1,15 @@
+{
+  "source": "rust",
+  "contract_id": "harness-fixture.status",
+  "executable_baseline": true,
+  "events": [
+    {"category": "input", "name": "received", "payload": {"value": "ready", "session_id": "rust-session"}},
+    {"category": "context", "name": "assembled", "payload": {"cwd": "C:/rust/work/status", "tools": ["exec_command"]}},
+    {"category": "tool.available", "name": "exec_command", "tool": "exec_command", "payload": {"schema": "shell"}},
+    {"category": "state", "name": "working", "state": "working", "payload": {"timestamp": "2026-01-01T00:00:00Z"}},
+    {"category": "outcome.link", "name": "file-created", "outcome_ref": "file:result.txt"},
+    {"category": "state", "name": "idle", "state": "idle"},
+    {"category": "termination", "name": "completed", "payload": {"turn_id": "rust-turn"}}
+  ]
+}
+

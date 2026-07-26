@@ -9,65 +9,15 @@ from __future__ import annotations
 
 import difflib
 import shlex
-import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pycodex.features import Feature
-from pycodex.core.tools.hosted_spec import FreeformToolFormat, ToolSpec
-from pycodex.core.tools.hook_names import HookToolName
-from pycodex.core.tools.context import ApplyPatchToolOutput, ToolPayload
-from pycodex.core.tools.router import FunctionCallError
-from pycodex.core.tools.registry import CoreToolRuntime, PostToolUsePayload, PreToolUsePayload
-from pycodex.protocol import (
-    AdditionalPermissionProfile,
-    AskForApproval,
-    EventMsg,
-    FileChange,
-    FileSystemAccessMode,
-    FileSystemPath,
-    FileSystemPermissions,
-    FileSystemSandboxEntry,
-    FileSystemSandboxPolicy,
-    GranularApprovalConfig,
-    PatchApplyUpdatedEvent,
-    approval_policy_display_value,
-)
-from pycodex.protocol import ToolName
-
 JsonValue = Any
 
-APPLY_PATCH_TOOL_NAME = "apply_patch"
 CODEX_CORE_APPLY_PATCH_ARG1 = "--codex-run-as-apply-patch"
 APPLY_PATCH_TOOL_INSTRUCTIONS = '## `apply_patch`\n\nUse the `apply_patch` shell command to edit files.\nYour patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:\n\n*** Begin Patch\n[ one or more file sections ]\n*** End Patch\n\nWithin that envelope, you get a sequence of file operations.\nYou MUST include a header to specify the action you are taking.\nEach operation starts with one of three headers:\n\n*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).\n*** Delete File: <path> - remove an existing file. Nothing follows.\n*** Update File: <path> - patch an existing file in place (optionally with a rename).\n\nMay be immediately followed by *** Move to: <new path> if you want to rename the file.\nThen one or more “hunks”, each introduced by @@ (optionally followed by a hunk header).\nWithin a hunk each line starts with:\n\nFor instructions on [context_before] and [context_after]:\n- By default, show 3 lines of code immediately above and 3 lines immediately below each change. If a change is within 3 lines of a previous change, do NOT duplicate the first change’s [context_after] lines in the second change’s [context_before] lines.\n- If 3 lines of context is insufficient to uniquely identify the snippet of code within the file, use the @@ operator to indicate the class or function to which the snippet belongs. For instance, we might have:\n@@ class BaseClass\n[3 lines of pre-context]\n- [old_code]\n+ [new_code]\n[3 lines of post-context]\n\n- If a code block is repeated so many times in a class or function such that even a single `@@` statement and 3 lines of context cannot uniquely identify the snippet of code, you can use multiple `@@` statements to jump to the right context. For instance:\n\n@@ class BaseClass\n@@ \t def method():\n[3 lines of pre-context]\n- [old_code]\n+ [new_code]\n[3 lines of post-context]\n\nThe full grammar definition is below:\nPatch := Begin { FileOp } End\nBegin := "*** Begin Patch" NEWLINE\nEnd := "*** End Patch" NEWLINE\nFileOp := AddFile | DeleteFile | UpdateFile\nAddFile := "*** Add File: " path NEWLINE { "+" line NEWLINE }\nDeleteFile := "*** Delete File: " path NEWLINE\nUpdateFile := "*** Update File: " path NEWLINE [ MoveTo ] { Hunk }\nMoveTo := "*** Move to: " newPath NEWLINE\nHunk := "@@" [ header ] NEWLINE { HunkLine } [ "*** End of File" NEWLINE ]\nHunkLine := (" " | "-" | "+") text NEWLINE\n\nA full patch can combine several operations:\n\n*** Begin Patch\n*** Add File: hello.txt\n+Hello world\n*** Update File: src/app.py\n*** Move to: src/main.py\n@@ def greet():\n-print("Hi")\n+print("Hello, world!")\n*** Delete File: obsolete.txt\n*** End Patch\n\nIt is important to remember:\n\n- You must include a header with your intended action (Add/Delete/Update)\n- You must prefix new lines with `+` even when creating a new file\n- File references can only be relative, NEVER ABSOLUTE.\n\nYou can invoke apply_patch like:\n\n```\nshell {"command":["apply_patch","*** Begin Patch\\n*** Add File: hello.txt\\n+Hello, world!\\n*** End Patch\\n"]}\n```\n'
-APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL = 0.5
-APPLY_PATCH_FREEFORM_DESCRIPTION = (
-    "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do "
-    "not wrap the patch in JSON."
-)
-APPLY_PATCH_LARK_GRAMMAR = """start: begin_patch hunk+ end_patch
-begin_patch: "*** Begin Patch" LF
-end_patch: "*** End Patch" LF?
-
-hunk: add_hunk | delete_hunk | update_hunk
-add_hunk: "*** Add File: " filename LF add_line+
-delete_hunk: "*** Delete File: " filename LF
-update_hunk: "*** Update File: " filename LF change_move? change?
-
-filename: /(.+)/
-add_line: "+" /(.*)/ LF -> line
-
-change_move: "*** Move to: " filename LF
-change: (change_context | change_line)+ eof_line?
-change_context: ("@@" | "@@ " /(.+)/) LF
-change_line: ("+" | "-" | " ") /(.*)/ LF
-eof_line: "*** End of File" LF
-
-%import common.LF
-"""
-
 BEGIN_PATCH_MARKER = "*** Begin Patch"
 ENVIRONMENT_ID_MARKER = "*** Environment ID: "
 END_PATCH_MARKER = "*** End Patch"
@@ -724,499 +674,6 @@ class ApplyPatchFileUpdate:
         _ensure_str(self.content, "content")
 
 
-@dataclass(frozen=True)
-class ApplyPatchHandler(CoreToolRuntime):
-    multi_environment: bool = False
-
-    @classmethod
-    def new(cls, include_environment_id: bool) -> "ApplyPatchHandler":
-        return cls(multi_environment=include_environment_id)
-
-    def tool_name(self) -> ToolName:
-        return ToolName.plain(APPLY_PATCH_TOOL_NAME)
-
-    def spec(self) -> ToolSpec:
-        return create_apply_patch_freeform_tool(self.multi_environment)
-
-    def matches_kind(self, payload: ToolPayload) -> bool:
-        return payload.type == "custom"
-
-    def create_diff_consumer(self) -> "ApplyPatchArgumentDiffConsumer":
-        return ApplyPatchArgumentDiffConsumer()
-
-    def pre_tool_use_payload(self, invocation: Any) -> PreToolUsePayload | None:
-        command = apply_patch_payload_command(getattr(invocation, "payload", None))
-        if command is None:
-            return None
-        return PreToolUsePayload(HookToolName.apply_patch(), {"command": command})
-
-    def with_updated_hook_input(self, invocation: Any, updated_input: JsonValue) -> Any:
-        from pycodex.core.tools.handlers.utils import updated_hook_command
-
-        patch = updated_hook_command(updated_input)
-        payload = getattr(invocation, "payload", None)
-        if isinstance(payload, ToolPayload) and payload.type == "custom":
-            return replace(invocation, payload=ToolPayload.custom(patch))
-        return invocation
-
-    def post_tool_use_payload(self, invocation: Any, result: Any) -> PostToolUsePayload | None:
-        command = apply_patch_payload_command(getattr(invocation, "payload", None))
-        if command is None:
-            return None
-        response_method = getattr(result, "post_tool_use_response", None)
-        tool_response = response_method(invocation.call_id, invocation.payload) if callable(response_method) else None
-        if tool_response is None:
-            return None
-        return PostToolUsePayload(
-            HookToolName.apply_patch(),
-            invocation.call_id,
-            {"command": command},
-            tool_response,
-        )
-
-    def handle(self, invocation: Any) -> ApplyPatchToolOutput:
-        resolved = resolve_apply_patch_invocation(
-            invocation,
-            multi_environment=self.multi_environment,
-        )
-        verified = verify_apply_patch_args(resolved.args, resolved.cwd)
-        if verified.type == "body":
-            assert verified.body is not None
-            rejection = _apply_patch_policy_rejection(invocation, verified.body)
-            if rejection is None:
-                return ApplyPatchToolOutput.from_text(apply_patch_action_to_disk(verified.body))
-            if "approval_required" not in rejection:
-                raise FunctionCallError.respond_to_model(rejection)
-            if getattr(invocation, "session", None) is None or not getattr(invocation, "call_id", None):
-                raise FunctionCallError.respond_to_model(rejection)
-            return self._handle_approval_required(invocation, resolved, verified.body)
-        if verified.type == "correctness_error":
-            raise FunctionCallError.respond_to_model(
-                f"apply_patch verification failed: {verified.error}"
-            )
-        raise FunctionCallError.respond_to_model(
-            "apply_patch handler received invalid patch input"
-        )
-
-    async def _handle_approval_required(
-        self,
-        invocation: Any,
-        resolved: ResolvedApplyPatchInvocation,
-        action: ApplyPatchAction,
-    ) -> ApplyPatchToolOutput:
-        from pycodex.core.tools.orchestrator import OrchestratorRunResult, ToolOrchestrator
-        from pycodex.core.tools.runtimes import ApplyPatchRuntime
-        from pycodex.core.tools.sandboxing import ExecApprovalRequirement, ToolCtx, ToolError
-
-        turn = getattr(invocation, "turn", None)
-        session = getattr(invocation, "session", None)
-        file_system_sandbox_policy = _invocation_file_system_sandbox_policy(invocation)
-        if file_system_sandbox_policy is None:
-            raise FunctionCallError.respond_to_model("apply_patch is unavailable without a filesystem policy")
-        request = build_apply_patch_request(
-            turn_environment=resolved.turn_environment,
-            action=action,
-            file_system_sandbox_policy=file_system_sandbox_policy,
-            cwd=resolved.cwd,
-            exec_approval_requirement=ExecApprovalRequirement.needs_approval(),
-        )
-        runtime = ApplyPatchRuntime()
-        result = await ToolOrchestrator.new().run(
-            runtime,
-            request,
-            ToolCtx(
-                session=session,
-                turn=turn,
-                call_id=str(getattr(invocation, "call_id")),
-                tool_name=getattr(invocation, "tool_name"),
-            ),
-            turn,
-            _invocation_approval_policy(invocation),
-        )
-        if isinstance(result, ToolError):
-            message = result.message if result.type == "rejected" else str(result.error)
-            raise FunctionCallError.respond_to_model(message or "apply_patch rejected")
-        if not isinstance(result, OrchestratorRunResult):
-            raise TypeError("apply_patch orchestrator returned an invalid result")
-        return ApplyPatchToolOutput.from_text(result.output.exec_output.aggregated_output.text)
-
-
-@dataclass
-class ApplyPatchArgumentDiffConsumer:
-    parser: StreamingPatchParser = field(default_factory=StreamingPatchParser)
-    last_sent_at: float | None = None
-    pending: PatchApplyUpdatedEvent | None = None
-
-    def consume_diff(self, turn: Any, call_id: str, delta: str) -> EventMsg | None:
-        if not _apply_patch_streaming_events_enabled(turn):
-            return None
-        try:
-            hunks = self.parser.push_delta(delta)
-        except ApplyPatchParseError:
-            return None
-        if not hunks:
-            return None
-        event = PatchApplyUpdatedEvent(call_id, convert_apply_patch_hunks_to_protocol(hunks))
-        now = time.monotonic()
-        if self.last_sent_at is not None and now - self.last_sent_at < APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL:
-            self.pending = event
-            return None
-        self.pending = None
-        self.last_sent_at = now
-        return EventMsg.with_payload("patch_apply_updated", event)
-
-    def finish(self) -> EventMsg | None:
-        try:
-            self.parser.finish()
-        except ApplyPatchParseError as error:
-            raise FunctionCallError.respond_to_model(f"failed to parse apply_patch: {error}") from error
-        event = self.pending
-        self.pending = None
-        if event is not None:
-            self.last_sent_at = time.monotonic()
-            return EventMsg.with_payload("patch_apply_updated", event)
-        return None
-
-
-def apply_patch_payload_command(payload: Any) -> str | None:
-    if isinstance(payload, ToolPayload) and payload.type == "custom":
-        return payload.input
-    return None
-
-
-def convert_apply_patch_hunks_to_protocol(hunks: tuple[Hunk, ...] | list[Hunk]) -> dict[Path, FileChange]:
-    changes: dict[Path, FileChange] = {}
-    for hunk in hunks:
-        path = hunk.path
-        if hunk.type == "add":
-            changes[path] = FileChange.add(hunk.contents or "")
-        elif hunk.type == "delete":
-            changes[path] = FileChange.delete("")
-        elif hunk.type == "update":
-            changes[path] = FileChange.update(
-                _format_update_chunks_for_progress(hunk.chunks),
-                move_path=hunk.move_path,
-            )
-        else:
-            raise ValueError(f"unknown apply_patch hunk type: {hunk.type}")
-    return changes
-
-
-def _format_update_chunks_for_progress(chunks: tuple[UpdateFileChunk, ...]) -> str:
-    lines: list[str] = []
-    for chunk in chunks:
-        lines.append(f"@@ {chunk.change_context}" if chunk.change_context is not None else "@@")
-        lines.extend(f"-{line}" for line in chunk.old_lines)
-        lines.extend(f"+{line}" for line in chunk.new_lines)
-        if chunk.is_end_of_file:
-            lines.append(EOF_MARKER)
-    return "\n".join(lines) + ("\n" if lines else "")
-
-
-def _apply_patch_streaming_events_enabled(turn: Any) -> bool:
-    features = getattr(turn, "features", None)
-    enabled = getattr(features, "enabled", None)
-    if callable(enabled):
-        return bool(enabled(Feature.APPLY_PATCH_STREAMING_EVENTS))
-    if isinstance(features, Mapping):
-        return bool(
-            features.get(Feature.APPLY_PATCH_STREAMING_EVENTS)
-            or features.get(Feature.APPLY_PATCH_STREAMING_EVENTS.value)
-            or features.get(Feature.APPLY_PATCH_STREAMING_EVENTS.key())
-        )
-    return False
-
-
-def _apply_patch_policy_rejection(invocation: Any, action: ApplyPatchAction) -> str | None:
-    file_system_sandbox_policy = _invocation_file_system_sandbox_policy(invocation)
-    if file_system_sandbox_policy is None:
-        return None
-    cwd = action.cwd
-    write_check_paths = _apply_patch_write_check_paths(action)
-    unwritable = tuple(
-        path for path in write_check_paths if not file_system_sandbox_policy.can_write_path_with_cwd(path, cwd)
-    )
-    if not unwritable:
-        return None
-    granted_permissions = _invocation_granted_permissions(invocation)
-    from pycodex.core.tools.handlers.utils import permissions_are_preapproved
-
-    if granted_permissions is not None and permissions_are_preapproved(
-        _apply_patch_required_permissions(write_check_paths, cwd),
-        granted_permissions,
-        cwd,
-    ):
-        return None
-    approval_policy = _invocation_approval_policy(invocation)
-    approval = approval_policy_display_value(approval_policy)
-    paths = "\n".join(str(path) for path in unwritable)
-    if approval_policy is AskForApproval.NEVER or (
-        isinstance(approval_policy, GranularApprovalConfig)
-        and not approval_policy.allows_sandbox_approval()
-    ):
-        return (
-            "exit_code: forbidden\n"
-            f"approval_policy: {approval}\n"
-            "stderr:\n"
-            "patch rejected: writing outside of the project; rejected by user approval settings\n"
-            f"paths:\n{paths}"
-        )
-    return (
-        "exit_code: approval_required\n"
-        f"approval_policy: {approval}\n"
-        "stderr:\n"
-        "patch requires approval before writing outside the current sandbox\n"
-        f"paths:\n{paths}"
-    )
-
-
-def _apply_patch_write_check_paths(action: ApplyPatchAction) -> tuple[Path, ...]:
-    paths: list[Path] = []
-    for path, change in action.changes.items():
-        paths.append(_write_check_path(path))
-        move_path = getattr(change, "move_path", None)
-        if move_path is not None:
-            paths.append(_write_check_path(move_path))
-    return tuple(dict.fromkeys(paths))
-
-
-def file_paths_for_action(action: ApplyPatchAction) -> tuple[Path, ...]:
-    if not isinstance(action, ApplyPatchAction):
-        raise TypeError("action must be ApplyPatchAction")
-    cwd = action.cwd
-    paths: list[Path] = []
-    for path, change in action.changes.items():
-        paths.append(_resolve_action_path(path, cwd))
-        move_path = getattr(change, "move_path", None)
-        if move_path is not None:
-            paths.append(_resolve_action_path(move_path, cwd))
-    return tuple(dict.fromkeys(paths))
-
-
-def write_permissions_for_paths(
-    file_paths: tuple[Path, ...] | list[Path],
-    file_system_sandbox_policy: FileSystemSandboxPolicy,
-    cwd: Path | str,
-) -> AdditionalPermissionProfile | None:
-    if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):
-        raise TypeError("file_system_sandbox_policy must be FileSystemSandboxPolicy")
-    cwd = Path(cwd)
-    write_roots: list[Path] = []
-    for path in file_paths:
-        path = Path(path)
-        parent = path.parent if str(path.parent) not in {"", "."} else path
-        if not file_system_sandbox_policy.can_write_path_with_cwd(parent, cwd):
-            write_roots.append(parent)
-    if not write_roots:
-        return None
-    entries = tuple(
-        FileSystemSandboxEntry(
-            FileSystemPath.explicit_path(path),
-            FileSystemAccessMode.WRITE,
-        )
-        for path in tuple(dict.fromkeys(write_roots))
-    )
-    return AdditionalPermissionProfile(file_system=FileSystemPermissions(entries=entries))
-
-
-def build_apply_patch_request(
-    *,
-    turn_environment: Any,
-    action: ApplyPatchAction,
-    file_system_sandbox_policy: FileSystemSandboxPolicy,
-    cwd: Path | str | None = None,
-    effective_additional_permissions: Any | None = None,
-    exec_approval_requirement: Any | None = None,
-) -> Any:
-    # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
-    # Behavior anchor: handler converts verified patches into an
-    # ApplyPatchRequest before handing off to ApplyPatchRuntime.
-    from pycodex.core.tools.handlers.utils import EffectiveAdditionalPermissions
-    from pycodex.core.tools.runtimes import ApplyPatchRequest
-    from pycodex.core.tools.sandboxing import ExecApprovalRequirement
-
-    if not isinstance(action, ApplyPatchAction):
-        raise TypeError("action must be ApplyPatchAction")
-    if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):
-        raise TypeError("file_system_sandbox_policy must be FileSystemSandboxPolicy")
-    request_cwd = Path(cwd) if cwd is not None else action.cwd
-    if request_cwd is None:
-        request_cwd = Path(getattr(turn_environment, "cwd"))
-    file_paths = file_paths_for_action(action)
-    if effective_additional_permissions is None:
-        effective_additional_permissions = EffectiveAdditionalPermissions(
-            sandbox_permissions="use_default",
-            additional_permissions=write_permissions_for_paths(
-                file_paths,
-                file_system_sandbox_policy,
-                request_cwd,
-            ),
-            permissions_preapproved=False,
-        )
-    if not isinstance(effective_additional_permissions, EffectiveAdditionalPermissions):
-        raise TypeError("effective_additional_permissions must be EffectiveAdditionalPermissions")
-    if exec_approval_requirement is None:
-        exec_approval_requirement = ExecApprovalRequirement.skip()
-    if not isinstance(exec_approval_requirement, ExecApprovalRequirement):
-        raise TypeError("exec_approval_requirement must be ExecApprovalRequirement")
-    return ApplyPatchRequest(
-        turn_environment=turn_environment,
-        action=action,
-        file_paths=file_paths,
-        changes=convert_apply_patch_to_protocol(action),
-        exec_approval_requirement=exec_approval_requirement,
-        additional_permissions=effective_additional_permissions.additional_permissions,
-        permissions_preapproved=effective_additional_permissions.permissions_preapproved,
-    )
-
-
-def _resolve_action_path(path: Path, cwd: Path | None) -> Path:
-    if path.is_absolute() or cwd is None:
-        return path
-    return cwd / path
-
-
-def _write_check_path(path: Path) -> Path:
-    parent = path.parent
-    return parent if str(parent) not in {"", "."} else path
-
-
-def _apply_patch_required_permissions(paths: tuple[Path, ...], cwd: Path) -> AdditionalPermissionProfile:
-    entries = tuple(
-        FileSystemSandboxEntry(
-            FileSystemPath.explicit_path(path if path.is_absolute() else cwd / path),
-            FileSystemAccessMode.WRITE,
-        )
-        for path in paths
-    )
-    return AdditionalPermissionProfile(file_system=FileSystemPermissions(entries=entries))
-
-
-def _invocation_granted_permissions(invocation: Any) -> AdditionalPermissionProfile | None:
-    session = getattr(invocation, "session", None)
-    granted_session = _sync_granted_permissions(session, "granted_session_permissions", "_granted_session_permissions")
-    granted_turn = _sync_granted_permissions(session, "granted_turn_permissions", "_granted_turn_permissions")
-    turn = getattr(invocation, "turn", None)
-    from pycodex.core.tools.handlers.utils import merge_permission_profiles
-
-    granted_turn = merge_permission_profiles(
-        granted_turn,
-        _sync_granted_permissions(turn, "granted_turn_permissions", "_granted_turn_permissions"),
-    )
-    return merge_permission_profiles(granted_session, granted_turn)
-
-
-def _sync_granted_permissions(target: Any, method_name: str, attr_name: str) -> AdditionalPermissionProfile | None:
-    if target is None:
-        return None
-    if hasattr(target, attr_name):
-        value = getattr(target, attr_name)
-        return value if isinstance(value, AdditionalPermissionProfile) else None
-    method = getattr(target, method_name, None)
-    if callable(method):
-        try:
-            value = method()
-        except TypeError:
-            return None
-        close = getattr(value, "close", None)
-        if callable(close):
-            close()
-            return None
-        if isinstance(value, AdditionalPermissionProfile):
-            return value
-    return None
-
-
-def _invocation_file_system_sandbox_policy(invocation: Any) -> Any | None:
-    turn = getattr(invocation, "turn", None)
-    policy = getattr(turn, "file_system_sandbox_policy", None)
-    if policy is not None:
-        return policy
-    permission_profile = getattr(turn, "permission_profile", None)
-    if permission_profile is None:
-        session = getattr(invocation, "session", None)
-        permission_profile = getattr(session, "permission_profile", None)
-    method = getattr(permission_profile, "file_system_sandbox_policy", None)
-    return method() if callable(method) else None
-
-
-def _invocation_approval_policy(invocation: Any) -> AskForApproval | GranularApprovalConfig:
-    turn = getattr(invocation, "turn", None)
-    value = getattr(turn, "approval_policy", AskForApproval.ON_REQUEST)
-    method = getattr(value, "value", None)
-    if callable(method):
-        value = method()
-    if isinstance(value, GranularApprovalConfig):
-        return value
-    if not isinstance(value, AskForApproval):
-        value = AskForApproval.parse(str(value))
-    return value
-
-
-@dataclass(frozen=True)
-class ResolvedApplyPatchInvocation:
-    args: ApplyPatchArgs
-    selected_environment_id: str | None
-    turn_environment: Any
-    cwd: Path
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.args, ApplyPatchArgs):
-            raise TypeError("args must be ApplyPatchArgs")
-        if self.selected_environment_id is not None:
-            _ensure_str(self.selected_environment_id, "selected_environment_id")
-        if not isinstance(self.cwd, Path):
-            object.__setattr__(self, "cwd", Path(self.cwd))
-
-
-def resolve_apply_patch_invocation(
-    invocation: Any,
-    *,
-    multi_environment: bool = False,
-) -> ResolvedApplyPatchInvocation:
-    payload = getattr(invocation, "payload", None)
-    if payload is None or getattr(payload, "type", None) != "custom":
-        raise FunctionCallError.respond_to_model("apply_patch handler received unsupported payload")
-    patch_input = getattr(payload, "input", None)
-    if not isinstance(patch_input, str):
-        raise FunctionCallError.respond_to_model("apply_patch handler received unsupported payload")
-    try:
-        args = parse_patch(patch_input)
-    except ApplyPatchParseError as parse_error:
-        raise FunctionCallError.respond_to_model(
-            f"apply_patch verification failed: {parse_error}"
-        ) from parse_error
-    selected_environment_id = require_apply_patch_environment_id(
-        args.environment_id,
-        multi_environment,
-    )
-    from pycodex.core.tools.handlers.utils import resolve_tool_environment
-
-    turn_environment = resolve_tool_environment(
-        getattr(invocation, "turn", None),
-        selected_environment_id,
-    )
-    if turn_environment is None:
-        raise FunctionCallError.respond_to_model("apply_patch is unavailable in this session")
-    return ResolvedApplyPatchInvocation(
-        args=args,
-        selected_environment_id=selected_environment_id,
-        turn_environment=turn_environment,
-        cwd=Path(getattr(turn_environment, "cwd")),
-    )
-
-
-def require_apply_patch_environment_id(
-    parsed_environment_id: str | None,
-    allow_environment_id: bool,
-) -> str | None:
-    if parsed_environment_id is not None and not allow_environment_id:
-        raise FunctionCallError.respond_to_model(
-            "apply_patch environment selection is unavailable for this turn"
-        )
-    return parsed_environment_id
-
-
 def run_apply_patch_standalone(
     args: tuple[object, ...] | list[object],
     stdin_text: str = "",
@@ -1253,7 +710,7 @@ def run_apply_patch_standalone(
         )
 
     root = Path.cwd() if cwd is None else Path(cwd)
-    parsed = maybe_parse_apply_patch((APPLY_PATCH_TOOL_NAME, patch_arg))
+    parsed = maybe_parse_apply_patch((APPLY_PATCH_COMMANDS[0], patch_arg))
     if parsed.type == "patch_parse_error" and parsed.error is not None:
         return StandaloneApplyPatchResult(1, stderr=f"{parsed.error}\n")
     if parsed.type != "body" or parsed.body is None:
@@ -1312,26 +769,6 @@ def apply_patch_summary(
     lines.extend(f"M {path}" for path in modified)
     lines.extend(f"D {path}" for path in deleted)
     return "\n".join(lines) + "\n"
-
-
-def convert_apply_patch_to_protocol(
-    action: ApplyPatchAction | Mapping[str, JsonValue],
-) -> dict[Path, FileChange]:
-    action = action if isinstance(action, ApplyPatchAction) else ApplyPatchAction.from_mapping(action)
-    result: dict[Path, FileChange] = {}
-    for path, change in action.changes.items():
-        if change.type == "add":
-            result[path] = FileChange.add(change.content or "")
-        elif change.type == "delete":
-            result[path] = FileChange.delete(change.content or "")
-        elif change.type == "update":
-            result[path] = FileChange.update(
-                change.unified_diff or "",
-                move_path=change.move_path,
-            )
-        else:
-            raise ValueError(f"unknown apply_patch file change type: {change.type}")
-    return result
 
 
 def parse_patch(patch: str) -> ApplyPatchArgs:
@@ -1538,28 +975,6 @@ def unified_diff_from_chunks_with_context(
         unified_diff="".join(diff_lines[2:]),
         original_content=original_content,
         content=new_content,
-    )
-
-
-def create_apply_patch_freeform_tool(include_environment_id: bool) -> ToolSpec:
-    if not isinstance(include_environment_id, bool):
-        raise TypeError("include_environment_id must be a bool")
-    definition = APPLY_PATCH_LARK_GRAMMAR
-    if include_environment_id:
-        definition = definition.replace(
-            "start: begin_patch hunk+ end_patch",
-            (
-                "start: begin_patch environment_id? hunk+ end_patch\n"
-                'environment_id: "*** Environment ID: " filename LF'
-            ),
-        )
-    return ToolSpec.freeform(
-        name=APPLY_PATCH_TOOL_NAME,
-        description=APPLY_PATCH_FREEFORM_DESCRIPTION,
-        format=FreeformToolFormat.grammar(
-            syntax="lark",
-            definition=definition,
-        ),
     )
 
 
@@ -2165,12 +1580,8 @@ def _ensure_str_tuple(value: object, name: str) -> tuple[str, ...]:
 
 __all__ = [
     "ADD_FILE_MARKER",
-    "APPLY_PATCH_FREEFORM_DESCRIPTION",
     "APPLY_PATCH_TOOL_INSTRUCTIONS",
     "CODEX_CORE_APPLY_PATCH_ARG1",
-    "APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL",
-    "APPLY_PATCH_LARK_GRAMMAR",
-    "APPLY_PATCH_TOOL_NAME",
     "APPLY_PATCH_COMMANDS",
     "BEGIN_PATCH_MARKER",
     "CHANGE_CONTEXT_MARKER",
@@ -2184,37 +1595,25 @@ __all__ = [
     "UPDATE_FILE_MARKER",
     "ApplyPatchAction",
     "ApplyPatchArgs",
-    "ApplyPatchArgumentDiffConsumer",
     "ApplyPatchError",
     "ApplyPatchFileChange",
     "ApplyPatchFileUpdate",
-    "ApplyPatchHandler",
     "ApplyPatchParseError",
     "Hunk",
     "MaybeApplyPatch",
     "MaybeApplyPatchVerified",
-    "ResolvedApplyPatchInvocation",
     "StandaloneApplyPatchResult",
     "StreamingPatchParser",
     "UpdateFileChunk",
     "apply_patch_action_to_disk",
-    "apply_patch_payload_command",
     "apply_patch_summary",
-    "build_apply_patch_request",
-    "convert_apply_patch_hunks_to_protocol",
-    "convert_apply_patch_to_protocol",
-    "create_apply_patch_freeform_tool",
     "derive_new_contents_from_chunks",
-    "file_paths_for_action",
     "maybe_parse_apply_patch",
     "maybe_parse_apply_patch_verified",
     "parse_patch",
-    "require_apply_patch_environment_id",
-    "resolve_apply_patch_invocation",
     "run_apply_patch_standalone",
     "unified_diff_from_chunks",
     "unified_diff_from_chunks_with_context",
     "verify_apply_patch_args",
-    "write_permissions_for_paths",
 ]
 

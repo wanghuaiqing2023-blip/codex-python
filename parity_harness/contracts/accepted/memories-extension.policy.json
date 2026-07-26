@@ -1,0 +1,28 @@
+{
+  "scope": "memories-extension",
+  "rust_root": "codex/codex-rs/ext/memories",
+  "python_root": "pycodex/ext/memories",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::backend",
+    "crate::extension",
+    "crate::local",
+    "crate::local::ad_hoc_note",
+    "crate::local::list",
+    "crate::local::path",
+    "crate::local::read",
+    "crate::local::search",
+    "crate::metrics",
+    "crate::prompts",
+    "crate::schema",
+    "crate::tools",
+    "crate::tools::ad_hoc_note",
+    "crate::tools::list",
+    "crate::tools::read",
+    "crate::tools::search"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

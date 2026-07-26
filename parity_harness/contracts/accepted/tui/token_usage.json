@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.token_usage",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "token_usage",
+    "source": "codex/codex-rs/tui/src/token_usage.rs",
+    "anchors": [
+      "TokenUsage",
+      "TokenUsageInfo",
+      "blended_total",
+      "cached_input",
+      "is_zero",
+      "non_cached_input",
+      "percent_of_context_window_remaining",
+      "tokens_in_context_window",
+      "BASELINE_TOKENS",
+      "fmt"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/token_usage.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/token_usage.py"
+    ],
+    "anchors": [
+      "TokenUsage",
+      "TokenUsageInfo",
+      "blended_total",
+      "cached_input",
+      "is_zero",
+      "non_cached_input",
+      "percent_of_context_window_remaining",
+      "tokens_in_context_window",
+      "BASELINE_TOKENS",
+      "fmt"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

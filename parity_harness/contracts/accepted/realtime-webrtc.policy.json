@@ -1,0 +1,13 @@
+{
+  "scope": "realtime-webrtc",
+  "rust_root": "codex/codex-rs/realtime-webrtc",
+  "python_root": "pycodex/realtime_webrtc",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::native"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

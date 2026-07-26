@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tools.responses_api",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tools",
+    "module": "responses_api",
+    "source": "codex/codex-rs/tools/src/responses_api.rs",
+    "anchors": [
+      "FreeformTool",
+      "FreeformToolFormat",
+      "LoadableToolSpec",
+      "ResponsesApiNamespace",
+      "ResponsesApiNamespaceTool",
+      "ResponsesApiTool",
+      "coalesce_loadable_tool_specs",
+      "default_namespace_description",
+      "dynamic_tool_to_responses_api_tool",
+      "mcp_tool_to_deferred_responses_api_tool",
+      "mcp_tool_to_responses_api_tool",
+      "tool_definition_to_responses_api_tool"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tools/responses_api.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tools/responses_api.py"
+    ],
+    "anchors": [
+      "FreeformTool",
+      "FreeformToolFormat",
+      "LoadableToolSpec",
+      "ResponsesApiNamespace",
+      "ResponsesApiNamespaceTool",
+      "ResponsesApiTool",
+      "coalesce_loadable_tool_specs",
+      "default_namespace_description",
+      "dynamic_tool_to_responses_api_tool",
+      "mcp_tool_to_deferred_responses_api_tool",
+      "mcp_tool_to_responses_api_tool",
+      "tool_definition_to_responses_api_tool"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

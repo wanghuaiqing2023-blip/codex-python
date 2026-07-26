@@ -7,7 +7,7 @@ import inspect
 from pathlib import Path
 from typing import Any, Callable
 
-from pycodex.core.tools.handlers.utils import normalize_request_permissions_response
+from pycodex.core.tools.handlers import normalize_request_permissions_response
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import (

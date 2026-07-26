@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-sandboxing.policy_transforms",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-sandboxing",
+    "module": "policy_transforms",
+    "source": "codex/codex-rs/sandboxing/src/policy_transforms.rs",
+    "anchors": [
+      "effective_file_system_sandbox_policy",
+      "effective_network_sandbox_policy",
+      "effective_permission_profile",
+      "intersect_permission_profiles",
+      "merge_permission_profiles",
+      "normalize_additional_permissions",
+      "should_require_platform_sandbox",
+      "effective_glob_scan_depth",
+      "merge_file_system_policy_with_additional_permissions",
+      "merge_glob_scan_max_depth"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/sandboxing/policy_transforms.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/sandboxing/policy_transforms.py"
+    ],
+    "anchors": [
+      "effective_file_system_sandbox_policy",
+      "effective_network_sandbox_policy",
+      "effective_permission_profile",
+      "intersect_permission_profiles",
+      "merge_permission_profiles",
+      "normalize_additional_permissions",
+      "should_require_platform_sandbox",
+      "effective_glob_scan_depth",
+      "merge_file_system_policy_with_additional_permissions",
+      "merge_glob_scan_max_depth"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

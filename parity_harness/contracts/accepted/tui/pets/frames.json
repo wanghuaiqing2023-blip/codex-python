@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-tui.pets.frames",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets::frames",
+    "source": "codex/codex-rs/tui/src/pets/frames.rs",
+    "anchors": [
+      "prepare_png_frames",
+      "glob_frame_files"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/frames.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pets/frames.py"
+    ],
+    "anchors": [
+      "prepare_png_frames",
+      "glob_frame_files"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

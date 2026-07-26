@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-api.endpoint.realtime_websocket.methods_v2",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-api",
+    "module": "endpoint::realtime_websocket::methods_v2",
+    "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_v2.rs",
+    "anchors": [
+      "conversation_function_call_output_message",
+      "conversation_item_create_message",
+      "session_update_session",
+      "websocket_intent",
+      "REALTIME_V2_BACKGROUND_AGENT_TOOL_DESCRIPTION",
+      "REALTIME_V2_BACKGROUND_AGENT_TOOL_NAME",
+      "REALTIME_V2_INPUT_TRANSCRIPTION_MODEL",
+      "REALTIME_V2_OUTPUT_MODALITY_AUDIO",
+      "REALTIME_V2_OUTPUT_MODALITY_TEXT",
+      "REALTIME_V2_SILENCE_TOOL_DESCRIPTION",
+      "REALTIME_V2_SILENCE_TOOL_NAME",
+      "REALTIME_V2_TOOL_CHOICE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_api/endpoint/realtime_websocket/methods_v2.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/codex_api/endpoint/realtime_websocket/methods_v2.py"
+    ],
+    "anchors": [
+      "conversation_function_call_output_message",
+      "conversation_item_create_message",
+      "session_update_session",
+      "websocket_intent",
+      "REALTIME_V2_BACKGROUND_AGENT_TOOL_DESCRIPTION",
+      "REALTIME_V2_BACKGROUND_AGENT_TOOL_NAME",
+      "REALTIME_V2_INPUT_TRANSCRIPTION_MODEL",
+      "REALTIME_V2_OUTPUT_MODALITY_AUDIO",
+      "REALTIME_V2_OUTPUT_MODALITY_TEXT",
+      "REALTIME_V2_SILENCE_TOOL_DESCRIPTION",
+      "REALTIME_V2_SILENCE_TOOL_NAME",
+      "REALTIME_V2_TOOL_CHOICE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

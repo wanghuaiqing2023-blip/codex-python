@@ -32,6 +32,8 @@ from pycodex.core import (
     read_thread_item_from_rollout,
 )
 from pycodex.core.client import ModelClient
+from pycodex.codex_api.error import ApiError
+from pycodex.codex_client import TransportError
 from pycodex.core.client_common import REVIEW_PROMPT
 from pycodex.core.context import GoalContext
 from pycodex.core.shell import Shell, ShellType
@@ -114,6 +116,7 @@ from pycodex.exec.local_runtime import (
     run_exec_resume_user_turn_http_sampling,
     run_exec_review_http_sampling,
     run_exec_user_turn_core_sampling,
+    run_exec_user_turn_core_sampling_websocket_preferred,
     run_exec_user_turn_default_local_http_sampling,
     run_exec_user_turn_http_sampling,
     run_exec_user_turn_with_shell_tools_http_sampling,
@@ -1447,6 +1450,63 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
 
 class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_websocket_preferred_core_path_falls_back_to_http_after_retry_limit(self) -> None:
+        # Rust composition contract:
+        # codex-core::session::turn uses SessionServices::model_client to make
+        # responses_retry's exhausted WebSocket branch sticky, then samples the
+        # same request through the HTTP Responses transport.
+        cwd = Path.cwd()
+        config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=cwd)
+        provider = LocalHttpProvider(
+            base_url="https://api.example.test/v1",
+            stream_max_retries=0,
+        )
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = create_exec_core_session(
+            config,
+            model_info,
+            model_client=client,
+            provider=provider,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        calls = {"websocket": 0, "http": 0}
+
+        def fail_websocket_connect(*_args, **_kwargs):
+            calls["websocket"] += 1
+            raise ApiError.transport_error(TransportError.network("timed out"))
+
+        def http_opener(_request):
+            calls["http"] += 1
+            return FakeResponse()
+
+        with patch(
+            "pycodex.core.client.ResponsesWebsocketClient.connect",
+            fail_websocket_connect,
+        ):
+            result = await run_exec_user_turn_core_sampling_websocket_preferred(
+                config,
+                plan,
+                client,
+                provider,
+                model_info,
+                opener=http_opener,
+                built_tools=lambda *_args: Router(),
+                core_session=session,
+            )
+
+        self.assertEqual(calls, {"websocket": 1, "http": 1})
+        self.assertEqual(result.last_agent_message, "done")
+        self.assertFalse(client.responses_websocket_enabled())
+
     async def test_core_sampling_forwards_initial_operation_thread_settings(self) -> None:
         # Rust composition contract:
         # codex-app-server::turn_processor builds ThreadSettingsOverrides and
@@ -10468,6 +10528,38 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(model_info.supports_parallel_tool_calls)
+
+    def test_default_local_http_runtime_preserves_provider_retry_and_timeout_metadata(self) -> None:
+        # Rust crate/module: codex-model-provider-info::ModelProviderInfo and
+        # codex-core::responses_retry. The session provider is the single
+        # source for retry limits and transport timeouts.
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id="local-openai",
+            cwd=Path("C:/work/project"),
+        )
+
+        _client, provider, _model_info, _auth = build_default_local_http_exec_runtime(
+            config,
+            env={"LOCAL_OPENAI_KEY": "sk-local"},
+            config_toml={
+                "model_providers": {
+                    "local-openai": {
+                        "env_key": "LOCAL_OPENAI_KEY",
+                        "request_max_retries": 2,
+                        "stream_max_retries": 1,
+                        "stream_idle_timeout_ms": 1234,
+                        "websocket_connect_timeout_ms": 5678,
+                    }
+                }
+            },
+        )
+
+        info = provider.info()
+        self.assertEqual(info.request_max_retries(), 2)
+        self.assertEqual(info.stream_max_retries(), 1)
+        self.assertEqual(info.stream_idle_timeout(), 1234)
+        self.assertEqual(info.websocket_connect_timeout(), 5678)
 
     def test_default_local_http_runtime_enables_reasoning_summaries_for_openai_codex_models(self) -> None:
         # Rust crate/module: codex-core::client and session::turn_context.

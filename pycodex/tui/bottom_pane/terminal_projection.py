@@ -49,9 +49,11 @@ class ProjectionCleanupShape(Protocol):
 
     clear_popup_height: int
     clear_live_status_active: bool
+    clear_live_status_height: int
     clear_external_blank_rows: bool
     clear_active_tail_height: int
     clear_composer_height: int
+    clear_footer_height: int
 
 
 class TerminalBottomPaneRequestRunner:
@@ -108,8 +110,10 @@ class TerminalBottomPaneRequestRunner:
                 live_status=live_status,
                 clear_popup_height=footprint.popup_height,
                 clear_live_status_active=footprint.live_status_active,
+                clear_live_status_height=footprint.live_status_height,
                 clear_active_tail_height=footprint.active_tail_height,
                 clear_composer_height=footprint.composer_height,
+                clear_footer_height=footprint.footer_height,
             ),
         )
 
@@ -351,8 +355,10 @@ def terminal_bottom_pane_frame_projection(
     *,
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
+    clear_live_status_height: int = 0,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    clear_footer_height: int = 1,
     viewport_area: object | None = None,
 ) -> TerminalBottomPaneFrameProjection:
     """Build the bottom-pane frame and buffer projection for custom_terminal.
@@ -368,8 +374,10 @@ def terminal_bottom_pane_frame_projection(
         state,
         clear_popup_height=clear_popup_height,
         clear_live_status_active=clear_live_status_active,
+        clear_live_status_height=clear_live_status_height,
         clear_active_tail_height=clear_active_tail_height,
         clear_composer_height=clear_composer_height,
+        clear_footer_height=clear_footer_height,
         viewport_area=viewport_area,
     )
     return TerminalBottomPaneFrameProjection(
@@ -385,9 +393,11 @@ def terminal_bottom_pane_live_viewport_update_for_cursor_policy(
     projection_policy: LiveViewportProjectionPolicy | None = None,
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
+    clear_live_status_height: int = 0,
     clear_external_blank_rows: bool = False,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    clear_footer_height: int = 1,
     viewport_area: object | None = None,
 ) -> LiveViewportProjection | None:
     """Project an action plan using the terminal cursor routing policy."""
@@ -402,9 +412,11 @@ def terminal_bottom_pane_live_viewport_update_for_cursor_policy(
         ),
         clear_popup_height=clear_popup_height,
         clear_live_status_active=clear_live_status_active,
+        clear_live_status_height=clear_live_status_height,
         clear_external_blank_rows=clear_external_blank_rows,
         clear_active_tail_height=clear_active_tail_height,
         clear_composer_height=clear_composer_height,
+        clear_footer_height=clear_footer_height,
         viewport_area=viewport_area,
     )
 
@@ -448,9 +460,11 @@ def _terminal_bottom_pane_request_live_viewport_update(
         projection_policy=projection_policy,
         clear_popup_height=cleanup.clear_popup_height,
         clear_live_status_active=cleanup.clear_live_status_active,
+        clear_live_status_height=cleanup.clear_live_status_height,
         clear_external_blank_rows=cleanup.clear_external_blank_rows,
         clear_active_tail_height=cleanup.clear_active_tail_height,
         clear_composer_height=cleanup.clear_composer_height,
+        clear_footer_height=cleanup.clear_footer_height,
         viewport_area=request.projection_viewport_area(),
     )
 
@@ -493,9 +507,11 @@ def terminal_bottom_pane_live_viewport_update(
     include_cursor_position: bool = True,
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
+    clear_live_status_height: int = 0,
     clear_external_blank_rows: bool = False,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    clear_footer_height: int = 1,
     viewport_area: object | None = None,
 ) -> LiveViewportProjection | None:
     """Project a bottom-pane action plan into a generic live-viewport update."""
@@ -506,9 +522,11 @@ def terminal_bottom_pane_live_viewport_update(
                 _terminal_bottom_pane_clear_request(
                     size,
                     live_status_active=plan.live_status_active or clear_live_status_active,
+                    live_status_height=max(plan.live_status_height, clear_live_status_height),
                     popup_height=clear_popup_height,
                     active_tail_height=clear_active_tail_height,
                     composer_height=clear_composer_height,
+                    footer_height=clear_footer_height,
                 ),
                 flush=plan.flush,
             )
@@ -519,8 +537,10 @@ def terminal_bottom_pane_live_viewport_update(
             plan.state,
             clear_popup_height=clear_popup_height,
             clear_live_status_active=clear_live_status_active,
+            clear_live_status_height=clear_live_status_height,
             clear_active_tail_height=clear_active_tail_height,
             clear_composer_height=clear_composer_height,
+            clear_footer_height=clear_footer_height,
             viewport_area=viewport_area,
         )
         return terminal_bottom_pane_frame_live_viewport_update(

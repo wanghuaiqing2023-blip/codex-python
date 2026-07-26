@@ -1,0 +1,87 @@
+{
+  "contract_id": "codex-state.runtime.memories",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "runtime::memories",
+    "source": "codex/codex-rs/state/src/runtime/memories.rs",
+    "anchors": [
+      "MemoryStore",
+      "claim_stage1_jobs_for_startup",
+      "clear_memory_data",
+      "delete_thread_memory",
+      "enqueue_global_consolidation",
+      "get_phase2_input_selection",
+      "heartbeat_global_phase2_job",
+      "list_stage1_outputs_for_global",
+      "mark_global_phase2_job_failed",
+      "mark_global_phase2_job_failed_if_unowned",
+      "mark_global_phase2_job_succeeded",
+      "mark_stage1_job_failed"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/runtime/memories.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/runtime/memories.py"
+    ],
+    "anchors": [
+      "MemoryStore",
+      "claim_stage1_jobs_for_startup",
+      "clear_memory_data",
+      "delete_thread_memory",
+      "enqueue_global_consolidation",
+      "get_phase2_input_selection",
+      "heartbeat_global_phase2_job",
+      "list_stage1_outputs_for_global",
+      "mark_global_phase2_job_failed",
+      "mark_global_phase2_job_failed_if_unowned",
+      "mark_global_phase2_job_succeeded",
+      "mark_stage1_job_failed"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_agent_graph_store_local_rs.py",
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_cli_state_db_recovery.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_core_goals.py",
+    "tests/test_core_paths.py",
+    "tests/test_core_suite_sqlite_state.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_memories_write_phase2_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_state_agent_job_model_rs.py",
+    "tests/test_state_audit_rs.py",
+    "tests/test_state_backfill_state_rs.py",
+    "tests/test_state_graph_rs.py",
+    "tests/test_state_lib_rs.py",
+    "tests/test_state_log_model_rs.py",
+    "tests/test_state_migrations_rs.py",
+    "tests/test_state_paths_rs.py",
+    "tests/test_state_runtime_memories_rs.py",
+    "tests/test_state_runtime_rs.py",
+    "tests/test_state_runtime_test_support_rs.py",
+    "tests/test_state_telemetry_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

@@ -17,6 +17,7 @@ from ..app_event import AppEvent, KeymapEditIntent
 from ..bottom_pane.bottom_pane_view import BottomPaneViewDefaults
 from ..bottom_pane.selection_popup_common import TerminalPopupLine
 from ..keymap import KeyBinding, RuntimeKeymap
+from .debug import build_keymap_debug_view
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -928,6 +929,7 @@ __all__ = [
     "build_keymap_action_menu_params",
     "build_keymap_capture_view",
     "build_keymap_conflict_params",
+    "build_keymap_debug_view",
     "build_keymap_replace_binding_menu_params",
     "capture_completion_returns_to_selected_keymap_picker_row",
     "capture_view_snapshot",

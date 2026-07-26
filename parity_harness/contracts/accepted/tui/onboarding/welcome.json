@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.onboarding.welcome",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "onboarding::welcome",
+    "source": "codex/codex-rs/tui/src/onboarding/welcome.rs",
+    "anchors": [
+      "WelcomeWidget",
+      "new",
+      "set_animations_suppressed",
+      "update_layout_area",
+      "MIN_ANIMATION_HEIGHT",
+      "MIN_ANIMATION_WIDTH",
+      "get_step_state",
+      "handle_key_event",
+      "render_ref"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/onboarding/welcome.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/onboarding/welcome.py"
+    ],
+    "anchors": [
+      "WelcomeWidget",
+      "new",
+      "set_animations_suppressed",
+      "update_layout_area",
+      "MIN_ANIMATION_HEIGHT",
+      "MIN_ANIMATION_WIDTH",
+      "get_step_state",
+      "handle_key_event",
+      "render_ref"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

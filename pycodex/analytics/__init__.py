@@ -1290,13 +1290,26 @@ class GuardianReviewAnalyticsResult(_SnakeEnum):
 
 
 class AnalyticsEventsClient:
-    def __init__(self, enabled: bool = True) -> None:
-        self.enabled = enabled
+    def __init__(
+        self,
+        auth_manager: Any = None,
+        base_url: str = "",
+        analytics_enabled: bool | None = None,
+        *,
+        enabled: bool | None = None,
+    ) -> None:
+        self.auth_manager = auth_manager
+        self.base_url = str(base_url).rstrip("/")
+        self.enabled = (
+            bool(enabled)
+            if enabled is not None
+            else analytics_enabled is not False
+        )
         self.recorded_facts: list[dict[str, Any]] = []
 
     @classmethod
     def disabled(cls) -> "AnalyticsEventsClient":
-        return cls(enabled=False)
+        return cls(analytics_enabled=False)
 
     async def record_events(self, *_args: Any, **_kwargs: Any) -> None:
         return None
@@ -1306,15 +1319,33 @@ class AnalyticsEventsClient:
             self.recorded_facts.append(fact)
 
     def track_request(self, connection_id: int, request_id: Any, request_kind: str) -> None:
-        if analytics_relevant_client_request(request_kind):
+        normalized_kind = getattr(request_kind, "type", request_kind)
+        if analytics_relevant_client_request(normalized_kind):
             self.record_fact(
                 {
                     "type": "ClientRequest",
                     "connection_id": connection_id,
                     "request_id": request_id,
-                    "request_kind": request_kind,
+                    "request_kind": normalized_kind,
                 }
             )
+
+    def track_initialize(
+        self,
+        connection_id: int,
+        params: Any,
+        product_client_id: str,
+        rpc_transport: Any,
+    ) -> None:
+        self.record_fact(
+            {
+                "type": "Initialize",
+                "connection_id": connection_id,
+                "params": params,
+                "product_client_id": product_client_id,
+                "rpc_transport": rpc_transport,
+            }
+        )
 
     def track_response(self, connection_id: int, request_id: Any, response_kind: str) -> None:
         if analytics_relevant_client_response(response_kind):

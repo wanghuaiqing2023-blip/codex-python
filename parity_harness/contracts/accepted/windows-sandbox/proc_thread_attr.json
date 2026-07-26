@@ -1,0 +1,43 @@
+{
+  "contract_id": "codex-windows-sandbox.proc_thread_attr",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "proc_thread_attr",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/proc_thread_attr.rs",
+    "anchors": [
+      "ProcThreadAttributeList",
+      "as_mut_ptr",
+      "set_handle_list",
+      "set_pseudoconsole",
+      "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+      "PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/proc_thread_attr.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/proc_thread_attr.py"
+    ],
+    "anchors": [
+      "ProcThreadAttributeList",
+      "as_mut_ptr",
+      "set_handle_list",
+      "set_pseudoconsole",
+      "PROC_THREAD_ATTRIBUTE_HANDLE_LIST",
+      "PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_conpty_proc_thread_attr.py",
+    "tests/test_windows_sandbox_process.py"
+  ]
+}

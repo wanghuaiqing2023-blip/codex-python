@@ -13,7 +13,7 @@ RUST_MODULE = RustTuiModule(crate="codex-tui", module="bottom_pane::popup_consts
 MAX_POPUP_ROWS = 8
 
 
-def _hint(binding: KeyBinding) -> str:
+def key_binding_hint(binding: KeyBinding) -> str:
     result = ""
     if "CONTROL" in binding.modifiers:
         result += key_hint.CTRL_PREFIX
@@ -54,11 +54,11 @@ def accept_cancel_hint_line(
     cancel_label: str,
 ) -> str:
     if accept is not None and cancel is not None:
-        return f"Press {_hint(accept)} {accept_label} or {_hint(cancel)} {cancel_label}"
+        return f"Press {key_binding_hint(accept)} {accept_label} or {key_binding_hint(cancel)} {cancel_label}"
     if accept is not None:
-        return f"Press {_hint(accept)} {accept_label}"
+        return f"Press {key_binding_hint(accept)} {accept_label}"
     if cancel is not None:
-        return f"Press {_hint(cancel)} {cancel_label}"
+        return f"Press {key_binding_hint(cancel)} {cancel_label}"
     return ""
 
 
@@ -66,6 +66,7 @@ __all__ = [
     "MAX_POPUP_ROWS",
     "RUST_MODULE",
     "accept_cancel_hint_line",
+    "key_binding_hint",
     "standard_popup_hint_line",
     "standard_popup_hint_line_for_keymap",
 ]

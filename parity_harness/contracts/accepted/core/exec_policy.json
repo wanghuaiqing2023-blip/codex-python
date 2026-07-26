@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.exec_policy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "exec_policy",
+    "source": "codex/codex-rs/core/src/exec_policy.rs",
+    "anchors": [
+      "ExecApprovalRequest",
+      "ExecPolicyError",
+      "ExecPolicyManager",
+      "ExecPolicyUpdateError",
+      "append_amendment_and_update",
+      "append_network_rule_and_update",
+      "check_execpolicy_for_warnings",
+      "child_uses_parent_exec_policy",
+      "create_exec_approval_requirement_for_command",
+      "current",
+      "format_exec_policy_error_with_source",
+      "load"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/exec_policy.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/exec_policy.py"
+    ],
+    "anchors": [
+      "ExecApprovalRequest",
+      "ExecPolicyError",
+      "ExecPolicyManager",
+      "ExecPolicyUpdateError",
+      "append_amendment_and_update",
+      "append_network_rule_and_update",
+      "check_execpolicy_for_warnings",
+      "child_uses_parent_exec_policy",
+      "create_exec_approval_requirement_for_command",
+      "current",
+      "format_exec_policy_error_with_source",
+      "load"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

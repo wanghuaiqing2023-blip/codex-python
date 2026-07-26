@@ -1,0 +1,13 @@
+{
+  "scope": "keyring-store",
+  "rust_root": "codex/codex-rs/keyring-store",
+  "python_root": "pycodex/keyring_store",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::tests"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

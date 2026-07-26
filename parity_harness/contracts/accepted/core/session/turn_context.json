@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-core.session.turn_context",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "session::turn_context",
+    "source": "codex/codex-rs/core/src/session/turn_context.rs",
+    "anchors": [
+      "TurnContext",
+      "file_system_sandbox_policy",
+      "goal_tools_enabled",
+      "permission_profile",
+      "sandbox_policy",
+      "local_time_context"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/session/turn_context.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/session/turn_context.py"
+    ],
+    "anchors": [
+      "TurnContext",
+      "file_system_sandbox_policy",
+      "goal_tools_enabled",
+      "permission_profile",
+      "sandbox_policy",
+      "local_time_context"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

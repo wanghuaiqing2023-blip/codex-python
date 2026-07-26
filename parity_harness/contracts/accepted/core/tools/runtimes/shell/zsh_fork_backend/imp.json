@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.tools.runtimes.shell.zsh_fork_backend.imp",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::runtimes::shell::zsh_fork_backend::imp",
+    "source": "codex/codex-rs/core/src/tools/runtimes/shell/zsh_fork_backend.rs",
+    "anchors": [
+      "maybe_prepare_unified_exec",
+      "maybe_run_shell_command",
+      "ZshForkSpawnLifecycle",
+      "after_spawn",
+      "inherited_fds"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/runtimes/shell/zsh_fork_backend/imp.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/runtimes/shell/zsh_fork_backend/imp.py"
+    ],
+    "anchors": [
+      "maybe_prepare_unified_exec",
+      "maybe_run_shell_command",
+      "ZshForkSpawnLifecycle",
+      "after_spawn",
+      "inherited_fds"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,6 +1,7 @@
 import unittest
 
-from pycodex.cli import UpdateAction, update_action_label
+from pycodex.cli.doctor import update_action_label
+from pycodex.tui.update_action import UpdateAction
 
 
 class UpdateActionTests(unittest.TestCase):

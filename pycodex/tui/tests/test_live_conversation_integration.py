@@ -27,6 +27,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from pycodex.features import Feature, Features
+from pycodex.protocol import (
+    CollaborationMode,
+    CollaborationModeMask,
+    ModeKind,
+    ReasoningEffort,
+    ServiceTier,
+    Settings,
+)
 from pycodex.tui.app.runtime import QueueActiveThreadEventStream, TuiAppRuntime
 from pycodex.tui.app_event import AppEvent
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
@@ -39,6 +48,7 @@ from pycodex.tui.runtime_projection import (
 
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _LIVE_ENV = "PYCODEX_RUN_LIVE_OAUTH_TUI"
+_FAST_TIER = ServiceTier.FAST.request_value()
 
 
 class _TtyOutput(io.StringIO):
@@ -132,22 +142,86 @@ def test_terminal_status_footer_projects_rust_named_session_id_item_without_toke
     assert _runtime_status_line_value(app_runtime, StatusLineItem.STATUS, "Ready") == "Ready"
 
 
-def test_terminal_status_footer_prefers_runtime_model_details() -> None:
-    # Rust product contract:
-    # App/session configuration can supply the resolved visible model details
-    # used by model/status surfaces; the footer should not reconstruct a
-    # different value when that runtime detail is already available.
+def _fast_status_runtime(
+    *,
+    chatgpt: bool = True,
+    model_supports_fast: bool = True,
+    service_tier: str | None = _FAST_TIER,
+) -> TuiAppRuntime:
     runtime = _ManualActiveThreadRuntime(thread_id="model-thread")
     runtime.model = "gpt-live"
+    runtime.auth = SimpleNamespace(is_chatgpt_auth=lambda: chatgpt)
+    runtime.try_list_models = lambda: [
+        SimpleNamespace(
+            model="gpt-live",
+            service_tiers=(SimpleNamespace(id=_FAST_TIER),) if model_supports_fast else (),
+        )
+    ]
     runtime.session_config = SimpleNamespace(
         model="gpt-live",
-        model_details=("high", "fast"),
+        model_details=("high",),
         model_reasoning_effort="xhigh",
+        service_tier=service_tier,
+        features=Features({Feature.FAST_MODE}),
     )
-    app_runtime = TuiAppRuntime(active_thread_runtime=runtime)
+    return TuiAppRuntime(active_thread_runtime=runtime)
+
+
+def test_terminal_status_footer_uses_rust_fast_status_contract() -> None:
+    # Rust parity: chatwidget::tests::status_and_layout::
+    # status_line_model_with_reasoning_includes_fast_for_fast_capable_models.
+    app_runtime = _fast_status_runtime()
 
     assert _runtime_model_with_reasoning(app_runtime) == "gpt-live high fast"
     assert _runtime_status_line_value(app_runtime, StatusLineItem.MODEL_WITH_REASONING, "Ready") == "gpt-live high fast"
+
+    app_runtime.handle_app_event(AppEvent.update_model("gpt-without-fast"))
+
+    assert _runtime_model_with_reasoning(app_runtime) == "gpt-without-fast high"
+
+
+@pytest.mark.parametrize(
+    ("chatgpt", "model_supports_fast", "service_tier"),
+    ((False, True, _FAST_TIER), (True, False, _FAST_TIER), (True, True, None)),
+)
+def test_terminal_status_footer_hides_fast_without_rust_preconditions(
+    chatgpt: bool,
+    model_supports_fast: bool,
+    service_tier: str | None,
+) -> None:
+    # Rust parity: fast_status_indicator_requires_chatgpt_auth and
+    # fast_status_indicator_is_hidden_for_models_without_fast_support.
+    app_runtime = _fast_status_runtime(
+        chatgpt=chatgpt,
+        model_supports_fast=model_supports_fast,
+        service_tier=service_tier,
+    )
+
+    assert _runtime_model_with_reasoning(app_runtime) == "gpt-live high"
+
+
+def test_terminal_status_footer_uses_effective_plan_mode_reasoning_effort() -> None:
+    # Rust: the passive footer renders the effective collaboration mode, not
+    # the persisted Default-mode effort hidden beneath the active Plan mask.
+    runtime = _ManualActiveThreadRuntime(thread_id="plan-mode-thread")
+    runtime.model = "gpt-live"
+    runtime.session_config = SimpleNamespace(
+        model="gpt-live",
+        model_details=("high",),
+        model_reasoning_effort="high",
+    )
+    app_runtime = TuiAppRuntime(active_thread_runtime=runtime)
+    app_runtime.chat_widget.current_collaboration_mode = CollaborationMode(
+        ModeKind.DEFAULT,
+        Settings(model="gpt-live", reasoning_effort=ReasoningEffort.HIGH),
+    )
+    app_runtime.chat_widget.active_collaboration_mask = CollaborationModeMask(
+        name="Plan",
+        mode=ModeKind.PLAN,
+        reasoning_effort=ReasoningEffort.MEDIUM,
+    )
+
+    assert _runtime_model_with_reasoning(app_runtime) == "gpt-live medium"
 
 
 def test_terminal_status_footer_uses_updated_model_from_app_event() -> None:
@@ -171,7 +245,7 @@ def test_terminal_status_footer_uses_updated_model_from_app_event() -> None:
 def test_cli_tui_uses_text_stdin_for_interactive_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     # Rust terminal input is character-event based. Python's interactive TUI
     # must not decode sys.stdin.buffer as UTF-8 on Windows code pages.
-    from pycodex.cli import parser as cli_parser
+    import pycodex.cli.main as cli_parser
 
     fake_buffer = io.BytesIO()
     fake_text_stdin = SimpleNamespace(buffer=fake_buffer, isatty=lambda: True)

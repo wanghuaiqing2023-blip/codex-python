@@ -125,3 +125,38 @@ def test_render_lines_uses_runtime_preview_values():
     assert "gpt-5-codex" in rendered
     assert "~/codex-rs" in rendered
     assert "jif/statusline-preview" in rendered
+
+
+def test_status_line_view_implements_terminal_bottom_pane_projection():
+    view = StatusLineSetupView.new(
+        ["model", "current-dir"],
+        True,
+        StatusSurfacePreviewData(),
+        [],
+        None,
+    )
+
+    lines = view.terminal_lines(width=80)
+
+    assert lines[0].text == "Configure Status Line"
+    assert lines[1].text == "Select which items to display in the status line."
+    assert any("Use theme colors" in line.text for line in lines)
+
+
+def test_status_line_view_delegates_rendering_and_height_to_multi_select_picker():
+    # Rust StatusLineSetupView implements Renderable by delegating both render
+    # and desired_height directly to its MultiSelectPicker.
+    view = StatusLineSetupView.new(
+        ["model", "current-dir"],
+        True,
+        StatusSurfacePreviewData(),
+        [],
+        None,
+    )
+
+    lines = view.terminal_lines(width=100)
+
+    assert [line.text for line in lines] == [
+        line.text for line in view.picker.terminal_lines(width=100)
+    ]
+    assert view.desired_height(100) == view.picker.desired_height(100)

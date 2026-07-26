@@ -449,6 +449,29 @@ class CoreGoalsTests(unittest.TestCase):
         self.assertEqual(len(scheduled), 1)
         self.assertEqual(scheduled[0][1].tokens_used, 7)
 
+    def test_ephemeral_session_skips_goal_continuation_without_state_db(self) -> None:
+        # Rust source: goals.rs::goal_continuation_candidate_if_active uses
+        # state_db_for_thread_goals and treats Ok(None) as an ephemeral no-op.
+        pending_work_checks = []
+
+        async def maybe_start_turn_for_pending_work():
+            pending_work_checks.append(True)
+
+        session = SimpleNamespace(
+            session_config=SimpleNamespace(ephemeral=True),
+            state_db=None,
+            collaboration_mode=SimpleNamespace(mode=ModeKind.DEFAULT),
+            input_queue=SimpleNamespace(
+                has_trigger_turn_mailbox_items=lambda: False,
+            ),
+            active_turn=None,
+            maybe_start_turn_for_pending_work=maybe_start_turn_for_pending_work,
+        )
+
+        asyncio.run(goal_runtime_apply(session, "maybe_continue_if_idle"))
+
+        self.assertEqual(pending_work_checks, [True])
+
     def test_protocol_goal_from_state_rejects_non_state_goal(self) -> None:
         with self.assertRaisesRegex(TypeError, "goal must be a state ThreadGoal"):
             protocol_goal_from_state(object())  # type: ignore[arg-type]

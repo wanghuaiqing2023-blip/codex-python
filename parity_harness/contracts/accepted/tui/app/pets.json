@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-tui.app.pets",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::pets",
+    "source": "codex/codex-rs/tui/src/app/pets.rs",
+    "anchors": [
+      "disable_ambient_pet_before_shutdown",
+      "handle_ambient_pet_image_render_error",
+      "handle_configured_pet_loaded",
+      "handle_pet_disabled",
+      "handle_pet_picker_preview_image_render_error",
+      "handle_pet_preview_loaded",
+      "handle_pet_selected",
+      "handle_pet_selection_loaded"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/pets.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/pets.py"
+    ],
+    "anchors": [
+      "disable_ambient_pet_before_shutdown",
+      "handle_ambient_pet_image_render_error",
+      "handle_configured_pet_loaded",
+      "handle_pet_disabled",
+      "handle_pet_picker_preview_image_render_error",
+      "handle_pet_preview_loaded",
+      "handle_pet_selected",
+      "handle_pet_selection_loaded"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

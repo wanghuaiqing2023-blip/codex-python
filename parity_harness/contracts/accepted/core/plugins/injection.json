@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.plugins.injection",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "plugins::injection",
+    "source": "codex/codex-rs/core/src/plugins/injection.rs",
+    "anchors": [
+      "build_plugin_injections"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/plugins/injection.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/plugins/injection.py"
+    ],
+    "anchors": [
+      "build_plugin_injections"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

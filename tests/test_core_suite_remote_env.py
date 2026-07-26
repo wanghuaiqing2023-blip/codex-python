@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.apply_patch import ApplyPatchHandler
+from pycodex.core.tools.handlers.apply_patch import ApplyPatchHandler
 from pycodex.core import ToolPayload
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.handlers.unified_exec import (

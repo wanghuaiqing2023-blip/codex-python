@@ -1,0 +1,22 @@
+{
+  "scope": "state",
+  "rust_root": "codex/codex-rs/state",
+  "python_root": "pycodex/state",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "bin::logs_client",
+    "bin::logs_client::formatter",
+    "bin::logs_client::matcher"
+  ],
+  "uncovered_python_files": [
+    "pycodex/state/state_runtime.py"
+  ],
+  "allowed_unowned": [
+    {
+      "path": "pycodex/state/runtime/test_support.py",
+      "reason": "Non-production port of Rust runtime::test_support, which is declared only under cfg(test)."
+    }
+  ]
+}

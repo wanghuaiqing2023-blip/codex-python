@@ -1,0 +1,281 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "goal-extension",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 9,
+    "python_files": 8,
+    "modules_with_candidates": 8,
+    "modules_with_anchors": 8
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "crate",
+        "source": "codex/codex-rs/ext/goal/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/__init__.py",
+          "anchor_candidates": [
+            "CREATE_GOAL_TOOL_NAME",
+            "CreateGoalRequest",
+            "GET_GOAL_TOOL_NAME",
+            "GoalExtension",
+            "GoalExtensionConfig",
+            "GoalRuntimeHandle",
+            "PreviousGoalSnapshot",
+            "UPDATE_GOAL_TOOL_NAME",
+            "install_with_backend"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "accounting",
+        "source": "codex/codex-rs/ext/goal/src/accounting.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/accounting.py",
+          "anchor_candidates": [
+            "BudgetLimitedGoalDisposition",
+            "GoalAccountingState",
+            "GoalProgressSnapshot",
+            "IdleGoalProgressSnapshot",
+            "RecordedTokenDelta",
+            "clear_current_turn_goal",
+            "current_turn_id",
+            "finish_turn",
+            "goal_token_delta_for_usage",
+            "idle_progress_snapshot",
+            "mark_budget_limit_reported_if_new",
+            "mark_current_turn_goal_active"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "events",
+        "source": "codex/codex-rs/ext/goal/src/events.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/events.py",
+          "anchor_candidates": [
+            "GoalEventEmitter",
+            "thread_goal_updated"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "extension",
+        "source": "codex/codex-rs/ext/goal/src/extension.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/extension.py",
+          "anchor_candidates": [
+            "GoalExtension",
+            "GoalExtensionConfig",
+            "install_with_backend",
+            "on_config_changed",
+            "on_thread_resume",
+            "on_thread_start",
+            "on_token_usage",
+            "on_tool_finish",
+            "on_turn_abort",
+            "on_turn_start",
+            "on_turn_stop",
+            "tools"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "metrics",
+        "source": "codex/codex-rs/ext/goal/src/metrics.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "runtime",
+        "source": "codex/codex-rs/ext/goal/src/runtime.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/runtime.py",
+          "anchor_candidates": [
+            "AccountedGoalProgress",
+            "GoalRuntimeHandle",
+            "PreviousGoalSnapshot",
+            "account_active_goal_progress",
+            "apply_external_goal_clear",
+            "apply_external_goal_set",
+            "is_enabled",
+            "prepare_external_goal_mutation",
+            "restore_after_resume",
+            "set_enabled",
+            "usage_limit_active_goal_for_turn",
+            "account_idle_goal_progress"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "spec",
+        "source": "codex/codex-rs/ext/goal/src/spec.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/spec.py",
+          "anchor_candidates": [
+            "CREATE_GOAL_TOOL_NAME",
+            "GET_GOAL_TOOL_NAME",
+            "UPDATE_GOAL_TOOL_NAME",
+            "create_create_goal_tool",
+            "create_get_goal_tool",
+            "create_update_goal_tool"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "steering",
+        "source": "codex/codex-rs/ext/goal/src/steering.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/steering.py",
+          "anchor_candidates": [
+            "budget_limit_steering_item",
+            "objective_updated_steering_item",
+            "budget_limit_prompt",
+            "escape_xml_text",
+            "objective_updated_prompt"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-goal-extension",
+        "module": "tool",
+        "source": "codex/codex-rs/ext/goal/src/tool.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/goal/tool.py",
+          "anchor_candidates": [
+            "CreateGoalRequest",
+            "GoalToolExecutor",
+            "create",
+            "get",
+            "protocol_goal_from_state",
+            "update",
+            "GoalToolKind",
+            "goal_response",
+            "handle",
+            "spec",
+            "tool_name"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

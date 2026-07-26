@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.state.service",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "state::service",
+    "source": "codex/codex-rs/core/src/state/service.rs",
+    "anchors": [
+      "SessionServices"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/state/service.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/state/service.py"
+    ],
+    "anchors": [
+      "SessionServices"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

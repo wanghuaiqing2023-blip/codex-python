@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.clipboard_paste",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "clipboard_paste",
+    "source": "codex/codex-rs/tui/src/clipboard_paste.rs",
+    "anchors": [
+      "EncodedImageFormat",
+      "PasteImageError",
+      "PastedImageInfo",
+      "is_probably_wsl",
+      "label",
+      "normalize_pasted_path",
+      "paste_image_as_png",
+      "paste_image_to_temp_png",
+      "pasted_image_format",
+      "convert_windows_path_to_wsl",
+      "fmt",
+      "normalize_windows_path"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/clipboard_paste.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/clipboard_paste.py"
+    ],
+    "anchors": [
+      "EncodedImageFormat",
+      "PasteImageError",
+      "PastedImageInfo",
+      "is_probably_wsl",
+      "label",
+      "normalize_pasted_path",
+      "paste_image_as_png",
+      "paste_image_to_temp_png",
+      "pasted_image_format",
+      "convert_windows_path_to_wsl",
+      "fmt",
+      "normalize_windows_path"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

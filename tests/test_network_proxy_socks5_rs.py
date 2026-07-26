@@ -5,30 +5,40 @@ import socket
 
 import pytest
 
-from pycodex.network_proxy import (
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
+    NetworkMode,
+    NetworkProxyConfig,
+)
+from pycodex.network_proxy.mitm_hook import (
+    MitmHookConfig,
+    MitmHookMatchConfig,
+)
+from pycodex.network_proxy.network_policy import (
     AUDIT_TARGET,
     DEFAULT_CLIENT_ADDRESS,
     DEFAULT_METHOD,
-    ConfigState,
-    MitmHookConfig,
-    MitmHookMatchConfig,
-    NetworkMode,
-    NetworkProxyConfig,
-    NetworkProxyConstraints,
-    NetworkProxyState,
     POLICY_DECISION_EVENT_NAME,
     POLICY_SCOPE_NON_DOMAIN,
+)
+from pycodex.network_proxy.reasons import (
     REASON_METHOD_NOT_ALLOWED,
     REASON_MITM_REQUIRED,
     REASON_PROXY_DISABLED,
+)
+from pycodex.network_proxy.runtime import (
+    ConfigState,
+    NetworkProxyState,
+)
+from pycodex.network_proxy.socks5 import (
     Socks5PolicyError,
     Socks5TcpRequest,
     Socks5UdpRequest,
-    StaticNetworkProxyReloader,
     handle_socks5_tcp_policy,
     inspect_socks5_udp_policy,
     run_socks5_with_std_listener,
 )
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def network_proxy_state_for_policy(config: NetworkProxyConfig) -> NetworkProxyState:

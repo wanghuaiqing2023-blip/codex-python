@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-keyring-store.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-keyring-store",
+    "module": "crate",
+    "source": "codex/codex-rs/keyring-store/src/lib.rs",
+    "anchors": [
+      "CredentialStoreError",
+      "DefaultKeyringStore",
+      "KeyringStore",
+      "MockKeyringStore",
+      "contains",
+      "credential",
+      "into_error",
+      "message",
+      "new",
+      "saved_value",
+      "set_error",
+      "delete"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/keyring_store/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/keyring_store/__init__.py"
+    ],
+    "anchors": [
+      "CredentialStoreError",
+      "DefaultKeyringStore",
+      "KeyringStore",
+      "MockKeyringStore",
+      "contains",
+      "credential",
+      "into_error",
+      "message",
+      "new",
+      "saved_value",
+      "set_error",
+      "delete"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

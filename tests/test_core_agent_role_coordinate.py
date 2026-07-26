@@ -6,18 +6,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pycodex.app_server_protocol.config import ConfigLayerSource
+from pycodex.config.state import ConfigLayerEntry
 from pycodex.core.agent.role import (
     AGENT_TYPE_UNAVAILABLE_ERROR,
     DEFAULT_ROLE_NAME,
-    AgentRoleConfig,
     apply_role_to_config,
-    build_spawn_agent_role_description,
-    built_in_agent_role_configs,
-    built_in_config_file_contents,
     load_role_layer_toml,
     resolve_role_config,
 )
-from pycodex.network_proxy import ConfigLayerEntry, ConfigLayerSource
+from pycodex.core.agent.role import built_in, spawn_tool_spec
+from pycodex.core.config.agent_roles import AgentRoleConfig
 
 
 @dataclass
@@ -39,25 +38,27 @@ class RoleConfigForTest:
 class AgentRoleCoordinateTests(unittest.TestCase):
     def test_builtin_roles_match_rust_order_and_config_lookup(self) -> None:
         # Rust source: codex-rs/core/src/agent/role.rs::built_in.
-        roles = built_in_agent_role_configs()
+        roles = built_in.configs()
 
         self.assertEqual(list(roles), ["default", "explorer", "worker"])
         self.assertEqual(roles[DEFAULT_ROLE_NAME].description, "Default agent.")
-        self.assertEqual(built_in_config_file_contents("explorer.toml"), "")
-        self.assertIsNotNone(built_in_config_file_contents("awaiter.toml"))
-        self.assertIsNone(built_in_config_file_contents("missing.toml"))
+        self.assertEqual(built_in.config_file_contents("explorer.toml"), "")
+        self.assertIsNotNone(built_in.config_file_contents("awaiter.toml"))
+        self.assertIsNone(built_in.config_file_contents("missing.toml"))
 
     def test_resolve_role_config_prefers_user_defined_then_builtins(self) -> None:
         # Rust source: codex-rs/core/src/agent/role.rs::resolve_role_config.
         user_role = AgentRoleConfig(description="User override")
 
-        self.assertEqual(resolve_role_config({"explorer": user_role}, "explorer"), user_role)
-        self.assertEqual(resolve_role_config({}, "default"), built_in_agent_role_configs()["default"])
-        self.assertIsNone(resolve_role_config({}, "missing"))
+        config = RoleConfigForTest(Path.cwd(), Path.cwd(), agent_roles={"explorer": user_role})
+        self.assertEqual(resolve_role_config(config, "explorer"), user_role)
+        config.agent_roles.clear()
+        self.assertEqual(resolve_role_config(config, "default"), built_in.configs()["default"])
+        self.assertIsNone(resolve_role_config(config, "missing"))
 
     def test_spawn_agent_role_description_deduplicates_user_defined_builtins(self) -> None:
         # Rust source: role_tests.rs::spawn_tool_spec_build_deduplicates_user_defined_built_in_roles.
-        spec = build_spawn_agent_role_description(
+        spec = spawn_tool_spec.build(
             {
                 "explorer": AgentRoleConfig(description="user override"),
                 "researcher": AgentRoleConfig(),
@@ -81,7 +82,7 @@ class AgentRoleCoordinateTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            spec = build_spawn_agent_role_description(
+            spec = spawn_tool_spec.build(
                 {"tiered": AgentRoleConfig(description="Stay fast.", config_file=role_path)}
             )
 

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.exec_cell.render",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "exec_cell::render",
+    "source": "codex/codex-rs/tui/src/exec_cell/render.rs",
+    "anchors": [
+      "OutputLines",
+      "OutputLinesParams",
+      "TOOL_CALL_MAX_LINES",
+      "new_active_exec_command",
+      "output_lines",
+      "EXEC_DISPLAY_LAYOUT",
+      "ExecDisplayLayout",
+      "MAX_INTERACTION_PREVIEW_CHARS",
+      "PrefixedBlock",
+      "TRANSCRIPT_HINT",
+      "USER_SHELL_TOOL_CALL_MAX_LINES",
+      "activity_marker"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/exec_cell/render.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/exec_cell/render.py"
+    ],
+    "anchors": [
+      "OutputLines",
+      "OutputLinesParams",
+      "TOOL_CALL_MAX_LINES",
+      "new_active_exec_command",
+      "output_lines",
+      "EXEC_DISPLAY_LAYOUT",
+      "ExecDisplayLayout",
+      "MAX_INTERACTION_PREVIEW_CHARS",
+      "PrefixedBlock",
+      "TRANSCRIPT_HINT",
+      "USER_SHELL_TOOL_CALL_MAX_LINES",
+      "activity_marker"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

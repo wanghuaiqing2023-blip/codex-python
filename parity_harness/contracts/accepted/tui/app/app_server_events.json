@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-tui.app.app_server_events",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::app_server_events",
+    "source": "codex/codex-rs/tui/src/app/app_server_events.rs",
+    "anchors": [
+      "refresh_mcp_startup_expected_servers_from_config"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/app_server_events.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/app_server_events.py"
+    ],
+    "anchors": [
+      "refresh_mcp_startup_expected_servers_from_config"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-shell-escalation.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-escalation",
+    "module": "crate",
+    "source": "codex/codex-rs/shell-escalation/src/lib.rs",
+    "anchors": [
+      "ESCALATE_SOCKET_ENV_VAR",
+      "EscalateAction",
+      "EscalateServer",
+      "EscalationDecision",
+      "EscalationExecution",
+      "EscalationPermissions",
+      "EscalationPolicy",
+      "EscalationSession",
+      "ExecParams",
+      "ExecResult",
+      "PreparedExec",
+      "ResolvedPermissionProfile"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_escalation/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_escalation/__init__.py"
+    ],
+    "anchors": [
+      "ESCALATE_SOCKET_ENV_VAR",
+      "EscalateAction",
+      "EscalateServer",
+      "EscalationDecision",
+      "EscalationExecution",
+      "EscalationPermissions",
+      "EscalationPolicy",
+      "EscalationSession",
+      "ExecParams",
+      "ExecResult",
+      "PreparedExec",
+      "ResolvedPermissionProfile"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

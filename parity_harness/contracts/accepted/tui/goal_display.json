@@ -1,0 +1,34 @@
+{
+  "contract_id": "codex-tui.goal_display",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "goal_display",
+    "source": "codex/codex-rs/tui/src/goal_display.rs",
+    "anchors": [
+      "format_goal_elapsed_seconds",
+      "goal_status_label",
+      "goal_usage_summary"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/goal_display.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/goal_display.py"
+    ],
+    "anchors": [
+      "format_goal_elapsed_seconds",
+      "goal_status_label",
+      "goal_usage_summary"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

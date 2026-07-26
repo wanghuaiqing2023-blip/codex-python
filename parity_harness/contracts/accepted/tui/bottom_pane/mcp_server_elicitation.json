@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.mcp_server_elicitation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::mcp_server_elicitation",
+    "source": "codex/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs",
+    "anchors": [
+      "FooterTip",
+      "McpServerElicitationFormRequest",
+      "McpServerElicitationOverlay",
+      "ToolSuggestionRequest",
+      "ToolSuggestionToolType",
+      "ToolSuggestionType",
+      "from_app_server_request",
+      "new_with_keymap",
+      "request_id",
+      "server_name",
+      "thread_id",
+      "tool_suggestion"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/mcp_server_elicitation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/mcp_server_elicitation.py"
+    ],
+    "anchors": [
+      "FooterTip",
+      "McpServerElicitationFormRequest",
+      "McpServerElicitationOverlay",
+      "ToolSuggestionRequest",
+      "ToolSuggestionToolType",
+      "ToolSuggestionType",
+      "from_app_server_request",
+      "new_with_keymap",
+      "request_id",
+      "server_name",
+      "thread_id",
+      "tool_suggestion"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

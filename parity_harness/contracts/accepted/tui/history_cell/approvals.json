@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.history_cell.approvals",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::approvals",
+    "source": "codex/codex-rs/tui/src/history_cell/approvals.rs",
+    "anchors": [
+      "ApprovalDecisionActor",
+      "ApprovalDecisionSubject",
+      "ReviewDecision",
+      "new_approval_decision_cell",
+      "new_guardian_approved_action_request",
+      "new_guardian_denied_action_request",
+      "new_guardian_denied_patch_request",
+      "new_guardian_timed_out_action_request",
+      "new_guardian_timed_out_patch_request",
+      "new_review_status_line",
+      "exec_snippet",
+      "non_empty_exec_snippet"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/approvals.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/approvals.py"
+    ],
+    "anchors": [
+      "ApprovalDecisionActor",
+      "ApprovalDecisionSubject",
+      "ReviewDecision",
+      "new_approval_decision_cell",
+      "new_guardian_approved_action_request",
+      "new_guardian_denied_action_request",
+      "new_guardian_denied_patch_request",
+      "new_guardian_timed_out_action_request",
+      "new_guardian_timed_out_patch_request",
+      "new_review_status_line",
+      "exec_snippet",
+      "non_empty_exec_snippet"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,6 +1,5 @@
 import unittest
 
-from pycodex.core.context import PluginCapabilitySummary
 from pycodex.core.plugins.mentions import (
     PLUGIN_PATH_PREFIX,
     SKILL_PATH_PREFIX,
@@ -17,6 +16,7 @@ from pycodex.core.plugins.mentions import (
     plugin_config_name_from_path,
     tool_kind_for_path,
 )
+from pycodex.plugin import PluginCapabilitySummary
 from pycodex.tools.tool_discovery import AppInfo
 from pycodex.protocol import UserInput
 

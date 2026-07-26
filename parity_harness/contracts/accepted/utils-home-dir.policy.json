@@ -1,0 +1,11 @@
+{
+  "scope": "utils-home-dir",
+  "rust_root": "codex/codex-rs/utils/home-dir",
+  "python_root": "pycodex/utils/home_dir",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

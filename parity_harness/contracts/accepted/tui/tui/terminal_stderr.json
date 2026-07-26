@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.tui.terminal_stderr",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "tui::terminal_stderr",
+    "source": "codex/codex-rs/tui/src/tui/terminal_stderr.rs",
+    "anchors": [
+      "TerminalStderrGuard",
+      "finish",
+      "install",
+      "pause",
+      "resume",
+      "STDERR_STATE",
+      "StderrState",
+      "drop",
+      "install_suppression",
+      "lock_state"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/tui/terminal_stderr.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/tui/terminal_stderr.py"
+    ],
+    "anchors": [
+      "TerminalStderrGuard",
+      "finish",
+      "install",
+      "pause",
+      "resume",
+      "STDERR_STATE",
+      "StderrState",
+      "drop",
+      "install_suppression",
+      "lock_state"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

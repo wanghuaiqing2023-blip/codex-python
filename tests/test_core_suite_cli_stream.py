@@ -2,7 +2,7 @@ import json
 
 from pycodex.core import ModelClient
 from pycodex.core.client_common import Prompt
-from pycodex.core.http_transport import _parse_responses_sse_stream, _provider_responses_endpoint
+from pycodex.core.client import _parse_responses_sse_stream, _provider_responses_endpoint
 from pycodex.protocol import BaseInstructions, ContentItem, ResponseItem
 from pycodex.rollout import (
     GitInfo,

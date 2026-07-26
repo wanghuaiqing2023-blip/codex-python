@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.runtimes.shell.unix_escalation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::runtimes::shell::unix_escalation",
+    "source": "codex/codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs",
+    "anchors": [
+      "PreparedUnifiedExecZshFork",
+      "prepare_unified_exec_zsh_fork",
+      "try_run_zsh_fork",
+      "CandidateCommands",
+      "CoreShellActionProvider",
+      "DecisionSource",
+      "InterceptedExecPolicyContext",
+      "ParsedShellCommand",
+      "approval_sandbox_permissions",
+      "commands_for_intercepted_exec_policy",
+      "decision_driven_by_policy",
+      "determine_action"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/runtimes/shell/unix_escalation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/runtimes/shell/unix_escalation.py"
+    ],
+    "anchors": [
+      "PreparedUnifiedExecZshFork",
+      "prepare_unified_exec_zsh_fork",
+      "try_run_zsh_fork",
+      "CandidateCommands",
+      "CoreShellActionProvider",
+      "DecisionSource",
+      "InterceptedExecPolicyContext",
+      "ParsedShellCommand",
+      "approval_sandbox_permissions",
+      "commands_for_intercepted_exec_policy",
+      "decision_driven_by_policy",
+      "determine_action"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-api.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-api",
+    "module": "crate",
+    "source": "codex/codex-rs/codex-api/src/lib.rs",
+    "anchors": [
+      "AllowedCaller",
+      "ApiError",
+      "ApproximateLocation",
+      "AuthError",
+      "AuthHeaderTelemetry",
+      "AuthProvider",
+      "ClickOperation",
+      "CompactClient",
+      "CompactionInput",
+      "Compression",
+      "FinanceAssetType",
+      "FinanceOperation"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_api/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/codex_api/__init__.py"
+    ],
+    "anchors": [
+      "AllowedCaller",
+      "ApiError",
+      "ApproximateLocation",
+      "AuthError",
+      "AuthHeaderTelemetry",
+      "AuthProvider",
+      "ClickOperation",
+      "CompactClient",
+      "CompactionInput",
+      "Compression",
+      "FinanceAssetType",
+      "FinanceOperation"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.session_log",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "session_log",
+    "source": "codex/codex-rs/tui/src/session_log.rs",
+    "anchors": [
+      "log_inbound_app_event",
+      "log_outbound_op",
+      "log_session_end",
+      "maybe_init",
+      "LOGGER",
+      "SessionLogger",
+      "is_enabled",
+      "new",
+      "now_ts",
+      "open",
+      "write_json_line",
+      "write_record"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/session_log.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/session_log.py"
+    ],
+    "anchors": [
+      "log_inbound_app_event",
+      "log_outbound_op",
+      "log_session_end",
+      "maybe_init",
+      "LOGGER",
+      "SessionLogger",
+      "is_enabled",
+      "new",
+      "now_ts",
+      "open",
+      "write_json_line",
+      "write_record"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

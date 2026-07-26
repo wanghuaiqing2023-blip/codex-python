@@ -14,6 +14,7 @@ from pycodex.tui.app.event_dispatch import (
     handle_event,
     handle_exit_mode_plan,
 )
+from pycodex.tui.app_event import AppEvent
 
 
 def test_shutdown_first_marks_active_thread_for_shutdown_then_clears_pending():
@@ -94,6 +95,26 @@ def test_clear_ui_event_dispatches_to_clear_and_fresh_session_plan():
     )
 
 
+def test_submit_user_message_with_mode_dispatches_to_chatwidget_owner():
+    """Rust app::event_dispatch forwards this event to ChatWidget unchanged."""
+
+    mode = object()
+    plan = dispatch_event_plan(
+        EventDispatchState(),
+        AppEvent.submit_user_message_with_mode("Implement the plan.", mode),
+    )
+
+    assert plan == EventDispatchPlan(
+        action="submit_user_message_with_mode",
+        updates=(
+            (
+                "submit_user_message_with_mode",
+                {"text": "Implement the plan.", "collaboration_mode": mode},
+            ),
+        ),
+    )
+
+
 def test_exit_event_uses_shutdown_first_exit_mode_plan():
     """Rust codex-tui app::event_dispatch::handle_event AppEvent::Exit branch."""
 
@@ -151,6 +172,19 @@ def test_update_reasoning_effort_dispatches_to_runtime_plan():
     )
 
 
+def test_open_agent_picker_dispatches_to_session_lifecycle() -> None:
+    # Rust: app::event_dispatch routes OpenAgentPicker to
+    # app::session_lifecycle::open_agent_picker.
+    plan = dispatch_event_plan(EventDispatchState(), AppEvent.open_agent_picker())
+
+    assert plan == EventDispatchPlan(
+        action="open_agent_picker",
+        updates=(("open_agent_picker", {}),),
+        schedule_frame=True,
+        forward_event="OpenAgentPicker",
+    )
+
+
 def test_persist_model_selection_dispatches_to_config_write_plan():
     """Rust codex-tui app::event_dispatch::handle_event AppEvent::PersistModelSelection branch."""
 
@@ -164,6 +198,30 @@ def test_persist_model_selection_dispatches_to_config_write_plan():
     assert plan == EventDispatchPlan(
         action="persist_model_selection",
         updates=(("persist_model_selection", {"model": "gpt-new", "effort": "high"}),),
+        schedule_frame=True,
+    )
+
+
+def test_status_line_setup_dispatches_to_rust_owned_config_write_plan():
+    """Rust codex-tui app::event_dispatch handles StatusLineSetup explicitly."""
+
+    state = EventDispatchState(active_thread_id="thread-status-line")
+    payload = {
+        "items": ["model-with-reasoning", "current-dir"],
+        "use_theme_colors": False,
+    }
+
+    setup = dispatch_event_plan(state, {"type": "StatusLineSetup", **payload})
+    assert setup == EventDispatchPlan(
+        action="setup_status_line",
+        updates=(("setup_status_line", payload),),
+        schedule_frame=True,
+    )
+
+    cancelled = dispatch_event_plan(state, {"type": "StatusLineSetupCancelled"})
+    assert cancelled == EventDispatchPlan(
+        action="cancel_status_line_setup",
+        updates=(("cancel_status_line_setup", None),),
         schedule_frame=True,
     )
 

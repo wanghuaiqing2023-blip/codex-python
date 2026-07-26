@@ -2,17 +2,39 @@ import ctypes
 
 from pycodex.windows_sandbox.wfp import (
     EXPLICIT_ACCESS_W,
-    FILTER_SPECS,
     FWPM_SESSION0,
     FWP_SECURITY_DESCRIPTOR_TYPE,
     GUID,
 )
+from pycodex.windows_sandbox.wfp.filter_specs import FILTER_SPECS
 
 
 def test_fixed_rust_wfp_filter_keys_and_names_are_unique() -> None:
     # Rust source: windows-sandbox-rs/src/wfp/filter_specs.rs.
     assert len({spec.key for spec in FILTER_SPECS}) == len(FILTER_SPECS) == 12
     assert len({spec.name for spec in FILTER_SPECS}) == len(FILTER_SPECS)
+
+
+def test_fixed_rust_wfp_filter_conditions_match_filter_specs_module() -> None:
+    # Rust source: windows-sandbox-rs/src/wfp/filter_specs.rs::FILTER_SPECS.
+    actual = {
+        spec.name: tuple((condition.kind, condition.value) for condition in spec.conditions)
+        for spec in FILTER_SPECS
+    }
+    assert actual == {
+        "codex_wfp_icmp_connect_v4": (("user", None), ("protocol", 1)),
+        "codex_wfp_icmp_connect_v6": (("user", None), ("protocol", 58)),
+        "codex_wfp_icmp_assign_v4": (("user", None), ("protocol", 1)),
+        "codex_wfp_icmp_assign_v6": (("user", None), ("protocol", 58)),
+        "codex_wfp_dns_53_v4": (("user", None), ("remote_port", 53)),
+        "codex_wfp_dns_53_v6": (("user", None), ("remote_port", 53)),
+        "codex_wfp_dns_853_v4": (("user", None), ("remote_port", 853)),
+        "codex_wfp_dns_853_v6": (("user", None), ("remote_port", 853)),
+        "codex_wfp_smb_445_v4": (("user", None), ("remote_port", 445)),
+        "codex_wfp_smb_445_v6": (("user", None), ("remote_port", 445)),
+        "codex_wfp_smb_139_v4": (("user", None), ("remote_port", 139)),
+        "codex_wfp_smb_139_v6": (("user", None), ("remote_port", 139)),
+    }
 
 
 def test_guid_layout_round_trips_fixed_provider_key() -> None:

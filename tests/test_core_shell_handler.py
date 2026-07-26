@@ -20,7 +20,7 @@ from pycodex.core.tools.handlers.shell import (
     run_exec_like,
     shell_command_payload_command,
 )
-from pycodex.core.tools.handlers.utils import EffectiveAdditionalPermissions
+from pycodex.core.tools.handlers import EffectiveAdditionalPermissions
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
 from pycodex.core.tools.registry import ToolInvocation
 from pycodex.protocol import (

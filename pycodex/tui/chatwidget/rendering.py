@@ -94,8 +94,10 @@ def terminal_bottom_pane_frame(
     *,
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
+    clear_live_status_height: int = 0,
     clear_active_tail_height: int = 0,
     clear_composer_height: int = 1,
+    clear_footer_height: int = 1,
     viewport_area: object | None = None,
 ) -> TerminalBottomPaneFrame:
     """Build the Rust-like bottom-pane frame for the terminal adapter.
@@ -111,13 +113,17 @@ def terminal_bottom_pane_frame(
     layout = terminal_bottom_pane_layout_rows(
         size,
         live_status_active=state.live_status_active,
+        live_status_height=state.live_status_height,
         popup_height=state.popup_height,
         clear_popup_height=clear_popup_height,
         clear_live_status_active=clear_live_status_active,
+        clear_live_status_height=clear_live_status_height,
         active_tail_height=len(state.active_tail_lines),
         clear_active_tail_height=clear_active_tail_height,
         composer_height=composer_projection.height,
         clear_composer_height=clear_composer_height,
+        footer_height=state.footer_height,
+        clear_footer_height=clear_footer_height,
         viewport_area=viewport_area,
     )
 
@@ -126,8 +132,8 @@ def terminal_bottom_pane_frame(
     visible_tail = state.active_tail_lines[-len(layout.active_tail_rows) :]
     for row, line in zip(layout.active_tail_rows, visible_tail):
         writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
-    if layout.live_status_row is not None and live_status_projection.line:
-        writes.append(TerminalBottomPaneFrameWrite(layout.live_status_row, 1, live_status_projection.line))
+    for row, line in zip(layout.live_status_rows, live_status_projection.lines):
+        writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
 
     for row, line in zip(layout.composer_rows, composer_projection.lines):
         writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
@@ -135,7 +141,10 @@ def terminal_bottom_pane_frame(
         popup_lines = terminal_popup_lines_for_width(state.popup_lines, max(1, columns - 1))
         for row, line in zip(layout.popup_rows, popup_lines):
             writes.append(TerminalBottomPaneFrameWrite(row, 1, line.text, line.selected))
-    if state.footer_text:
+    if state.footer_lines and not state.popup_lines:
+        for row, line in zip(layout.footer_rows, state.footer_lines):
+            writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
+    elif state.footer_text and not state.popup_lines:
         writes.append(
             TerminalBottomPaneFrameWrite(
                 layout.footer_row,

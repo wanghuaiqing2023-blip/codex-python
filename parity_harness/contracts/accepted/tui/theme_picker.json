@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.theme_picker",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "theme_picker",
+    "source": "codex/codex-rs/tui/src/theme_picker.rs",
+    "anchors": [
+      "build_theme_picker_params",
+      "NARROW_PREVIEW_ROWS",
+      "PREVIEW_FALLBACK_SUBTITLE",
+      "PREVIEW_FRAME_PADDING",
+      "PreviewDiffKind",
+      "PreviewRow",
+      "ThemePreviewNarrowRenderable",
+      "ThemePreviewWideRenderable",
+      "WIDE_PREVIEW_LEFT_INSET",
+      "WIDE_PREVIEW_MIN_WIDTH",
+      "WIDE_PREVIEW_ROWS",
+      "centered_offset"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/theme_picker.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/theme_picker.py"
+    ],
+    "anchors": [
+      "build_theme_picker_params",
+      "NARROW_PREVIEW_ROWS",
+      "PREVIEW_FALLBACK_SUBTITLE",
+      "PREVIEW_FRAME_PADDING",
+      "PreviewDiffKind",
+      "PreviewRow",
+      "ThemePreviewNarrowRenderable",
+      "ThemePreviewWideRenderable",
+      "WIDE_PREVIEW_LEFT_INSET",
+      "WIDE_PREVIEW_MIN_WIDTH",
+      "WIDE_PREVIEW_ROWS",
+      "centered_offset"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.history_cell.separators",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::separators",
+    "source": "codex/codex-rs/tui/src/history_cell/separators.rs",
+    "anchors": [
+      "FinalMessageSeparator",
+      "new",
+      "runtime_metrics_label",
+      "display_lines",
+      "format_duration_ms",
+      "pluralize",
+      "raw_lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/separators.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/separators.py"
+    ],
+    "anchors": [
+      "FinalMessageSeparator",
+      "new",
+      "runtime_metrics_label",
+      "display_lines",
+      "format_duration_ms",
+      "pluralize",
+      "raw_lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,9 @@
+{
+  "scenario_id": "success",
+  "action": "write-file",
+  "claim": "completed",
+  "path": "result.txt",
+  "content": "status: ready",
+  "states": {"working": false, "turn": "completed"}
+}
+

@@ -47,11 +47,7 @@ class PendingRequests:
 
 
 def refresh_mcp_startup_expected_servers_from_config(config: Any) -> List[str]:
-    servers = _get(_get(config, "mcp_servers", {}), "get", None)
-    if callable(servers):
-        servers = servers()
-    if servers is None:
-        servers = _get(config, "mcp_servers", {})
+    servers = _get(config, "mcp_servers", {})
     items = servers.items() if hasattr(servers, "items") else []
     return [name for name, server in items if bool(_get(server, "enabled", True))]
 

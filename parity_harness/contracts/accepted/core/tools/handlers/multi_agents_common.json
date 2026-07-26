@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.handlers.multi_agents_common",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::multi_agents_common",
+    "source": "codex/codex-rs/core/src/tools/handlers/multi_agents_common.rs",
+    "anchors": [
+      "DEFAULT_WAIT_TIMEOUT_MS",
+      "MAX_WAIT_TIMEOUT_MS",
+      "MIN_WAIT_TIMEOUT_MS",
+      "apply_requested_spawn_agent_model_overrides",
+      "apply_spawn_agent_overrides",
+      "apply_spawn_agent_runtime_overrides",
+      "apply_spawn_agent_service_tier",
+      "build_agent_resume_config",
+      "build_agent_spawn_config",
+      "build_wait_agent_statuses",
+      "collab_agent_error",
+      "collab_spawn_error"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/multi_agents_common.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/multi_agents_common.py"
+    ],
+    "anchors": [
+      "DEFAULT_WAIT_TIMEOUT_MS",
+      "MAX_WAIT_TIMEOUT_MS",
+      "MIN_WAIT_TIMEOUT_MS",
+      "apply_requested_spawn_agent_model_overrides",
+      "apply_spawn_agent_overrides",
+      "apply_spawn_agent_runtime_overrides",
+      "apply_spawn_agent_service_tier",
+      "build_agent_resume_config",
+      "build_agent_spawn_config",
+      "build_wait_agent_statuses",
+      "collab_agent_error",
+      "collab_spawn_error"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

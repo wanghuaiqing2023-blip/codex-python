@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.mcp_tool_call",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "mcp_tool_call",
+    "source": "codex/codex-rs/core/src/mcp_tool_call.rs",
+    "anchors": [
+      "MCP_TOOL_APPROVAL_ACCEPT",
+      "MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION",
+      "MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC",
+      "MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX",
+      "McpToolApprovalMetadata",
+      "build_guardian_mcp_tool_review_request",
+      "is_mcp_tool_approval_question_id",
+      "lookup_mcp_tool_metadata",
+      "MCP_CALL_COUNT_METRIC",
+      "MCP_CALL_DURATION_METRIC",
+      "MCP_RESULT_TELEMETRY_DID_TRIGGER_SERVER_USER_FLOW_KEY",
+      "MCP_RESULT_TELEMETRY_META_KEY"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/mcp_tool_call.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/mcp_tool_call.py"
+    ],
+    "anchors": [
+      "MCP_TOOL_APPROVAL_ACCEPT",
+      "MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION",
+      "MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC",
+      "MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX",
+      "McpToolApprovalMetadata",
+      "build_guardian_mcp_tool_review_request",
+      "is_mcp_tool_approval_question_id",
+      "lookup_mcp_tool_metadata",
+      "MCP_CALL_COUNT_METRIC",
+      "MCP_CALL_DURATION_METRIC",
+      "MCP_RESULT_TELEMETRY_DID_TRIGGER_SERVER_USER_FLOW_KEY",
+      "MCP_RESULT_TELEMETRY_META_KEY"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

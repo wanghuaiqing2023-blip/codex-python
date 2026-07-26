@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.multi_agents",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "multi_agents",
+    "source": "codex/codex-rs/tui/src/multi_agents.rs",
+    "anchors": [
+      "AgentMetadata",
+      "AgentPickerThreadEntry",
+      "SpawnRequestSummary",
+      "agent_picker_status_dot_spans",
+      "format_agent_picker_item_name",
+      "next_agent_shortcut",
+      "next_agent_shortcut_matches",
+      "previous_agent_shortcut",
+      "previous_agent_shortcut_matches",
+      "spawn_request_summary",
+      "tool_call_history_cell",
+      "AgentLabel"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/multi_agents.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/multi_agents.py"
+    ],
+    "anchors": [
+      "AgentMetadata",
+      "AgentPickerThreadEntry",
+      "SpawnRequestSummary",
+      "agent_picker_status_dot_spans",
+      "format_agent_picker_item_name",
+      "next_agent_shortcut",
+      "next_agent_shortcut_matches",
+      "previous_agent_shortcut",
+      "previous_agent_shortcut_matches",
+      "spawn_request_summary",
+      "tool_call_history_cell",
+      "AgentLabel"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

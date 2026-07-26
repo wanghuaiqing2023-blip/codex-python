@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-realtime-webrtc.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-realtime-webrtc",
+    "module": "crate",
+    "source": "codex/codex-rs/realtime-webrtc/src/lib.rs",
+    "anchors": [
+      "RealtimeWebrtcError",
+      "RealtimeWebrtcEvent",
+      "RealtimeWebrtcSession",
+      "RealtimeWebrtcSessionHandle",
+      "StartedRealtimeWebrtcSession",
+      "apply_answer_sdp",
+      "close",
+      "local_audio_peak",
+      "start"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/realtime_webrtc/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/realtime_webrtc/__init__.py"
+    ],
+    "anchors": [
+      "RealtimeWebrtcError",
+      "RealtimeWebrtcEvent",
+      "RealtimeWebrtcSession",
+      "RealtimeWebrtcSessionHandle",
+      "StartedRealtimeWebrtcSession",
+      "apply_answer_sdp",
+      "close",
+      "local_audio_peak",
+      "start"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

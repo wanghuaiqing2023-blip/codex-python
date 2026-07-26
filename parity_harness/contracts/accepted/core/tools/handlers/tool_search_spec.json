@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.tools.handlers.tool_search_spec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::tool_search_spec",
+    "source": "codex/codex-rs/core/src/tools/handlers/tool_search_spec.rs",
+    "anchors": [
+      "create_tool_search_tool"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/tool_search_spec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/tool_search_spec.py"
+    ],
+    "anchors": [
+      "create_tool_search_tool"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

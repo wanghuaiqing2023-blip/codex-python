@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-hooks.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "crate",
+    "source": "codex/codex-rs/hooks/src/lib.rs",
+    "anchors": [
+      "HOOK_EVENT_NAMES",
+      "HOOK_EVENT_NAMES_WITH_MATCHERS",
+      "Hook",
+      "HookEvent",
+      "HookEventAfterAgent",
+      "HookListEntry",
+      "HookListOutcome",
+      "HookPayload",
+      "HookResponse",
+      "HookResult",
+      "Hooks",
+      "HooksConfig"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/__init__.py"
+    ],
+    "anchors": [
+      "HOOK_EVENT_NAMES",
+      "HOOK_EVENT_NAMES_WITH_MATCHERS",
+      "Hook",
+      "HookEvent",
+      "HookEventAfterAgent",
+      "HookListEntry",
+      "HookListOutcome",
+      "HookPayload",
+      "HookResponse",
+      "HookResult",
+      "Hooks",
+      "HooksConfig"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

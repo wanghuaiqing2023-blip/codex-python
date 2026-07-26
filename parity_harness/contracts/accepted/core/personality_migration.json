@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.personality_migration",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "personality_migration",
+    "source": "codex/codex-rs/core/src/personality_migration.rs",
+    "anchors": [
+      "PERSONALITY_MIGRATION_FILENAME",
+      "PersonalityMigrationStatus",
+      "maybe_migrate_personality",
+      "has_recorded_sessions"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/personality_migration.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/personality_migration.py"
+    ],
+    "anchors": [
+      "PERSONALITY_MIGRATION_FILENAME",
+      "PersonalityMigrationStatus",
+      "maybe_migrate_personality",
+      "has_recorded_sessions"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

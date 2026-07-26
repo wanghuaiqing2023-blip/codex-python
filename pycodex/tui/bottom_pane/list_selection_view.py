@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import textwrap
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
@@ -277,6 +278,7 @@ class ListSelectionView:
 
     @classmethod
     def new(cls, params: SelectionViewParams, app_event_tx: Any = None, keymap: Any = None) -> "ListSelectionView":
+        header = _compose_selection_header(params.header, params.title, params.subtitle)
         active_tab_idx = None
         if params.tabs:
             if params.initial_tab_id is not None:
@@ -303,7 +305,7 @@ class ListSelectionView:
             name_column_width=params.name_column_width,
             filtered_indices=[],
             last_selected_actual_idx=None,
-            header=params.header,
+            header=header,
             initial_selected_idx=params.initial_selected_idx,
             side_content=params.side_content,
             side_content_width=params.side_content_width,
@@ -575,10 +577,10 @@ class ListSelectionView:
         header, row construction, visible windowing, and selected-row styling.
         """
 
-        lines: list[TerminalPopupLine] = [
-            TerminalPopupLine(header_line, False)
-            for header_line in _selection_header_lines(self.active_header())
-        ]
+        header_lines = _selection_header_lines(self.active_header())
+        lines = [TerminalPopupLine(header_line, False) for header_line in header_lines]
+        if header_lines:
+            lines.append(TerminalPopupLine("", False))
         lines.extend(
             render_terminal_popup_lines(
                 self.build_rows(),
@@ -589,6 +591,14 @@ class ListSelectionView:
                 column_width=self.rows_width(),
             )
         )
+        footer_lines = _selection_footer_lines(
+            self.footer_note,
+            self.active_footer_hint(),
+            width=max(1, width),
+        )
+        if footer_lines:
+            lines.append(TerminalPopupLine("", False))
+            lines.extend(TerminalPopupLine(line, False) for line in footer_lines)
         return lines
 
     def stacked_side_content(self) -> Any:
@@ -790,7 +800,9 @@ def render_lines(view: ListSelectionView) -> str:
 
 
 def render_lines_with_width(view: ListSelectionView, width: int = 80) -> str:
-    lines: List[str] = []
+    lines = _selection_header_lines(view.active_header())
+    if lines:
+        lines.append("")
     if view.active_tab_id() is not None:
         lines.append("[" + str(view.active_tab_id()) + "]")
     if view.search_query:
@@ -807,6 +819,10 @@ def render_lines_with_width(view: ListSelectionView, width: int = 80) -> str:
     marker = _renderable_marker(view.stacked_side_content() if view.side_layout_width(max(width - MENU_SURFACE_HORIZONTAL_INSET, 0)) is None else view.side_content)
     if marker:
         lines.append(marker)
+    footer_lines = _selection_footer_lines(view.footer_note, view.active_footer_hint(), width=max(1, width))
+    if footer_lines:
+        lines.append("")
+        lines.extend(footer_lines)
     return "\n".join(lines)
 
 
@@ -863,6 +879,40 @@ def _selection_header_lines(header: Any) -> list[str]:
     if isinstance(header, list):
         return [str(part) for part in header if part]
     return [str(header)]
+
+
+def _compose_selection_header(header: Any, title: str | None, subtitle: str | None) -> Any:
+    """Mirror Rust ``ListSelectionView::new`` header/title composition."""
+
+    if title is None and subtitle is None:
+        return header
+    return tuple([*_selection_header_lines(header), *([title] if title is not None else []), *([subtitle] if subtitle is not None else [])])
+
+
+def _selection_footer_lines(note: Any, hint: Any, *, width: int) -> list[str]:
+    lines: list[str] = []
+    note_text = _selection_line_text(note)
+    if note_text:
+        lines.extend(textwrap.wrap(note_text, width=max(1, width - 2)) or [""])
+    hint_text = _selection_line_text(hint)
+    if hint_text:
+        lines.append(hint_text[:width])
+    return lines
+
+
+def _selection_line_text(value: Any) -> str:
+    if value is None:
+        return ""
+    plain = getattr(value, "plain", None)
+    if isinstance(plain, str):
+        return plain
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return text
+    spans = getattr(value, "spans", None)
+    if spans is not None:
+        return "".join(str(getattr(span, "text", span)) for span in spans)
+    return str(value)
 
 
 def _truthy_helper(*args: Any, **kwargs: Any) -> bool:

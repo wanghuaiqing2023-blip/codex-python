@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.history_cell.base",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::base",
+    "source": "codex/codex-rs/tui/src/history_cell/base.rs",
+    "anchors": [
+      "CompositeHistoryCell",
+      "PlainHistoryCell",
+      "PrefixedWrappedHistoryCell",
+      "WebHyperlinkHistoryCell",
+      "new",
+      "display_hyperlink_lines",
+      "display_lines",
+      "raw_lines",
+      "transcript_hyperlink_lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/base.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/base.py"
+    ],
+    "anchors": [
+      "CompositeHistoryCell",
+      "PlainHistoryCell",
+      "PrefixedWrappedHistoryCell",
+      "WebHyperlinkHistoryCell",
+      "new",
+      "display_hyperlink_lines",
+      "display_lines",
+      "raw_lines",
+      "transcript_hyperlink_lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

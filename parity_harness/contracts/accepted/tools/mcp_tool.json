@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-tools.mcp_tool",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tools",
+    "module": "mcp_tool",
+    "source": "codex/codex-rs/tools/src/mcp_tool.rs",
+    "anchors": [
+      "mcp_call_tool_result_output_schema",
+      "parse_mcp_tool"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tools/mcp_tool.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tools/mcp_tool.py"
+    ],
+    "anchors": [
+      "mcp_call_tool_result_output_schema",
+      "parse_mcp_tool"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

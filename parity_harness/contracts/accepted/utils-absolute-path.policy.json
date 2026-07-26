@@ -1,0 +1,14 @@
+{
+  "scope": "utils-absolute-path",
+  "rust_root": "codex/codex-rs/utils/absolute-path",
+  "python_root": "pycodex/utils/absolute_path",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::absolutize",
+    "crate::test_support"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.extension_api import ExtensionData, ExtensionRegistryBuilder
 from pycodex.protocol import TokenUsage
 
@@ -31,8 +31,8 @@ class Recorder:
         self.token_updates.append((session_store, thread_store, turn_store, token_usage))
 
 
-def _session_with_recorder(recorder: Recorder) -> InMemoryCodexSession:
-    session = InMemoryCodexSession(cwd="C:/work", thread_id="thread-1")
+def _session_with_recorder(recorder: Recorder) -> Session:
+    session = Session(cwd="C:/work", thread_id="thread-1")
     builder = ExtensionRegistryBuilder.new()
     builder.thread_lifecycle_contributor(recorder)
     builder.turn_lifecycle_contributor(recorder)
@@ -42,7 +42,7 @@ def _session_with_recorder(recorder: Recorder) -> InMemoryCodexSession:
 
 
 def test_session_owns_rust_scoped_extension_stores() -> None:
-    session = InMemoryCodexSession(cwd="C:/work", thread_id="thread-1")
+    session = Session(cwd="C:/work", thread_id="thread-1")
 
     assert isinstance(session.services.session_extension_data, ExtensionData)
     assert isinstance(session.services.thread_extension_data, ExtensionData)
@@ -83,3 +83,4 @@ def test_session_forwards_turn_and_token_lifecycle_through_registry() -> None:
     assert recorder.token_updates[0][3].total_token_usage.total_tokens == 7
     assert recorder.turn_stops[0].turn_store is turn.extension_data
     assert recorder.turn_aborts[0].reason == "interrupted"
+

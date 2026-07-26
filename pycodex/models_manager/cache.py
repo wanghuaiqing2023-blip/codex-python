@@ -132,11 +132,11 @@ class ModelsCacheManager:
             data = json.loads(self.cache_path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise OSError(str(exc)) from exc
         try:
             return ModelsCache.from_mapping(data)
-        except (TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise OSError(str(exc)) from exc
 
     def save_internal(self, cache: ModelsCache) -> None:

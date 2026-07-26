@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.history_cell.search",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::search",
+    "source": "codex/codex-rs/tui/src/history_cell/search.rs",
+    "anchors": [
+      "WebSearchCell",
+      "call_id",
+      "complete",
+      "new",
+      "new_active_web_search_call",
+      "new_web_search_call",
+      "update",
+      "display_lines",
+      "raw_lines",
+      "web_search_action_detail",
+      "web_search_detail",
+      "web_search_header"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/search.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/search.py"
+    ],
+    "anchors": [
+      "WebSearchCell",
+      "call_id",
+      "complete",
+      "new",
+      "new_active_web_search_call",
+      "new_web_search_call",
+      "update",
+      "display_lines",
+      "raw_lines",
+      "web_search_action_detail",
+      "web_search_detail",
+      "web_search_header"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

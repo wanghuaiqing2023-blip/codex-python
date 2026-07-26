@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.status_line_style",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::status_line_style",
+    "source": "codex/codex-rs/tui/src/bottom_pane/status_line_style.rs",
+    "anchors": [
+      "status_line_from_segments",
+      "STATUS_LINE_COLOR_BRIGHTNESS_PERCENT",
+      "STATUS_LINE_COLOR_SATURATION_PERCENT",
+      "STATUS_LINE_SEPARATOR",
+      "StatusLineAccent",
+      "fallback_style",
+      "for_item",
+      "scopes",
+      "soften_rgb_channel",
+      "soften_status_line_color",
+      "soften_status_line_style",
+      "status_line_from_segments_with_resolver"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/status_line_style.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/status_line_style.py"
+    ],
+    "anchors": [
+      "status_line_from_segments",
+      "STATUS_LINE_COLOR_BRIGHTNESS_PERCENT",
+      "STATUS_LINE_COLOR_SATURATION_PERCENT",
+      "STATUS_LINE_SEPARATOR",
+      "StatusLineAccent",
+      "fallback_style",
+      "for_item",
+      "scopes",
+      "soften_rgb_channel",
+      "soften_status_line_color",
+      "soften_status_line_style",
+      "status_line_from_segments_with_resolver"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

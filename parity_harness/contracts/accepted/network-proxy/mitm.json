@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-network-proxy.mitm",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "mitm",
+    "source": "codex/codex-rs/network-proxy/src/mitm.rs",
+    "anchors": [
+      "MitmPolicyContext",
+      "MitmPolicyDecision",
+      "apply_mitm_hook_actions",
+      "authority_header_value",
+      "build_https_uri",
+      "evaluate_mitm_policy",
+      "extract_request_host",
+      "mitm_blocking_response",
+      "path_and_query",
+      "path_for_log"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/mitm.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/mitm.py"
+    ],
+    "anchors": [
+      "MitmPolicyContext",
+      "MitmPolicyDecision",
+      "apply_mitm_hook_actions",
+      "authority_header_value",
+      "build_https_uri",
+      "evaluate_mitm_policy",
+      "extract_request_host",
+      "mitm_blocking_response",
+      "path_and_query",
+      "path_for_log"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

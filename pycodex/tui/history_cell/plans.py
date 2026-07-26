@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .._porting import RustTuiModule
-from ..line_truncation import Line
+from ..line_truncation import Line, Span
 from ..terminal_hyperlinks import (
     HyperlinkLine,
     annotate_web_urls,
@@ -28,7 +28,7 @@ RUST_MODULE = RustTuiModule(
     source="codex/codex-rs/tui/src/history_cell/plans.rs",
 )
 
-PLAN_PREFIX = "> "
+PLAN_PREFIX = "\u2022 "
 PLAN_BODY_PREFIX = "  "
 PLAN_BRANCH_PREFIX = "  | "
 PLAN_BRANCH_CONTINUATION = "    "
@@ -147,15 +147,33 @@ class ProposedPlanCell:
 
     def display_hyperlink_lines(self, width: int) -> list[HyperlinkLine]:
         lines = [
-            HyperlinkLine.new(Line.from_text(f"{PLAN_PREFIX}Proposed Plan")),
+            HyperlinkLine.new(
+                Line.from_spans(
+                    [Span(PLAN_PREFIX, "dim"), Span("Proposed Plan", "bold")]
+                )
+            ),
             HyperlinkLine.new(Line.from_text(" ")),
         ]
-        body_source = raw_lines_from_source(self.plan_markdown)
-        if not body_source:
-            body_source = [Line.from_text("(empty)", style="dim italic")]
+        from ..markdown import render_markdown_agent_with_links_and_cwd
+
         wrap_width = max(1, int(width) - 4)
-        wrapped_body = adaptive_wrap_lines(body_source, wrap_width)
-        body = prefix_hyperlink_lines(annotate_web_urls(wrapped_body), PLAN_BODY_PREFIX, PLAN_BODY_PREFIX)
+        body_source = render_markdown_agent_with_links_and_cwd(
+            self.plan_markdown,
+            wrap_width,
+            self.cwd,
+        )
+        if not body_source:
+            body_source = [HyperlinkLine.new(Line.from_text("(empty)", style="dim italic"))]
+        else:
+            annotated = annotate_web_urls(line.line for line in body_source)
+            for original, rendered in zip(body_source, annotated):
+                rendered.hyperlinks = [
+                    *original.hyperlinks,
+                    *(link for link in rendered.hyperlinks if link not in original.hyperlinks),
+                ]
+            body_source = annotated
+        body = [HyperlinkLine.new(Line.from_text(" "))]
+        body.extend(prefix_hyperlink_lines(body_source, PLAN_BODY_PREFIX, PLAN_BODY_PREFIX))
         body.append(HyperlinkLine.new(Line.from_text(" ")))
         for line in body:
             line.style(PROPOSED_PLAN_STYLE)

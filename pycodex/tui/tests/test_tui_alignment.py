@@ -1501,6 +1501,7 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
         encoding="utf-8-sig"
     )
     status_source = (REPO_ROOT / "pycodex/tui/chatwidget/status_surfaces.py").read_text(encoding="utf-8-sig")
+    protocol_source = (REPO_ROOT / "pycodex/tui/chatwidget/protocol.py").read_text(encoding="utf-8-sig")
     turn_runtime_source = (REPO_ROOT / "pycodex/tui/chatwidget/turn_runtime.py").read_text(encoding="utf-8-sig")
     status_card_source = (REPO_ROOT / "pycodex/tui/status/card.py").read_text(encoding="utf-8-sig")
     status_controls_source = (REPO_ROOT / "pycodex/tui/chatwidget/status_controls.py").read_text(
@@ -1603,7 +1604,9 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     assert "TerminalTurnSubmissionRunner" in imported_names
     assert "run_terminal_turn_submission" not in imported_names
     assert "self._turn_submission = TerminalTurnSubmissionRunner(" in source
-    assert "self._turn_submission.submit(prompt)" in source
+    assert "self.app_runtime.enqueue_user_turn," in source
+    assert "self._turn_submission.submit(prompt)" not in source
+    assert "self.app_runtime.bind_codex_op_sink(self._submit_codex_op)" in source
     assert "time.monotonic()" not in source
     assert "set_exit_code=self._set_exit_code" in source
     assert "apply_draft=self._bottom_pane.sync_draft" in source
@@ -1624,10 +1627,19 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     assert "render_turn_status=lambda: self._status.render_turn_status(force=True)" not in source
     assert "def composer_cursor_visible(" in status_source
     assert "def bind_render_bottom_pane(" in status_source
-    assert "self._status.bind_render_bottom_pane(self._bottom_pane.render)" in source
+    assert (
+        "self._status.bind_render_bottom_pane("
+        "self._bottom_pane.render_without_resize_check)"
+    ) in source
     assert "render_bottom_pane=lambda: self._bottom_pane.render()" not in source
     assert "cursor_visible=self._status.composer_cursor_visible" in source
     assert "cursor_visible=lambda: not self._status.turn_active" not in source
+    assert "project_status=self._project_chatwidget_status" in source
+    assert "def _project_chatwidget_status(self) -> None:" in source
+    assert "def project_chatwidget_status(" in status_source
+    assert "retry_error_status_from_notification" not in protocol_source
+    assert 'TerminalNotificationAction("retry_error"' not in protocol_source
+    assert "project_status()" in protocol_source
     assert "class TerminalStatusCardWriter" in status_card_source
     assert "self._status_card = TerminalStatusCardWriter(" in source
     assert "class TerminalStatusCommandController" in status_controls_source
@@ -1688,7 +1700,9 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     assert "class TerminalPromptDispatcher" in slash_dispatch_source
     assert '"TerminalPromptDispatcher",' in slash_dispatch_source
     assert "self._prompt_dispatch = TerminalPromptDispatcher(" in source
-    assert "prompt_dispatch = self._prompt_dispatch.dispatch(prompt)" in source
+    assert "prompt_dispatch = self.app_runtime.run_app_event_loop_step(" in source
+    assert "self._prompt_dispatch.dispatch," in source
+    assert "prompt_dispatch = self._prompt_dispatch.dispatch(prompt)" not in source
     assert "from .local_command import" not in source
     assert "command_result = self._local_commands.run(prompt)" not in source
     assert 'command_result == "exit"' not in source
@@ -1962,12 +1976,21 @@ def test_product_tui_uses_current_rust_core_goal_and_rollout_chain() -> None:
     app_runtime = (REPO_ROOT / "pycodex/tui/app/runtime.py").read_text(encoding="utf-8-sig")
     terminal_runtime = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(encoding="utf-8-sig")
     exec_runtime = (REPO_ROOT / "pycodex/exec/local_runtime.py").read_text(encoding="utf-8-sig")
-    session_runtime = (REPO_ROOT / "pycodex/core/session/runtime.py").read_text(encoding="utf-8-sig")
+    session_module = (REPO_ROOT / "pycodex/core/session/session.py").read_text(encoding="utf-8-sig")
     turn_runtime = (REPO_ROOT / "pycodex/core/session/turn/runtime.py").read_text(encoding="utf-8-sig")
     goal_runtime = (REPO_ROOT / "pycodex/core/goals.py").read_text(encoding="utf-8-sig")
     goal_handlers = (REPO_ROOT / "pycodex/core/tools/handlers/goal/__init__.py").read_text(
         encoding="utf-8-sig"
     )
+    get_goal_handler = (
+        REPO_ROOT / "pycodex/core/tools/handlers/goal/get_goal.py"
+    ).read_text(encoding="utf-8-sig")
+    create_goal_handler = (
+        REPO_ROOT / "pycodex/core/tools/handlers/goal/create_goal.py"
+    ).read_text(encoding="utf-8-sig")
+    update_goal_handler = (
+        REPO_ROOT / "pycodex/core/tools/handlers/goal/update_goal.py"
+    ).read_text(encoding="utf-8-sig")
     spec_plan = (REPO_ROOT / "pycodex/core/tools/spec_plan.py").read_text(encoding="utf-8-sig")
     protocol = (REPO_ROOT / "pycodex/tui/chatwidget/protocol.py").read_text(encoding="utf-8-sig")
     request_plan_tests = (REPO_ROOT / "tests/test_exec_session_services_rs.py").read_text(
@@ -1992,15 +2015,18 @@ def test_product_tui_uses_current_rust_core_goal_and_rollout_chain() -> None:
     assert "async def built_tools(sess: Any, turn_context: Any" in turn_runtime
     assert "extension_tool_executors=extension_tool_executors(sess)" in turn_runtime
     assert "return ToolRouter.from_turn_context(turn_context, params)" in turn_runtime
-    assert "extensions = empty_extension_registry()" in session_runtime
-    assert "GoalExtension" not in session_runtime
+    assert "extensions = empty_extension_registry()" in session_module
+    assert "GoalExtension" not in session_module
     assert "GoalExtension" not in exec_runtime
     assert "planned_tools.add(GetGoalHandler())" in spec_plan
     assert "planned_tools.add(CreateGoalHandler())" in spec_plan
     assert "planned_tools.add(UpdateGoalHandler())" in spec_plan
-    assert "class GetGoalHandler:" in goal_handlers
-    assert "class CreateGoalHandler:" in goal_handlers
-    assert "class UpdateGoalHandler:" in goal_handlers
+    assert "class GetGoalHandler:" in get_goal_handler
+    assert "class CreateGoalHandler:" in create_goal_handler
+    assert "class UpdateGoalHandler:" in update_goal_handler
+    assert "from .get_goal import GetGoalHandler" in goal_handlers
+    assert "from .create_goal import CreateGoalHandler" in goal_handlers
+    assert "from .update_goal import UpdateGoalHandler" in goal_handlers
     assert '"type": "maybe_continue_if_idle"' in turn_runtime
     assert "async def goal_runtime_apply(session: Any, event: GoalRuntimeEvent" in goal_runtime
     assert "CreateGoalHandler" not in app_runtime
@@ -2021,6 +2047,83 @@ def test_product_tui_uses_current_rust_core_goal_and_rollout_chain() -> None:
     assert "usage_limit_runtime_stops_active_goal_and_prevents_idle_continuation" in continuation_tests
     assert "test_real_goal_lifecycle_notifications_drive_footer_state" in app_runtime_tests
     assert "test_core_created_operation_runs_after_current_turn_stream_closes" in terminal_runtime_tests
+
+
+def test_stream_retry_chain_keeps_rust_module_ownership_and_multiline_status_layout() -> None:
+    # Rust owners and anchors:
+    # - core::responses_retry emits retryable StreamError events.
+    # - app_server::bespoke_event_handling maps them with will_retry=true.
+    # - tui::chatwidget::{protocol,streaming} owns retry status transitions.
+    # - status_indicator_widget and bottom_pane own wrapped height and rendering.
+    rust_retry = (REPO_ROOT / "codex/codex-rs/core/src/responses_retry.rs").read_text(encoding="utf-8")
+    rust_mapping = (REPO_ROOT / "codex/codex-rs/app-server/src/bespoke_event_handling.rs").read_text(
+        encoding="utf-8"
+    )
+    rust_protocol = (REPO_ROOT / "codex/codex-rs/tui/src/chatwidget/protocol.rs").read_text(encoding="utf-8")
+    rust_streaming = (REPO_ROOT / "codex/codex-rs/tui/src/chatwidget/streaming.rs").read_text(encoding="utf-8")
+    rust_status = (REPO_ROOT / "codex/codex-rs/tui/src/status_indicator_widget.rs").read_text(encoding="utf-8")
+
+    py_mapping = (REPO_ROOT / "pycodex/tui/app/runtime.py").read_text(encoding="utf-8-sig")
+    py_protocol = (REPO_ROOT / "pycodex/tui/chatwidget/protocol.py").read_text(encoding="utf-8-sig")
+    py_streaming = (REPO_ROOT / "pycodex/tui/chatwidget/streaming.py").read_text(encoding="utf-8-sig")
+    py_status = (REPO_ROOT / "pycodex/tui/chatwidget/status_surfaces.py").read_text(encoding="utf-8-sig")
+    py_footprint = (REPO_ROOT / "pycodex/tui/bottom_pane/terminal_footprint.py").read_text(encoding="utf-8-sig")
+    py_terminal = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(encoding="utf-8-sig")
+    native_harness = (REPO_ROOT / "pycodex/tui/tests/harness/native_compare.py").read_text(encoding="utf-8-sig")
+
+    assert "handle_retryable_response_stream_error" in rust_retry
+    assert 'format!("Reconnecting... {retry_count}/{max_retries}")' in rust_retry
+    assert "will_retry: true" in rust_mapping
+    assert "self.on_stream_error(" in rust_protocol
+    assert "fn on_stream_error" in rust_streaming
+    assert ".take(3)" in (
+        REPO_ROOT / "codex/codex-rs/tui/src/chatwidget/status_state.rs"
+    ).read_text(encoding="utf-8")
+    assert "fn desired_height" in rust_status
+
+    assert '"will_retry": True' in py_mapping
+    assert "streaming.on_stream_error(" in py_protocol
+    assert "retry_error_status_from_notification" not in py_protocol
+    assert "def on_stream_error(" in py_streaming
+    assert '"\\n".join(line_text(line) for line in lines)' in py_status
+    assert "live_status_height" in py_footprint
+    assert "terminal_width=self._terminal_columns.columns" in py_terminal
+    assert "_timing_trace" not in py_terminal
+    assert "ready_screen_text" in native_harness
+    assert "_wait_for_windows_conpty_screen_text" in native_harness
+
+
+def test_plan_selection_and_codex_op_dispatch_keep_rust_module_ownership() -> None:
+    # Rust owners:
+    # - bottom_pane::list_selection_view composes title/subtitle/header and renders the footer.
+    # - chatwidget::plan_implementation uses popup_consts and dismisses all three choices.
+    # - app::event_dispatch sends CodexOp through the product turn runner.
+    list_source = (REPO_ROOT / "pycodex/tui/bottom_pane/list_selection_view.py").read_text(encoding="utf-8-sig")
+    plan_source = (REPO_ROOT / "pycodex/tui/chatwidget/plan_implementation.py").read_text(encoding="utf-8-sig")
+    app_source = (REPO_ROOT / "pycodex/tui/app/runtime.py").read_text(encoding="utf-8-sig")
+    app_tree = ast.parse(app_source)
+    direct_bottom_pane_kinds: set[str] = set()
+    for node in ast.walk(app_tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "_BOTTOM_PANE_APP_EVENT_KINDS"
+            for target in node.targets
+        ):
+            continue
+        if isinstance(node.value, ast.Call) and node.value.args and isinstance(node.value.args[0], ast.Set):
+            direct_bottom_pane_kinds = {
+                str(element.value)
+                for element in node.value.args[0].elts
+                if isinstance(element, ast.Constant)
+            }
+
+    assert "header = _compose_selection_header(params.header, params.title, params.subtitle)" in list_source
+    assert "self.active_footer_hint()" in list_source
+    assert "from ..bottom_pane.popup_consts import standard_popup_hint_line" in plan_source
+    assert 'return "Enter select ? Esc cancel"' not in plan_source
+    assert plan_source.count("dismiss_on_select=True") == 3
+    assert "CodexOp" not in direct_bottom_pane_kinds
 
 
 def _literal_all(tree: ast.AST) -> set[str]:

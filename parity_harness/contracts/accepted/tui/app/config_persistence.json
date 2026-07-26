@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.app.config_persistence",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::config_persistence",
+    "source": "codex/codex-rs/tui/src/app/config_persistence.rs",
+    "anchors": [
+      "approval_policy_from_effective_config",
+      "approvals_reviewer_from_effective_config",
+      "feature_enabled_from_effective_config",
+      "features_toml_from_json",
+      "memories_from_effective_config",
+      "overridden_write_message",
+      "sandbox_mode_from_effective_config",
+      "windows_sandbox_mode_from_effective_config",
+      "windows_toml_from_json"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/config_persistence.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/config_persistence.py"
+    ],
+    "anchors": [
+      "approval_policy_from_effective_config",
+      "approvals_reviewer_from_effective_config",
+      "feature_enabled_from_effective_config",
+      "features_toml_from_json",
+      "memories_from_effective_config",
+      "overridden_write_message",
+      "sandbox_mode_from_effective_config",
+      "windows_sandbox_mode_from_effective_config",
+      "windows_toml_from_json"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,4 +1,4 @@
-﻿"""Python port entry point for Codex TUI.
+"""Python port entry point for Codex TUI.
 
 Upstream Rust implementation for the terminal UI is in ``codex-rs/tui``.
 This package mirrors the Rust ``codex-tui`` module boundaries so behavior can be
@@ -269,7 +269,7 @@ async def run_main(*_args: object, **kwargs: object) -> AppExitInfo:
 
     The Rust root wires config/app-server setup and then enters the terminal
     app.  Python's product path already constructs the exec-backed prompt
-    runner in ``pycodex.cli.parser``; this boundary accepts that runner as an
+    runner in ``pycodex.cli.main``; this boundary accepts that runner as an
     injection point and executes the same terminal runtime.
     """
 

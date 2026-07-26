@@ -1,4 +1,4 @@
-﻿import json
+import json
 from pathlib import Path
 import asyncio
 import os
@@ -18,7 +18,8 @@ from pycodex.codex_api.error import ApiError
 from pycodex.codex_client import TransportError
 from pycodex.protocol.config_types import AskForApproval, SandboxMode
 
-import pycodex.cli.doctor_updates as doctor_updates
+import pycodex.cli.doctor as doctor_updates
+import pycodex.cli.doctor.updates as doctor_update_checks
 from pycodex.exec.websocket import WebSocketFrame
 from pycodex.cli import (
     GITHUB_LATEST_RELEASE_URL,
@@ -27,7 +28,7 @@ from pycodex.cli import (
     StateCheckInputs,
     SystemCheckInputs,
     TerminalCheckInputs,
-    TerminalTitleCheckInputs,
+    TerminalTitleInputs,
     UpdateAction,
     VersionInfo,
     WebsocketCheckInputs,
@@ -37,27 +38,27 @@ from pycodex.cli import (
     compare_npm_package_roots,
     detect_update_action,
     describe_install_context,
-    doctor_background_server_check,
+    background_server_check,
     doctor_auth_check,
     doctor_config_check,
     default_reachability_plan,
     doctor_fallback_state_check,
-    doctor_git_check,
+    git_check,
     doctor_installation_check,
     doctor_managed_by_npm,
     doctor_mcp_check,
     doctor_network_check,
     doctor_provider_reachability_check,
-    doctor_runtime_check,
+    runtime_check,
     doctor_sandbox_check,
-    doctor_search_check,
+    search_check,
     doctor_state_check,
-    doctor_system_check,
+    system_check,
     doctor_terminal_check,
-    doctor_terminal_title_check,
-    doctor_thread_inventory_check,
-    doctor_updates_check,
-    doctor_updates_check_from_config,
+    terminal_title_check,
+    thread_inventory_check,
+    updates_check,
+    updates_check_from_config,
     doctor_websocket_check,
     fetch_homebrew_cask_version,
     fetch_latest_github_release_version,
@@ -74,7 +75,7 @@ from pycodex.cli import (
     push_cached_version_details,
     push_latest_version_probe_error_details,
     push_latest_version_details,
-    redact_doctor_detail,
+    redact_detail,
     redacted_doctor_check_mapping,
     redacted_doctor_checks_mapping,
     redacted_doctor_report_mapping,
@@ -200,28 +201,28 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
     def test_doctor_progress_visibility_matches_rust(self) -> None:
         # Rust parity: codex-cli/src/doctor/progress.rs should_show_progress.
         self.assertFalse(
-            doctor_updates._should_show_doctor_progress(
+            doctor_updates.should_show_progress(
                 json_output=True,
                 term="xterm-256color",
                 stderr_is_tty=True,
             )
         )
         self.assertFalse(
-            doctor_updates._should_show_doctor_progress(
+            doctor_updates.should_show_progress(
                 json_output=False,
                 term="xterm-256color",
                 stderr_is_tty=False,
             )
         )
         self.assertFalse(
-            doctor_updates._should_show_doctor_progress(
+            doctor_updates.should_show_progress(
                 json_output=False,
                 term="dumb",
                 stderr_is_tty=True,
             )
         )
         self.assertTrue(
-            doctor_updates._should_show_doctor_progress(
+            doctor_updates.should_show_progress(
                 json_output=False,
                 term="xterm-256color",
                 stderr_is_tty=True,
@@ -239,9 +240,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown doctor output status"):
             doctor_updates._doctor_output_ascii_status_marker("pending")
 
-    def test_doctor_output_ascii_separator_matches_rust_width(self) -> None:
+    def testseparator_matches_rust_width(self) -> None:
         # Rust parity: codex-cli/src/doctor/output.rs SEPARATOR_WIDTH.
-        separator = doctor_updates._doctor_output_ascii_separator()
+        separator = doctor_updates.separator()
         self.assertEqual(separator, "-" * 61)
         self.assertEqual(len(separator), 61)
 
@@ -254,10 +255,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
 
     def test_doctor_output_detail_number_formatters_match_rust(self) -> None:
         # Rust parity: codex-cli/src/doctor/output/detail.rs format_bytes/format_count.
-        self.assertEqual(doctor_updates._doctor_detail_format_bytes(999), "999 B")
-        self.assertEqual(doctor_updates._doctor_detail_format_bytes(1024), "1.00 KB")
-        self.assertEqual(doctor_updates._doctor_detail_format_bytes(1024 * 1024), "1.00 MB")
-        self.assertEqual(doctor_updates._doctor_detail_format_bytes(1024 * 1024 * 1024), "1.00 GB")
+        self.assertEqual(doctor_updates.format_bytes(999), "999 B")
+        self.assertEqual(doctor_updates.format_bytes(1024), "1.00 KB")
+        self.assertEqual(doctor_updates.format_bytes(1024 * 1024), "1.00 MB")
+        self.assertEqual(doctor_updates.format_bytes(1024 * 1024 * 1024), "1.00 GB")
         self.assertEqual(doctor_updates._doctor_detail_format_count(1234567), "1,234,567")
 
     def test_doctor_output_detail_rollout_summary_matches_rust(self) -> None:
@@ -270,10 +271,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         )
         self.assertIsNone(doctor_updates._doctor_detail_rollout_summary("not rollout stats"))
 
-    def test_redact_doctor_detail_hides_secret_values_and_url_credentials(self) -> None:
-        self.assertEqual(redact_doctor_detail("OPENAI_API_KEY: sk-live-secret"), "OPENAI_API_KEY: <redacted>")
+    def test_redact_detail_hides_secret_values_and_url_credentials(self) -> None:
+        self.assertEqual(redact_detail("OPENAI_API_KEY: sk-live-secret"), "OPENAI_API_KEY: <redacted>")
         self.assertEqual(
-            redact_doctor_detail(
+            redact_detail(
                 "optional reachability failed: remote: https://user:pass@example.com/mcp/path?x=abc (connect failed)"
             ),
             "optional reachability failed: remote: https://example.com/mcp/<redacted> (connect failed)",
@@ -602,10 +603,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(check["issues"][0]["measured"], "https://example.com/mcp")
         self.assertEqual(check["issues"][0]["remedy"], "Check https://example.com/help.")
 
-    def test_doctor_background_server_check_reports_not_running(self) -> None:
+    def test_background_server_check_reports_not_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
-            check = doctor_background_server_check(codex_home=codex_home)
+            check = background_server_check(codex_home=codex_home)
 
         self.assertEqual(check.status, "ok")
         self.assertEqual(check.summary, "background server is not running")
@@ -614,7 +615,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("mode: ephemeral", check.details)
         self.assertFalse(any(detail.startswith("app-server version:") for detail in check.details))
 
-    def test_doctor_background_server_check_reports_running_version(self) -> None:
+    def test_background_server_check_reports_running_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             state_dir = codex_home / "app-server-daemon"
@@ -624,7 +625,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             socket_path.parent.mkdir()
             socket_path.write_text("", encoding="utf-8")
 
-            check = doctor_background_server_check(
+            check = background_server_check(
                 codex_home=codex_home,
                 version_probe=lambda _path: "1.2.3",
             )
@@ -635,7 +636,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("app-server version: 1.2.3", check.details)
         self.assertIn("mode: persistent", check.details)
 
-    def test_doctor_background_server_check_uses_default_probe(self) -> None:
+    def test_background_server_check_uses_default_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             state_dir = codex_home / "app-server-daemon"
@@ -680,7 +681,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             doctor_updates.StdlibWebSocket.connect_unix_socket = fake_connect_unix_socket  # type: ignore[method-assign]
 
             try:
-                check = doctor_background_server_check(codex_home=codex_home)
+                check = background_server_check(codex_home=codex_home)
             finally:
                 doctor_updates.StdlibWebSocket.connect_unix_socket = original_connect
 
@@ -695,7 +696,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(request["method"], "initialize")
         self.assertEqual(request["params"]["clientInfo"]["name"], "codex")
 
-    def test_doctor_background_server_check_warns_for_stale_socket(self) -> None:
+    def test_background_server_check_warns_for_stale_socket(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             socket_path = codex_home / "app-server-control" / "app-server-control.sock"
@@ -705,7 +706,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             def probe(path: Path) -> str:
                 raise RuntimeError(f"failed to connect to {path}")
 
-            check = doctor_background_server_check(codex_home=codex_home, version_probe=probe)
+            check = background_server_check(codex_home=codex_home, version_probe=probe)
 
         self.assertEqual(check.status, "warn")
         self.assertEqual(check.summary, "background server socket is stale or unreachable")
@@ -731,10 +732,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(len(concise), 123)
         self.assertTrue(concise.endswith("..."))
 
-    def test_doctor_thread_inventory_check_ok_when_no_inventory(self) -> None:
+    def test_thread_inventory_check_ok_when_no_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
-            check = doctor_thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
+            check = thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
 
         self.assertEqual(check.status, "ok")
         self.assertEqual(check.summary, "no rollout/state DB inventory to compare")
@@ -742,7 +743,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("rollout DB active files: 0", check.details)
         self.assertIn("rollout DB rows: skipped (state DB missing)", check.details)
 
-    def test_doctor_thread_inventory_check_ok_when_rollouts_match_db(self) -> None:
+    def test_thread_inventory_check_ok_when_rollouts_match_db(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             rollout_dir = codex_home / "sessions" / "2025" / "01" / "02"
@@ -760,7 +761,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
                     (thread_id, str(rollout_path), 0, "test-provider", "cli"),
                 )
 
-            check = doctor_thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
+            check = thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
 
         self.assertEqual(check.status, "ok")
         self.assertEqual(check.summary, "rollout files and state DB thread inventory agree")
@@ -771,7 +772,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("rollout DB archive mismatches: 0", check.details)
         self.assertIn("rollout DB model providers: test-provider=1", check.details)
 
-    def test_doctor_thread_inventory_check_prefers_session_meta_id_over_filename(self) -> None:
+    def test_thread_inventory_check_prefers_session_meta_id_over_filename(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             rollout_dir = codex_home / "sessions" / "2025" / "01" / "02"
@@ -808,14 +809,14 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
                     (meta_id, str(rollout_path), 0, "test-provider", "cli"),
                 )
 
-            check = doctor_thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
+            check = thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
 
         self.assertEqual(check.status, "ok")
         self.assertEqual(check.summary, "rollout files and state DB thread inventory agree")
         self.assertIn("rollout DB missing active rows: 0", check.details)
         self.assertIn("rollout DB duplicate rollout thread ids: 0", check.details)
 
-    def test_doctor_thread_inventory_check_reports_empty_rollout_as_scan_error(self) -> None:
+    def test_thread_inventory_check_reports_empty_rollout_as_scan_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             rollout_dir = codex_home / "sessions" / "2025" / "01" / "02"
@@ -824,7 +825,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             rollout_path = rollout_dir / f"rollout-2025-01-02T10-00-00-{thread_id}.jsonl"
             rollout_path.write_text("", encoding="utf-8")
 
-            check = doctor_thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
+            check = thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
 
         self.assertEqual(check.status, "warn")
         self.assertEqual(check.summary, "rollout scan was incomplete or found bad files")
@@ -832,7 +833,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("rollout DB rows: skipped (state DB missing)", check.details)
         self.assertTrue(any("no parseable rollout items" in detail for detail in check.details))
 
-    def test_doctor_thread_inventory_check_reports_bad_json_as_scan_error(self) -> None:
+    def test_thread_inventory_check_reports_bad_json_as_scan_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             rollout_dir = codex_home / "sessions" / "2025" / "01" / "02"
@@ -841,14 +842,14 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             rollout_path = rollout_dir / f"rollout-2025-01-02T10-00-00-{thread_id}.jsonl"
             rollout_path.write_text("{not-json}\n", encoding="utf-8")
 
-            check = doctor_thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
+            check = thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
 
         self.assertEqual(check.status, "warn")
         self.assertEqual(check.summary, "rollout scan was incomplete or found bad files")
         self.assertIn("rollout DB scan errors: 1", check.details)
         self.assertTrue(any("Expecting property name enclosed in double quotes" in detail for detail in check.details))
 
-    def test_doctor_thread_inventory_check_warns_for_missing_stale_and_mismatched_rows(self) -> None:
+    def test_thread_inventory_check_warns_for_missing_stale_and_mismatched_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             active_dir = codex_home / "sessions" / "2025" / "01" / "02"
@@ -876,7 +877,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
                     ("00000000-0000-0000-0000-000000000003", str(stale_path), 0, "test-provider", "cli"),
                 )
 
-            check = doctor_thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
+            check = thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
 
         self.assertEqual(check.status, "warn")
         self.assertEqual(check.summary, "rollout files and state DB thread inventory differ")
@@ -884,7 +885,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("rollout DB stale rows: 1", check.details)
         self.assertIn("rollout DB archive mismatches: 1", check.details)
 
-    def test_doctor_thread_inventory_check_summarizes_sources_like_rust(self) -> None:
+    def test_thread_inventory_check_summarizes_sources_like_rust(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             codex_home = Path(tmp)
             rollout_dir = codex_home / "sessions" / "2025" / "01" / "02"
@@ -920,7 +921,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
                         (thread_id, str(rollout_path), 0, provider, source),
                     )
 
-            check = doctor_thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
+            check = thread_inventory_check(codex_home=codex_home, default_provider="test-provider")
 
         self.assertEqual(check.status, "ok")
         self.assertIn(
@@ -2961,9 +2962,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(check.summary, "Responses WebSocket failed; HTTPS fallback may still work")
         self.assertIn("handshake stream error: bad websocket frame", check.details)
 
-    def test_doctor_terminal_title_check_reports_default_project_name(self) -> None:
-        check = doctor_terminal_title_check(
-            inputs=TerminalTitleCheckInputs(
+    def test_terminal_title_check_reports_default_project_name(self) -> None:
+        check = terminal_title_check(
+            inputs=TerminalTitleInputs(
                 configured_items=None,
                 cwd=Path("/work/repo"),
                 project_root=Path("/work/repo"),
@@ -2979,9 +2980,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("terminal title project source: git repo root", check.details)
         self.assertIn("terminal title project value: repo", check.details)
 
-    def test_doctor_terminal_title_check_reports_disabled_configuration(self) -> None:
-        check = doctor_terminal_title_check(
-            inputs=TerminalTitleCheckInputs(configured_items=(), cwd=Path("/work/repo"))
+    def test_terminal_title_check_reports_disabled_configuration(self) -> None:
+        check = terminal_title_check(
+            inputs=TerminalTitleInputs(configured_items=(), cwd=Path("/work/repo"))
         )
 
         self.assertEqual(check.status, "ok")
@@ -3000,10 +3001,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(doctor_updates._display_list(["alpha"]), "alpha")
         self.assertEqual(doctor_updates._display_list(["alpha", "beta", "gamma"]), "alpha, beta, gamma")
 
-    def test_doctor_terminal_title_check_reports_project_config_fallback(self) -> None:
+    def test_terminal_title_check_reports_project_config_fallback(self) -> None:
         # Rust parity: codex-cli/src/doctor/title.rs terminal_title_reports_project_config_fallback.
-        check = doctor_terminal_title_check(
-            inputs=TerminalTitleCheckInputs(
+        check = terminal_title_check(
+            inputs=TerminalTitleInputs(
                 configured_items=("project",),
                 cwd=Path("/workspace/project/subdir"),
                 project_root=Path("/workspace/project"),
@@ -3017,10 +3018,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("terminal title project source: project config", check.details)
         self.assertIn("terminal title project value: project", check.details)
 
-    def test_doctor_terminal_title_check_omits_project_when_not_selected(self) -> None:
+    def test_terminal_title_check_omits_project_when_not_selected(self) -> None:
         # Rust parity: codex-cli/src/doctor/title.rs terminal_title_omits_project_when_project_item_is_not_selected.
-        check = doctor_terminal_title_check(
-            inputs=TerminalTitleCheckInputs(
+        check = terminal_title_check(
+            inputs=TerminalTitleInputs(
                 configured_items=("model",),
                 cwd=Path("/workspace/project"),
                 project_root=Path("/workspace/project"),
@@ -3033,10 +3034,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("terminal title items: model", check.details)
         self.assertFalse(any(detail.startswith("terminal title project ") for detail in check.details))
 
-    def test_doctor_terminal_title_check_normalizes_item_aliases(self) -> None:
+    def test_terminal_title_check_normalizes_item_aliases(self) -> None:
         # Rust parity: codex-cli/src/doctor/title.rs terminal_title_item_id.
-        check = doctor_terminal_title_check(
-            inputs=TerminalTitleCheckInputs(
+        check = terminal_title_check(
+            inputs=TerminalTitleInputs(
                 configured_items=(
                     "spinner",
                     "status",
@@ -3057,9 +3058,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         )
         self.assertIn("terminal title activity: true", check.details)
 
-    def test_doctor_terminal_title_check_warns_for_invalid_items(self) -> None:
-        check = doctor_terminal_title_check(
-            inputs=TerminalTitleCheckInputs(
+    def test_terminal_title_check_warns_for_invalid_items(self) -> None:
+        check = terminal_title_check(
+            inputs=TerminalTitleInputs(
                 configured_items=("project", "spinner", "bogus", "bogus"),
                 cwd=Path("/work/abcdefghijklmnopqrstuvwxy"),
             )
@@ -3073,10 +3074,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("terminal title project value: abcdefghijklmnopqrstu...", check.details)
         self.assertEqual(check.remediation, "Remove or replace the unknown entries in [tui].terminal_title.")
 
-    def test_doctor_terminal_title_check_warns_when_all_items_invalid(self) -> None:
+    def test_terminal_title_check_warns_when_all_items_invalid(self) -> None:
         # Rust parity: codex-cli/src/doctor/title.rs terminal_title_warns_when_all_configured_items_are_invalid.
-        check = doctor_terminal_title_check(
-            inputs=TerminalTitleCheckInputs(
+        check = terminal_title_check(
+            inputs=TerminalTitleInputs(
                 configured_items=("bogus",),
                 cwd=Path("/workspace/project"),
             )
@@ -3088,8 +3089,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn('terminal title invalid items: "bogus"', check.details)
         self.assertFalse(any(detail.startswith("terminal title project ") for detail in check.details))
 
-    def test_doctor_git_check_reports_git_metadata_from_inputs(self) -> None:
-        check = doctor_git_check(
+    def test_git_check_reports_git_metadata_from_inputs(self) -> None:
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=Path("/usr/bin/git"),
                 git_candidates=(Path("/usr/bin/git"), Path("/opt/bin/git")),
@@ -3112,9 +3113,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("git branch: main", check.details)
         self.assertIn("core.fsmonitor: false", check.details)
 
-    def test_doctor_git_check_normalizes_detached_head_branch(self) -> None:
+    def test_git_check_normalizes_detached_head_branch(self) -> None:
         # Rust parity: codex-cli/src/doctor/git.rs normalized_branch.
-        check = doctor_git_check(
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=Path("/usr/bin/git"),
                 git_version="git version 2.45.0",
@@ -3125,9 +3126,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(check.status, "ok")
         self.assertIn("git branch: detached HEAD", check.details)
 
-    def test_doctor_git_check_omits_empty_branch(self) -> None:
+    def test_git_check_omits_empty_branch(self) -> None:
         # Rust parity: codex-cli/src/doctor/git.rs normalized_branch.
-        check = doctor_git_check(
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=Path("/usr/bin/git"),
                 git_version="git version 2.45.0",
@@ -3138,9 +3139,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(check.status, "ok")
         self.assertFalse(any(detail.startswith("git branch:") for detail in check.details))
 
-    def test_doctor_git_check_omits_empty_core_fsmonitor(self) -> None:
+    def test_git_check_omits_empty_core_fsmonitor(self) -> None:
         # Rust parity: codex-cli/src/doctor/git.rs core.fsmonitor optional detail filtering.
-        check = doctor_git_check(
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=Path("/usr/bin/git"),
                 git_version="git version 2.45.0",
@@ -3186,8 +3187,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             (root / ".git").write_text("not a gitdir pointer\n", encoding="utf-8")
             self.assertEqual(doctor_updates._git_entry_summary(root), "file")
 
-    def test_doctor_git_check_warns_when_selected_git_cannot_run(self) -> None:
-        check = doctor_git_check(
+    def test_git_check_warns_when_selected_git_cannot_run(self) -> None:
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=Path("/bad/git"),
                 git_candidates=(Path("/bad/git"),),
@@ -3202,8 +3203,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             "Fix the selected Git executable or PATH so Codex can inspect Git metadata.",
         )
 
-    def test_doctor_git_check_warns_for_repo_without_git_executable(self) -> None:
-        check = doctor_git_check(
+    def test_git_check_warns_for_repo_without_git_executable(self) -> None:
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=None,
                 git_candidates=(),
@@ -3216,9 +3217,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("repo root: /repo", check.details)
         self.assertEqual(check.remediation, "Install Git or fix PATH so Codex can inspect repository metadata.")
 
-    def test_doctor_git_check_reports_no_git_and_no_repo_as_ok(self) -> None:
+    def test_git_check_reports_no_git_and_no_repo_as_ok(self) -> None:
         # Rust parity: codex-cli/src/doctor/git.rs git_summary/git_check_from_inputs.
-        check = doctor_git_check(
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=None,
                 git_candidates=(),
@@ -3232,8 +3233,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("repo detected: false", check.details)
         self.assertIsNone(check.remediation)
 
-    def test_doctor_git_check_warns_for_old_windows_git(self) -> None:
-        check = doctor_git_check(
+    def test_git_check_warns_for_old_windows_git(self) -> None:
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=Path("C:/Git/bin/git.exe"),
                 git_candidates=(Path("C:/Git/bin/git.exe"),),
@@ -3249,9 +3250,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             "Update Git for Windows or the bundled Git executable Codex resolves first.",
         )
 
-    def test_doctor_git_check_warns_for_msysgit(self) -> None:
+    def test_git_check_warns_for_msysgit(self) -> None:
         # Rust parity: codex-cli/src/doctor/git.rs classifies_old_windows_git.
-        check = doctor_git_check(
+        check = git_check(
             inputs=GitCheckInputs(
                 selected_git=Path("C:/Git/bin/git.exe"),
                 git_candidates=(Path("C:/Git/bin/git.exe"),),
@@ -5090,8 +5091,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             "Back up CODEX_HOME, then remove or repair the affected SQLite database.",
         )
 
-    def test_doctor_system_check_reports_os_language_and_locale_env(self) -> None:
-        check = doctor_system_check(
+    def test_system_check_reports_os_language_and_locale_env(self) -> None:
+        check = system_check(
             inputs=SystemCheckInputs(
                 os="macOS 15.0",
                 os_type="macos",
@@ -5114,9 +5115,9 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             ],
         )
 
-    def test_doctor_system_check_reports_locale_env_in_rust_order(self) -> None:
+    def test_system_check_reports_locale_env_in_rust_order(self) -> None:
         # Rust parity: codex-cli/src/doctor/system.rs LOCALE_ENV_VARS iteration order.
-        check = doctor_system_check(
+        check = system_check(
             inputs=SystemCheckInputs(
                 os="Linux",
                 os_type="linux",
@@ -5137,8 +5138,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         ]
         self.assertEqual(positions, sorted(positions))
 
-    def test_doctor_system_check_handles_missing_os_language(self) -> None:
-        check = doctor_system_check(
+    def test_system_check_handles_missing_os_language(self) -> None:
+        check = system_check(
             inputs=SystemCheckInputs(
                 os="Linux",
                 os_type="linux",
@@ -5151,8 +5152,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(check.summary, "OS language unavailable")
         self.assertIn("os language: unavailable", check.details)
 
-    def test_doctor_runtime_check_reports_process_provenance(self) -> None:
-        check = doctor_runtime_check(
+    def test_runtime_check_reports_process_provenance(self) -> None:
+        check = runtime_check(
             current_version="1.2.3",
             current_exe="/usr/local/bin/codex",
             env={"CODEX_BUILD_COMMIT": "abc123"},
@@ -5830,8 +5831,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn(f"TERMINFO: {missing} (missing)", check.details)
         self.assertEqual(check.remediation, "check that $TERMINFO points to a readable directory")
 
-    def test_doctor_runtime_check_names_managed_install_methods(self) -> None:
-        check = doctor_runtime_check(
+    def test_runtime_check_names_managed_install_methods(self) -> None:
+        check = runtime_check(
             current_version="1.2.3",
             current_exe="/tmp/codex",
             env={"CODEX_MANAGED_BY_NPM": "1"},
@@ -5841,14 +5842,14 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("running npm on ", check.summary)
         self.assertIn("install method: npm", check.details)
 
-    def test_doctor_search_check_verifies_system_rg_version(self) -> None:
+    def test_search_check_verifies_system_rg_version(self) -> None:
         seen: list[tuple[str, tuple[str, ...]]] = []
 
         def runner(program: str, args: tuple[str, ...]) -> str:
             seen.append((program, args))
             return "ripgrep 14.1.0\nfeatures\n"
 
-        check = doctor_search_check(rg_command="rg", provider="system", command_runner=runner)
+        check = search_check(rg_command="rg", provider="system", command_runner=runner)
 
         self.assertEqual(check.status, "ok")
         self.assertEqual(check.summary, "search is OK (system)")
@@ -5857,7 +5858,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("search command readiness: ripgrep 14.1.0", check.details)
         self.assertEqual(seen, [("rg", ("--version",))])
 
-    def test_doctor_search_check_uses_unknown_version_for_empty_system_rg_output(self) -> None:
+    def test_search_check_uses_unknown_version_for_empty_system_rg_output(self) -> None:
         # Source: rust_contract
         # Rust crate: codex-cli
         # Rust module: src/doctor/runtime.rs
@@ -5867,41 +5868,41 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             self.assertEqual((program, args), ("rg", ("--version",)))
             return "\n\n"
 
-        check = doctor_search_check(rg_command="rg", provider="system", command_runner=runner)
+        check = search_check(rg_command="rg", provider="system", command_runner=runner)
 
         self.assertEqual(check.status, "ok")
         self.assertEqual(check.summary, "search is OK (system)")
         self.assertIn("search command readiness: rg version unknown", check.details)
 
-    def test_doctor_search_check_warns_when_system_rg_cannot_run(self) -> None:
+    def test_search_check_warns_when_system_rg_cannot_run(self) -> None:
         def runner(_program: str, _args: tuple[str, ...]) -> str:
             raise RuntimeError("not found")
 
-        check = doctor_search_check(rg_command="rg", provider="system", command_runner=runner)
+        check = search_check(rg_command="rg", provider="system", command_runner=runner)
 
         self.assertEqual(check.status, "warn")
         self.assertEqual(check.summary, "search command could not be verified")
         self.assertIn("search command readiness: not found", check.details)
         self.assertEqual(check.remediation, "Install ripgrep or repair the bundled Codex package.")
 
-    def test_doctor_search_check_verifies_bundled_rg_file(self) -> None:
+    def test_search_check_verifies_bundled_rg_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             command = Path(tmp) / "rg.exe"
             command.write_text("", encoding="utf-8")
 
-            check = doctor_search_check(rg_command=command, provider="bundled")
+            check = search_check(rg_command=command, provider="bundled")
 
         self.assertEqual(check.status, "ok")
         self.assertEqual(check.summary, "search is OK (bundled)")
         self.assertIn(f"search command: {command}", check.details)
         self.assertIn("search command readiness: file exists", check.details)
 
-    def test_doctor_search_check_warns_when_bundled_path_is_not_file(self) -> None:
+    def test_search_check_warns_when_bundled_path_is_not_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             command = Path(tmp) / "rg.exe"
             command.mkdir()
 
-            check = doctor_search_check(rg_command=command, provider="bundled")
+            check = search_check(rg_command=command, provider="bundled")
 
         self.assertEqual(check.status, "warn")
         self.assertIn("search command readiness: path is not a file", check.details)
@@ -6070,8 +6071,8 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
             seen.append(update_action)
             return "2.0.0"
 
-        original_fetch = doctor_updates.fetch_latest_version
-        doctor_updates.fetch_latest_version = fake_fetch
+        original_fetch = doctor_update_checks.fetch_latest_version
+        doctor_update_checks.fetch_latest_version = fake_fetch
         try:
             check = build_doctor_update_check(
                 check_for_update_on_startup=True,
@@ -6081,7 +6082,7 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
                 env={},
             )
         finally:
-            doctor_updates.fetch_latest_version = original_fetch
+            doctor_update_checks.fetch_latest_version = original_fetch
 
         self.assertEqual(seen, [UpdateAction.BREW_UPGRADE])
         self.assertIn("latest version: 2.0.0", check.details)
@@ -6172,10 +6173,10 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertEqual(check.summary, "npm update target could not be inspected")
         self.assertIn("npm root -g failed: npm missing", check.details)
 
-    def test_doctor_updates_check_derives_update_action_from_install_context(self) -> None:
+    def test_updates_check_derives_update_action_from_install_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             version_file = Path(tmp) / "version.json"
-            check = doctor_updates_check(
+            check = updates_check(
                 check_for_update_on_startup=True,
                 codex_home=tmp,
                 current_version="1.0.0",
@@ -6188,16 +6189,16 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn(f"version cache: {version_file}", check.details)
         self.assertIn("update action: bun install -g @openai/codex", check.details)
 
-    def test_doctor_updates_check_from_config_reads_update_preference(self) -> None:
+    def test_updates_check_from_config_reads_update_preference(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            disabled = doctor_updates_check_from_config(
+            disabled = updates_check_from_config(
                 {"check_for_update_on_startup": False},
                 codex_home=tmp,
                 current_version="1.0.0",
                 env={},
                 latest_version="1.0.0",
             )
-            defaulted = doctor_updates_check_from_config(
+            defaulted = updates_check_from_config(
                 {"check_for_update_on_startup": "nope"},
                 codex_home=tmp,
                 current_version="1.0.0",
@@ -6658,10 +6659,10 @@ def test_doctor_output_detail_limits_match_rust() -> None:
 
 def test_doctor_output_detail_format_bytes_thresholds_match_rust() -> None:
     # Rust parity: codex-cli/src/doctor/output/detail.rs format_bytes threshold branches.
-    assert doctor_updates._doctor_detail_format_bytes(999) == "999 B"
-    assert doctor_updates._doctor_detail_format_bytes(1024) == "1.00 KB"
-    assert doctor_updates._doctor_detail_format_bytes(1024 * 1024) == "1.00 MB"
-    assert doctor_updates._doctor_detail_format_bytes(1024 * 1024 * 1024) == "1.00 GB"
+    assert doctor_updates.format_bytes(999) == "999 B"
+    assert doctor_updates.format_bytes(1024) == "1.00 KB"
+    assert doctor_updates.format_bytes(1024 * 1024) == "1.00 MB"
+    assert doctor_updates.format_bytes(1024 * 1024 * 1024) == "1.00 GB"
 
 
 def test_doctor_output_detail_format_count_grouping_matches_rust() -> None:
@@ -6674,9 +6675,9 @@ def test_doctor_output_detail_format_count_grouping_matches_rust() -> None:
 
 def test_doctor_output_detail_format_bytes_precision_matches_rust() -> None:
     # Rust parity: codex-cli/src/doctor/output/detail.rs format_bytes uses two decimals.
-    assert doctor_updates._doctor_detail_format_bytes(1536) == "1.50 KB"
-    assert doctor_updates._doctor_detail_format_bytes(1572864) == "1.50 MB"
-    assert doctor_updates._doctor_detail_format_bytes(1610612736) == "1.50 GB"
+    assert doctor_updates.format_bytes(1536) == "1.50 KB"
+    assert doctor_updates.format_bytes(1572864) == "1.50 MB"
+    assert doctor_updates.format_bytes(1610612736) == "1.50 GB"
 
 
 def test_doctor_output_detail_rollout_summary_rejects_non_numeric_parts() -> None:

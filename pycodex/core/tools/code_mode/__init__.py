@@ -75,15 +75,6 @@ RUNTIME_GLOBAL_HELPERS = (
 )
 _COMMAND_STREAM_DISCONNECTED = object()
 
-CODE_MODE_FREEFORM_GRAMMAR = """
-start: pragma_source | plain_source
-pragma_source: PRAGMA_LINE NEWLINE SOURCE
-plain_source: SOURCE
-
-PRAGMA_LINE: /[ \\t]*\\/\\/ @exec:[^\\r\\n]*/
-NEWLINE: /\\r?\\n/
-SOURCE: /[\\s\\S]+/
-"""
 
 DEFERRED_NESTED_TOOLS_GUIDANCE = (
     "Some nested MCP/app tools may be omitted from this description. They are "
@@ -199,18 +190,6 @@ class ParsedExecSource:
         object.__setattr__(self, "max_output_tokens", _optional_non_negative_int(self.max_output_tokens))
 
 
-@dataclass(frozen=True)
-class ExecWaitArgs:
-    cell_id: str
-    yield_time_ms: int = DEFAULT_WAIT_YIELD_TIME_MS
-    max_tokens: int | None = None
-    terminate: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "cell_id", _ensure_str(self.cell_id, "cell_id"))
-        object.__setattr__(self, "yield_time_ms", _non_negative_int(self.yield_time_ms))
-        object.__setattr__(self, "max_tokens", _optional_non_negative_int(self.max_tokens))
-        object.__setattr__(self, "terminate", _ensure_bool(self.terminate, "terminate"))
 
 
 @dataclass(frozen=True)
@@ -1228,72 +1207,10 @@ def build_nested_tool_payload(
     return _build_freeform_tool_payload(tool_name, input)
 
 
-def create_code_mode_tool(
-    enabled_tools: Iterable[CodeModeToolDefinition | Mapping[str, JsonValue]] = (),
-    namespace_descriptions: Mapping[str, ToolNamespaceDescription | Mapping[str, str]] | None = None,
-    *,
-    code_mode_only: bool,
-    deferred_tools_available: bool,
-) -> Any:
-    from pycodex.core.tools.hosted_spec import FreeformToolFormat, ToolSpec
-
-    definitions = tuple(_coerce_code_mode_tool_definition(tool) for tool in enabled_tools)
-    return ToolSpec.freeform(
-        name=PUBLIC_TOOL_NAME,
-        description=build_exec_tool_description(
-            definitions,
-            namespace_descriptions,
-            code_mode_only=code_mode_only,
-            deferred_tools_available=deferred_tools_available,
-        ),
-        format=FreeformToolFormat.grammar(
-            syntax="lark",
-            definition=CODE_MODE_FREEFORM_GRAMMAR,
-        ),
-    )
 
 
-def create_wait_tool() -> dict[str, JsonValue]:
-    return {
-        "type": "function",
-        "name": WAIT_TOOL_NAME,
-        "description": (
-            f"Waits on a yielded `{PUBLIC_TOOL_NAME}` cell and returns new output or completion.\n"
-            f"{build_wait_tool_description().strip()}"
-        ),
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "cell_id": {
-                    "type": "string",
-                    "description": "Identifier of the running exec cell.",
-                },
-                "yield_time_ms": {
-                    "type": "number",
-                    "description": (
-                        "How long to wait (in milliseconds) for more output before yielding again."
-                    ),
-                },
-                "max_tokens": {
-                    "type": "number",
-                    "description": "Maximum number of output tokens to return for this wait call.",
-                },
-                "terminate": {
-                    "type": "boolean",
-                    "description": "Whether to terminate the running exec cell.",
-                },
-            },
-            "required": ["cell_id"],
-            "additionalProperties": False,
-        },
-    }
 
 
-def into_function_call_output_content_items(
-    items: Iterable[FunctionCallOutputContentItem | Mapping[str, JsonValue]],
-) -> tuple[FunctionCallOutputContentItem, ...]:
-    return tuple(_into_function_call_output_content_item(item) for item in items)
 
 
 def handle_runtime_response(
@@ -1303,7 +1220,7 @@ def handle_runtime_response(
     wall_time_seconds: float,
     can_request_original_detail: bool = True,
 ) -> Any:
-    from pycodex.tools.original_image_detail import sanitize_original_image_detail
+    from pycodex.core.original_image_detail import sanitize_original_image_detail
     from pycodex.core.tools.context import FunctionToolOutput
 
     runtime_response = _coerce_runtime_response(response)
@@ -1404,77 +1321,6 @@ class CodeModeService:
         if self.wait_to_pending_callback is None:
             return WaitToPendingOutcome.missing_cell(missing_cell_response(wait_request.cell_id))
         return _coerce_wait_to_pending_outcome(self.wait_to_pending_callback(wait_request))
-
-
-@dataclass(frozen=True)
-class CodeModeExecuteHandler:
-    nested_tool_specs: tuple[Mapping[str, JsonValue] | Any, ...] = ()
-    namespace_descriptions: Mapping[str, ToolNamespaceDescription | Mapping[str, str]] | None = None
-    code_mode_only: bool = False
-    deferred_tools_available: bool = False
-    execute_callback: CodeModeExecuteCallback | None = None
-    cell_id_allocator: CellIdAllocator | None = None
-    can_request_original_detail: bool = True
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "nested_tool_specs", tuple(self.nested_tool_specs))
-
-    def tool_name(self) -> ToolName:
-        return ToolName.plain(PUBLIC_TOOL_NAME)
-
-    def spec(self) -> Any:
-        enabled_tools = sort_code_mode_tool_definitions(
-            collect_code_mode_tool_definitions(self.nested_tool_specs),
-            self.namespace_descriptions,
-        )
-        return create_code_mode_tool(
-            enabled_tools,
-            self.namespace_descriptions,
-            code_mode_only=self.code_mode_only,
-            deferred_tools_available=self.deferred_tools_available,
-        )
-
-    def matches_kind(self, payload: Any) -> bool:
-        return getattr(payload, "type", None) == "custom"
-
-    def handle(self, invocation_or_payload: Any) -> Any:
-        from pycodex.core.tools.context import ToolPayload
-
-        payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
-        tool_name = getattr(invocation_or_payload, "tool_name", self.tool_name())
-        call_id = str(getattr(invocation_or_payload, "call_id", ""))
-        if (
-            not isinstance(payload, ToolPayload)
-            or payload.type != "custom"
-            or not is_exec_tool_name(tool_name)
-            or payload.input is None
-        ):
-            raise ValueError(f"{PUBLIC_TOOL_NAME} expects raw JavaScript source text")
-        if self.execute_callback is None:
-            raise ValueError("code-mode execute callback is not configured")
-
-        parsed = parse_exec_source(payload.input)
-        request = ExecuteRequest(
-            cell_id=self._allocate_cell_id(),
-            tool_call_id=call_id,
-            enabled_tools=collect_code_mode_tool_definitions(self.nested_tool_specs),
-            source=parsed.code,
-            yield_time_ms=parsed.yield_time_ms,
-            max_output_tokens=parsed.max_output_tokens,
-        )
-        started_at = time.perf_counter()
-        response = _coerce_runtime_response(self.execute_callback(request))
-        return handle_runtime_response(
-            response,
-            max_output_tokens=parsed.max_output_tokens,
-            wall_time_seconds=time.perf_counter() - started_at,
-            can_request_original_detail=self.can_request_original_detail,
-        )
-
-    def _allocate_cell_id(self) -> str:
-        if self.cell_id_allocator is not None:
-            return str(self.cell_id_allocator())
-        return str(uuid.uuid4())
 
 
 @dataclass(frozen=True)
@@ -2566,6 +2412,25 @@ def _render_json_schema_property_name(name: str) -> str:
 def _render_json_schema_literal(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
+
+from .execute_spec import (
+    CODE_MODE_FREEFORM_GRAMMAR,
+    create_code_mode_tool,
+)
+
+from .wait_handler import (
+    ExecWaitArgs,
+)
+
+from .wait_spec import (
+    create_wait_tool,
+)
+
+from .response_adapter import (
+    into_function_call_output_content_items,
+)
+
+from .execute_handler import CodeModeExecuteHandler
 
 __all__ = [
     "CODE_MODE_PRAGMA_PREFIX",

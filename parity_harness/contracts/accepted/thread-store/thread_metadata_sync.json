@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-thread-store.thread_metadata_sync",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-thread-store",
+    "module": "thread_metadata_sync",
+    "source": "codex/codex-rs/thread-store/src/thread_metadata_sync.rs",
+    "anchors": [
+      "PendingThreadMetadataPatch",
+      "ThreadMetadataSync",
+      "for_create",
+      "for_resume",
+      "mark_pending_update_applied",
+      "observe_appended_items",
+      "take_pending_update",
+      "take_pending_update_for_existing_history",
+      "IMAGE_ONLY_USER_MESSAGE_PLACEHOLDER",
+      "git_info_patch_from_observation",
+      "parse_memory_mode",
+      "parse_session_timestamp"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/thread_store/thread_metadata_sync.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/thread_store/thread_metadata_sync.py"
+    ],
+    "anchors": [
+      "PendingThreadMetadataPatch",
+      "ThreadMetadataSync",
+      "for_create",
+      "for_resume",
+      "mark_pending_update_applied",
+      "observe_appended_items",
+      "take_pending_update",
+      "take_pending_update_for_existing_history",
+      "IMAGE_ONLY_USER_MESSAGE_PLACEHOLDER",
+      "git_info_patch_from_observation",
+      "parse_memory_mode",
+      "parse_session_timestamp"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_thread_store_metadata_sync_rs.py"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.ide_context",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "ide_context",
+    "source": "codex/codex-rs/tui/src/ide_context.rs",
+    "anchors": [
+      "IdeContext",
+      "ActiveFile",
+      "FileDescriptor",
+      "Position",
+      "Range"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/ide_context/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/ide_context/__init__.py"
+    ],
+    "anchors": [
+      "IdeContext",
+      "ActiveFile",
+      "FileDescriptor",
+      "Position",
+      "Range"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.turn_runtime",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::turn_runtime",
+    "source": "codex/codex-rs/tui/src/chatwidget/turn_runtime.rs",
+    "anchors": [
+      "apply_runtime_metrics_delta",
+      "collect_runtime_metrics_delta",
+      "finalize_turn",
+      "handle_non_retry_error",
+      "has_queued_follow_up_messages",
+      "interrupted_turn_message",
+      "log_websocket_timing_totals",
+      "maybe_prompt_plan_implementation",
+      "on_cyber_policy_error",
+      "on_error",
+      "on_plan_update",
+      "on_rate_limit_error"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/turn_runtime.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/turn_runtime.py"
+    ],
+    "anchors": [
+      "apply_runtime_metrics_delta",
+      "collect_runtime_metrics_delta",
+      "finalize_turn",
+      "handle_non_retry_error",
+      "has_queued_follow_up_messages",
+      "interrupted_turn_message",
+      "log_websocket_timing_totals",
+      "maybe_prompt_plan_implementation",
+      "on_cyber_policy_error",
+      "on_error",
+      "on_plan_update",
+      "on_rate_limit_error"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,6 @@
+{
+  "contract_id": "codex-goal-extension.events", "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "codex-goal-extension", "module": "events", "source": "codex/codex-rs/ext/goal/src/events.rs", "anchors": ["GoalEventEmitter", "thread_goal_updated"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "pycodex/ext/goal/events.py", "layout": "module-file", "implementation_files": ["pycodex/ext/goal/events.py"], "anchors": ["GoalEventEmitter", "thread_goal_updated"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

@@ -34,7 +34,7 @@ from pycodex.protocol import (
     is_protected_metadata_name,
     project_roots_glob_pattern,
 )
-from pycodex.protocol.models import _legacy_runtime_file_system_policy_for_cwd
+from pycodex.protocol.permissions import _legacy_runtime_file_system_policy_for_cwd
 
 
 class ProtocolPermissionModelTests(unittest.TestCase):

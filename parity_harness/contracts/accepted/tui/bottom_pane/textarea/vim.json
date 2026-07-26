@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.textarea.vim",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::textarea::vim",
+    "source": "codex/codex-rs/tui/src/bottom_pane/textarea/vim.rs",
+    "anchors": [
+      "VimMode",
+      "VimMotion",
+      "VimOperator",
+      "VimPending",
+      "VimTextObject",
+      "VimTextObjectScope",
+      "text_object_range",
+      "big_word_range_at_cursor",
+      "cursor_is_at_range_end",
+      "cursor_overlaps_range",
+      "expand_word_around",
+      "following_whitespace_end"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/textarea/vim.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/textarea/vim.py"
+    ],
+    "anchors": [
+      "VimMode",
+      "VimMotion",
+      "VimOperator",
+      "VimPending",
+      "VimTextObject",
+      "VimTextObjectScope",
+      "text_object_range",
+      "big_word_range_at_cursor",
+      "cursor_is_at_range_end",
+      "cursor_overlaps_range",
+      "expand_word_around",
+      "following_whitespace_end"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

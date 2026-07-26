@@ -1,0 +1,21 @@
+{
+  "scope": "execpolicy",
+  "rust_root": "codex/codex-rs/execpolicy",
+  "python_root": "pycodex/execpolicy",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::amend",
+    "crate::decision",
+    "crate::error",
+    "crate::execpolicycheck",
+    "crate::executable_name",
+    "crate::parser",
+    "crate::policy",
+    "crate::rule",
+    "bin::codex-execpolicy"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

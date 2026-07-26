@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.connectors",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::connectors",
+    "source": "codex/codex-rs/tui/src/chatwidget/connectors.rs",
+    "anchors": [
+      "ConnectorsCacheState",
+      "ConnectorsState",
+      "add_connectors_output",
+      "connectors_enabled",
+      "connectors_for_mentions",
+      "on_connectors_loaded",
+      "prefetch_connectors",
+      "refresh_connectors",
+      "update_connector_enabled",
+      "connector_brief_description",
+      "connector_description",
+      "connector_status_label"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/connectors.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/connectors.py"
+    ],
+    "anchors": [
+      "ConnectorsCacheState",
+      "ConnectorsState",
+      "add_connectors_output",
+      "connectors_enabled",
+      "connectors_for_mentions",
+      "on_connectors_loaded",
+      "prefetch_connectors",
+      "refresh_connectors",
+      "update_connector_enabled",
+      "connector_brief_description",
+      "connector_description",
+      "connector_status_label"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

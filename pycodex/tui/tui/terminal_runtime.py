@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections import deque
 import sys
 from pathlib import Path
-from typing import TextIO
+from typing import Callable, TextIO
 
 from ...terminal_detection import terminal_info
 from ..app.runtime import ActiveThreadRuntime, TuiAppRuntime
@@ -28,6 +28,11 @@ from ..app.resize_reflow import (
     TerminalResizeHistoryReplayer,
 )
 from ..app.event_dispatch import TerminalFullScreenApprovalController
+from ..app.input import (
+    KeyEvent as AppInputKeyEvent,
+    MISSING_EDITOR_MESSAGE,
+    keymap_command_for_event,
+)
 from ..app.agent_message_consolidation import (
     TerminalAgentMessageConsolidator,
     TerminalTranscriptState,
@@ -38,6 +43,7 @@ from ..bottom_pane.terminal_controller import (
 )
 from ..bottom_pane.command_popup import command_popup_flags_from_config
 from ..bottom_pane.chat_composer import (
+    InputResult,
     TerminalComposerEffectRunner,
     TerminalComposerPromptReader,
 )
@@ -50,6 +56,7 @@ from ..chatwidget.protocol import (
     HistoryProjectionSink,
     TerminalProtocolEventDispatcher,
 )
+from ..chatwidget.interaction import active_view_key_has_priority
 from ..chatwidget.rendering import active_history_cell_lines
 from ..chatwidget.slash_dispatch import (
     TerminalLocalCommandDispatcher,
@@ -59,6 +66,7 @@ from ..chatwidget.slash_dispatch import (
 )
 from ..chatwidget.status_surfaces import (
     TerminalStatusSurfaceWriter,
+    refresh_runtime_status_surfaces,
 )
 from ..chatwidget.status_controls import TerminalStatusCommandController
 from ..chatwidget.turn_runtime import TerminalTurnSubmissionRunner
@@ -93,11 +101,40 @@ from .event_stream import (
 )
 
 
+def _app_input_key_event(
+    event_kind: str,
+    event_text: str = "",
+) -> AppInputKeyEvent | None:
+    kind = str(event_kind).lower()
+    if kind.startswith("ctrl_") and len(kind) == len("ctrl_") + 1:
+        return AppInputKeyEvent(kind[-1], modifiers=("control",))
+    if kind == "text" and len(event_text) == 1:
+        return AppInputKeyEvent(event_text)
+    named = {
+        "enter": "enter",
+        "escape": "esc",
+        "backspace": "backspace",
+        "delete": "delete",
+        "up": "up",
+        "down": "down",
+        "left": "left",
+        "right": "right",
+        "home": "home",
+        "end": "end",
+        "page_up": "pageup",
+        "page_down": "pagedown",
+        "tab": "tab",
+    }
+    code = named.get(kind)
+    return None if code is None else AppInputKeyEvent(code)
+
+
 def run_terminal_tui(
     *,
     active_thread_runtime: ActiveThreadRuntime | TuiAppRuntime,
     stdout: TextIO | None = None,
     stdin: TextIO | None = None,
+    exit_info_sink: Callable[[object], None] | None = None,
 ) -> int:
     """Run the Rust-style scrollback-first TUI product path."""
 
@@ -110,7 +147,10 @@ def run_terminal_tui(
         app_runtime = TuiAppRuntime(active_thread_runtime=active_thread_runtime)
         configure_app_runtime_thread_identity(app_runtime, active_thread_runtime)
     runner = TerminalTuiRunner(app_runtime, stdout=stdout or sys.stdout, stdin=stdin or sys.stdin)
-    return runner.run()
+    exit_code = runner.run()
+    if exit_info_sink is not None:
+        exit_info_sink(runner.app_exit_info())
+    return exit_code
 
 
 class TerminalTuiRunner:
@@ -123,6 +163,7 @@ class TerminalTuiRunner:
         self.exit_code = 0
         self._input_source_provider = TerminalInputSourceProvider(stdin)
         self._deferred_turn_input: deque[TerminalInputEvent] = deque()
+        self._deferred_completed_prompts: deque[object] = deque()
         self._deferred_internal_operations: deque[tuple[str, AppCommand]] = deque()
         self._turn_event_consume_depth = 0
         self._draining_internal_operations = False
@@ -146,6 +187,7 @@ class TerminalTuiRunner:
             layout_active=lambda: self._resize.layout_active,
             check_resize=lambda: self._resize.check_size_change(),
             animations_enabled=bool(getattr(self.app_runtime.chat_widget.config, "animations", True)),
+            terminal_width=self._terminal_columns.columns,
         )
         self._bottom_pane = TerminalBottomPaneController(
             stdout,
@@ -176,7 +218,10 @@ class TerminalTuiRunner:
                     else None
                 ),
         )
-        self._status.bind_render_bottom_pane(self._bottom_pane.render)
+        # Live-status transitions already perform the resize check before
+        # applying their frame state. Keep the subsequent BottomPane draw in
+        # the same no-resize phase, as the history and resize collaborators do.
+        self._status.bind_render_bottom_pane(self._bottom_pane.render_without_resize_check)
         self._status.bind_status_indicator_visible(
             lambda: not self._bottom_pane.has_active_view()
         )
@@ -257,6 +302,7 @@ class TerminalTuiRunner:
             consolidate_agent_message=self._agent_message_consolidation.consolidate,
             apply_live_tail=self._bottom_pane.sync_active_tail,
             render_frame=self._bottom_pane.render_without_resize_check,
+            hide_status_indicator=self._hide_status_for_visible_stream_output,
         )
         self._user_prompt_output = TerminalUserPromptOutputWriter(
             terminal_active=self._resize.terminal_layout_active_state,
@@ -271,7 +317,7 @@ class TerminalTuiRunner:
             assistant_stream_active=lambda: self._assistant_stream.active,
             assistant_delta=self._assistant_stream.handle_delta,
             assistant_completed=self._assistant_stream.complete_message,
-            retry_error=self._status.show_live_status,
+            project_status=self._project_chatwidget_status,
             suppress_turn_status=self._status.suppress_turn_status,
             clear_turn_status=self._status.clear_turn_status,
             hide_live_status=self._status.hide_live_status,
@@ -279,6 +325,7 @@ class TerminalTuiRunner:
             finalize_active_stream=self._assistant_stream.finalize,
             ensure_turn_status=self._status.ensure_turn_status,
             restore_turn_status=self._status.ensure_turn_status,
+            immediate_follow_up_pending=self.app_runtime.has_pending_internal_operation,
         )
         self._clear_ui = TerminalClearUiExecutor.for_terminal_runtime(
             app_runtime=self.app_runtime,
@@ -349,6 +396,7 @@ class TerminalTuiRunner:
         )
         self.app_runtime.bind_active_view_sink(self._show_app_view)
         self.app_runtime.bind_internal_operation_sink(self._submit_or_defer_internal_operation)
+        self.app_runtime.bind_codex_op_sink(self._submit_codex_op)
         self._local_commands = TerminalLocalCommandDispatcher(
             clear=self._clear_ui.run,
             help_=self._history.write_cell,
@@ -392,6 +440,7 @@ class TerminalTuiRunner:
         )
         bottom_pane_event_sender = self.app_runtime.app_event_sender
         runtime_keymap = getattr(self.app_runtime, "runtime_keymap", None) or RuntimeKeymap.built_in_defaults()
+        self._bottom_pane.set_keymap(runtime_keymap)
         self.app_runtime.chat_widget.bind_approval_request_sink(
             ApprovalViewProjector(
                 app_event_sender=bottom_pane_event_sender,
@@ -452,16 +501,28 @@ class TerminalTuiRunner:
         self._resize.activate_layout()
         self._session_header.write()
         self._startup_notices.write()
+        self._drain_startup_app_server_events()
+        refresh_runtime_status_surfaces(
+            self.app_runtime.chat_widget,
+            self.app_runtime,
+        )
         while True:
             try:
-                prompt = self._read_prompt()
+                prompt = (
+                    self._deferred_completed_prompts.popleft()
+                    if self._deferred_completed_prompts
+                    else self._read_prompt()
+                )
             except (EOFError, KeyboardInterrupt):
                 self._shutdown()
                 return self.exit_code
             if prompt is None:
                 self._shutdown()
                 return self.exit_code
-            prompt_dispatch = self._prompt_dispatch.dispatch(prompt)
+            prompt_dispatch = self.app_runtime.run_app_event_loop_step(
+                self._prompt_dispatch.dispatch,
+                prompt,
+            )
             if prompt_dispatch.action == "exit":
                 self._shutdown()
                 return self.exit_code
@@ -476,6 +537,20 @@ class TerminalTuiRunner:
             prompt = prompt_dispatch.prompt
             self._user_prompt_output.write(prompt)
             self._run_turn(prompt)
+
+    def _drain_startup_app_server_events(self) -> None:
+        next_event = getattr(
+            self.app_runtime.active_thread_runtime,
+            "next_app_server_event",
+            None,
+        )
+        if not callable(next_event):
+            return
+        while True:
+            event = next_event(0)
+            if event is None:
+                return
+            self.app_runtime.handle_app_server_event(event)
 
     def _read_prompt(self) -> str | None:
         return self._composer_prompt.read()
@@ -518,10 +593,65 @@ class TerminalTuiRunner:
     def _handle_global_key(self, event_kind: str, event_text: str) -> bool:
         """Route Rust app-level shortcuts before composer key handling."""
 
-        _ = event_text
-        if event_kind != "ctrl_t":
+        key_event = _app_input_key_event(event_kind, event_text)
+        if key_event is None:
             return False
-        return self._transcript_overlay.open()
+        if active_view_key_has_priority(
+            self._bottom_pane.has_active_view(),
+            key_event,
+        ):
+            # Rust chatwidget::interaction gives the active BottomPaneView the
+            # key and returns before app/global shortcuts such as Esc backtrack.
+            return False
+        if key_event.code == "esc":
+            action = self.app_runtime.handle_backtrack_escape(
+                composer_is_empty=not bool(self._bottom_pane.composer.current_text()),
+                overlay_open=False,
+                transcript_cells=self._transcript.cells,
+            )
+            if action == "open_preview":
+                self._transcript_overlay.open()
+            if action != "noop":
+                return True
+        runtime_keymap = getattr(self.app_runtime, "runtime_keymap", None)
+        if runtime_keymap is None:
+            runtime_keymap = RuntimeKeymap.built_in_defaults()
+        command = keymap_command_for_event(runtime_keymap, key_event)
+        if command is None:
+            return False
+        if command == "open_transcript":
+            return self._transcript_overlay.open()
+        if command == "open_external_editor":
+            self._history.write_cell(MISSING_EDITOR_MESSAGE)
+            return True
+        if command == "clear_terminal":
+            self._clear_ui.run()
+            return True
+        if command == "toggle_vim_mode":
+            enabled = not bool(getattr(self.app_runtime.chat_widget, "vim_enabled", False))
+            setattr(self.app_runtime.chat_widget, "vim_enabled", enabled)
+            self._history.write_cell(
+                "Vim mode enabled." if enabled else "Vim mode disabled."
+            )
+            return True
+        if command == "copy":
+            last_agent = str(
+                getattr(self.app_runtime.chat_widget.transcript, "last_agent_markdown", "")
+                or ""
+            )
+            if not last_agent:
+                self._history.write_cell("No agent response to copy")
+            return True
+        if command == "toggle_raw_output":
+            current = bool(getattr(self.app_runtime.chat_widget, "raw_mode", False))
+            self.app_runtime.apply_raw_output_mode(not current)
+            return True
+        if command == "toggle_fast_mode":
+            toggle = getattr(self.app_runtime.chat_widget, "toggle_fast_mode_from_ui", None)
+            if callable(toggle):
+                toggle()
+            return True
+        return False
 
     def _pager_keymap(self) -> object:
         runtime_keymap = getattr(self.app_runtime, "runtime_keymap", None)
@@ -530,11 +660,48 @@ class TerminalTuiRunner:
         return runtime_keymap.pager
 
     def _run_turn(self, prompt: str) -> None:
-        self._turn_submission.submit(prompt)
+        self.app_runtime.run_app_event_loop_step(
+            self.app_runtime.enqueue_user_turn,
+            prompt,
+        )
+
+    def _submit_codex_op(self, operation: AppCommand) -> bool:
+        from ..app.runtime import user_turn_prompt
+
+        if operation.kind == "UserTurn":
+            prompt = user_turn_prompt(operation)
+            return self._turn_submission.submit_operation(
+                prompt,
+                lambda: self.app_runtime.submit_op(operation),
+                append_history=True,
+            )
+        return self._turn_submission.submit_operation(
+            operation.kind,
+            lambda: self.app_runtime.submit_op(operation),
+        )
 
     def _stream_cwd(self) -> Path:
         config = getattr(self.app_runtime.active_thread_runtime, "session_config", None)
         return Path(getattr(config, "cwd", None) or Path.cwd())
+
+    def _project_chatwidget_status(self) -> None:
+        streaming = self.app_runtime.chat_widget.streaming
+        self._bottom_pane.set_task_running(streaming.task_running)
+        status = (
+            streaming.status_state.current_status
+            if streaming.status_indicator_visible
+            or (
+                streaming.task_running
+                and self._assistant_stream.active
+                and not self._assistant_stream.has_visible_output()
+            )
+            else None
+        )
+        self._status.project_chatwidget_status(status)
+
+    def _hide_status_for_visible_stream_output(self) -> None:
+        self._status.suppress_turn_status()
+        self._status.hide_inline_status(redraw_bottom_pane=False)
 
     def _reset_terminal_stream_state(self) -> None:
         self._assistant_stream.reset()
@@ -601,9 +768,34 @@ class TerminalTuiRunner:
             self.app_runtime.submit_op(AppCommand.interrupt())
             return True
         if isinstance(event, TerminalInputEvent):
-            self._deferred_turn_input.append(event)
             if event.kind == "eof":
                 self._turn_input_eof_deferred = True
+                self._deferred_turn_input.append(event)
+                return True
+            outcome = self._handle_bottom_pane_composer_event(
+                event.kind,
+                event.text,
+                None,
+                bool(
+                    getattr(
+                        self._input_source_provider.get(),
+                        "detect_paste_bursts",
+                        False,
+                    )
+                ),
+            )
+            self._bottom_pane.render_without_resize_check()
+            if not isinstance(outcome, InputResult):
+                return True
+            prompt_dispatch = self.app_runtime.run_app_event_loop_step(
+                self._prompt_dispatch.dispatch,
+                outcome,
+            )
+            if prompt_dispatch.action == "show_view" and prompt_dispatch.view is not None:
+                self._bottom_pane.show_view(prompt_dispatch.view)
+                self._bottom_pane.render_without_resize_check()
+            elif prompt_dispatch.action == "submit":
+                self._deferred_completed_prompts.append(outcome)
             return True
         return False
 
@@ -618,5 +810,23 @@ class TerminalTuiRunner:
             self.app_runtime.shutdown_current_thread(timeout_seconds=1.0)
         except Exception:
             pass
+
+    def app_exit_info(self) -> object:
+        """Build Rust ``codex_tui::AppExitInfo`` from the completed app state."""
+
+        from .. import AppExitInfo
+
+        token_info = getattr(self.app_runtime.chat_widget, "token_info", None)
+        token_usage = getattr(token_info, "total_token_usage", None)
+        thread_id = (
+            self.app_runtime.current_displayed_thread_id()
+            or getattr(self.app_runtime.chat_widget, "thread_id", None)
+        )
+        thread_name = getattr(self.app_runtime.chat_widget, "thread_name", None)
+        return AppExitInfo(
+            token_usage=token_usage,
+            thread_id=None if thread_id is None else str(thread_id),
+            thread_name=None if thread_name is None else str(thread_name),
+        )
 
 __all__ = ["TerminalTuiRunner", "run_terminal_tui"]

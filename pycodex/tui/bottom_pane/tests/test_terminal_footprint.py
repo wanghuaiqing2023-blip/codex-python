@@ -28,6 +28,12 @@ def test_terminal_footprint_rows_reserve_idle_status_and_popup_space() -> None:
     assert bottom_pane_rows_for_size(size, live_status_active=True) == [19, 20, 21, 22, 23, 24]
     assert bottom_pane_rows_for_size(size, live_status_active=False, popup_height=3) == [20, 21, 22, 23, 24]
     assert bottom_pane_rows_for_size(size, live_status_active=False, composer_height=3) == [19, 20, 21, 22, 23, 24]
+    assert bottom_pane_height(live_status_active=True, live_status_height=4) == 9
+    assert bottom_pane_rows_for_size(
+        size,
+        live_status_active=True,
+        live_status_height=4,
+    ) == list(range(16, 25))
 
 
 def test_terminal_footprint_from_live_status_surface() -> None:
@@ -41,7 +47,8 @@ def test_terminal_footprint_from_live_status_surface() -> None:
     assert TerminalBottomPaneFootprint.from_surface(inactive) == TerminalBottomPaneFootprint()
     assert TerminalBottomPaneFootprint.from_surface(active_without_text) == TerminalBottomPaneFootprint()
     assert TerminalBottomPaneFootprint.from_surface(active_with_text) == TerminalBottomPaneFootprint(
-        live_status_active=True
+        live_status_active=True,
+        live_status_height=1,
     )
     assert TerminalBottomPaneFootprint.from_surface(active_with_text, popup_height=2).popup_height == 2
 
@@ -134,3 +141,27 @@ def test_terminal_footprint_assigns_and_clears_wrapped_composer_rows() -> None:
     assert wrapped.composer_row == 22
     assert shrinking.clear_rows == (19, 20, 21, 22, 23, 24)
     assert shrinking.composer_rows == (22,)
+
+
+def test_terminal_footprint_assigns_and_clears_multiline_footer_rows() -> None:
+    # Rust owner: bottom_pane::footer::footer_height participates in the
+    # bottom-pane desired height and viewport cleanup contract.
+    size = os.terminal_size((80, 24))
+
+    expanded = terminal_bottom_pane_layout_rows(
+        size,
+        live_status_active=False,
+        footer_height=3,
+    )
+    shrinking = terminal_bottom_pane_layout_rows(
+        size,
+        live_status_active=False,
+        footer_height=1,
+        clear_footer_height=3,
+    )
+
+    assert expanded.clear_rows == (19, 20, 21, 22, 23, 24)
+    assert expanded.composer_rows == (20,)
+    assert expanded.footer_rows == (22, 23, 24)
+    assert shrinking.clear_rows == (19, 20, 21, 22, 23, 24)
+    assert shrinking.footer_rows == (24,)

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-model-provider.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-model-provider",
+    "module": "crate",
+    "source": "codex/codex-rs/model-provider/src/lib.rs",
+    "anchors": [
+      "BearerAuthProvider",
+      "CoreAuthProvider",
+      "ModelProvider",
+      "ProviderAccount",
+      "ProviderAccountError",
+      "ProviderAccountResult",
+      "ProviderAccountState",
+      "ProviderCapabilities",
+      "SharedModelProvider",
+      "auth_provider_from_auth",
+      "create_model_provider",
+      "unauthenticated_auth_provider"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/model_provider/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/model_provider/__init__.py"
+    ],
+    "anchors": [
+      "BearerAuthProvider",
+      "CoreAuthProvider",
+      "ModelProvider",
+      "ProviderAccount",
+      "ProviderAccountError",
+      "ProviderAccountResult",
+      "ProviderAccountState",
+      "ProviderCapabilities",
+      "SharedModelProvider",
+      "auth_provider_from_auth",
+      "create_model_provider",
+      "unauthenticated_auth_provider"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

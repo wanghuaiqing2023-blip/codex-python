@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.service_tiers",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::service_tiers",
+    "source": "codex/codex-rs/tui/src/chatwidget/service_tiers.rs",
+    "anchors": [
+      "can_toggle_fast_mode_from_keybinding",
+      "configured_service_tier",
+      "current_model_service_tier_commands",
+      "current_service_tier",
+      "fast_mode_enabled",
+      "refresh_effective_service_tier",
+      "service_tier_update_for_core",
+      "set_service_tier",
+      "should_show_fast_status",
+      "sync_service_tier_commands",
+      "toggle_fast_mode_from_ui",
+      "toggle_service_tier_from_ui"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/service_tiers.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/service_tiers.py"
+    ],
+    "anchors": [
+      "can_toggle_fast_mode_from_keybinding",
+      "configured_service_tier",
+      "current_model_service_tier_commands",
+      "current_service_tier",
+      "fast_mode_enabled",
+      "refresh_effective_service_tier",
+      "service_tier_update_for_core",
+      "set_service_tier",
+      "should_show_fast_status",
+      "sync_service_tier_commands",
+      "toggle_fast_mode_from_ui",
+      "toggle_service_tier_from_ui"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

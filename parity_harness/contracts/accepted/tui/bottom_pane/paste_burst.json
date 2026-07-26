@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.paste_burst",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::paste_burst",
+    "source": "codex/codex-rs/tui/src/bottom_pane/paste_burst.rs",
+    "anchors": [
+      "CharDecision",
+      "FlushResult",
+      "PasteBurst",
+      "RetroGrab",
+      "append_char_to_buffer",
+      "append_newline_if_active",
+      "begin_with_retro_grabbed",
+      "clear_after_explicit_paste",
+      "clear_window_after_non_char",
+      "decide_begin_buffer",
+      "extend_window",
+      "flush_before_modified_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/paste_burst.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/paste_burst.py"
+    ],
+    "anchors": [
+      "CharDecision",
+      "FlushResult",
+      "PasteBurst",
+      "RetroGrab",
+      "append_char_to_buffer",
+      "append_newline_if_active",
+      "begin_with_retro_grabbed",
+      "clear_after_explicit_paste",
+      "clear_window_after_non_char",
+      "decide_begin_buffer",
+      "extend_window",
+      "flush_before_modified_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

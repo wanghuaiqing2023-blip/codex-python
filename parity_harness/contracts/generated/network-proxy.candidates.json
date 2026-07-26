@@ -1,0 +1,520 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "network-proxy",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 16,
+    "python_files": 16,
+    "modules_with_candidates": 16,
+    "modules_with_anchors": 16
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "crate",
+        "source": "codex/codex-rs/network-proxy/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/__init__.py",
+          "anchor_candidates": [
+            "ALLOW_LOCAL_BINDING_ENV_KEY",
+            "ALL_PROXY_ENV_KEYS",
+            "BlockedRequest",
+            "BlockedRequestArgs",
+            "CODEX_PROXY_GIT_SSH_COMMAND_MARKER",
+            "ConfigState",
+            "DEFAULT_NO_PROXY_VALUE",
+            "InjectedHeaderConfig",
+            "MitmHookActionsConfig",
+            "MitmHookConfig",
+            "MitmHookMatchConfig",
+            "NO_PROXY_ENV_KEYS"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "certs",
+        "source": "codex/codex-rs/network-proxy/src/certs.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/certs.py",
+          "anchor_candidates": [
+            "MANAGED_MITM_CA_CERT",
+            "MANAGED_MITM_CA_DIR",
+            "MANAGED_MITM_CA_KEY",
+            "managed_ca_paths",
+            "validate_existing_ca_key_file",
+            "write_atomic_create_new"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "config",
+        "source": "codex/codex-rs/network-proxy/src/config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/config.py",
+          "anchor_candidates": [
+            "NetworkDomainPermission",
+            "NetworkMode",
+            "NetworkProxyConfig",
+            "RuntimeConfig",
+            "allow_unix_sockets",
+            "allowed_domains",
+            "allows_method",
+            "denied_domains",
+            "host_and_port_from_network_addr",
+            "resolve_runtime",
+            "set_allow_unix_sockets",
+            "set_allowed_domains"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "connect_policy",
+        "source": "codex/codex-rs/network-proxy/src/connect_policy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/connect_policy.py",
+          "anchor_candidates": [
+            "TargetCheckedTcpConnector",
+            "from_allow_local_binding",
+            "new",
+            "allow_local_binding",
+            "connect"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "http_proxy",
+        "source": "codex/codex-rs/network-proxy/src/http_proxy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/http_proxy.py",
+          "anchor_candidates": [
+            "run_http_proxy",
+            "run_http_proxy_with_std_listener",
+            "http_connect_accept",
+            "http_plain_proxy",
+            "json_blocked",
+            "remove_hop_by_hop_request_headers",
+            "text_response",
+            "validate_absolute_form_host_header"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "mitm",
+        "source": "codex/codex-rs/network-proxy/src/mitm.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/mitm.py",
+          "anchor_candidates": [
+            "MitmPolicyContext",
+            "MitmPolicyDecision",
+            "apply_mitm_hook_actions",
+            "authority_header_value",
+            "build_https_uri",
+            "evaluate_mitm_policy",
+            "extract_request_host",
+            "mitm_blocking_response",
+            "path_and_query",
+            "path_for_log"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "mitm_hook",
+        "source": "codex/codex-rs/network-proxy/src/mitm_hook.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/mitm_hook.py",
+          "anchor_candidates": [
+            "CompiledGlobMatcher",
+            "HeaderConstraint",
+            "HookEvaluation",
+            "InjectedHeaderConfig",
+            "MitmHook",
+            "MitmHookActions",
+            "MitmHookActionsConfig",
+            "MitmHookConfig",
+            "MitmHookMatchConfig",
+            "MitmHookMatcher",
+            "PathMatcher",
+            "QueryConstraint"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "network_policy",
+        "source": "codex/codex-rs/network-proxy/src/network_policy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/network_policy.py",
+          "anchor_candidates": [
+            "BlockDecisionAuditEventArgs",
+            "NetworkDecision",
+            "NetworkDecisionSource",
+            "NetworkPolicyDecision",
+            "NetworkPolicyRequest",
+            "NetworkPolicyRequestArgs",
+            "NetworkProtocol",
+            "ask",
+            "ask_with_source",
+            "deny",
+            "deny_with_source",
+            "emit_allow_decision_audit_event"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "policy",
+        "source": "codex/codex-rs/network-proxy/src/policy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/policy.py",
+          "anchor_candidates": [
+            "Host",
+            "allows",
+            "as_str",
+            "compile_allowlist_globset",
+            "compile_denylist_globset",
+            "is_global_wildcard_domain_pattern",
+            "is_loopback_host",
+            "is_non_public_ip",
+            "normalize_host",
+            "parse",
+            "parse_for_constraints"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "proxy",
+        "source": "codex/codex-rs/network-proxy/src/proxy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/proxy.py",
+          "anchor_candidates": [
+            "ALLOW_LOCAL_BINDING_ENV_KEY",
+            "ALL_PROXY_ENV_KEYS",
+            "CODEX_PROXY_GIT_SSH_COMMAND_MARKER",
+            "DEFAULT_NO_PROXY_VALUE",
+            "NO_PROXY_ENV_KEYS",
+            "NetworkProxy",
+            "NetworkProxyBuilder",
+            "NetworkProxyHandle",
+            "PROXY_ACTIVE_ENV_KEY",
+            "PROXY_ENV_KEYS",
+            "PROXY_GIT_SSH_COMMAND_ENV_KEY",
+            "PROXY_URL_ENV_KEYS"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "reasons",
+        "source": "codex/codex-rs/network-proxy/src/reasons.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/reasons.py",
+          "anchor_candidates": [
+            "REASON_DENIED",
+            "REASON_METHOD_NOT_ALLOWED",
+            "REASON_MITM_HOOK_DENIED",
+            "REASON_MITM_REQUIRED",
+            "REASON_NOT_ALLOWED",
+            "REASON_NOT_ALLOWED_LOCAL",
+            "REASON_POLICY_DENIED",
+            "REASON_PROXY_DISABLED",
+            "REASON_UNIX_SOCKET_UNSUPPORTED"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "responses",
+        "source": "codex/codex-rs/network-proxy/src/responses.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/responses.py",
+          "anchor_candidates": [
+            "PolicyDecisionDetails",
+            "blocked_header_value",
+            "blocked_message",
+            "blocked_message_with_policy",
+            "blocked_text_response",
+            "blocked_text_response_with_policy",
+            "json_response",
+            "text_response"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "runtime",
+        "source": "codex/codex-rs/network-proxy/src/runtime.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/runtime.py",
+          "anchor_candidates": [
+            "BlockedRequest",
+            "BlockedRequestArgs",
+            "ConfigState",
+            "HostBlockDecision",
+            "HostBlockReason",
+            "NetworkProxyAuditMetadata",
+            "NetworkProxyState",
+            "add_allowed_domain",
+            "add_denied_domain",
+            "allow_local_binding",
+            "allow_upstream_proxy",
+            "audit_metadata"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "socks5",
+        "source": "codex/codex-rs/network-proxy/src/socks5.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/socks5.py",
+          "anchor_candidates": [
+            "run_socks5",
+            "run_socks5_with_std_listener",
+            "emit_socks_block_decision_audit_event",
+            "policy_denied_error"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "state",
+        "source": "codex/codex-rs/network-proxy/src/state.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/state.py",
+          "anchor_candidates": [
+            "NetworkProxyConstraintError",
+            "NetworkProxyConstraints",
+            "build_config_state",
+            "validate_policy_against_constraints"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-network-proxy",
+        "module": "upstream",
+        "source": "codex/codex-rs/network-proxy/src/upstream.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/network_proxy/upstream.py",
+          "anchor_candidates": [
+            "UpstreamClient",
+            "direct",
+            "direct_with_allow_local_binding",
+            "from_env_proxy",
+            "from_env_proxy_with_allow_local_binding",
+            "proxy_for_connect",
+            "unix_socket",
+            "ProxyConfig",
+            "from_env",
+            "proxy_for_protocol",
+            "read_proxy_env"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

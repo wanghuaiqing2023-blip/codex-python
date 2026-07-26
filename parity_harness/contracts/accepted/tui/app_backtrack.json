@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app_backtrack",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app_backtrack",
+    "source": "codex/codex-rs/tui/src/app_backtrack.rs",
+    "anchors": [
+      "BacktrackSelection",
+      "BacktrackState",
+      "PendingBacktrackRollback",
+      "reset_backtrack_state",
+      "trim_transcript_cells_drop_last_n_user_turns",
+      "user_count",
+      "NO_PREVIOUS_MESSAGE_TO_EDIT",
+      "backtrack_selection",
+      "has_backtrack_target",
+      "nth_user_position",
+      "trim_transcript_cells_to_nth_user",
+      "user_positions_iter"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app_backtrack.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app_backtrack.py"
+    ],
+    "anchors": [
+      "BacktrackSelection",
+      "BacktrackState",
+      "PendingBacktrackRollback",
+      "reset_backtrack_state",
+      "trim_transcript_cells_drop_last_n_user_turns",
+      "user_count",
+      "NO_PREVIOUS_MESSAGE_TO_EDIT",
+      "backtrack_selection",
+      "has_backtrack_target",
+      "nth_user_position",
+      "trim_transcript_cells_to_nth_user",
+      "user_positions_iter"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

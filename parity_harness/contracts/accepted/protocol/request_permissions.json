@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-protocol.request_permissions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "request_permissions",
+    "source": "codex/codex-rs/protocol/src/request_permissions.rs",
+    "anchors": [
+      "PermissionGrantScope",
+      "RequestPermissionProfile",
+      "RequestPermissionsArgs",
+      "RequestPermissionsEvent",
+      "RequestPermissionsResponse",
+      "is_empty"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/request_permissions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/request_permissions.py"
+    ],
+    "anchors": [
+      "PermissionGrantScope",
+      "RequestPermissionProfile",
+      "RequestPermissionsArgs",
+      "RequestPermissionsEvent",
+      "RequestPermissionsResponse",
+      "is_empty"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_request_permissions.py"
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "contract_id": "codex-linux-sandbox.proxy_routing",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-linux-sandbox",
+    "module": "proxy_routing",
+    "source": "codex/codex-rs/linux-sandbox/src/proxy_routing.rs",
+    "anchors": [
+      "ProxyRouteSpec",
+      "activate_proxy_routes_in_netns",
+      "prepare_host_proxy_route_spec",
+      "PROXY_ENV_KEYS",
+      "PROXY_SOCKET_DIR_PREFIX",
+      "PlannedProxyRoute",
+      "ProxyRouteEntry",
+      "ProxyRoutePlan",
+      "cleanup_proxy_socket_dir",
+      "cleanup_stale_proxy_socket_dirs_in",
+      "default_proxy_port",
+      "is_loopback_host"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/linux_sandbox/proxy_routing.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/linux_sandbox/proxy_routing.py"
+    ],
+    "anchors": [
+      "ProxyRouteSpec",
+      "activate_proxy_routes_in_netns",
+      "prepare_host_proxy_route_spec",
+      "PROXY_ENV_KEYS",
+      "PROXY_SOCKET_DIR_PREFIX",
+      "PlannedProxyRoute",
+      "ProxyRouteEntry",
+      "ProxyRoutePlan",
+      "cleanup_proxy_socket_dir",
+      "cleanup_stale_proxy_socket_dirs_in",
+      "default_proxy_port",
+      "is_loopback_host"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_core_spawn_landlock.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_bazel_bwrap_rs.py",
+    "tests/test_linux_sandbox_bundled_bwrap_rs.py",
+    "tests/test_linux_sandbox_bwrap_rs.py",
+    "tests/test_linux_sandbox_exec_util_rs.py",
+    "tests/test_linux_sandbox_landlock_rs.py",
+    "tests/test_linux_sandbox_launcher_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_linux_sandbox_linux_run_main_rs.py",
+    "tests/test_linux_sandbox_main_rs.py",
+    "tests/test_linux_sandbox_proxy_routing_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

@@ -1,6 +1,9 @@
+from pycodex.features import Feature, Features
+from pycodex.protocol import ServiceTier
 from pycodex.tui.chatwidget.service_tiers import (
     SERVICE_TIER_DEFAULT_REQUEST_VALUE,
     ChatWidgetServiceTierState,
+    Config,
     ModelPreset,
     ServiceTierCommand,
     ServiceTierPreset,
@@ -8,12 +11,14 @@ from pycodex.tui.chatwidget.service_tiers import (
     fast_mode_config,
 )
 
+FAST_TIER = ServiceTier.FAST.request_value()
+
 
 def _fast_model(default_service_tier: str | None = None) -> ModelPreset:
     return ModelPreset(
         model="gpt-5.4",
         service_tiers=(
-            ServiceTierPreset(id="fast"),
+            ServiceTierPreset(id=FAST_TIER),
         ),
         default_service_tier=default_service_tier,
     )
@@ -23,7 +28,7 @@ def _catalog_model() -> dict[str, object]:
     return {
         "model": "gpt-5.4",
         "service_tiers": [
-            {"id": "fast", "name": "Fast", "description": "Quicker responses"},
+            {"id": FAST_TIER, "name": "Fast", "description": "Quicker responses"},
         ],
         "default_service_tier": None,
     }
@@ -38,7 +43,7 @@ def test_service_tier_commands_lowercase_catalog_names() -> None:
     )
 
     assert state.current_model_service_tier_commands() == [
-        ServiceTierCommand(id="fast", name="fast", description="Quicker responses")
+        ServiceTierCommand(id=FAST_TIER, name="fast", description="Quicker responses")
     ]
 
 
@@ -54,7 +59,7 @@ def test_sync_service_tier_commands_records_enabled_flag_and_current_model_comma
 
     assert state.service_tier_commands_enabled is True
     assert state.service_tier_commands == (
-        ServiceTierCommand(id="fast", name="fast", description="Quicker responses"),
+        ServiceTierCommand(id=FAST_TIER, name="fast", description="Quicker responses"),
     )
 
 
@@ -68,10 +73,10 @@ def test_fast_toggle_updates_and_persists_local_service_tier() -> None:
 
     state.toggle_fast_mode_from_ui()
 
-    assert state.configured_service_tier() == "fast"
+    assert state.configured_service_tier() == FAST_TIER
     assert state.events == [
-        ServiceTierSelectionEvent.override_turn_context("fast"),
-        ServiceTierSelectionEvent.persist_selection("fast"),
+        ServiceTierSelectionEvent.override_turn_context(FAST_TIER),
+        ServiceTierSelectionEvent.persist_selection(FAST_TIER),
     ]
 
 
@@ -100,13 +105,13 @@ def test_fast_toggle_noops_when_current_model_has_no_fast_tier() -> None:
 def test_service_tier_toggle_turns_selected_tier_back_to_default() -> None:
     # Rust parity: chatwidget::service_tiers::toggle_service_tier_from_ui
     state = ChatWidgetServiceTierState(
-        config=fast_mode_config(True, service_tier="fast"),
+        config=fast_mode_config(True, service_tier=FAST_TIER),
         model="gpt-5.4",
         models=(_catalog_model(),),
     )
 
     state.toggle_service_tier_from_ui(
-        ServiceTierCommand(id="fast", name="fast", description="Quicker responses")
+        ServiceTierCommand(id=FAST_TIER, name="fast", description="Quicker responses")
     )
 
     assert state.configured_service_tier() == SERVICE_TIER_DEFAULT_REQUEST_VALUE
@@ -149,12 +154,29 @@ def test_should_show_fast_status_requires_fast_supported_and_chatgpt_account() -
         has_chatgpt_account=True,
     )
 
-    assert state.should_show_fast_status("gpt-5.4", "fast")
+    assert state.should_show_fast_status("gpt-5.4", FAST_TIER)
     assert not state.should_show_fast_status("gpt-5.4", None)
-    assert not state.should_show_fast_status("other", "fast")
+    assert not state.should_show_fast_status("other", FAST_TIER)
 
     state.has_chatgpt_account = False
-    assert not state.should_show_fast_status("gpt-5.4", "fast")
+    assert not state.should_show_fast_status("gpt-5.4", FAST_TIER)
+
+
+def test_effective_service_tier_accepts_core_features_type() -> None:
+    # Rust production Config stores codex_core::features::Features, not the
+    # small TUI test FeatureSet used by the semantic state tests above.
+    state = ChatWidgetServiceTierState(
+        config=Config(
+            service_tier=FAST_TIER,
+            features=Features({Feature.FAST_MODE}),
+        ),
+        model="gpt-5.4",
+        models=(_fast_model(),),
+        has_chatgpt_account=True,
+    )
+
+    assert state.current_service_tier() == FAST_TIER
+    assert state.should_show_fast_status("gpt-5.4", state.current_service_tier())
 
 
 def test_set_service_tier_refreshes_effective_tier_and_surfaces() -> None:
@@ -162,10 +184,10 @@ def test_set_service_tier_refreshes_effective_tier_and_surfaces() -> None:
     state = ChatWidgetServiceTierState(
         config=fast_mode_config(True),
         model="gpt-5.4",
-        models=(_fast_model(default_service_tier="fast"),),
+        models=(_fast_model(default_service_tier=FAST_TIER),),
     )
 
-    assert state.current_service_tier() == "fast"
+    assert state.current_service_tier() == FAST_TIER
     state.set_service_tier(SERVICE_TIER_DEFAULT_REQUEST_VALUE)
 
     assert state.configured_service_tier() == SERVICE_TIER_DEFAULT_REQUEST_VALUE
@@ -179,7 +201,7 @@ def test_service_tier_update_for_core_delegates_resolution_for_current_model() -
     state = ChatWidgetServiceTierState(
         config=fast_mode_config(True, service_tier="unsupported"),
         model="gpt-5.4",
-        models=(_fast_model(default_service_tier="fast"),),
+        models=(_fast_model(default_service_tier=FAST_TIER),),
     )
 
     assert state.service_tier_update_for_core() == SERVICE_TIER_DEFAULT_REQUEST_VALUE
@@ -194,16 +216,16 @@ def test_model_support_lookup_and_fast_tier_lookup_use_current_model_catalog() -
             {
                 "model": "other",
                 "service_tiers": [
-                    {"id": "fast", "name": "Fast", "description": "Other fast"},
+                    {"id": FAST_TIER, "name": "Fast", "description": "Other fast"},
                 ],
             },
         ),
     )
 
-    assert state.model_supports_service_tier("gpt-5.4", "fast") is True
+    assert state.model_supports_service_tier("gpt-5.4", FAST_TIER) is True
     assert state.model_supports_service_tier("gpt-5.4", "flex") is False
     assert state.current_model_fast_service_tier() == ServiceTierCommand(
-        id="fast",
+        id=FAST_TIER,
         name="fast",
         description="Quicker responses",
     )

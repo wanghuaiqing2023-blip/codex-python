@@ -7,12 +7,12 @@ This is the standard-library slice of
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
 from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.mention_counts import build_skill_name_counts
 from pycodex.core.plugins.mentions import (
     ToolMentionKind,
     extract_tool_mentions,
@@ -21,23 +21,6 @@ from pycodex.core.plugins.mentions import (
 )
 
 JsonValue = Any
-
-
-def build_skill_name_counts(
-    skills: Iterable[SkillMetadata | Mapping[str, JsonValue] | Any],
-    disabled_paths: Iterable[Path | str] = (),
-) -> tuple[dict[str, int], dict[str, int]]:
-    disabled = {_path_key(path) for path in disabled_paths}
-    exact_counts: Counter[str] = Counter()
-    lower_counts: Counter[str] = Counter()
-    for skill in skills:
-        metadata = _coerce_skill_metadata(skill)
-        path = _skill_path_key(metadata)
-        if path is not None and path in disabled:
-            continue
-        exact_counts[metadata.name] += 1
-        lower_counts[metadata.name.lower()] += 1
-    return dict(exact_counts), dict(lower_counts)
 
 
 def text_mentions_skill(text: str, skill_name: str) -> bool:

@@ -1,4 +1,5 @@
 import asyncio
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -2282,12 +2283,16 @@ async def test_shutdown_signal_non_unix_ignores_hangup_waiter() -> None:
 @pytest.mark.asyncio
 async def test_run_main_executes_default_runtime_orchestration() -> None:
     # Rust: run_main delegates to Stdio/VSCode/default-auth runtime startup.
+    stdin = io.StringIO("")
+    stdout = io.StringIO()
     result = await run_main(
         arg0_paths=object(),
         cli_config_overrides={},
         loader_overrides={},
         strict_config=False,
         default_analytics_enabled=False,
+        stdin=stdin,
+        stdout=stdout,
     )
 
     assert isinstance(result, AppServerRuntimeResult)

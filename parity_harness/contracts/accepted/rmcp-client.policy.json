@@ -1,0 +1,29 @@
+{
+  "scope": "rmcp-client",
+  "rust_root": "codex/codex-rs/rmcp-client",
+  "python_root": "pycodex/rmcp_client",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "bin::rmcp_test_server",
+    "bin::test_stdio_server",
+    "bin::test_streamable_http_server",
+    "crate::auth_status",
+    "crate::elicitation_client_service",
+    "crate::executor_process_transport",
+    "crate::http_client_adapter",
+    "crate::http_client_adapter::www_authenticate",
+    "crate::in_process_transport",
+    "crate::logging_client_handler",
+    "crate::oauth",
+    "crate::perform_oauth_login",
+    "crate::program_resolver",
+    "crate::rmcp_client",
+    "crate::stdio_server_launcher",
+    "crate::stdio_server_launcher::private",
+    "crate::utils"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

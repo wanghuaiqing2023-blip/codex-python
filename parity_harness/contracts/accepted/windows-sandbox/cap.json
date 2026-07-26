@@ -1,0 +1,77 @@
+{
+  "contract_id": "codex-windows-sandbox.cap",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "cap",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/cap.rs",
+    "anchors": [
+      "CapSids",
+      "cap_sid_file",
+      "load_or_create_cap_sids",
+      "workspace_cap_sid_for_cwd",
+      "workspace_write_cap_sid_for_root",
+      "workspace_write_root_contains_path",
+      "workspace_write_root_overlaps_path",
+      "workspace_write_root_specificity",
+      "writable_root_cap_sid_for_path"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/cap.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/cap.py"
+    ],
+    "anchors": [
+      "CapSids",
+      "cap_sid_file",
+      "load_or_create_cap_sids",
+      "workspace_cap_sid_for_cwd",
+      "workspace_write_cap_sid_for_root",
+      "workspace_write_root_contains_path",
+      "workspace_write_root_overlaps_path",
+      "workspace_write_root_specificity",
+      "writable_root_cap_sid_for_path"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_cli_debug_windows_sandbox_native.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_core_unified_exec_windows_sandbox.py",
+    "tests/test_core_windows_sandbox_execution.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py",
+    "tests/test_windows_sandbox_acl.py",
+    "tests/test_windows_sandbox_cap.py",
+    "tests/test_windows_sandbox_capture.py",
+    "tests/test_windows_sandbox_desktop.py",
+    "tests/test_windows_sandbox_elevated.py",
+    "tests/test_windows_sandbox_identity.py",
+    "tests/test_windows_sandbox_process.py",
+    "tests/test_windows_sandbox_resolved_permissions.py",
+    "tests/test_windows_sandbox_setup_orchestrator.py",
+    "tests/test_windows_sandbox_spawn_prep.py",
+    "tests/test_windows_sandbox_token.py"
+  ]
+}

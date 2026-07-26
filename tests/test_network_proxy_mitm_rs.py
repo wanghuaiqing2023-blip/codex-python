@@ -3,25 +3,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from pycodex.network_proxy import (
-    ConfigState,
-    InjectedHeaderConfig,
-    MitmHook,
-    MitmHookActions,
-    MitmHookActionsConfig,
-    MitmHookConfig,
-    MitmHookMatchConfig,
-    MitmPolicyContext,
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
     NetworkMode,
     NetworkProxyConfig,
-    NetworkProxyConstraints,
-    NetworkProxyState,
-    REASON_METHOD_NOT_ALLOWED,
-    REASON_MITM_HOOK_DENIED,
-    REASON_NOT_ALLOWED_LOCAL,
-    ResolvedInjectedHeader,
-    SecretSource,
-    StaticNetworkProxyReloader,
+)
+from pycodex.network_proxy.mitm import (
+    MitmPolicyContext,
     apply_mitm_hook_actions,
     authority_header_value,
     build_https_uri,
@@ -30,6 +18,26 @@ from pycodex.network_proxy import (
     path_and_query,
     path_for_log,
 )
+from pycodex.network_proxy.mitm_hook import (
+    InjectedHeaderConfig,
+    MitmHook,
+    MitmHookActions,
+    MitmHookActionsConfig,
+    MitmHookConfig,
+    MitmHookMatchConfig,
+    ResolvedInjectedHeader,
+    SecretSource,
+)
+from pycodex.network_proxy.reasons import (
+    REASON_METHOD_NOT_ALLOWED,
+    REASON_MITM_HOOK_DENIED,
+    REASON_NOT_ALLOWED_LOCAL,
+)
+from pycodex.network_proxy.runtime import (
+    ConfigState,
+    NetworkProxyState,
+)
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def github_write_hook() -> MitmHookConfig:

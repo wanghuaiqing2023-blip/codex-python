@@ -2,13 +2,13 @@
 from types import SimpleNamespace
 
 from pycodex.core.codex_thread import CodexThread, CodexThreadSettingsOverrides, SETTINGS_UNSET
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.protocol import CollaborationMode, ModeKind, ReasoningEffort, Settings, ThreadSettingsOverrides
 
 
 class CodexThreadUnittestTests(unittest.IsolatedAsyncioTestCase):
     async def test_thread_settings_update_preserves_absent_effort(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             collaboration_mode=CollaborationMode(
                 mode=ModeKind.DEFAULT,
@@ -30,7 +30,7 @@ class CodexThreadUnittestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update.collaboration_mode.settings.developer_instructions, "keep this")
 
     async def test_thread_settings_update_allows_explicit_effort_clear(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             collaboration_mode=CollaborationMode(
                 mode=ModeKind.DEFAULT,
@@ -69,4 +69,5 @@ class CodexThreadUnittestTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ from pycodex.core.spawn import (
     StdioPolicy,
     build_spawn_child_request,
 )
+from pycodex.core.landlock import spawn_command_under_linux_sandbox
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile
 
 
@@ -188,6 +190,32 @@ class SpawnAndLandlockTests(unittest.TestCase):
         self.assertIs(request.network, network)
         self.assertEqual(request.network_sandbox_policy, NetworkSandboxPolicy.ENABLED)
         self.assertEqual(request.effective_env(), {"K": "V", "MANAGED_NETWORK": "1"})
+
+    def test_spawn_command_under_linux_sandbox_uses_core_landlock_owner(self) -> None:
+        # Rust source: codex-rs/core/src/landlock.rs::spawn_command_under_linux_sandbox.
+        captured = []
+
+        async def spawn(request):
+            captured.append(request)
+            return "child"
+
+        result = asyncio.run(
+            spawn_command_under_linux_sandbox(
+                "/opt/codex/codex",
+                ["echo", "ok"],
+                "/work",
+                PermissionProfile.external(NetworkSandboxPolicy.RESTRICTED),
+                "/sandbox",
+                False,
+                StdioPolicy.INHERIT,
+                None,
+                {"K": "V"},
+                spawn_child_async=spawn,
+            )
+        )
+
+        self.assertEqual(result, "child")
+        self.assertEqual(captured[0].program, Path("/opt/codex/codex"))
 
     def test_allow_network_for_proxy_mirrors_boolean_input(self) -> None:
         # Rust test: codex-rs/sandboxing/src/landlock_tests.rs::proxy_network_requires_managed_requirements.

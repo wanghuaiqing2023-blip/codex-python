@@ -1,0 +1,187 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "connectors",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 6,
+    "python_files": 6,
+    "modules_with_candidates": 6,
+    "modules_with_anchors": 6
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-connectors",
+        "module": "crate",
+        "source": "codex/codex-rs/connectors/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/connectors/__init__.py",
+          "anchor_candidates": [
+            "CONNECTORS_CACHE_TTL",
+            "ConnectorDirectoryCacheContext",
+            "ConnectorDirectoryCacheKey",
+            "DirectoryApp",
+            "DirectoryListResponse",
+            "cached_directory_connectors",
+            "list_all_connectors_with_options",
+            "connector_install_url",
+            "connector_name_slug",
+            "list_directory_connectors",
+            "list_workspace_connectors",
+            "normalize_connector_value"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-connectors",
+        "module": "accessible",
+        "source": "codex/codex-rs/connectors/src/accessible.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/connectors/accessible.py",
+          "anchor_candidates": [
+            "AccessibleConnectorTool",
+            "collect_accessible_connectors"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-connectors",
+        "module": "directory_cache",
+        "source": "codex/codex-rs/connectors/src/directory_cache.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/connectors/directory_cache.py",
+          "anchor_candidates": [
+            "CONNECTOR_DIRECTORY_DISK_CACHE_SCHEMA_VERSION",
+            "ConnectorDirectoryCacheContext",
+            "cache_path",
+            "load_cached_directory_connectors_from_disk",
+            "write_cached_directory_connectors_to_disk",
+            "CONNECTOR_DIRECTORY_DISK_CACHE_DIR"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-connectors",
+        "module": "filter",
+        "source": "codex/codex-rs/connectors/src/filter.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/connectors/filter.py",
+          "anchor_candidates": [
+            "filter_disallowed_connectors",
+            "filter_tool_suggest_discoverable_connectors",
+            "DISALLOWED_CONNECTOR_IDS",
+            "FIRST_PARTY_CHAT_DISALLOWED_CONNECTOR_IDS",
+            "is_connector_id_allowed",
+            "is_first_party_chat_originator"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-connectors",
+        "module": "merge",
+        "source": "codex/codex-rs/connectors/src/merge.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/connectors/merge.py",
+          "anchor_candidates": [
+            "merge_connectors",
+            "merge_plugin_connectors",
+            "merge_plugin_connectors_with_accessible",
+            "plugin_connector_to_app_info"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-connectors",
+        "module": "metadata",
+        "source": "codex/codex-rs/connectors/src/metadata.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/connectors/metadata.py",
+          "anchor_candidates": [
+            "connector_display_label",
+            "connector_install_url",
+            "connector_mention_slug",
+            "sanitize_name",
+            "sort_connectors_by_accessibility_and_name"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.status_controls",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::status_controls",
+    "source": "codex/codex-rs/tui/src/chatwidget/status_controls.rs",
+    "anchors": [
+      "add_status_output",
+      "cancel_status_line_setup",
+      "cancel_terminal_title_setup",
+      "finish_status_rate_limit_refresh",
+      "open_status_line_setup",
+      "open_terminal_title_setup",
+      "preview_terminal_title",
+      "refresh_status_line",
+      "revert_terminal_title_setup_preview",
+      "set_active_agent_label",
+      "set_status",
+      "set_status_header"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/status_controls.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/status_controls.py"
+    ],
+    "anchors": [
+      "add_status_output",
+      "cancel_status_line_setup",
+      "cancel_terminal_title_setup",
+      "finish_status_rate_limit_refresh",
+      "open_status_line_setup",
+      "open_terminal_title_setup",
+      "preview_terminal_title",
+      "refresh_status_line",
+      "revert_terminal_title_setup_preview",
+      "set_active_agent_label",
+      "set_status",
+      "set_status_header"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

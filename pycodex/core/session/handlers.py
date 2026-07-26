@@ -43,17 +43,17 @@ from pycodex.rollout import (
 )
 from pycodex.core.tasks.compact import CompactTask
 from pycodex.core.tasks.regular import RegularTask
-
-
-USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY = "active_turn_auxiliary"
-AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX = (
-    "The user has manually approved a specific action that was previously `Rejected`."
+from pycodex.core.tasks import spawn_task as spawn_session_task
+from pycodex.core.tasks.user_shell import (
+    UserShellCommandMode,
+    UserShellCommandTask,
+    execute_user_shell_command,
 )
 
 
-@dataclass(frozen=True)
-class UserShellCommandTask:
-    command: str
+AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX = (
+    "The user has manually approved a specific action that was previously `Rejected`."
+)
 
 
 @dataclass(frozen=True)
@@ -820,29 +820,27 @@ async def run_user_shell_command(sess: Any, sub_id: str, command: str) -> None:
         active = await _maybe_await(active_getter())
         if active is not None:
             turn_context, cancellation_token = active
-            executor = getattr(sess, "execute_user_shell_command", None)
-            if callable(executor):
-                await _maybe_await(
-                    executor(
-                        turn_context,
-                        command,
-                        cancellation_token,
-                        USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY,
-                    )
+            asyncio.create_task(
+                execute_user_shell_command(
+                    sess,
+                    turn_context,
+                    command,
+                    cancellation_token,
+                    UserShellCommandMode.ACTIVE_TURN_AUXILIARY,
                 )
-                return
-            auxiliary = getattr(sess, "run_user_shell_command_active_turn_auxiliary", None)
-            if callable(auxiliary):
-                await _maybe_await(auxiliary(turn_context, command, cancellation_token))
-                return
+            )
+            return
 
     new_turn = getattr(sess, "new_default_turn_with_sub_id", None)
     if callable(new_turn):
         turn_context = await _maybe_await(new_turn(sub_id))
     else:
         turn_context = await _maybe_await(getattr(sess, "new_default_turn")())
-    spawn_task = getattr(sess, "spawn_task")
-    await _maybe_await(spawn_task(turn_context, [], UserShellCommandTask(command)))
+    spawn_task = getattr(sess, "spawn_task", None)
+    if callable(spawn_task):
+        await _maybe_await(spawn_task(turn_context, [], UserShellCommandTask.new(command)))
+        return
+    await spawn_session_task(sess, turn_context, [], UserShellCommandTask.new(command))
 
 
 async def compact(sess: Any, sub_id: str) -> None:
@@ -1294,6 +1292,4 @@ __all__ = [
     "user_input_or_turn",
     "user_input_or_turn_inner",
     "UserInputTurnInput",
-    "UserShellCommandTask",
-    "USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY",
 ]

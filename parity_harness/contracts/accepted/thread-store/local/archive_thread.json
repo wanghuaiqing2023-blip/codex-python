@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-thread-store.local.archive_thread",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-thread-store",
+    "module": "local::archive_thread",
+    "source": "codex/codex-rs/thread-store/src/local/archive_thread.rs",
+    "anchors": [
+      "archive_thread"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/thread_store/local/archive_thread.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/thread_store/local/archive_thread.py"
+    ],
+    "anchors": [
+      "archive_thread"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_thread_store_local_archive_unarchive_rs.py"
+  ]
+}

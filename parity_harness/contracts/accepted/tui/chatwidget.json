@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget",
+    "source": "codex/codex-rs/tui/src/chatwidget.rs",
+    "anchors": [
+      "ActiveCellTranscriptKey",
+      "ChatWidget",
+      "ChatWidgetInit",
+      "ExternalEditorState",
+      "InterruptedTurnNoticeMode",
+      "ReplayKind",
+      "TurnAbortReason",
+      "active_cell_transcript_hyperlink_lines",
+      "active_cell_transcript_key",
+      "add_debug_config_output",
+      "add_diff_in_progress",
+      "add_error_message"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/__init__.py"
+    ],
+    "anchors": [
+      "ActiveCellTranscriptKey",
+      "ChatWidget",
+      "ChatWidgetInit",
+      "ExternalEditorState",
+      "InterruptedTurnNoticeMode",
+      "ReplayKind",
+      "TurnAbortReason",
+      "active_cell_transcript_hyperlink_lines",
+      "active_cell_transcript_key",
+      "add_debug_config_output",
+      "add_diff_in_progress",
+      "add_error_message"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

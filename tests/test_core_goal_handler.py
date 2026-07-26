@@ -13,10 +13,12 @@ from pycodex.core.tools.handlers.goal import (
     InMemoryGoalStore,
     UpdateGoalHandler,
     completion_budget_report,
+    parse_create_goal_arguments,
+)
+from pycodex.core.tools.handlers.goal_spec import (
     create_create_goal_tool,
     create_get_goal_tool,
     create_update_goal_tool,
-    parse_create_goal_arguments,
 )
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.router import FunctionCallError

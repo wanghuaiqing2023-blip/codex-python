@@ -32,7 +32,8 @@ from pycodex.config.hook_config import ManagedHooksRequirementsToml
 from pycodex.config.mcp_types import AppToolApproval
 from pycodex.execpolicy import Decision
 from pycodex.protocol.config_types import ApprovalsReviewer, AskForApproval, WebSearchMode
-from pycodex.protocol.models import NetworkSandboxPolicy, PermissionProfile
+from pycodex.protocol.models import PermissionProfile
+from pycodex.protocol.permissions import NetworkSandboxPolicy
 
 
 def test_network_requirements_canonical_domains_and_unix_sockets() -> None:

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.multi_select_picker",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::multi_select_picker",
+    "source": "codex/codex-rs/tui/src/bottom_pane/multi_select_picker.rs",
+    "anchors": [
+      "CancelCallback",
+      "ChangeCallBack",
+      "ConfirmCallback",
+      "MultiSelectItem",
+      "MultiSelectPicker",
+      "MultiSelectPickerBuilder",
+      "PreviewCallback",
+      "build",
+      "builder",
+      "close",
+      "enable_ordering",
+      "items"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/multi_select_picker.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/multi_select_picker.py"
+    ],
+    "anchors": [
+      "CancelCallback",
+      "ChangeCallBack",
+      "ConfirmCallback",
+      "MultiSelectItem",
+      "MultiSelectPicker",
+      "MultiSelectPickerBuilder",
+      "PreviewCallback",
+      "build",
+      "builder",
+      "close",
+      "enable_ordering",
+      "items"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

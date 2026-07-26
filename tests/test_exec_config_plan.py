@@ -36,6 +36,7 @@ from pycodex.exec import (
 )
 from pycodex.arg0 import Arg0DispatchPaths
 from pycodex.features import Feature
+from pycodex.core.config.permissions import ProjectTrust
 from pycodex.protocol import (
     AltScreenMode,
     AskForApproval,
@@ -255,6 +256,27 @@ class ExecConfigPlanTests(unittest.TestCase):
 
         self.assertIs(overrides.approval_policy, AskForApproval.NEVER)
         self.assertIs(overrides.sandbox_mode, SandboxMode.READ_ONLY)
+
+    def test_dangerous_bypass_sets_never_and_full_access_for_interactive_tui(self):
+        # Rust CLI maps --dangerously-bypass-approvals-and-sandbox to the
+        # complete YOLO pair regardless of trusted-project defaults.
+        cli = replace(
+            parse_exec_args(["prompt"]),
+            dangerously_bypass_approvals_and_sandbox=True,
+        )
+
+        overrides = exec_harness_overrides_from_cli(
+            cli,
+            config_toml={
+                "approval_policy": "on-request",
+                "sandbox_mode": "read-only",
+            },
+            interactive=True,
+            active_project=ProjectTrust(trusted=True),
+        )
+
+        self.assertIs(overrides.approval_policy, AskForApproval.NEVER)
+        self.assertIs(overrides.sandbox_mode, SandboxMode.DANGER_FULL_ACCESS)
 
     def test_exec_harness_overrides_serializes_granular_approval_policy(self):
         granular = GranularApprovalConfig(

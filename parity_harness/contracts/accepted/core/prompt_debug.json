@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.prompt_debug",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "prompt_debug",
+    "source": "codex/codex-rs/core/src/prompt_debug.rs",
+    "anchors": [
+      "build_prompt_input",
+      "build_prompt_input_from_session"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/prompt_debug.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/prompt_debug.py"
+    ],
+    "anchors": [
+      "build_prompt_input",
+      "build_prompt_input_from_session"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

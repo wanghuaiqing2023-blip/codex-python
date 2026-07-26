@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-debug-client.main.output",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-debug-client",
+    "module": "main::output",
+    "source": "codex/codex-rs/debug-client/src/output.rs",
+    "anchors": [
+      "LabelColor",
+      "Output",
+      "client_line",
+      "format_label",
+      "new",
+      "prompt",
+      "server_json_line",
+      "server_line",
+      "set_prompt",
+      "PromptState"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/debug_client/output.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/debug_client/output.py"
+    ],
+    "anchors": [
+      "LabelColor",
+      "Output",
+      "client_line",
+      "format_label",
+      "new",
+      "prompt",
+      "server_json_line",
+      "server_line",
+      "set_prompt",
+      "PromptState"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

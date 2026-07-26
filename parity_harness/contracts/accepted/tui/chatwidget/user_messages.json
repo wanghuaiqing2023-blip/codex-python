@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.user_messages",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::user_messages",
+    "source": "codex/codex-rs/tui/src/chatwidget/user_messages.rs",
+    "anchors": [
+      "PendingSteer",
+      "PendingSteerCompareKey",
+      "QueueDrain",
+      "QueuedUserMessage",
+      "ShellEscapePolicy",
+      "ThreadComposerState",
+      "ThreadInputState",
+      "UserMessage",
+      "UserMessageDisplay",
+      "UserMessageHistoryOverride",
+      "UserMessageHistoryRecord",
+      "app_server_text_elements"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/user_messages.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/user_messages.py"
+    ],
+    "anchors": [
+      "PendingSteer",
+      "PendingSteerCompareKey",
+      "QueueDrain",
+      "QueuedUserMessage",
+      "ShellEscapePolicy",
+      "ThreadComposerState",
+      "ThreadInputState",
+      "UserMessage",
+      "UserMessageDisplay",
+      "UserMessageHistoryOverride",
+      "UserMessageHistoryRecord",
+      "app_server_text_elements"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

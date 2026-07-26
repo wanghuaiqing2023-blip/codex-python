@@ -173,6 +173,20 @@ def test_handle_command_execution_started_groups_active_exec_calls_and_suppresse
     assert "wait-1" in state.running_commands
 
 
+def test_command_start_projects_status_visibility_to_shared_bottom_pane_owner():
+    # Rust chatwidget::command_lifecycle calls BottomPane::ensure_status_indicator
+    # directly; the Python module boundary must project to that shared owner.
+    projected: list[str] = []
+    state = CommandLifecycleState()
+    state.bind_status_projection(ensure_status_indicator=lambda: projected.append("visible"))
+
+    state.handle_command_execution_started_now(
+        CommandExecutionItem("call-1", "echo one", "user_shell")
+    )
+
+    assert projected == ["visible"]
+
+
 def test_output_delta_updates_recent_chunks_and_active_exec_cell_revision():
     state = CommandLifecycleState()
     state.track_unified_exec_process_begin("call-1", "proc-1", "echo one")

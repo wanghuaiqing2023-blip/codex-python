@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-tui.app.platform_actions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::platform_actions",
+    "source": "codex/codex-rs/tui/src/app/platform_actions.rs",
+    "anchors": [
+      "WindowsSandboxState",
+      "side_return_shortcut_matches",
+      "spawn_world_writable_scan",
+      "send_world_writable_scan_failed"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/platform_actions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/platform_actions.py"
+    ],
+    "anchors": [
+      "WindowsSandboxState",
+      "side_return_shortcut_matches",
+      "spawn_world_writable_scan",
+      "send_world_writable_scan_failed"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "pycodex/tui/app/tests/test_platform_actions.py",
+    "pycodex/tui/app/tests/test_runtime.py"
+  ]
+}

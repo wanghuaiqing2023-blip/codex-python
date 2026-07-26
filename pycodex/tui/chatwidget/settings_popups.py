@@ -110,6 +110,7 @@ class TerminalSettingsPopupController:
     app_runtime: Any
 
     def open_view(self) -> Any:
+        from ..app_event import AppEvent as RuntimeAppEvent
         from ..bottom_pane.list_selection_view import (
             SelectionItem as BottomPaneSelectionItem,
             SelectionViewParams as BottomPaneSelectionViewParams,
@@ -120,19 +121,27 @@ class TerminalSettingsPopupController:
         speaker = getattr(config, "realtime_speaker", None) or "System default"
         return BottomPaneSelectionViewParams(
             title="Settings",
-            subtitle="Configure realtime microphone and speaker selection.",
+            subtitle="Configure settings for Codex.",
             items=[
                 BottomPaneSelectionItem(
                     name="Microphone",
                     description=f"Current: {microphone}",
-                    is_disabled=True,
-                    disabled_reason="Realtime device selection is not enabled in this runtime.",
+                    actions=[
+                        RuntimeAppEvent.open_realtime_audio_device_selection(
+                            RealtimeAudioDeviceKind.MICROPHONE
+                        )
+                    ],
+                    dismiss_on_select=True,
                 ),
                 BottomPaneSelectionItem(
                     name="Speaker",
                     description=f"Current: {speaker}",
-                    is_disabled=True,
-                    disabled_reason="Realtime device selection is not enabled in this runtime.",
+                    actions=[
+                        RuntimeAppEvent.open_realtime_audio_device_selection(
+                            RealtimeAudioDeviceKind.SPEAKER
+                        )
+                    ],
+                    dismiss_on_select=True,
                 ),
             ],
         )

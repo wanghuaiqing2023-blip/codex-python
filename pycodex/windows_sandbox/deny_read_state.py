@@ -10,45 +10,16 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-from .acl import add_deny_read_ace, revoke_ace
-from .path_normalization import canonicalize_path
+from .acl import revoke_ace
+from .deny_read_acl import (
+    apply_deny_read_acls,
+    lexical_path_key,
+)
 from .setup import sandbox_dir
 from .token import LocalSid
 
 
 DENY_READ_ACL_STATE_FILE = "deny_read_acl_state.json"
-
-
-def lexical_path_key(path: str | Path) -> str:
-    return str(Path(path)).replace("\\", "/").rstrip("/").lower()
-
-
-def plan_deny_read_acl_paths(paths: Iterable[str | Path]) -> tuple[Path, ...]:
-    planned: list[Path] = []
-    seen: set[str] = set()
-    for raw in paths:
-        path = Path(raw)
-        _append_unique(planned, seen, path)
-        if path.exists():
-            _append_unique(planned, seen, canonicalize_path(path))
-    return tuple(planned)
-
-
-def apply_deny_read_acls(paths: Iterable[str | Path], sid: LocalSid | int) -> tuple[Path, ...]:
-    applied: list[Path] = []
-    added: list[Path] = []
-    try:
-        for path in plan_deny_read_acl_paths(paths):
-            if not path.exists():
-                path.mkdir(parents=True, exist_ok=True)
-            if add_deny_read_ace(path, sid):
-                added.append(path)
-            applied.append(path)
-    except BaseException:
-        for path in added:
-            revoke_ace(path, sid)
-        raise
-    return tuple(applied)
 
 
 def sync_persistent_deny_read_acls(
@@ -89,17 +60,7 @@ def _load_state(path: Path) -> dict[str, list[str]]:
     return result
 
 
-def _append_unique(output: list[Path], seen: set[str], path: Path) -> None:
-    key = lexical_path_key(path)
-    if key not in seen:
-        seen.add(key)
-        output.append(path)
-
-
 __all__ = [
     "DENY_READ_ACL_STATE_FILE",
-    "apply_deny_read_acls",
-    "lexical_path_key",
-    "plan_deny_read_acl_paths",
     "sync_persistent_deny_read_acls",
 ]

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.compact",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "compact",
+    "source": "codex/codex-rs/core/src/compact.rs",
+    "anchors": [
+      "CompactionAnalyticsAttempt",
+      "InitialContextInjection",
+      "SUMMARIZATION_PROMPT",
+      "SUMMARY_PREFIX",
+      "begin",
+      "build_compacted_history",
+      "collect_user_messages",
+      "compaction_status_from_result",
+      "content_items_to_text",
+      "insert_initial_context_before_last_real_user_or_summary",
+      "is_summary_message",
+      "run_compact_task"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/compact.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/compact.py"
+    ],
+    "anchors": [
+      "CompactionAnalyticsAttempt",
+      "InitialContextInjection",
+      "SUMMARIZATION_PROMPT",
+      "SUMMARY_PREFIX",
+      "begin",
+      "build_compacted_history",
+      "collect_user_messages",
+      "compaction_status_from_result",
+      "content_items_to_text",
+      "insert_initial_context_before_last_real_user_or_summary",
+      "is_summary_message",
+      "run_compact_task"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

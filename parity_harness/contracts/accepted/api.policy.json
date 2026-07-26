@@ -1,0 +1,18 @@
+{
+  "scope": "api",
+  "rust_root": "codex/codex-rs/codex-api",
+  "python_root": "pycodex/codex_api",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [
+    "pycodex/codex_api/endpoint/realtime_websocket/methods_common_constants.py"
+  ],
+  "allowed_unowned": [
+    {
+      "path": "pycodex/codex_api/endpoint/_websocket_client.py",
+      "reason": "Python-only dependency adapter for RFC 6455/RFC 7692 transport that Rust delegates to tokio-tungstenite; it is isolated behind endpoint::responses_websocket and does not claim a Rust module."
+    }
+  ]
+}

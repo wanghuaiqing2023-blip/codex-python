@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.chatwidget.hook_lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::hook_lifecycle",
+    "source": "codex/codex-rs/tui/src/chatwidget/hook_lifecycle.rs",
+    "anchors": [
+      "finish_active_hook_cell_if_idle",
+      "flush_completed_hook_output",
+      "on_hook_completed",
+      "on_hook_started",
+      "schedule_hook_timer_if_needed",
+      "update_due_hook_visibility"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/hook_lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/hook_lifecycle.py"
+    ],
+    "anchors": [
+      "finish_active_hook_cell_if_idle",
+      "flush_completed_hook_output",
+      "on_hook_completed",
+      "on_hook_started",
+      "schedule_hook_timer_if_needed",
+      "update_due_hook_visibility"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

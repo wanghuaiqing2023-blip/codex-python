@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.exec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "exec",
+    "source": "codex/codex-rs/core/src/exec.rs",
+    "anchors": [
+      "DEFAULT_EXEC_COMMAND_TIMEOUT_MS",
+      "ExecCapturePolicy",
+      "ExecExpiration",
+      "ExecExpirationOutcome",
+      "ExecParams",
+      "IO_DRAIN_TIMEOUT_MS",
+      "MAX_EXEC_OUTPUT_DELTAS_PER_CALL",
+      "WindowsSandboxFilesystemOverrides",
+      "cancel_when_either",
+      "is_likely_sandbox_denied",
+      "resolve_windows_elevated_filesystem_overrides",
+      "resolve_windows_restricted_token_filesystem_overrides"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/exec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/exec.py"
+    ],
+    "anchors": [
+      "DEFAULT_EXEC_COMMAND_TIMEOUT_MS",
+      "ExecCapturePolicy",
+      "ExecExpiration",
+      "ExecExpirationOutcome",
+      "ExecParams",
+      "IO_DRAIN_TIMEOUT_MS",
+      "MAX_EXEC_OUTPUT_DELTAS_PER_CALL",
+      "WindowsSandboxFilesystemOverrides",
+      "cancel_when_either",
+      "is_likely_sandbox_denied",
+      "resolve_windows_elevated_filesystem_overrides",
+      "resolve_windows_restricted_token_filesystem_overrides"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

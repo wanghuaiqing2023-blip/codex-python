@@ -18,6 +18,7 @@ from pycodex.tui.bottom_pane.list_selection_view import (
     side_by_side_layout_widths,
 )
 from pycodex.tui.bottom_pane.bottom_pane_view import ViewCompletion
+from pycodex.tui.bottom_pane.popup_consts import standard_popup_hint_line
 from pycodex.tui.bottom_pane.selection_tabs import SelectionTab
 
 
@@ -199,12 +200,35 @@ def test_terminal_lines_project_header_rows_and_selected_item_style():
 
     assert lines[0].text == "Select Model and Effort"
     assert lines[1].text == "Access legacy models"
-    assert lines[2].text.startswith("> 1. * current")
-    assert lines[2].selected is True
-    assert lines[3].selected is False
-    assert moved[2].selected is False
-    assert moved[3].text.startswith("> 2.   other")
-    assert moved[3].selected is True
+    assert lines[2].text == ""
+    assert lines[3].text.startswith("> 1. * current")
+    assert lines[3].selected is True
+    assert lines[4].selected is False
+    assert moved[3].selected is False
+    assert moved[4].text.startswith("> 2.   other")
+    assert moved[4].selected is True
+
+
+def test_title_subtitle_and_footer_match_rust_selection_view_layout() -> None:
+    # Rust: list_selection_view::{renders_blank_line_between_title_and_items_without_subtitle,
+    # renders_blank_line_between_subtitle_and_items} and standard popup footer rendering.
+    view = _view(
+        [SelectionItem(name="Read Only", description="Codex can read files")],
+        title="Select Approval Mode",
+        subtitle="Switch between Codex approval presets",
+        footer_hint=standard_popup_hint_line(),
+    )
+
+    lines = view.terminal_lines(width=80)
+
+    assert [line.text for line in lines] == [
+        "Select Approval Mode",
+        "Switch between Codex approval presets",
+        "",
+        "> 1.   Read Only  Codex can read files",
+        "",
+        "Press enter to confirm or esc to go back",
+    ]
 
 
 def test_key_dispatch_and_semantic_render_helpers_cover_runtime_boundaries():

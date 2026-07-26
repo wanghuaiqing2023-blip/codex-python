@@ -1,4 +1,4 @@
-﻿"""Local in-process runtime bridge for ``codex exec`` user turns."""
+"""Local in-process runtime bridge for ``codex exec`` user turns."""
 
 from __future__ import annotations
 
@@ -35,8 +35,6 @@ def _goal_debug_trace(event: str, **fields: Any) -> None:
 
 from pycodex.apply_patch import (
     apply_patch_action_to_disk,
-    convert_apply_patch_to_protocol,
-    create_apply_patch_freeform_tool,
     maybe_parse_apply_patch_verified,
     parse_patch,
     verify_apply_patch_args,
@@ -53,20 +51,21 @@ from pycodex.execpolicy import (
     match_exec_policy_rules_for_command,
 )
 from pycodex.features import Feature
-from pycodex.core.tools.handlers.utils import (
+from pycodex.core.tools.handlers import (
     merge_permission_profiles,
     normalize_additional_permissions,
     permissions_are_preapproved,
 )
-from pycodex.core.http_transport import (
-    http_sampling_stream_max_retries,
+from pycodex.core.client import (
     http_transport_config_from_provider,
     model_client_http_sampler,
     model_client_websocket_preferred_sampler,
     prewarm_model_client_websocket_session,
-    response_items_from_responses_payload,
-    run_user_turn_http_sampling_from_session,
 )
+from pycodex.core.apply_patch import convert_apply_patch_to_protocol
+from pycodex.core.tools.handlers.apply_patch_spec import create_apply_patch_freeform_tool
+from pycodex.codex_api.endpoint.responses import response_items_from_responses_payload
+from pycodex.core.session.turn.runtime import run_user_turn_http_sampling_from_session
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.handlers.request_permissions import RequestPermissionsHandler
 from pycodex.core.review_format import format_review_findings_block, render_review_output_text
@@ -88,7 +87,7 @@ from pycodex.rollout import (
     read_thread_item_from_rollout,
     read_session_meta_line,
 )
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.core.mcp import McpManager
 from pycodex.core.state.service import SessionServices
 from pycodex.core.shell import default_user_shell
@@ -107,11 +106,8 @@ from pycodex.core.session.turn.runtime import (
     build_user_turn_responses_request_from_session,
     run_user_turn_sampling_from_session,
 )
-from pycodex.core.tools.handlers.view_image import (
-    ViewImageHandler,
-    ViewImageToolOptions,
-    create_view_image_tool,
-)
+from pycodex.core.tools.handlers.view_image import ViewImageHandler
+from pycodex.core.tools.handlers.view_image_spec import ViewImageToolOptions, create_view_image_tool
 from pycodex.core.unified_exec import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS as CORE_UNIFIED_EXEC_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     DEFAULT_MAX_OUTPUT_TOKENS as CORE_UNIFIED_EXEC_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -266,6 +262,8 @@ class LocalHttpProvider:
     auth: Any = None
     name: str = "OpenAI"
     supports_websockets: bool = True
+    request_max_retries: int = 4
+    stream_max_retries: int = 5
     stream_idle_timeout_ms: int = 300_000
     websocket_connect_timeout_ms: int = 15_000
 
@@ -277,6 +275,8 @@ class LocalHttpProvider:
             name=self.name,
             base_url=self.base_url,
             supports_websockets=self.supports_websockets,
+            request_max_retries_value=self.request_max_retries,
+            stream_max_retries_value=self.stream_max_retries,
             stream_idle_timeout_ms=self.stream_idle_timeout_ms,
             websocket_connect_timeout_ms=self.websocket_connect_timeout_ms,
         )
@@ -1244,6 +1244,30 @@ def build_default_local_http_exec_runtime(
         base_url=base_url,
         auth=resolved_auth,
         supports_websockets=_config_provider_supports_websockets(config_toml, provider_id, base_url),
+        request_max_retries=_config_provider_non_negative_int(
+            config_toml,
+            provider_id,
+            "request_max_retries",
+            4,
+        ),
+        stream_max_retries=_config_provider_non_negative_int(
+            config_toml,
+            provider_id,
+            "stream_max_retries",
+            5,
+        ),
+        stream_idle_timeout_ms=_config_provider_non_negative_int(
+            config_toml,
+            provider_id,
+            "stream_idle_timeout_ms",
+            300_000,
+        ),
+        websocket_connect_timeout_ms=_config_provider_non_negative_int(
+            config_toml,
+            provider_id,
+            "websocket_connect_timeout_ms",
+            15_000,
+        ),
     )
     model_info = LocalHttpModelInfo(
         slug=model,
@@ -1392,6 +1416,20 @@ def _config_provider_env_key(config_toml: Mapping[str, Any] | None, provider_id:
         return None
     env_key = provider.get("env_key")
     return env_key if isinstance(env_key, str) and env_key else None
+
+
+def _config_provider_non_negative_int(
+    config_toml: Mapping[str, Any] | None,
+    provider_id: str | None,
+    key: str,
+    default: int,
+) -> int:
+    if config_toml is None or provider_id is None:
+        return default
+    providers = config_toml.get("model_providers")
+    provider = providers.get(provider_id) if isinstance(providers, Mapping) else None
+    value = provider.get(key) if isinstance(provider, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else default
 
 
 def _config_provider_supports_parallel_tool_calls(
@@ -2174,6 +2212,7 @@ def _in_memory_exec_session(
     config: ExecSessionConfig,
     model_info: Any,
     *,
+    model_client: ModelClient | None = None,
     provider: Any = None,
     auth_manager: Any = None,
     models_manager: Any = None,
@@ -2183,7 +2222,7 @@ def _in_memory_exec_session(
     state_db: Any = None,
     goal_tools_enabled: bool = False,
     session_source: SessionSource | None = None,
-) -> InMemoryCodexSession:
+) -> Session:
     reasoning_summary = config.model_reasoning_summary
     if reasoning_summary is None:
         reasoning_summary = getattr(model_info, "default_reasoning_summary", "auto")
@@ -2195,7 +2234,7 @@ def _in_memory_exec_session(
     session_provider = _session_model_provider(provider, auth_manager)
     if models_manager is None:
         models_manager = _models_manager_for_exec_session(session_config, session_provider)
-    return InMemoryCodexSession(
+    return Session(
         cwd=config.cwd,
         shell=default_user_shell(),
         thread_id=thread_id or "thread",
@@ -2204,7 +2243,11 @@ def _in_memory_exec_session(
         auth_manager=auth_manager,
         model_provider_id=config.model_provider_id or "openai",
         session_config=session_config,
-        services=_exec_session_services(session_config, models_manager=models_manager),
+        services=_exec_session_services(
+            session_config,
+            models_manager=models_manager,
+            model_client=model_client,
+        ),
         user_instructions=config.user_instructions,
         developer_instructions=config.developer_instructions,
         base_instructions=_base_instructions_from_model_info(model_info, config.personality),
@@ -2243,13 +2286,19 @@ def _in_memory_exec_session(
     )
 
 
-def _exec_session_services(config: ExecSessionConfig, *, models_manager: Any = None) -> SessionServices:
+def _exec_session_services(
+    config: ExecSessionConfig,
+    *,
+    models_manager: Any = None,
+    model_client: ModelClient | None = None,
+) -> SessionServices:
     codex_home = Path(find_codex_home())
     plugins_manager = PluginsManager.new(codex_home)
     skills_manager = SkillsManager.new(codex_home, config.bundled_skills_enabled())
     return SessionServices(
         mcp_connection_manager=McpConnectionManager(config.mcp_servers),
         models_manager=models_manager,
+        model_client=model_client,
         unified_exec_manager=UnifiedExecProcessManager(),
         skills_manager=skills_manager,
         plugins_manager=plugins_manager,
@@ -2271,13 +2320,14 @@ def create_exec_core_session(
     config: ExecSessionConfig,
     model_info: Any,
     *,
+    model_client: ModelClient | None = None,
     provider: Any = None,
     auth_manager: Any = None,
     models_manager: Any = None,
     event_observer: Any = None,
     thread_id: str | None = None,
     state_db: Any = None,
-) -> InMemoryCodexSession:
+) -> Session:
     """Create the reusable core session owned by an interactive thread.
 
     Rust keeps normal user turns and goal continuation turns on the same
@@ -2288,6 +2338,7 @@ def create_exec_core_session(
     return _in_memory_exec_session(
         config,
         model_info,
+        model_client=model_client,
         provider=provider,
         auth_manager=auth_manager,
         models_manager=models_manager,
@@ -2301,10 +2352,11 @@ def create_exec_core_session(
 
 
 def refresh_exec_core_session(
-    session: InMemoryCodexSession,
+    session: Session,
     config: ExecSessionConfig,
     model_info: Any,
     *,
+    model_client: ModelClient | None = None,
     provider: Any = None,
     auth_manager: Any = None,
     event_observer: Any = None,
@@ -2313,6 +2365,8 @@ def refresh_exec_core_session(
 
     session.cwd = Path(config.cwd)
     session.model_info = model_info
+    if model_client is not None:
+        session.services.model_client = model_client
     if provider is not None:
         session.provider = _session_model_provider(provider, auth_manager)
     if auth_manager is not None:
@@ -2437,7 +2491,7 @@ async def run_exec_user_turn_core_sampling(
     session_event_observer: Any = None,
     cancellation_token: Any = None,
     codex_home: Path | str | None = None,
-    core_session: InMemoryCodexSession | None = None,
+    core_session: Session | None = None,
     auth_manager: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a prepared ``codex exec`` user turn through the in-memory core loop."""
@@ -2456,6 +2510,7 @@ async def run_exec_user_turn_core_sampling(
     session = core_session or create_exec_core_session(
         config,
         model_info,
+        model_client=model_client,
         provider=provider,
         auth_manager=auth_manager,
         event_observer=session_event_observer,
@@ -2466,6 +2521,7 @@ async def run_exec_user_turn_core_sampling(
         session,
         config,
         model_info,
+        model_client=model_client,
         provider=provider,
         auth_manager=auth_manager,
         event_observer=session_event_observer,
@@ -2560,7 +2616,7 @@ async def run_exec_user_turn_core_http_sampling(
     codex_home: Path | str | None = None,
     session_event_observer: Any = None,
     cancellation_token: Any = None,
-    core_session: InMemoryCodexSession | None = None,
+    core_session: Session | None = None,
 ) -> UserTurnSamplingResult:
     """Run ``codex exec`` through the in-memory core loop with stdlib HTTP sampling."""
 
@@ -2582,7 +2638,6 @@ async def run_exec_user_turn_core_http_sampling(
         model_client.new_session(),
         transport_config(),
         opener=opener,
-        max_retries=http_sampling_stream_max_retries(provider),
         auth_manager=auth_manager,
         config_factory=transport_config,
     )
@@ -2624,7 +2679,7 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
     stream_event_observer: Any = None,
     model_session: Any = None,
     cancellation_token: Any = None,
-    core_session: InMemoryCodexSession | None = None,
+    core_session: Session | None = None,
 ) -> UserTurnSamplingResult:
     """Run a core user turn through Rust's websocket-preferred transport shape."""
 
@@ -2655,7 +2710,6 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
         model_session,
         transport_config(),
         opener=opener,
-        max_retries=http_sampling_stream_max_retries(provider),
         auth_manager=auth_manager,
         config_factory=transport_config,
         stream_event_observer=stream_event_observer,
@@ -6202,7 +6256,7 @@ def _usage_is_zero(usage: Usage) -> bool:
     )
 
 
-def _attach_local_http_session_events(error: CodexErr, session: InMemoryCodexSession) -> None:
+def _attach_local_http_session_events(error: CodexErr, session: Session) -> None:
     try:
         object.__setattr__(error, "session_events", tuple(session.emitted_events))
     except Exception:
@@ -6389,7 +6443,3 @@ __all__ = [
     "tool_timeline_items_from_local_http_exec_result",
     "usage_from_local_http_exec_result",
 ]
-
-
-
-

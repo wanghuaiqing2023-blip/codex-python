@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.keymap_setup.picker",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "keymap_setup::picker",
+    "source": "codex/codex-rs/tui/src/keymap_setup/picker.rs",
+    "anchors": [
+      "KEYMAP_ALL_TAB_ID",
+      "KEYMAP_COMMON_TAB_ID",
+      "KEYMAP_CUSTOM_TAB_ID",
+      "KEYMAP_DEBUG_TAB_ID",
+      "KEYMAP_PICKER_VIEW_ID",
+      "KEYMAP_UNBOUND_TAB_ID",
+      "build_keymap_picker_params_for_selected_action_with_filter",
+      "build_keymap_picker_params_with_filter",
+      "KEYMAP_COMMON_ACTIONS",
+      "KEYMAP_CONTEXT_LABEL_WIDTH",
+      "KEYMAP_CONTEXT_TABS",
+      "KEYMAP_ROW_PREFIX_WIDTH"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/keymap_setup/picker.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/keymap_setup/picker.py"
+    ],
+    "anchors": [
+      "KEYMAP_ALL_TAB_ID",
+      "KEYMAP_COMMON_TAB_ID",
+      "KEYMAP_CUSTOM_TAB_ID",
+      "KEYMAP_DEBUG_TAB_ID",
+      "KEYMAP_PICKER_VIEW_ID",
+      "KEYMAP_UNBOUND_TAB_ID",
+      "build_keymap_picker_params_for_selected_action_with_filter",
+      "build_keymap_picker_params_with_filter",
+      "KEYMAP_COMMON_ACTIONS",
+      "KEYMAP_CONTEXT_LABEL_WIDTH",
+      "KEYMAP_CONTEXT_TABS",
+      "KEYMAP_ROW_PREFIX_WIDTH"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,16 @@
+{
+  "contract_id": "codex-core-skills.config_rules",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs", "crate": "codex-core-skills",
+    "module": "config_rules", "source": "codex/codex-rs/core-skills/src/config_rules.rs",
+    "anchors": ["SkillConfigRule", "SkillConfigRuleSelector", "SkillConfigRules", "resolve_disabled_skill_paths", "skill_config_rules_from_stack", "skill_config_rule_selector"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_skills/config_rules.py", "layout": "module-file",
+    "implementation_files": ["pycodex/core_skills/config_rules.py"],
+    "anchors": ["SkillConfigRule", "SkillConfigRuleSelector", "SkillConfigRules", "resolve_disabled_skill_paths", "skill_config_rules_from_stack", "skill_config_rule_selector"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

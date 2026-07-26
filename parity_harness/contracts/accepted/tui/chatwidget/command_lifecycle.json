@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.command_lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::command_lifecycle",
+    "source": "codex/codex-rs/tui/src/chatwidget/command_lifecycle.rs",
+    "anchors": [
+      "flush_unified_exec_wait_streak",
+      "handle_command_execution_completed_now",
+      "handle_command_execution_started_now",
+      "on_command_execution_completed",
+      "on_command_execution_started",
+      "on_exec_command_output_delta",
+      "on_terminal_interaction",
+      "sync_unified_exec_footer",
+      "track_unified_exec_output_chunk",
+      "track_unified_exec_process_begin",
+      "track_unified_exec_process_end",
+      "MAX_RECENT_CHUNKS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/command_lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/command_lifecycle.py"
+    ],
+    "anchors": [
+      "flush_unified_exec_wait_streak",
+      "handle_command_execution_completed_now",
+      "handle_command_execution_started_now",
+      "on_command_execution_completed",
+      "on_command_execution_started",
+      "on_exec_command_output_delta",
+      "on_terminal_interaction",
+      "sync_unified_exec_footer",
+      "track_unified_exec_output_chunk",
+      "track_unified_exec_process_begin",
+      "track_unified_exec_process_end",
+      "MAX_RECENT_CHUNKS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

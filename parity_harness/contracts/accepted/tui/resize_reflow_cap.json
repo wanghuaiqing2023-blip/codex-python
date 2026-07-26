@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.resize_reflow_cap",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "resize_reflow_cap",
+    "source": "codex/codex-rs/tui/src/resize_reflow_cap.rs",
+    "anchors": [
+      "resize_reflow_max_rows",
+      "ALACRITTY_RESIZE_REFLOW_MAX_ROWS",
+      "VSCODE_RESIZE_REFLOW_MAX_ROWS",
+      "WEZTERM_RESIZE_REFLOW_MAX_ROWS",
+      "WINDOWS_TERMINAL_RESIZE_REFLOW_MAX_ROWS",
+      "auto_resize_reflow_max_rows",
+      "resize_reflow_max_rows_for"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/resize_reflow_cap.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/resize_reflow_cap.py"
+    ],
+    "anchors": [
+      "resize_reflow_max_rows",
+      "ALACRITTY_RESIZE_REFLOW_MAX_ROWS",
+      "VSCODE_RESIZE_REFLOW_MAX_ROWS",
+      "WEZTERM_RESIZE_REFLOW_MAX_ROWS",
+      "WINDOWS_TERMINAL_RESIZE_REFLOW_MAX_ROWS",
+      "auto_resize_reflow_max_rows",
+      "resize_reflow_max_rows_for"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

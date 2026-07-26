@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.skills_helpers",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "skills_helpers",
+    "source": "codex/codex-rs/tui/src/skills_helpers.rs",
+    "anchors": [
+      "SKILL_NAME_TRUNCATE_LEN",
+      "match_skill",
+      "skill_description",
+      "skill_display_name",
+      "truncate_skill_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/skills_helpers.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/skills_helpers.py"
+    ],
+    "anchors": [
+      "SKILL_NAME_TRUNCATE_LEN",
+      "match_skill",
+      "skill_description",
+      "skill_display_name",
+      "truncate_skill_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

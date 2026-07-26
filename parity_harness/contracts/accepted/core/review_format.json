@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.review_format",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "review_format",
+    "source": "codex/codex-rs/core/src/review_format.rs",
+    "anchors": [
+      "format_review_findings_block",
+      "render_review_output_text",
+      "REVIEW_FALLBACK_MESSAGE",
+      "format_location"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/review_format.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/review_format.py"
+    ],
+    "anchors": [
+      "format_review_findings_block",
+      "render_review_output_text",
+      "REVIEW_FALLBACK_MESSAGE",
+      "format_location"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

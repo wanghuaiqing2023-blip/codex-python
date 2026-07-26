@@ -1,4 +1,4 @@
-"""Rust integration parity for ``core/tests/suite/model_overrides.rs``.
+﻿"""Rust integration parity for ``core/tests/suite/model_overrides.rs``.
 
 Thread settings updates are runtime/session overrides.  They must not persist
 back into ``CODEX_HOME/config.toml`` and must not create the file when it is
@@ -12,16 +12,16 @@ from pathlib import Path
 import pytest
 
 from pycodex.core.session.handlers import update_thread_settings
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.protocol import ReasoningEffort, ThreadSettingsOverrides
 
 
-async def _apply_model_override(home: Path, *, config_contents: str | None) -> tuple[Path, InMemoryCodexSession]:
+async def _apply_model_override(home: Path, *, config_contents: str | None) -> tuple[Path, Session]:
     config_path = home / "config.toml"
     if config_contents is not None:
         config_path.write_text(config_contents, encoding="utf-8")
 
-    session = InMemoryCodexSession(cwd=home, reasoning_effort=ReasoningEffort.MEDIUM)
+    session = Session(cwd=home, reasoning_effort=ReasoningEffort.MEDIUM)
     await update_thread_settings(
         session,
         "settings-1",
@@ -56,3 +56,4 @@ async def test_thread_settings_update_does_not_create_config_file(tmp_path: Path
     assert session.collaboration_mode.settings.model == "o3"
     assert session.reasoning_effort == ReasoningEffort.HIGH
     assert session.emitted_events[-1].type == "thread_settings_applied"
+

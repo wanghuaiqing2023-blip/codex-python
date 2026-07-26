@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-network-proxy.policy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "policy",
+    "source": "codex/codex-rs/network-proxy/src/policy.rs",
+    "anchors": [
+      "Host",
+      "allows",
+      "as_str",
+      "compile_allowlist_globset",
+      "compile_denylist_globset",
+      "is_global_wildcard_domain_pattern",
+      "is_loopback_host",
+      "is_non_public_ip",
+      "normalize_host",
+      "parse",
+      "parse_for_constraints"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/policy.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/policy.py"
+    ],
+    "anchors": [
+      "Host",
+      "allows",
+      "as_str",
+      "compile_allowlist_globset",
+      "compile_denylist_globset",
+      "is_global_wildcard_domain_pattern",
+      "is_loopback_host",
+      "is_non_public_ip",
+      "normalize_host",
+      "parse",
+      "parse_for_constraints"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

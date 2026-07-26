@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.context.image_generation_instructions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::image_generation_instructions",
+    "source": "codex/codex-rs/core/src/context/image_generation_instructions.rs",
+    "anchors": [
+      "ImageGenerationInstructions",
+      "new",
+      "body",
+      "role"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/image_generation_instructions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/image_generation_instructions.py"
+    ],
+    "anchors": [
+      "ImageGenerationInstructions",
+      "new",
+      "body",
+      "role"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -287,8 +287,12 @@ class ThreadManager:
         agent_control: Any = None,
         environment_manager: Any = None,
         models_manager: Any = None,
+        extensions: Any = None,
+        analytics_events_client: Any = None,
         state_db: Any = None,
         thread_store: Any = None,
+        installation_id: str = "",
+        attestation_provider: Any = None,
         default_environment_selections: Mapping[str, Any] | None = None,
     ) -> None:
         self._thread_factory = thread_factory
@@ -300,8 +304,12 @@ class ThreadManager:
         self._agent_control = agent_control
         self._environment_manager = environment_manager
         self._models_manager = models_manager
+        self._extensions = extensions
+        self._analytics_events_client = analytics_events_client
         self._state_db = state_db
         self._thread_store = thread_store
+        self._installation_id = str(installation_id)
+        self._attestation_provider = attestation_provider
         self._default_environment_selections = dict(default_environment_selections or {})
         self._threads: MutableMapping[str, Any] = {}
         self._thread_metadata: MutableMapping[str, dict[str, Any]] = {}
@@ -343,6 +351,18 @@ class ThreadManager:
 
     def state_db(self) -> Any:
         return self._state_db
+
+    def extensions(self) -> Any:
+        return self._extensions
+
+    def analytics_events_client(self) -> Any:
+        return self._analytics_events_client
+
+    def installation_id(self) -> str:
+        return self._installation_id
+
+    def attestation_provider(self) -> Any:
+        return self._attestation_provider
 
     async def list_models(self, refresh_strategy: Any = None) -> list[Any]:
         if self._models_manager is None:

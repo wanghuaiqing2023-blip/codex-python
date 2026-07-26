@@ -15,12 +15,14 @@ from pycodex.tui.chatwidget.status_surfaces import (
     five_hour_status_window,
     parse_items_with_invalids,
     permissions_display,
+    refresh_runtime_status_surfaces,
     run_state_status_text,
     run_terminal_live_status_text_show,
     run_terminal_turn_status_refresh,
     run_terminal_turn_status_render,
     should_render_terminal_turn_status,
     status_surface_selections,
+    runtime_status_line_text,
     terminal_live_status_projection,
     terminal_live_status_text,
     terminal_turn_elapsed_seconds,
@@ -41,11 +43,37 @@ from pycodex.tui.chatwidget.status_surfaces import (
     terminal_live_status_transition_to_inactive,
     terminal_live_status_transition_to_status,
 )
-from pycodex.tui.chatwidget.status_state import TerminalTitleStatusKind
+from pycodex.tui.chatwidget.status_state import StatusIndicatorState, TerminalTitleStatusKind
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 
 
 NOW = datetime(2026, 6, 12, tzinfo=timezone.utc)
+
+
+def test_runtime_status_line_uses_configured_items_and_warns_once() -> None:
+    # Rust tests:
+    # - status_line_context_used_renders_labeled_percent
+    # - status_line_invalid_items_warn_once
+    from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime, TuiAppRuntime
+
+    active = ExecFunctionActiveThreadRuntime(lambda _prompt: 0)
+    active.session_config = SimpleNamespace(
+        tui_status_line=["context-used", "bogus_item", "bogus_item"],
+        tui_status_line_use_colors=False,
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active)
+
+    assert runtime_status_line_text(runtime) == "Context 0% used"
+    refresh_runtime_status_surfaces(runtime.chat_widget, runtime)
+    refresh_runtime_status_surfaces(runtime.chat_widget, runtime)
+
+    warnings = [
+        cell
+        for cell in runtime.pending_history_cells
+        if "Ignored invalid status line item" in str(getattr(cell, "text", cell))
+    ]
+    assert len(warnings) == 1
+    assert '"bogus_item"' in str(getattr(warnings[0], "text", warnings[0]))
 
 
 class FlushTrackingStringIO(io.StringIO):
@@ -153,7 +181,7 @@ def test_terminal_live_turn_status_text_and_tick_gate() -> None:
     # Rust owner: codex-tui::chatwidget::status_surfaces drives live status
     # strings; tui::terminal_runtime only writes the resulting surface.
     assert terminal_live_status_text("Working") == "\u2022 Working"
-    assert terminal_live_status_text("retry", "slow") == "\u2022 retry \u2514 slow"
+    assert terminal_live_status_text("retry", "slow") == "\u2022 retry\n  \u2502 slow"
     assert terminal_turn_status_header(2) == "Working (2s \u2022 esc to interrupt)"
     assert terminal_turn_status_header(-1) == "Working (0s \u2022 esc to interrupt)"
     assert should_render_terminal_turn_status(
@@ -191,6 +219,18 @@ def test_terminal_live_status_projection_clips_for_bottom_pane_row() -> None:
     assert terminal_live_status_projection(None, columns=10).line is None
 
 
+def test_terminal_live_status_projection_preserves_status_detail_rows() -> None:
+    projection = terminal_live_status_projection(
+        "\u2022 Reconnecting... 2/5\n  \u2502 Request timed out",
+        columns=80,
+    )
+
+    assert projection.lines == (
+        "\u2022 Reconnecting... 2/5",
+        "  \u2502 Request timed out",
+    )
+
+
 def test_run_terminal_live_status_text_show_builds_text_and_delegates_surface_effects() -> None:
     # Rust owner: codex-tui::chatwidget::status_surfaces owns live status text
     # refresh; codex-tui::bottom_pane owns status-indicator footprint effects.
@@ -209,7 +249,7 @@ def test_run_terminal_live_status_text_show_builds_text_and_delegates_surface_ef
         render_bottom_pane=lambda: calls.append("render"),
     )
 
-    assert shown == TerminalLiveStatusSurface.active_status("\u2022 retry \u2514 slow")
+    assert shown == TerminalLiveStatusSurface.active_status("\u2022 retry\n  \u2502 slow")
     assert calls == ["resize", "render"]
 
 
@@ -225,7 +265,9 @@ def test_terminal_status_surface_writer_updates_state_before_render() -> None:
         writer,
         stdin_is_terminal=lambda: True,
         layout_active=lambda: True,
-        check_resize=lambda: calls.append("resize"),
+        check_resize=lambda: calls.append(
+            ("resize", holder["status"].live_status)
+        ),
         render_bottom_pane=lambda: calls.append(
             ("render", holder["status"].live_status)
         ),
@@ -233,9 +275,36 @@ def test_terminal_status_surface_writer_updates_state_before_render() -> None:
     holder["status"] = status
     status.show_live_status("retry", "slow")
 
-    expected = TerminalLiveStatusSurface.active_status("\u2022 retry \u2514 slow")
+    expected = TerminalLiveStatusSurface.active_status("\u2022 retry\n  \u2502 slow")
     assert status.live_status == expected
-    assert calls == ["resize", ("render", expected)]
+    assert calls == [("resize", expected), ("render", expected)]
+
+
+def test_terminal_status_surface_writer_wraps_retry_details_to_rust_height() -> None:
+    status = TerminalStatusSurfaceWriter(
+        io.StringIO(),
+        terminal_width=lambda: 40,
+        animations_enabled=False,
+    )
+    status.turn_status = TerminalTurnStatusState.inactive().after_render(0)
+
+    status.project_chatwidget_status(
+        StatusIndicatorState(
+            header="Reconnecting... 2/5",
+            details=(
+                "Error while reading the server response: stream closed before "
+                "response.completed"
+            ),
+            details_max_lines=3,
+        )
+    )
+
+    assert status.live_status.footprint_height == 4
+    assert status.live_status.render_lines[1:] == (
+        "  \u2502 Error while reading the server",
+        "    response: stream closed before",
+        "    response.completed",
+    )
 
 
 def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None:
@@ -387,7 +456,7 @@ def test_guardian_status_temporarily_owns_and_releases_turn_status_surface() -> 
     status.show_guardian_status("Reviewing approval request", "echo one")
 
     assert status.turn_status.suppressed is True
-    assert status.live_status.render_text == "\u2022 Reviewing approval request \u2514 echo one"
+    assert status.live_status.render_text == "\u2022 Reviewing approval request\n  \u2502 echo one"
 
     status.restore_turn_status("Working")
 

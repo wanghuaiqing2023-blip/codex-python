@@ -1,0 +1,11 @@
+{
+  "scope": "utils-rustls-provider",
+  "rust_root": "codex/codex-rs/utils/rustls-provider",
+  "python_root": "pycodex/utils/rustls_provider",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

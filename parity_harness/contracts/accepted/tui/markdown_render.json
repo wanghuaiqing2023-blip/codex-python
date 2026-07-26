@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.markdown_render",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "markdown_render",
+    "source": "codex/codex-rs/tui/src/markdown_render.rs",
+    "anchors": [
+      "render_markdown_lines_with_width_and_cwd",
+      "render_markdown_text",
+      "render_markdown_text_with_width",
+      "render_markdown_text_with_width_and_cwd",
+      "COLON_LOCATION_SUFFIX_RE",
+      "HASH_LOCATION_SUFFIX_RE",
+      "IndentContext",
+      "LinkState",
+      "MarkdownStyles",
+      "RenderedTableLines",
+      "TABLE_BODY_SEPARATOR_CHAR",
+      "TABLE_CELL_PADDING"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/markdown_render/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/markdown_render/__init__.py"
+    ],
+    "anchors": [
+      "render_markdown_lines_with_width_and_cwd",
+      "render_markdown_text",
+      "render_markdown_text_with_width",
+      "render_markdown_text_with_width_and_cwd",
+      "COLON_LOCATION_SUFFIX_RE",
+      "HASH_LOCATION_SUFFIX_RE",
+      "IndentContext",
+      "LinkState",
+      "MarkdownStyles",
+      "RenderedTableLines",
+      "TABLE_BODY_SEPARATOR_CHAR",
+      "TABLE_CELL_PADDING"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

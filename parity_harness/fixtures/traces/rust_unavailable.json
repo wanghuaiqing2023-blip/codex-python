@@ -1,0 +1,8 @@
+{
+  "source": "rust",
+  "contract_id": "harness-fixture.status",
+  "executable_baseline": false,
+  "baseline_detail": "fixture simulates a Rust executable that is unavailable on this host",
+  "events": []
+}
+

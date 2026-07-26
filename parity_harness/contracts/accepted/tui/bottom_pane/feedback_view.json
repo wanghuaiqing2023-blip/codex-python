@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.feedback_view",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::feedback_view",
+    "source": "codex/codex-rs/tui/src/bottom_pane/feedback_view.rs",
+    "anchors": [
+      "FeedbackAudience",
+      "FeedbackNoteView",
+      "feedback_classification",
+      "feedback_disabled_params",
+      "feedback_selection_params",
+      "feedback_success_cell",
+      "feedback_upload_consent_params",
+      "new",
+      "should_show_feedback_connectivity_details",
+      "BASE_CLI_BUG_ISSUE_URL",
+      "CODEX_FEEDBACK_INTERNAL_URL",
+      "cursor_pos"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/feedback_view.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/feedback_view.py"
+    ],
+    "anchors": [
+      "FeedbackAudience",
+      "FeedbackNoteView",
+      "feedback_classification",
+      "feedback_disabled_params",
+      "feedback_selection_params",
+      "feedback_success_cell",
+      "feedback_upload_consent_params",
+      "new",
+      "should_show_feedback_connectivity_details",
+      "BASE_CLI_BUG_ISSUE_URL",
+      "CODEX_FEEDBACK_INTERNAL_URL",
+      "cursor_pos"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

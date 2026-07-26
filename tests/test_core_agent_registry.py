@@ -9,6 +9,7 @@ from pycodex.core import (
     next_thread_spawn_depth,
     session_depth,
 )
+from pycodex.core.agent.registry import format_agent_nickname
 from pycodex.protocol import AgentPath, SessionSource, SubAgentSource, ThreadId
 from pycodex.protocol.error import CodexErr
 
@@ -18,6 +19,14 @@ def agent_metadata(thread_id: ThreadId, agent_path: AgentPath | None = None) -> 
 
 
 class AgentRegistryTests(unittest.TestCase):
+    def test_format_agent_nickname_adds_ordinals_after_reset(self) -> None:
+        # Rust source: core/src/agent/registry_tests.rs.
+        self.assertEqual(format_agent_nickname("Ada", 0), "Ada")
+        self.assertEqual(format_agent_nickname("Ada", 1), "Ada the 2nd")
+        self.assertEqual(format_agent_nickname("Ada", 2), "Ada the 3rd")
+        self.assertEqual(format_agent_nickname("Ada", 10), "Ada the 11th")
+        self.assertEqual(format_agent_nickname("Ada", 20), "Ada the 21st")
+
     def test_session_depth_defaults_to_zero_for_root_sources(self) -> None:
         self.assertEqual(session_depth(SessionSource.cli()), 0)
 

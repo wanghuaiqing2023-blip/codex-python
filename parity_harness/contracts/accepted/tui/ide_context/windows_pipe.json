@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.ide_context.windows_pipe",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "ide_context::windows_pipe",
+    "source": "codex/codex-rs/tui/src/ide_context/windows_pipe.rs",
+    "anchors": [
+      "WindowsPipeStream",
+      "connect",
+      "set_deadline",
+      "FALSE",
+      "NULL_HANDLE",
+      "OverlappedOperation",
+      "OwnedHandle",
+      "TRUE",
+      "TokenUserBuffer",
+      "as_mut_ptr",
+      "cancel_and_timeout",
+      "complete"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/ide_context/windows_pipe.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/ide_context/windows_pipe.py"
+    ],
+    "anchors": [
+      "WindowsPipeStream",
+      "connect",
+      "set_deadline",
+      "FALSE",
+      "NULL_HANDLE",
+      "OverlappedOperation",
+      "OwnedHandle",
+      "TRUE",
+      "TokenUserBuffer",
+      "as_mut_ptr",
+      "cancel_and_timeout",
+      "complete"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

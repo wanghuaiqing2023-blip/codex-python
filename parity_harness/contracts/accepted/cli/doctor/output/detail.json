@@ -1,0 +1,18 @@
+{
+  "contract_id": "codex-cli.doctor.output.detail",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs", "crate": "codex-cli",
+    "module": "bin::codex::doctor::output::detail",
+    "source": "codex/codex-rs/cli/src/doctor/output/detail.rs",
+    "anchors": ["format_bytes"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cli/doctor/output/detail.py", "layout": "module-file",
+    "implementation_files": ["pycodex/cli/doctor/output/detail.py"],
+    "anchors": ["format_bytes"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_cli_doctor_updates.py"]
+}

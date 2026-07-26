@@ -1,0 +1,71 @@
+{
+  "contract_id": "codex-agent-identity.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-agent-identity",
+    "module": "crate",
+    "source": "codex/codex-rs/agent-identity/src/lib.rs",
+    "anchors": [
+      "AgentBillOfMaterials",
+      "AgentIdentityJwtClaims",
+      "AgentIdentityKey",
+      "AgentTaskAuthorizationTarget",
+      "GeneratedAgentKeyMaterial",
+      "agent_identity_biscuit_url",
+      "agent_identity_jwks_url",
+      "agent_identity_request_id",
+      "agent_registration_url",
+      "agent_task_registration_url",
+      "authorization_header_for_agent_task",
+      "build_abom"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/agent_identity/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/agent_identity/__init__.py"
+    ],
+    "anchors": [
+      "AgentBillOfMaterials",
+      "AgentIdentityJwtClaims",
+      "AgentIdentityKey",
+      "AgentTaskAuthorizationTarget",
+      "GeneratedAgentKeyMaterial",
+      "agent_identity_biscuit_url",
+      "agent_identity_jwks_url",
+      "agent_identity_request_id",
+      "agent_registration_url",
+      "agent_task_registration_url",
+      "authorization_header_for_agent_task",
+      "build_abom"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_agent_identity_lib_rs.py",
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_model_provider_auth_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

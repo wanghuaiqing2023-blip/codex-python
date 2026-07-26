@@ -1,0 +1,500 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "tools",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 18,
+    "python_files": 18,
+    "modules_with_candidates": 17,
+    "modules_with_anchors": 17
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "crate",
+        "source": "codex/codex-rs/tools/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/__init__.py",
+          "anchor_candidates": [
+            "ToolName"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "code_mode",
+        "source": "codex/codex-rs/tools/src/code_mode.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/code_mode.py",
+          "anchor_candidates": [
+            "augment_tool_spec_for_code_mode",
+            "code_mode_name_for_tool_name",
+            "collect_code_mode_exec_prompt_tool_definitions",
+            "collect_code_mode_tool_definitions",
+            "tool_spec_to_code_mode_tool_definition",
+            "code_mode_tool_definitions_for_spec"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "dynamic_tool",
+        "source": "codex/codex-rs/tools/src/dynamic_tool.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/dynamic_tool.py",
+          "anchor_candidates": [
+            "parse_dynamic_tool"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "function_call_error",
+        "source": "codex/codex-rs/tools/src/function_call_error.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/function_call_error.py",
+          "anchor_candidates": [
+            "FunctionCallError"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "image_detail",
+        "source": "codex/codex-rs/tools/src/image_detail.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "json_schema",
+        "source": "codex/codex-rs/tools/src/json_schema.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/json_schema.py",
+          "anchor_candidates": [
+            "AdditionalProperties",
+            "JsonSchema",
+            "JsonSchemaPrimitiveType",
+            "JsonSchemaType",
+            "any_of",
+            "array",
+            "boolean",
+            "integer",
+            "null",
+            "number",
+            "object",
+            "parse_tool_input_schema"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "mcp_tool",
+        "source": "codex/codex-rs/tools/src/mcp_tool.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/mcp_tool.py",
+          "anchor_candidates": [
+            "mcp_call_tool_result_output_schema",
+            "parse_mcp_tool"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "request_plugin_install",
+        "source": "codex/codex-rs/tools/src/request_plugin_install.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/request_plugin_install.py",
+          "anchor_candidates": [
+            "REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE",
+            "REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE",
+            "REQUEST_PLUGIN_INSTALL_PERSIST_KEY",
+            "RequestPluginInstallArgs",
+            "RequestPluginInstallMeta",
+            "RequestPluginInstallResult",
+            "all_requested_connectors_picked_up",
+            "build_request_plugin_install_elicitation_request",
+            "verified_connector_install_completed",
+            "build_request_plugin_install_meta"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "response_history",
+        "source": "codex/codex-rs/tools/src/response_history.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/response_history.py",
+          "anchor_candidates": [
+            "retain_tail_from_last_n_user_messages",
+            "truncate_assistant_output_text_to_token_budget"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "responses_api",
+        "source": "codex/codex-rs/tools/src/responses_api.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/responses_api.py",
+          "anchor_candidates": [
+            "FreeformTool",
+            "FreeformToolFormat",
+            "LoadableToolSpec",
+            "ResponsesApiNamespace",
+            "ResponsesApiNamespaceTool",
+            "ResponsesApiTool",
+            "coalesce_loadable_tool_specs",
+            "default_namespace_description",
+            "dynamic_tool_to_responses_api_tool",
+            "mcp_tool_to_deferred_responses_api_tool",
+            "mcp_tool_to_responses_api_tool",
+            "tool_definition_to_responses_api_tool"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_call",
+        "source": "codex/codex-rs/tools/src/tool_call.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_call.py",
+          "anchor_candidates": [
+            "ConversationHistory",
+            "ToolCall"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_config",
+        "source": "codex/codex-rs/tools/src/tool_config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_config.py",
+          "anchor_candidates": [
+            "ShellCommandBackendConfig",
+            "ToolEnvironmentMode",
+            "ToolUserShellType",
+            "UnifiedExecShellMode",
+            "ZshForkConfig",
+            "from_count",
+            "has_environment",
+            "request_user_input_available_modes",
+            "shell_command_backend_for_features",
+            "shell_type_for_model_and_features"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_definition",
+        "source": "codex/codex-rs/tools/src/tool_definition.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_definition.py",
+          "anchor_candidates": [
+            "ToolDefinition",
+            "into_deferred",
+            "renamed"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_discovery",
+        "source": "codex/codex-rs/tools/src/tool_discovery.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_discovery.py",
+          "anchor_candidates": [
+            "DiscoverablePluginInfo",
+            "DiscoverableTool",
+            "DiscoverableToolAction",
+            "DiscoverableToolType",
+            "LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME",
+            "ListAvailablePluginsToInstallResult",
+            "REQUEST_PLUGIN_INSTALL_TOOL_NAME",
+            "RequestPluginInstallEntry",
+            "TOOL_SEARCH_DEFAULT_LIMIT",
+            "TOOL_SEARCH_TOOL_NAME",
+            "ToolSearchSourceInfo",
+            "collect_request_plugin_install_entries"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_executor",
+        "source": "codex/codex-rs/tools/src/tool_executor.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_executor.py",
+          "anchor_candidates": [
+            "ToolExecutor",
+            "ToolExposure",
+            "exposure",
+            "handle",
+            "spec",
+            "supports_parallel_tool_calls",
+            "tool_name"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_output",
+        "source": "codex/codex-rs/tools/src/tool_output.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_output.py",
+          "anchor_candidates": [
+            "JsonToolOutput",
+            "ToolOutput",
+            "telemetry_preview"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_payload",
+        "source": "codex/codex-rs/tools/src/tool_payload.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_payload.py",
+          "anchor_candidates": [
+            "ToolPayload"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-tools",
+        "module": "tool_spec",
+        "source": "codex/codex-rs/tools/src/tool_spec.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/tools/tool_spec.py",
+          "anchor_candidates": [
+            "ResponsesApiWebSearchFilters",
+            "ResponsesApiWebSearchUserLocation",
+            "ToolSpec",
+            "create_tools_json_for_responses_api",
+            "name"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

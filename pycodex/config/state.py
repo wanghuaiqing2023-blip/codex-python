@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pycodex.network_proxy import ConfigLayerSource
+from pycodex.app_server_protocol.config import ConfigLayerSource
 
 from .fingerprint import record_origins, version_for_toml
 from .key_aliases import normalized_with_key_aliases
@@ -352,15 +352,7 @@ def _insert_layer_by_precedence(layers: list[ConfigLayerEntry], layer: ConfigLay
 
 
 def _source_precedence(source: ConfigLayerSource) -> int:
-    return {
-        "mdm": 0,
-        "legacy_managed_config_toml_from_file": 5,
-        "legacy_managed_config_toml_from_mdm": 5,
-        "system": 1,
-        "user": 2,
-        "project": 3,
-        "session_flags": 4,
-    }.get(source.type, 5)
+    return source.precedence()
 
 
 __all__ = [

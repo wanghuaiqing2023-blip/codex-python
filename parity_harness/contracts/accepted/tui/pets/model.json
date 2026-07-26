@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.pets.model",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets::model",
+    "source": "codex/codex-rs/tui/src/pets/model.rs",
+    "anchors": [
+      "Animation",
+      "AnimationFrame",
+      "CUSTOM_PET_PREFIX",
+      "Pet",
+      "custom_pet_selector",
+      "frame_cache_key",
+      "frame_count",
+      "load_with_codex_home",
+      "total_duration",
+      "AnimationSpec",
+      "FrameSpec",
+      "MAX_ANIMATION_FPS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/model.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pets/model.py"
+    ],
+    "anchors": [
+      "Animation",
+      "AnimationFrame",
+      "CUSTOM_PET_PREFIX",
+      "Pet",
+      "custom_pet_selector",
+      "frame_cache_key",
+      "frame_count",
+      "load_with_codex_home",
+      "total_duration",
+      "AnimationSpec",
+      "FrameSpec",
+      "MAX_ANIMATION_FPS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

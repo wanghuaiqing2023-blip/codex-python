@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.resume_picker",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "resume_picker",
+    "source": "codex/codex-rs/tui/src/resume_picker.rs",
+    "anchors": [
+      "SessionPickerAction",
+      "SessionPickerLaunchContext",
+      "SessionSelection",
+      "SessionTarget",
+      "display_label",
+      "run_fork_picker_with_app_server",
+      "run_resume_picker_from_existing_session_with_app_server",
+      "run_resume_picker_with_app_server",
+      "AltScreenGuard",
+      "BackgroundEvent",
+      "DenseColumns",
+      "DenseSummaryInput"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/resume_picker/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/resume_picker/__init__.py"
+    ],
+    "anchors": [
+      "SessionPickerAction",
+      "SessionPickerLaunchContext",
+      "SessionSelection",
+      "SessionTarget",
+      "display_label",
+      "run_fork_picker_with_app_server",
+      "run_resume_picker_from_existing_session_with_app_server",
+      "run_resume_picker_with_app_server",
+      "AltScreenGuard",
+      "BackgroundEvent",
+      "DenseColumns",
+      "DenseSummaryInput"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

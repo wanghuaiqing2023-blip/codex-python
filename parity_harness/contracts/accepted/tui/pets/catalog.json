@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.pets.catalog",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets::catalog",
+    "source": "codex/codex-rs/tui/src/pets/catalog.rs",
+    "anchors": [
+      "BUILTIN_PETS",
+      "BuiltinPet",
+      "DEFAULT_FRAME_COLUMNS",
+      "DEFAULT_FRAME_HEIGHT",
+      "DEFAULT_FRAME_ROWS",
+      "DEFAULT_FRAME_WIDTH",
+      "SPRITESHEET_HEIGHT",
+      "SPRITESHEET_WIDTH",
+      "builtin_pet"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/catalog.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pets/catalog.py"
+    ],
+    "anchors": [
+      "BUILTIN_PETS",
+      "BuiltinPet",
+      "DEFAULT_FRAME_COLUMNS",
+      "DEFAULT_FRAME_HEIGHT",
+      "DEFAULT_FRAME_ROWS",
+      "DEFAULT_FRAME_WIDTH",
+      "SPRITESHEET_HEIGHT",
+      "SPRITESHEET_WIDTH",
+      "builtin_pet"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

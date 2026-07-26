@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-core-plugins.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "crate",
+    "source": "codex/codex-rs/core-plugins/src/lib.rs",
+    "anchors": [
+      "ConfiguredMarketplace",
+      "ConfiguredMarketplaceListOutcome",
+      "ConfiguredMarketplacePlugin",
+      "LoadedPlugin",
+      "OPENAI_BUNDLED_MARKETPLACE_NAME",
+      "OPENAI_CURATED_MARKETPLACE_NAME",
+      "PluginDetail",
+      "PluginDetailsUnavailableReason",
+      "PluginInstallError",
+      "PluginInstallOutcome",
+      "PluginInstallRequest",
+      "PluginLoadOutcome"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/__init__.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/core_plugins/__init__.py"],
+    "anchors": [
+      "ConfiguredMarketplace",
+      "ConfiguredMarketplaceListOutcome",
+      "ConfiguredMarketplacePlugin",
+      "LoadedPlugin",
+      "OPENAI_BUNDLED_MARKETPLACE_NAME",
+      "OPENAI_CURATED_MARKETPLACE_NAME",
+      "PluginDetail",
+      "PluginDetailsUnavailableReason",
+      "PluginInstallError",
+      "PluginInstallOutcome",
+      "PluginInstallRequest",
+      "PluginLoadOutcome"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

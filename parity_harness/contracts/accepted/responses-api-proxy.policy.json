@@ -1,0 +1,14 @@
+{
+  "scope": "responses-api-proxy",
+  "rust_root": "codex/codex-rs/responses-api-proxy",
+  "python_root": "pycodex/responses_api_proxy",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::dump",
+    "crate::read_api_key"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

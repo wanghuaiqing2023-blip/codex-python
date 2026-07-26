@@ -1,0 +1,6 @@
+{
+  "contract_id": "codex-goal-extension.extension", "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "codex-goal-extension", "module": "extension", "source": "codex/codex-rs/ext/goal/src/extension.rs", "anchors": ["GoalExtension", "GoalExtensionConfig", "install_with_backend", "on_config_changed", "on_thread_resume", "on_thread_start", "on_token_usage", "on_tool_finish", "on_turn_abort", "on_turn_start", "on_turn_stop", "tools"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "pycodex/ext/goal/extension.py", "layout": "module-file", "implementation_files": ["pycodex/ext/goal/extension.py"], "anchors": ["GoalExtension", "GoalExtensionConfig", "install_with_backend", "on_config_changed", "on_thread_resume", "on_thread_start", "on_token_usage", "on_tool_finish", "on_turn_abort", "on_turn_start", "on_turn_stop", "tools"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

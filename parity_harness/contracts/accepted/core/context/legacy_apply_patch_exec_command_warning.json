@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.context.legacy_apply_patch_exec_command_warning",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::legacy_apply_patch_exec_command_warning",
+    "source": "codex/codex-rs/core/src/context/legacy_apply_patch_exec_command_warning.rs",
+    "anchors": [
+      "LegacyApplyPatchExecCommandWarning",
+      "matches_text"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/legacy_apply_patch_exec_command_warning.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/legacy_apply_patch_exec_command_warning.py"
+    ],
+    "anchors": [
+      "LegacyApplyPatchExecCommandWarning",
+      "matches_text"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

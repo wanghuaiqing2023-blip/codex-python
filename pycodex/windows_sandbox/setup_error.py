@@ -67,6 +67,15 @@ class SetupFailure(RuntimeError):
         super().__init__(f"{self.code.value}: {self.message}")
 
 
+def sanitize_setup_metric_tag_value(value: str) -> str:
+    return "".join(
+        character
+        if character.isalnum() or character in {"_", "-", "."}
+        else "_"
+        for character in value
+    )
+
+
 def setup_error_path(codex_home: str | Path) -> Path:
     return Path(codex_home) / ".sandbox" / "setup_error.json"
 
@@ -99,6 +108,7 @@ __all__ = [
     "SetupFailure",
     "clear_setup_error_report",
     "read_setup_error_report",
+    "sanitize_setup_metric_tag_value",
     "setup_error_path",
     "write_setup_error_report",
 ]

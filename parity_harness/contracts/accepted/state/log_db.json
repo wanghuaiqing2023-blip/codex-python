@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-state.log_db",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "log_db",
+    "source": "codex/codex-rs/state/src/log_db.rs",
+    "anchors": [
+      "LogDbLayer",
+      "LogSinkQueueConfig",
+      "start",
+      "start_with_config",
+      "LOG_BATCH_SIZE",
+      "LOG_QUEUE_CAPACITY",
+      "MessageVisitor",
+      "SpanFieldVisitor",
+      "SpanLogContext",
+      "append_fields",
+      "current_process_log_uuid",
+      "event_thread_id"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/log_db.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/log_db.py"
+    ],
+    "anchors": [
+      "LogDbLayer",
+      "LogSinkQueueConfig",
+      "start",
+      "start_with_config",
+      "LOG_BATCH_SIZE",
+      "LOG_QUEUE_CAPACITY",
+      "MessageVisitor",
+      "SpanFieldVisitor",
+      "SpanLogContext",
+      "append_fields",
+      "current_process_log_uuid",
+      "event_thread_id"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

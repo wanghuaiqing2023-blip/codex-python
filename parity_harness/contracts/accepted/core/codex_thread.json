@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.codex_thread",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "codex_thread",
+    "source": "codex/codex-rs/core/src/codex_thread.rs",
+    "anchors": [
+      "CodexThread",
+      "CodexThreadSettingsOverrides",
+      "ThreadConfigSnapshot",
+      "agent_status",
+      "apply_external_goal_clear",
+      "apply_external_goal_set",
+      "apply_goal_resume_runtime_effects",
+      "call_mcp_tool",
+      "config",
+      "config_snapshot",
+      "continue_active_goal_if_idle",
+      "decrement_out_of_band_elicitation_count"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/codex_thread.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/codex_thread.py"
+    ],
+    "anchors": [
+      "CodexThread",
+      "CodexThreadSettingsOverrides",
+      "ThreadConfigSnapshot",
+      "agent_status",
+      "apply_external_goal_clear",
+      "apply_external_goal_set",
+      "apply_goal_resume_runtime_effects",
+      "call_mcp_tool",
+      "config",
+      "config_snapshot",
+      "continue_active_goal_if_idle",
+      "decrement_out_of_band_elicitation_count"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone as utc_timezone
 import os
+from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from pycodex.extension_api import ExtensionData
+from pycodex.protocol import (
+    AskForApproval,
+    FileSystemSandboxPolicy,
+    PermissionProfile,
+    SandboxPolicy,
+    SessionSource,
+    TruncationPolicyConfig,
+    WindowsSandboxLevel,
+)
 
 
 # CLDR's primary (territory 001) mappings for Windows zones commonly seen by
@@ -68,6 +82,49 @@ _WINDOWS_TO_IANA = {
 }
 
 
+@dataclass(frozen=True)
+class TurnContext:
+    cwd: Path
+    turn_id: str | None = None
+    model_info: Any = None
+    provider: Any = None
+    auth_manager: Any = None
+    user_instructions: str | None = None
+    developer_instructions: str | None = None
+    config: Any = None
+    available_models: tuple[Any, ...] = ()
+    permission_profile: PermissionProfile = field(default_factory=PermissionProfile.disabled)
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
+    approval_policy: Any = AskForApproval.ON_REQUEST
+    sandbox_policy: SandboxPolicy = field(default_factory=SandboxPolicy.danger_full_access)
+    file_system_sandbox_policy: FileSystemSandboxPolicy | None = None
+    features: Any = None
+    collaboration_mode: Any = None
+    realtime_active: bool = False
+    personality: Any = None
+    reasoning_effort: Any = None
+    reasoning_summary: Any = "auto"
+    service_tier: Any = None
+    current_date: str | None = None
+    timezone: str | None = None
+    network: Any = None
+    environments: Any = None
+    final_output_json_schema: Any = None
+    goal_tools_enabled: bool = False
+    server_model_warning_emitted: bool = False
+    model_verification_emitted: bool = False
+    truncation_policy: TruncationPolicyConfig = field(
+        default_factory=lambda: TruncationPolicyConfig.tokens(10_000)
+    )
+    session_source: SessionSource = field(default_factory=SessionSource.default)
+    extension_data: ExtensionData | None = None
+    turn_skills: Any = None
+
+    @property
+    def sub_id(self) -> str:
+        return str(self.turn_id or "")
+
+
 def local_time_context() -> tuple[str, str]:
     """Return the local date and IANA zone, with Rust's UTC fallback."""
 
@@ -122,4 +179,4 @@ def _is_iana_timezone(value: str) -> bool:
     return True
 
 
-__all__ = ["local_iana_timezone", "local_time_context"]
+__all__ = ["TurnContext", "local_iana_timezone", "local_time_context"]

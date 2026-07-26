@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.handlers.multi_agents.send_input",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::multi_agents::send_input",
+    "source": "codex/codex-rs/core/src/tools/handlers/multi_agents/send_input.rs",
+    "anchors": [
+      "Handler",
+      "SendInputResult",
+      "SendInputArgs",
+      "code_mode_result",
+      "handle",
+      "log_preview",
+      "matches_kind",
+      "search_info",
+      "spec",
+      "success_for_logging",
+      "to_response_item",
+      "tool_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/multi_agents/send_input.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/multi_agents/send_input.py"
+    ],
+    "anchors": [
+      "Handler",
+      "SendInputResult",
+      "SendInputArgs",
+      "code_mode_result",
+      "handle",
+      "log_preview",
+      "matches_kind",
+      "search_info",
+      "spec",
+      "success_for_logging",
+      "to_response_item",
+      "tool_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

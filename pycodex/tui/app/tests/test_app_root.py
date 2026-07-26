@@ -1,3 +1,8 @@
+"""Parity tests for Rust ``codex-tui::app``.
+
+Rust source: ``codex/codex-rs/tui/src/app.rs``.
+"""
+
 import asyncio
 
 from pycodex.tui.app import (

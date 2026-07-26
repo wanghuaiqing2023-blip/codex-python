@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.pets.ambient",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets::ambient",
+    "source": "codex/codex-rs/tui/src/pets/ambient.rs",
+    "anchors": [
+      "AmbientPet",
+      "AmbientPetDraw",
+      "PetNotificationKind",
+      "draw_request",
+      "image_columns",
+      "image_enabled",
+      "load",
+      "preview_draw_request",
+      "schedule_next_frame",
+      "set_notification",
+      "AnimationFrameTick",
+      "FAILED_LIFETIME"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/ambient.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pets/ambient.py"
+    ],
+    "anchors": [
+      "AmbientPet",
+      "AmbientPetDraw",
+      "PetNotificationKind",
+      "draw_request",
+      "image_columns",
+      "image_enabled",
+      "load",
+      "preview_draw_request",
+      "schedule_next_frame",
+      "set_notification",
+      "AnimationFrameTick",
+      "FAILED_LIFETIME"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

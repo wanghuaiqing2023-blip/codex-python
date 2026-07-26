@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.app.history_ui",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::history_ui",
+    "source": "codex/codex-rs/tui/src/app/history_ui.rs",
+    "anchors": [
+      "clear_terminal_ui",
+      "clear_ui_header_lines",
+      "clear_ui_header_lines_with_version",
+      "open_url_in_browser",
+      "queue_clear_ui_header",
+      "reset_app_ui_state_after_clear",
+      "reset_transcript_state_after_clear"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/history_ui.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/history_ui.py"
+    ],
+    "anchors": [
+      "clear_terminal_ui",
+      "clear_ui_header_lines",
+      "clear_ui_header_lines_with_version",
+      "open_url_in_browser",
+      "queue_clear_ui_header",
+      "reset_app_ui_state_after_clear",
+      "reset_transcript_state_after_clear"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

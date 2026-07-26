@@ -111,6 +111,21 @@ Python-only behavior must not be labeled Rust parity without such evidence.
 Golden tests are useful for stable serializable modules, but they are not the
 default for complex runtime paths. Pin them to a specific Rust reference body.
 
+## Executable architecture contracts
+
+The independent architecture authority lives under
+`parity_harness/contracts/accepted/`, with crate inventory and fixed baseline
+in `parity_harness/contracts/workspace.json`. When adding, moving, merging, or
+deleting production files in a registered crate, update its reviewed contract
+in the same change and run
+`python -B -m parity_harness structure --scope <crate> --gate ownership`.
+Generate review candidates with
+`python -B -m parity_harness contract generate --scope <crate>`; generated
+candidates must never overwrite accepted contracts. A Rust module may own one
+Python module-file or one continuous module-package. Treat orphan findings as
+investigation candidates and confirm runtime or dynamic registration before
+deleting code.
+
 ## Terminal TUI framework discipline
 
 The supported UI is the Rust-aligned terminal TUI; there is no maintained

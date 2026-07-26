@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pycodex.core.tools.handlers.utils import (
+from pycodex.core.tools.handlers import (
     EffectiveAdditionalPermissions,
     apply_granted_turn_permissions,
     implicit_granted_permissions,

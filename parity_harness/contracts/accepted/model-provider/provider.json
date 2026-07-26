@@ -1,0 +1,76 @@
+{
+  "contract_id": "codex-model-provider.provider",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-model-provider",
+    "module": "provider",
+    "source": "codex/codex-rs/model-provider/src/provider.rs",
+    "anchors": [
+      "DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL",
+      "ModelProvider",
+      "ProviderAccountError",
+      "ProviderAccountResult",
+      "ProviderAccountState",
+      "ProviderCapabilities",
+      "SharedModelProvider",
+      "create_model_provider",
+      "ConfiguredModelProvider",
+      "account_state",
+      "api_auth",
+      "api_provider"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/model_provider/provider.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/model_provider/provider.py"
+    ],
+    "anchors": [
+      "DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL",
+      "ModelProvider",
+      "ProviderAccountError",
+      "ProviderAccountResult",
+      "ProviderAccountState",
+      "ProviderCapabilities",
+      "SharedModelProvider",
+      "create_model_provider",
+      "ConfiguredModelProvider",
+      "account_state",
+      "api_auth",
+      "api_provider"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_external_crate_interfaces.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_model_provider_amazon_bedrock.py",
+    "tests/test_model_provider_amazon_bedrock_mod_rs.py",
+    "tests/test_model_provider_bearer_auth_provider.py",
+    "tests/test_model_provider_lib_rs.py",
+    "tests/test_model_provider_provider.py",
+    "tests/test_model_provider_provider_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

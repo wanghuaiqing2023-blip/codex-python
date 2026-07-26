@@ -1,0 +1,764 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "state",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 26,
+    "python_files": 25,
+    "modules_with_candidates": 23,
+    "modules_with_anchors": 23
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "bin::logs_client",
+        "source": "codex/codex-rs/state/src/bin/logs_client.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "bin::logs_client::formatter",
+        "source": "codex/codex-rs/state/src/bin/logs_client.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "bin::logs_client::matcher",
+        "source": "codex/codex-rs/state/src/bin/logs_client.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "crate",
+        "source": "codex/codex-rs/state/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/__init__.py",
+          "anchor_candidates": [
+            "AgentJob",
+            "AgentJobCreateParams",
+            "AgentJobItem",
+            "AgentJobItemCreateParams",
+            "AgentJobItemStatus",
+            "AgentJobProgress",
+            "AgentJobStatus",
+            "Anchor",
+            "BackfillState",
+            "BackfillStats",
+            "BackfillStatus",
+            "DB_ERROR_METRIC"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "audit",
+        "source": "codex/codex-rs/state/src/audit.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/audit.py",
+          "anchor_candidates": [
+            "ThreadStateAuditRow",
+            "read_thread_state_audit_rows"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "extract",
+        "source": "codex/codex-rs/state/src/extract.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/extract.py",
+          "anchor_candidates": [
+            "apply_rollout_item",
+            "enum_to_string",
+            "rollout_item_affects_thread_metadata",
+            "IMAGE_ONLY_USER_MESSAGE_PLACEHOLDER",
+            "strip_user_message_prefix",
+            "user_message_preview"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "log_db",
+        "source": "codex/codex-rs/state/src/log_db.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/log_db.py",
+          "anchor_candidates": [
+            "LogDbLayer",
+            "LogSinkQueueConfig",
+            "start",
+            "start_with_config",
+            "LOG_BATCH_SIZE",
+            "LOG_QUEUE_CAPACITY",
+            "MessageVisitor",
+            "SpanFieldVisitor",
+            "SpanLogContext",
+            "append_fields",
+            "current_process_log_uuid",
+            "event_thread_id"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "migrations",
+        "source": "codex/codex-rs/state/src/migrations.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/migrations.py",
+          "anchor_candidates": [
+            "GOALS_MIGRATOR",
+            "LOGS_MIGRATOR",
+            "MEMORIES_MIGRATOR",
+            "STATE_MIGRATOR",
+            "runtime_goals_migrator",
+            "runtime_logs_migrator",
+            "runtime_memories_migrator",
+            "runtime_state_migrator",
+            "runtime_migrator"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model",
+        "source": "codex/codex-rs/state/src/model/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/__init__.py",
+          "anchor_candidates": [
+            "AgentJob",
+            "AgentJobCreateParams",
+            "AgentJobItem",
+            "AgentJobItemCreateParams",
+            "AgentJobItemRow",
+            "AgentJobItemStatus",
+            "AgentJobProgress",
+            "AgentJobRow",
+            "AgentJobStatus",
+            "Anchor",
+            "BackfillState",
+            "BackfillStats"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model::agent_job",
+        "source": "codex/codex-rs/state/src/model/agent_job.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/agent_job.py",
+          "anchor_candidates": [
+            "AgentJob",
+            "AgentJobCreateParams",
+            "AgentJobItem",
+            "AgentJobItemCreateParams",
+            "AgentJobItemRow",
+            "AgentJobItemStatus",
+            "AgentJobProgress",
+            "AgentJobRow",
+            "AgentJobStatus",
+            "is_final",
+            "parse",
+            "epoch_seconds_to_datetime"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model::backfill_state",
+        "source": "codex/codex-rs/state/src/model/backfill_state.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/backfill_state.py",
+          "anchor_candidates": [
+            "BackfillState",
+            "BackfillStatus",
+            "parse",
+            "try_from_row",
+            "epoch_seconds_to_datetime"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model::graph",
+        "source": "codex/codex-rs/state/src/model/graph.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/graph.py",
+          "anchor_candidates": [
+            "DirectionalThreadSpawnEdgeStatus"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model::log",
+        "source": "codex/codex-rs/state/src/model/log.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/log.py",
+          "anchor_candidates": [
+            "LogEntry",
+            "LogQuery",
+            "LogRow"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model::memories",
+        "source": "codex/codex-rs/state/src/model/memories.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/memories.py",
+          "anchor_candidates": [
+            "Phase2JobClaimOutcome",
+            "Stage1JobClaim",
+            "Stage1JobClaimOutcome",
+            "Stage1Output",
+            "Stage1StartupClaimParams"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model::thread_goal",
+        "source": "codex/codex-rs/state/src/model/thread_goal.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/thread_goal.py",
+          "anchor_candidates": [
+            "ThreadGoal",
+            "ThreadGoalRow",
+            "ThreadGoalStatus",
+            "as_str",
+            "is_active",
+            "is_terminal"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "model::thread_metadata",
+        "source": "codex/codex-rs/state/src/model/thread_metadata.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/model/thread_metadata.py",
+          "anchor_candidates": [
+            "Anchor",
+            "BackfillStats",
+            "ExtractionOutcome",
+            "SortDirection",
+            "SortKey",
+            "ThreadMetadata",
+            "ThreadMetadataBuilder",
+            "ThreadRow",
+            "ThreadsPage",
+            "anchor_from_item",
+            "build",
+            "datetime_to_epoch_millis"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "paths",
+        "source": "codex/codex-rs/state/src/paths.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/paths.py",
+          "anchor_candidates": [
+            "file_modified_time_utc"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime",
+        "source": "codex/codex-rs/state/src/runtime.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/__init__.py",
+          "anchor_candidates": [
+            "GoalAccountingMode",
+            "GoalAccountingOutcome",
+            "GoalStore",
+            "GoalUpdate",
+            "MemoryStore",
+            "RemoteControlEnrollmentRecord",
+            "ThreadFilterOptions",
+            "LOG_PARTITION_ROW_LIMIT",
+            "LOG_PARTITION_SIZE_LIMIT_BYTES"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime::agent_jobs",
+        "source": "codex/codex-rs/state/src/runtime/agent_jobs.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/agent_jobs.py",
+          "anchor_candidates": [
+            "create_agent_job",
+            "get_agent_job",
+            "get_agent_job_item",
+            "get_agent_job_progress",
+            "is_agent_job_cancelled",
+            "list_agent_job_items",
+            "mark_agent_job_cancelled",
+            "mark_agent_job_completed",
+            "mark_agent_job_failed",
+            "mark_agent_job_item_completed",
+            "mark_agent_job_item_failed",
+            "mark_agent_job_item_pending"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime::backfill",
+        "source": "codex/codex-rs/state/src/runtime/backfill.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/backfill.py",
+          "anchor_candidates": [
+            "checkpoint_backfill",
+            "get_backfill_state",
+            "mark_backfill_complete",
+            "mark_backfill_running",
+            "try_claim_backfill",
+            "ensure_backfill_state_row"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime::goals",
+        "source": "codex/codex-rs/state/src/runtime/goals.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/goals.py",
+          "anchor_candidates": [
+            "GoalAccountingMode",
+            "GoalAccountingOutcome",
+            "GoalStore",
+            "GoalUpdate",
+            "account_thread_goal_usage",
+            "delete_thread_goal",
+            "get_thread_goal",
+            "insert_thread_goal",
+            "pause_active_thread_goal",
+            "replace_thread_goal",
+            "update_thread_goal",
+            "usage_limit_active_thread_goal"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime::logs",
+        "source": "codex/codex-rs/state/src/runtime/logs.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/logs.py",
+          "anchor_candidates": [
+            "delete_logs_before",
+            "insert_log",
+            "insert_logs",
+            "max_log_id",
+            "query_feedback_logs",
+            "query_feedback_logs_for_threads",
+            "query_logs",
+            "run_logs_startup_maintenance",
+            "LOG_RETENTION_DAYS",
+            "format_feedback_log_line"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime::memories",
+        "source": "codex/codex-rs/state/src/runtime/memories.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/memories.py",
+          "anchor_candidates": [
+            "MemoryStore",
+            "claim_stage1_jobs_for_startup",
+            "clear_memory_data",
+            "delete_thread_memory",
+            "enqueue_global_consolidation",
+            "get_phase2_input_selection",
+            "heartbeat_global_phase2_job",
+            "list_stage1_outputs_for_global",
+            "mark_global_phase2_job_failed",
+            "mark_global_phase2_job_failed_if_unowned",
+            "mark_global_phase2_job_succeeded",
+            "mark_stage1_job_failed"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime::remote_control",
+        "source": "codex/codex-rs/state/src/runtime/remote_control.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/remote_control.py",
+          "anchor_candidates": [
+            "RemoteControlEnrollmentRecord",
+            "delete_remote_control_enrollment",
+            "get_remote_control_enrollment",
+            "upsert_remote_control_enrollment",
+            "REMOTE_CONTROL_APP_SERVER_CLIENT_NAME_NONE",
+            "app_server_client_name_from_key",
+            "remote_control_app_server_client_name_key"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "runtime::threads",
+        "source": "codex/codex-rs/state/src/runtime/threads.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/runtime/threads.py",
+          "anchor_candidates": [
+            "ThreadFilterOptions",
+            "apply_rollout_items",
+            "delete_thread",
+            "extract_memory_mode",
+            "find_rollout_path_by_id",
+            "find_thread_by_exact_title",
+            "find_thread_spawn_child_by_path",
+            "find_thread_spawn_descendant_by_path",
+            "get_thread",
+            "get_thread_memory_mode",
+            "insert_thread_if_absent",
+            "list_thread_ids"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-state",
+        "module": "telemetry",
+        "source": "codex/codex-rs/state/src/telemetry.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/telemetry.py",
+          "anchor_candidates": [
+            "DbKind",
+            "DbTelemetry",
+            "DbTelemetryHandle",
+            "install_process_db_telemetry",
+            "record_backfill_gate",
+            "record_fallback",
+            "record_init_result",
+            "DbOutcomeTags",
+            "as_str",
+            "classify_error",
+            "classify_sqlite_code",
+            "counter"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

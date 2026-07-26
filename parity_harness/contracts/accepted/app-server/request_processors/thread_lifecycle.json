@@ -1,0 +1,73 @@
+{
+  "contract_id": "codex-app-server.request_processors.thread_lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "request_processors::thread_lifecycle",
+    "source": "codex/codex-rs/app-server/src/request_processors/thread_lifecycle.rs",
+    "anchors": [
+      "EnsureConversationListenerResult",
+      "ListenerTaskContext",
+      "THREAD_UNLOADING_DELAY",
+      "ThreadShutdownResult",
+      "ensure_conversation_listener",
+      "ensure_listener_task_running",
+      "handle_pending_thread_resume_request",
+      "handle_thread_listener_command",
+      "log_listener_attach_result",
+      "merge_turn_history_with_active_turn",
+      "populate_thread_turns_from_history",
+      "resolve_pending_server_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/request_processors_thread_lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/request_processors_thread_lifecycle.py"
+    ],
+    "anchors": [
+      "EnsureConversationListenerResult",
+      "ListenerTaskContext",
+      "THREAD_UNLOADING_DELAY",
+      "ThreadShutdownResult",
+      "ensure_conversation_listener",
+      "ensure_listener_task_running",
+      "handle_pending_thread_resume_request",
+      "handle_thread_listener_command",
+      "log_listener_attach_result",
+      "merge_turn_history_with_active_turn",
+      "populate_thread_turns_from_history",
+      "resolve_pending_server_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_config_mod_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_app_server_lib_rs.py",
+    "tests/test_app_server_main_rs.py",
+    "tests/test_app_server_request_processors_thread_lifecycle_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

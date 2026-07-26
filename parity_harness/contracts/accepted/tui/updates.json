@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.updates",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "updates",
+    "source": "codex/codex-rs/tui/src/updates.rs",
+    "anchors": [
+      "dismiss_version",
+      "get_upgrade_version",
+      "get_upgrade_version_for_popup",
+      "HOMEBREW_CASK_API_URL",
+      "HomebrewCaskInfo",
+      "LATEST_RELEASE_URL",
+      "ReleaseInfo",
+      "VERSION_FILENAME",
+      "VersionInfo",
+      "check_for_update",
+      "fetch_latest_github_release_version",
+      "read_version_info"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/updates.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/updates.py"
+    ],
+    "anchors": [
+      "dismiss_version",
+      "get_upgrade_version",
+      "get_upgrade_version_for_popup",
+      "HOMEBREW_CASK_API_URL",
+      "HomebrewCaskInfo",
+      "LATEST_RELEASE_URL",
+      "ReleaseInfo",
+      "VERSION_FILENAME",
+      "VersionInfo",
+      "check_for_update",
+      "fetch_latest_github_release_version",
+      "read_version_info"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

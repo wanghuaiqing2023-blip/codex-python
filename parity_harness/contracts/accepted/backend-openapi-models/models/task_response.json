@@ -1,0 +1,64 @@
+{
+  "contract_id": "codex-backend-openapi-models.models.task_response",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-backend-openapi-models",
+    "module": "models::task_response",
+    "source": "codex/codex-rs/codex-backend-openapi-models/src/models/task_response.rs",
+    "anchors": [
+      "TaskResponse",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_backend_openapi_models/models/task_response.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/codex_backend_openapi_models/models/task_response.py"
+    ],
+    "anchors": [
+      "TaskResponse",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_backend_client_client_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_codex_backend_openapi_models_additional_rate_limit_details.py",
+    "tests/test_codex_backend_openapi_models_code_task_details_response.py",
+    "tests/test_codex_backend_openapi_models_config_file_response.py",
+    "tests/test_codex_backend_openapi_models_credit_status_details.py",
+    "tests/test_codex_backend_openapi_models_external_pull_request_response.py",
+    "tests/test_codex_backend_openapi_models_git_pull_request.py",
+    "tests/test_codex_backend_openapi_models_lib.py",
+    "tests/test_codex_backend_openapi_models_models_mod.py",
+    "tests/test_codex_backend_openapi_models_paginated_list_task_list_item.py",
+    "tests/test_codex_backend_openapi_models_rate_limit_status_details.py",
+    "tests/test_codex_backend_openapi_models_rate_limit_status_payload.py",
+    "tests/test_codex_backend_openapi_models_rate_limit_window_snapshot.py",
+    "tests/test_codex_backend_openapi_models_task_list_item.py",
+    "tests/test_codex_backend_openapi_models_task_response.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-core.tools",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools",
+    "source": "codex/codex-rs/core/src/tools/mod.rs",
+    "anchors": [
+      "TELEMETRY_PREVIEW_MAX_BYTES",
+      "TELEMETRY_PREVIEW_MAX_LINES",
+      "TELEMETRY_PREVIEW_TRUNCATION_NOTICE",
+      "flat_tool_name",
+      "format_exec_output_for_model",
+      "format_exec_output_str",
+      "tool_user_shell_type"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/__init__.py"
+    ],
+    "anchors": [
+      "TELEMETRY_PREVIEW_MAX_BYTES",
+      "TELEMETRY_PREVIEW_MAX_LINES",
+      "TELEMETRY_PREVIEW_TRUNCATION_NOTICE",
+      "flat_tool_name",
+      "format_exec_output_for_model",
+      "format_exec_output_str",
+      "tool_user_shell_type"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

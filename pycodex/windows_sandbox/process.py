@@ -55,84 +55,6 @@ class PipeSpawnHandles:
     desktop: LaunchDesktop
 
 
-class ConptyInstance:
-    """Own a native pseudo console and the remaining host pipe handles."""
-
-    def __init__(self, pseudoconsole: object, input_write: object, output_read: object, desktop: LaunchDesktop) -> None:
-        self._pseudoconsole = pseudoconsole
-        self._input_write = input_write
-        self._output_read = output_read
-        self._desktop = desktop
-
-    @property
-    def raw_handle(self) -> int | None:
-        value = getattr(self._pseudoconsole, "value", self._pseudoconsole)
-        return int(value) if value else None
-
-    def take_input_write(self) -> object:
-        handle, self._input_write = self._input_write, None
-        return handle
-
-    def take_output_read(self) -> object:
-        handle, self._output_read = self._output_read, None
-        return handle
-
-    def resize(self, cols: int, rows: int) -> None:
-        if not self.raw_handle:
-            raise WindowsSandboxProcessError("pseudo console is closed")
-        if cols <= 0 or rows <= 0 or cols > 32767 or rows > 32767:
-            raise ValueError("ConPTY size must be within 1..32767")
-        result = _kernel32.ResizePseudoConsole(self._pseudoconsole, COORD(cols, rows))
-        if result < 0:
-            raise WindowsSandboxProcessError(result, f"ResizePseudoConsole failed: 0x{result & 0xffffffff:08x}")
-
-    def close(self) -> None:
-        for name in ("_input_write", "_output_read"):
-            handle = getattr(self, name)
-            if handle is not None:
-                _close_handle(handle)
-                setattr(self, name, None)
-        if self.raw_handle:
-            _kernel32.ClosePseudoConsole(self._pseudoconsole)
-            self._pseudoconsole = None
-        self._desktop.close()
-
-    def __del__(self) -> None:
-        try:
-            self.close()
-        except BaseException:
-            pass
-
-
-class _ConptyInputWriter:
-    """Normalize bare LF input the same way as Rust's Windows TTY driver."""
-
-    def __init__(self, stream: io.BufferedWriter) -> None:
-        self._stream = stream
-        self._previous_was_cr = False
-
-    @property
-    def closed(self) -> bool:
-        return self._stream.closed
-
-    def write(self, data: bytes | bytearray | memoryview) -> int:
-        source = bytes(data)
-        normalized = bytearray()
-        for byte in source:
-            if byte == 0x0A and not self._previous_was_cr:
-                normalized.append(0x0D)
-            normalized.append(byte)
-            self._previous_was_cr = byte == 0x0D
-        self._stream.write(normalized)
-        return len(source)
-
-    def flush(self) -> None:
-        self._stream.flush()
-
-    def close(self) -> None:
-        self._stream.close()
-
-
 class NativeProcessPopen:
     """Popen-compatible owner for a restricted Win32 process and its job."""
 
@@ -140,6 +62,7 @@ class NativeProcessPopen:
         self,
         process_handle: object,
         job_handle: object,
+        process_id: int,
         stdin: object | None,
         stdout: io.BufferedReader,
         stderr: io.BufferedReader | None = None,
@@ -147,6 +70,7 @@ class NativeProcessPopen:
     ) -> None:
         self._process_handle = process_handle
         self._job_handle = job_handle
+        self.pid = process_id
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
@@ -244,8 +168,6 @@ if os.name == "nt":
     CREATE_UNICODE_ENVIRONMENT = 0x00000400
     EXTENDED_STARTUPINFO_PRESENT = 0x00080000
     CREATE_SUSPENDED = 0x00000004
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016
     HANDLE_FLAG_INHERIT = 0x00000001
     WAIT_OBJECT_0 = 0x00000000
     WAIT_TIMEOUT = 0x00000102
@@ -254,9 +176,6 @@ if os.name == "nt":
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
     INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-
-    class COORD(ctypes.Structure):
-        _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
 
     class SECURITY_ATTRIBUTES(ctypes.Structure):
         _fields_ = [
@@ -340,19 +259,6 @@ if os.name == "nt":
     _kernel32.CreatePipe.restype = BOOL
     _kernel32.SetHandleInformation.argtypes = [HANDLE, DWORD, DWORD]
     _kernel32.SetHandleInformation.restype = BOOL
-    _kernel32.InitializeProcThreadAttributeList.argtypes = [LPVOID, DWORD, DWORD, ctypes.POINTER(SIZE_T)]
-    _kernel32.InitializeProcThreadAttributeList.restype = BOOL
-    _kernel32.UpdateProcThreadAttribute.argtypes = [
-        LPVOID,
-        DWORD,
-        SIZE_T,
-        LPVOID,
-        SIZE_T,
-        LPVOID,
-        ctypes.POINTER(SIZE_T),
-    ]
-    _kernel32.UpdateProcThreadAttribute.restype = BOOL
-    _kernel32.DeleteProcThreadAttributeList.argtypes = [LPVOID]
     _kernel32.ReadFile.argtypes = [HANDLE, LPVOID, DWORD, ctypes.POINTER(DWORD), LPVOID]
     _kernel32.ReadFile.restype = BOOL
     _kernel32.WaitForSingleObject.argtypes = [HANDLE, DWORD]
@@ -373,13 +279,6 @@ if os.name == "nt":
     _kernel32.TerminateJobObject.restype = BOOL
     _kernel32.ResumeThread.argtypes = [HANDLE]
     _kernel32.ResumeThread.restype = DWORD
-    _kernel32.CreatePseudoConsole.argtypes = [COORD, HANDLE, HANDLE, DWORD, ctypes.POINTER(HANDLE)]
-    _kernel32.CreatePseudoConsole.restype = ctypes.c_long
-    _kernel32.ResizePseudoConsole.argtypes = [HANDLE, COORD]
-    _kernel32.ResizePseudoConsole.restype = ctypes.c_long
-    _kernel32.ClosePseudoConsole.argtypes = [HANDLE]
-    _kernel32.ClosePseudoConsole.restype = None
-
     _advapi32.CreateProcessAsUserW.argtypes = [
         HANDLE,
         wintypes.LPCWSTR,
@@ -425,15 +324,16 @@ def create_process_as_user_capture(
     stderr_read, stderr_write = _create_pipe()
     process_info = PROCESS_INFORMATION()
     job_handle = HANDLE()
-    attribute_buffer: ctypes.Array[ctypes.c_char] | None = None
-    attribute_value: object | None = None
-    attribute_list: LPVOID | None = None
+    attributes = None
     desktop_buffer = ctypes.create_unicode_buffer(desktop.startup_name)
     try:
+        from .proc_thread_attr import ProcThreadAttributeList
+
         child_handles = (stdin_read, stdout_write, stderr_write)
         for handle in child_handles:
             _set_inheritable(handle)
-        attribute_buffer, attribute_list, attribute_value = _handle_attribute_list(child_handles)
+        attributes = ProcThreadAttributeList(1)
+        attributes.set_handle_list(child_handles)
 
         startup = STARTUPINFOEXW()
         startup.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
@@ -442,7 +342,7 @@ def create_process_as_user_capture(
         startup.StartupInfo.hStdInput = stdin_read
         startup.StartupInfo.hStdOutput = stdout_write
         startup.StartupInfo.hStdError = stderr_write
-        startup.lpAttributeList = attribute_list
+        startup.lpAttributeList = attributes.as_mut_ptr()
 
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(command)))
         environment = make_env_block(env)
@@ -483,10 +383,8 @@ def create_process_as_user_capture(
         _close_handle(process_info.hProcess)
         raise
     finally:
-        if attribute_list:
-            _kernel32.DeleteProcThreadAttributeList(attribute_list)
-        attribute_buffer = None
-        attribute_value = None
+        if attributes is not None:
+            attributes.close()
 
     _close_handle(stdin_read)
     _close_handle(stdin_write)
@@ -567,7 +465,9 @@ def create_process_as_user_popen(
     if not command or not all(isinstance(arg, str) for arg in command):
         raise ValueError("command must contain at least one string argument")
     if tty:
-        return create_process_as_user_conpty_popen(
+        from .conpty import spawn_conpty_process_as_user
+
+        return spawn_conpty_process_as_user(
             token,
             command,
             cwd,
@@ -581,15 +481,16 @@ def create_process_as_user_popen(
     stderr_read, stderr_write = (HANDLE(), HANDLE()) if merge_stderr else _create_pipe()
     process_info = PROCESS_INFORMATION()
     job_handle = HANDLE()
-    attribute_list: LPVOID | None = None
-    attribute_buffer: ctypes.Array[ctypes.c_char] | None = None
-    attribute_value: object | None = None
+    attributes = None
     desktop_buffer = ctypes.create_unicode_buffer(desktop.startup_name)
     try:
+        from .proc_thread_attr import ProcThreadAttributeList
+
         child_handles = (stdin_read, stdout_write) if merge_stderr else (stdin_read, stdout_write, stderr_write)
         for handle in child_handles:
             _set_inheritable(handle)
-        attribute_buffer, attribute_list, attribute_value = _handle_attribute_list(child_handles)
+        attributes = ProcThreadAttributeList(1)
+        attributes.set_handle_list(child_handles)
         startup = STARTUPINFOEXW()
         startup.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
         startup.StartupInfo.lpDesktop = ctypes.cast(desktop_buffer, wintypes.LPWSTR)
@@ -597,7 +498,7 @@ def create_process_as_user_popen(
         startup.StartupInfo.hStdInput = stdin_read
         startup.StartupInfo.hStdOutput = stdout_write
         startup.StartupInfo.hStdError = stdout_write if merge_stderr else stderr_write
-        startup.lpAttributeList = attribute_list
+        startup.lpAttributeList = attributes.as_mut_ptr()
         command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(command)))
         environment = make_env_block(env)
         flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED
@@ -646,6 +547,7 @@ def create_process_as_user_popen(
         result = NativeProcessPopen(
             process_info.hProcess,
             job_handle,
+            int(process_info.dwProcessId),
             stdin_file,
             stdout_file,
             stderr_file,
@@ -660,121 +562,10 @@ def create_process_as_user_popen(
             _kernel32.TerminateProcess(process_info.hProcess, 1)
         raise
     finally:
-        if attribute_list:
-            _kernel32.DeleteProcThreadAttributeList(attribute_list)
-        attribute_buffer = None
-        attribute_value = None
+        if attributes is not None:
+            attributes.close()
         for handle in (stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write, process_info.hThread, process_info.hProcess, job_handle):
             _close_handle(handle)
-        if desktop is not None:
-            desktop.close()
-
-
-def create_process_as_user_conpty_popen(
-    token: WinHandle | int,
-    command: Sequence[str],
-    cwd: str | Path,
-    env: Mapping[str, str],
-    *,
-    stdin_open: bool,
-    use_private_desktop: bool = False,
-    cols: int = 80,
-    rows: int = 24,
-) -> NativeProcessPopen:
-    """Spawn a restricted process attached to a real Windows ConPTY."""
-
-    _require_windows()
-    if not command or not all(isinstance(arg, str) for arg in command):
-        raise ValueError("command must contain at least one string argument")
-    if cols <= 0 or rows <= 0 or cols > 32767 or rows > 32767:
-        raise ValueError("ConPTY size must be within 1..32767")
-    desktop = LaunchDesktop.prepare(use_private_desktop)
-    input_read, input_write = _create_pipe()
-    output_read, output_write = _create_pipe()
-    pseudoconsole = HANDLE()
-    process_info = PROCESS_INFORMATION()
-    job_handle = HANDLE()
-    attribute_list: LPVOID | None = None
-    attribute_buffer: ctypes.Array[ctypes.c_char] | None = None
-    attribute_value: object | None = None
-    desktop_buffer = ctypes.create_unicode_buffer(desktop.startup_name)
-    conpty: ConptyInstance | None = None
-    try:
-        result = _kernel32.CreatePseudoConsole(
-            COORD(cols, rows), input_read, output_write, 0, ctypes.byref(pseudoconsole)
-        )
-        if result < 0:
-            raise WindowsSandboxProcessError(result, f"CreatePseudoConsole failed: 0x{result & 0xffffffff:08x}")
-        _close_handle(input_read)
-        input_read = HANDLE()
-        _close_handle(output_write)
-        output_write = HANDLE()
-        conpty = ConptyInstance(pseudoconsole, input_write, output_read, desktop)
-        pseudoconsole = HANDLE()
-        input_write = HANDLE()
-        output_read = HANDLE()
-        desktop = None
-
-        attribute_buffer, attribute_list, attribute_value = _pseudoconsole_attribute_list(conpty.raw_handle)
-        startup = STARTUPINFOEXW()
-        startup.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
-        startup.StartupInfo.lpDesktop = ctypes.cast(desktop_buffer, wintypes.LPWSTR)
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES
-        startup.StartupInfo.hStdInput = HANDLE(INVALID_HANDLE_VALUE)
-        startup.StartupInfo.hStdOutput = HANDLE(INVALID_HANDLE_VALUE)
-        startup.StartupInfo.hStdError = HANDLE(INVALID_HANDLE_VALUE)
-        startup.lpAttributeList = attribute_list
-        command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(command)))
-        environment = make_env_block(env)
-        flags = CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED
-        if not _advapi32.CreateProcessAsUserW(
-            _as_handle(token), None, command_line, None, None, False, flags,
-            environment, str(Path(cwd)), ctypes.byref(startup.StartupInfo), ctypes.byref(process_info),
-        ):
-            error = ctypes.get_last_error()
-            raise WindowsSandboxProcessError(error, f"CreateProcessAsUserW failed: {error}")
-        job_handle = _create_kill_on_close_job()
-        if not _kernel32.AssignProcessToJobObject(job_handle, process_info.hProcess):
-            error = ctypes.get_last_error()
-            _kernel32.TerminateProcess(process_info.hProcess, 1)
-            raise WindowsSandboxProcessError(error, f"AssignProcessToJobObject failed: {error}")
-        if _kernel32.ResumeThread(process_info.hThread) == 0xFFFFFFFF:
-            error = ctypes.get_last_error()
-            _kernel32.TerminateJobObject(job_handle, 1)
-            raise WindowsSandboxProcessError(error, f"ResumeThread failed: {error}")
-        _close_handle(process_info.hThread)
-        process_info.hThread = HANDLE()
-        input_handle = conpty.take_input_write()
-        if not stdin_open:
-            _close_handle(input_handle)
-            input_handle = None
-        output_handle = conpty.take_output_read()
-        stdin_file = (
-            _ConptyInputWriter(_handle_file(input_handle, "wb"))
-            if input_handle is not None
-            else None
-        )
-        stdout_file = _handle_file(output_handle, "rb")
-        result_process = NativeProcessPopen(
-            process_info.hProcess, job_handle, stdin_file, stdout_file, None, conpty
-        )
-        process_info.hProcess = HANDLE()
-        job_handle = HANDLE()
-        conpty = None
-        return result_process
-    except BaseException:
-        if getattr(process_info.hProcess, "value", process_info.hProcess):
-            _kernel32.TerminateProcess(process_info.hProcess, 1)
-        raise
-    finally:
-        if attribute_list:
-            _kernel32.DeleteProcThreadAttributeList(attribute_list)
-        attribute_buffer = None
-        attribute_value = None
-        for handle in (input_read, input_write, output_read, output_write, pseudoconsole, process_info.hThread, process_info.hProcess, job_handle):
-            _close_handle(handle)
-        if conpty is not None:
-            conpty.close()
         if desktop is not None:
             desktop.close()
 
@@ -824,58 +615,6 @@ def _set_inheritable(handle: HANDLE) -> None:
         _raise_last_error("SetHandleInformation failed for stdio handle")
 
 
-def _handle_attribute_list(
-    handles: Sequence[HANDLE],
-) -> tuple[ctypes.Array[ctypes.c_char], LPVOID, object]:
-    size = SIZE_T()
-    _kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
-    if not size.value:
-        _raise_last_error("InitializeProcThreadAttributeList size query failed")
-    buffer = ctypes.create_string_buffer(size.value)
-    attribute_list = ctypes.cast(buffer, LPVOID)
-    if not _kernel32.InitializeProcThreadAttributeList(attribute_list, 1, 0, ctypes.byref(size)):
-        _raise_last_error("InitializeProcThreadAttributeList failed")
-    handle_array = (HANDLE * len(handles))(*handles)
-    if not _kernel32.UpdateProcThreadAttribute(
-        attribute_list,
-        0,
-        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-        ctypes.cast(handle_array, LPVOID),
-        ctypes.sizeof(handle_array),
-        None,
-        None,
-    ):
-        _kernel32.DeleteProcThreadAttributeList(attribute_list)
-        _raise_last_error("UpdateProcThreadAttribute(handle list) failed")
-    return buffer, attribute_list, handle_array
-
-
-def _pseudoconsole_attribute_list(raw_handle: int | None) -> tuple[ctypes.Array[ctypes.c_char], LPVOID, object]:
-    if raw_handle is None:
-        raise WindowsSandboxProcessError("invalid pseudo console handle")
-    size = SIZE_T()
-    _kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
-    if not size.value:
-        _raise_last_error("InitializeProcThreadAttributeList size query failed")
-    buffer = ctypes.create_string_buffer(size.value)
-    attribute_list = ctypes.cast(buffer, LPVOID)
-    if not _kernel32.InitializeProcThreadAttributeList(attribute_list, 1, 0, ctypes.byref(size)):
-        _raise_last_error("InitializeProcThreadAttributeList failed")
-    value = HANDLE(raw_handle)
-    if not _kernel32.UpdateProcThreadAttribute(
-        attribute_list,
-        0,
-        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-        ctypes.cast(value, LPVOID),
-        ctypes.sizeof(HANDLE),
-        None,
-        None,
-    ):
-        _kernel32.DeleteProcThreadAttributeList(attribute_list)
-        _raise_last_error("UpdateProcThreadAttribute(pseudoconsole) failed")
-    return buffer, attribute_list, value
-
-
 def _read_handle(handle: HANDLE, chunks: list[bytes]) -> None:
     try:
         buffer = ctypes.create_string_buffer(8192)
@@ -914,7 +653,6 @@ def _require_windows() -> None:
 
 __all__ = [
     "ProcessCaptureResult",
-    "ConptyInstance",
     "NativeProcessPopen",
     "PipeSpawnHandles",
     "StderrMode",
@@ -922,6 +660,5 @@ __all__ = [
     "WindowsSandboxProcessError",
     "create_process_as_user_capture",
     "create_process_as_user_popen",
-    "create_process_as_user_conpty_popen",
     "make_env_block",
 ]

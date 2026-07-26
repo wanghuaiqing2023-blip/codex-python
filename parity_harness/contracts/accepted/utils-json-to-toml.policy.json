@@ -1,0 +1,11 @@
+{
+  "scope": "utils-json-to-toml",
+  "rust_root": "codex/codex-rs/utils/json-to-toml",
+  "python_root": "pycodex/utils/json_to_toml",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

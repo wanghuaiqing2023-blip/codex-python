@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.context.realtime_start_with_instructions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::realtime_start_with_instructions",
+    "source": "codex/codex-rs/core/src/context/realtime_start_with_instructions.rs",
+    "anchors": [
+      "RealtimeStartWithInstructions",
+      "new",
+      "body",
+      "role",
+      "type_markers"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/realtime_start_with_instructions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/realtime_start_with_instructions.py"
+    ],
+    "anchors": [
+      "RealtimeStartWithInstructions",
+      "new",
+      "body",
+      "role",
+      "type_markers"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

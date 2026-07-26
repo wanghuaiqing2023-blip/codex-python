@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.chatwidget.permission_popups",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::permission_popups",
+    "source": "codex/codex-rs/tui/src/chatwidget/permission_popups.rs",
+    "anchors": [
+      "approval_preset_actions",
+      "approve_recent_auto_review_denial",
+      "open_approvals_popup",
+      "open_auto_review_denials_popup",
+      "open_full_access_confirmation",
+      "open_permissions_popup",
+      "permission_mode_actions",
+      "permission_profile_selection_actions",
+      "preset_matches_current"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/permission_popups.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/permission_popups.py"
+    ],
+    "anchors": [
+      "approval_preset_actions",
+      "approve_recent_auto_review_denial",
+      "open_approvals_popup",
+      "open_auto_review_denials_popup",
+      "open_full_access_confirmation",
+      "open_permissions_popup",
+      "permission_mode_actions",
+      "permission_profile_selection_actions",
+      "preset_matches_current"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

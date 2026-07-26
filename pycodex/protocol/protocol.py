@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import json
+import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
@@ -42,7 +43,10 @@ from .config_types import (
     Settings,
     WindowsSandboxLevel,
 )
-from .ids import SessionId, ThreadId
+from .conversation_start_prompt_serde import PROMPT_UNSET, deserialize as deserialize_conversation_start_prompt
+from .conversation_start_prompt_serde import serialize as serialize_conversation_start_prompt
+from .session_id import SessionId
+from .thread_id import ThreadId
 from .dynamic_tools import DynamicToolCallOutputContentItem, DynamicToolCallRequest, DynamicToolResponse
 from .mcp import CallToolResult, RequestId
 from .memory_citation import MemoryCitation
@@ -50,12 +54,17 @@ from .models import (
     ActivePermissionProfile,
     AdditionalPermissionProfile,
     ContentItem,
-    FileSystemSandboxPolicy,
     MessagePhase,
     PermissionProfile,
     ResponseInputItem,
     SandboxEnforcement,
-    SandboxPolicy,
+)
+from .permissions import (
+    FileSystemSandboxPolicy,
+    NetworkSandboxPolicy,
+    _default_read_only_subpaths_for_writable_root,
+    _path_starts_with,
+    _strip_prefix,
 )
 from .num_format import format_with_separators
 from .parse_command import ParsedCommand
@@ -85,6 +94,249 @@ USER_MESSAGE_BEGIN = "## My request for Codex:"
 
 MAX_THREAD_GOAL_OBJECTIVE_CHARS = 4000
 BASELINE_TOKENS = 12000
+
+
+def _optional_bool_field(value: Mapping[str, JsonValue], key: str, default: bool = False) -> bool:
+    raw = value.get(key, default)
+    if not isinstance(raw, bool):
+        raise TypeError(f"{key} must be a bool")
+    return raw
+
+
+@dataclass(frozen=True)
+class WritableRoot:
+    root: Path
+    read_only_subpaths: tuple[Path, ...] = ()
+    protected_metadata_names: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "root", Path(self.root))
+        if not isinstance(self.read_only_subpaths, tuple):
+            object.__setattr__(self, "read_only_subpaths", tuple(Path(path) for path in self.read_only_subpaths))
+        else:
+            object.__setattr__(self, "read_only_subpaths", tuple(Path(path) for path in self.read_only_subpaths))
+        if not isinstance(self.protected_metadata_names, tuple):
+            object.__setattr__(self, "protected_metadata_names", tuple(self.protected_metadata_names))
+
+    def is_path_writable(self, path: Path | str) -> bool:
+        path = Path(path)
+        if not _path_starts_with(path, self.root):
+            return False
+        if any(_path_starts_with(path, subpath) for subpath in self.read_only_subpaths):
+            return False
+        return not self.path_contains_protected_metadata_name(path)
+
+    def path_contains_protected_metadata_name(self, path: Path | str) -> bool:
+        relative = _strip_prefix(Path(path), self.root)
+        if relative is None or relative == Path("."):
+            return False
+        first = relative.parts[0] if relative.parts else None
+        return first in self.protected_metadata_names
+
+
+@dataclass(frozen=True)
+class SandboxPolicy:
+    type: str
+    writable_roots: tuple[Path, ...] = ()
+    network_access: bool | NetworkSandboxPolicy = False
+    exclude_tmpdir_env_var: bool = False
+    exclude_slash_tmp: bool = False
+
+    def __post_init__(self) -> None:
+        if self.type not in {"danger-full-access", "read-only", "external-sandbox", "workspace-write"}:
+            raise ValueError(f"unknown sandbox policy type: {self.type}")
+        if not isinstance(self.writable_roots, list | tuple):
+            raise TypeError("writable_roots must be a list")
+        if not all(isinstance(path, Path | str) for path in self.writable_roots):
+            raise TypeError("writable_roots entries must be strings or Path")
+        if not isinstance(self.writable_roots, tuple):
+            object.__setattr__(self, "writable_roots", tuple(Path(path) for path in self.writable_roots))
+        else:
+            object.__setattr__(self, "writable_roots", tuple(Path(path) for path in self.writable_roots))
+        if not all(isinstance(path, Path) for path in self.writable_roots):
+            raise TypeError("writable_roots must contain Path")
+        for field_name in ("exclude_tmpdir_env_var", "exclude_slash_tmp"):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be a bool")
+        if self.type == "external-sandbox":
+            if self.writable_roots:
+                raise ValueError("external-sandbox policy cannot include writable_roots")
+            if not isinstance(self.network_access, NetworkSandboxPolicy):
+                raise TypeError("external-sandbox network_access must be NetworkSandboxPolicy")
+            if self.exclude_tmpdir_env_var:
+                raise ValueError("external-sandbox policy cannot include exclude_tmpdir_env_var")
+            if self.exclude_slash_tmp:
+                raise ValueError("external-sandbox policy cannot include exclude_slash_tmp")
+        else:
+            if not isinstance(self.network_access, bool):
+                raise TypeError(f"{self.type} network_access must be a bool")
+            if self.type == "danger-full-access" and self.network_access:
+                raise ValueError("danger-full-access policy cannot include network_access")
+            if self.type != "workspace-write":
+                if self.writable_roots:
+                    raise ValueError(f"{self.type} policy cannot include writable_roots")
+                if self.exclude_tmpdir_env_var:
+                    raise ValueError(f"{self.type} policy cannot include exclude_tmpdir_env_var")
+                if self.exclude_slash_tmp:
+                    raise ValueError(f"{self.type} policy cannot include exclude_slash_tmp")
+
+    @classmethod
+    def danger_full_access(cls) -> "SandboxPolicy":
+        return cls("danger-full-access")
+
+    @classmethod
+    def read_only(cls, network_access: bool = False) -> "SandboxPolicy":
+        return cls("read-only", network_access=network_access)
+
+    @classmethod
+    def external_sandbox(
+        cls,
+        network_access: NetworkSandboxPolicy = NetworkSandboxPolicy.RESTRICTED,
+    ) -> "SandboxPolicy":
+        return cls("external-sandbox", network_access=network_access)
+
+    @classmethod
+    def workspace_write(
+        cls,
+        writable_roots: tuple[Path | str, ...] | list[Path | str] = (),
+        network_access: bool = False,
+        exclude_tmpdir_env_var: bool = False,
+        exclude_slash_tmp: bool = False,
+    ) -> "SandboxPolicy":
+        if not isinstance(writable_roots, list | tuple):
+            raise TypeError("writable_roots must be a list")
+        if not all(isinstance(path, Path | str) for path in writable_roots):
+            raise TypeError("writable_roots entries must be strings or Path")
+        return cls(
+            "workspace-write",
+            writable_roots=tuple(Path(path) for path in writable_roots),
+            network_access=network_access,
+            exclude_tmpdir_env_var=exclude_tmpdir_env_var,
+            exclude_slash_tmp=exclude_slash_tmp,
+        )
+
+    @classmethod
+    def new_read_only_policy(cls) -> "SandboxPolicy":
+        return cls.read_only(network_access=False)
+
+    @classmethod
+    def new_workspace_write_policy(cls) -> "SandboxPolicy":
+        return cls.workspace_write()
+
+    def has_full_disk_read_access(self) -> bool:
+        return True
+
+    def has_full_disk_write_access(self) -> bool:
+        return self.type in {"danger-full-access", "external-sandbox"}
+
+    def has_full_network_access(self) -> bool:
+        if self.type == "danger-full-access":
+            return True
+        if self.type == "external-sandbox":
+            return isinstance(self.network_access, NetworkSandboxPolicy) and self.network_access.is_enabled()
+        return bool(self.network_access)
+
+    def network_sandbox_policy(self) -> NetworkSandboxPolicy:
+        return NetworkSandboxPolicy.ENABLED if self.has_full_network_access() else NetworkSandboxPolicy.RESTRICTED
+
+    def get_writable_roots_with_cwd(self, cwd: Path | str) -> tuple[WritableRoot, ...]:
+        if self.type != "workspace-write":
+            return ()
+        cwd = Path(cwd)
+        roots = list(self.writable_roots)
+        if cwd.is_absolute():
+            roots.append(cwd)
+        if not self.exclude_slash_tmp:
+            slash_tmp = Path("/tmp")
+            if slash_tmp.is_dir():
+                roots.append(slash_tmp)
+        if not self.exclude_tmpdir_env_var:
+            raw_tmpdir = os.environ.get("TMPDIR")
+            if raw_tmpdir:
+                tmpdir = Path(raw_tmpdir)
+                if tmpdir.is_absolute():
+                    roots.append(tmpdir)
+
+        cwd_root = cwd if cwd.is_absolute() else None
+        return tuple(
+            WritableRoot(
+                root=root,
+                read_only_subpaths=tuple(
+                    _default_read_only_subpaths_for_writable_root(
+                        root,
+                        protect_missing_dot_codex=cwd_root == root,
+                    )
+                ),
+                protected_metadata_names=(),
+            )
+            for root in roots
+        )
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "SandboxPolicy":
+        data = _mapping(value, "sandbox policy")
+        policy_type = _required_str(data, "type")
+        if policy_type == "danger-full-access":
+            unknown = set(data) - {"type"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+            return cls.danger_full_access()
+        if policy_type == "read-only":
+            unknown = set(data) - {"type", "network_access"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+            return cls.read_only(network_access=_optional_bool_field(data, "network_access"))
+        if policy_type == "external-sandbox":
+            unknown = set(data) - {"type", "network_access"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+            raw_network = data.get("network_access", NetworkSandboxPolicy.RESTRICTED.value)
+            return cls.external_sandbox(NetworkSandboxPolicy.parse(raw_network))
+        if policy_type == "workspace-write":
+            unknown = set(data) - {"type", "writable_roots", "network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+            writable_roots = data.get("writable_roots", ())
+            if not isinstance(writable_roots, list | tuple):
+                raise TypeError("writable_roots must be a list")
+            if not all(isinstance(path, str) for path in writable_roots):
+                raise TypeError("writable_roots entries must be strings")
+            return cls.workspace_write(
+                tuple(Path(path) for path in writable_roots),
+                network_access=_optional_bool_field(data, "network_access"),
+                exclude_tmpdir_env_var=_optional_bool_field(data, "exclude_tmpdir_env_var"),
+                exclude_slash_tmp=_optional_bool_field(data, "exclude_slash_tmp"),
+            )
+        raise ValueError(f"unknown sandbox policy type: {policy_type}")
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        if self.type == "danger-full-access":
+            return {"type": self.type}
+        if self.type == "read-only":
+            data: dict[str, JsonValue] = {"type": self.type}
+            if bool(self.network_access):
+                data["network_access"] = True
+            return data
+        if self.type == "external-sandbox":
+            return {
+                "type": self.type,
+                "network_access": (
+                    self.network_access.value
+                    if isinstance(self.network_access, NetworkSandboxPolicy)
+                    else NetworkSandboxPolicy.ENABLED.value if self.network_access else NetworkSandboxPolicy.RESTRICTED.value
+                ),
+            }
+        if self.type == "workspace-write":
+            data: dict[str, JsonValue] = {
+                "type": self.type,
+                "network_access": bool(self.network_access),
+                "exclude_tmpdir_env_var": self.exclude_tmpdir_env_var,
+                "exclude_slash_tmp": self.exclude_slash_tmp,
+            }
+            if self.writable_roots:
+                data["writable_roots"] = [str(path) for path in self.writable_roots]
+            return data
+        return {"type": self.type}
 
 
 def _mapping(value: JsonValue, label: str) -> Mapping[str, JsonValue]:
@@ -2117,13 +2369,10 @@ class RealtimeVoice(str, Enum):
         return self.value
 
 
-_PROMPT_UNSET = object()
-
-
 @dataclass(frozen=True)
 class ConversationStartParams:
     output_modality: RealtimeOutputModality
-    prompt: str | None | object = _PROMPT_UNSET
+    prompt: str | None | object = PROMPT_UNSET
     realtime_session_id: str | None = None
     transport: ConversationStartTransport | None = None
     voice: RealtimeVoice | None = None
@@ -2131,11 +2380,7 @@ class ConversationStartParams:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "ConversationStartParams":
         data = _mapping(value, "conversation start params")
-        prompt: str | None | object = _PROMPT_UNSET
-        if "prompt" in data:
-            prompt = data["prompt"]
-            if prompt is not None and not isinstance(prompt, str):
-                raise TypeError("prompt must be a string or null")
+        prompt = deserialize_conversation_start_prompt(dict(data))
         return cls(
             output_modality=RealtimeOutputModality(_required_str(data, "output_modality")),
             prompt=prompt,
@@ -2150,8 +2395,7 @@ class ConversationStartParams:
 
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {"output_modality": self.output_modality.value}
-        if self.prompt is not _PROMPT_UNSET:
-            data["prompt"] = self.prompt
+        serialize_conversation_start_prompt(data, self.prompt)
         if self.realtime_session_id is not None:
             data["realtime_session_id"] = self.realtime_session_id
         if self.transport is not None:

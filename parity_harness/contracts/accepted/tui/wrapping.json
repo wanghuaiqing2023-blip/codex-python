@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.wrapping",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "wrapping",
+    "source": "codex/codex-rs/tui/src/wrapping.rs",
+    "anchors": [
+      "RtOptions",
+      "adaptive_wrap_line",
+      "adaptive_wrap_lines",
+      "break_words",
+      "initial_indent",
+      "line_contains_url_like",
+      "line_ending",
+      "line_has_mixed_url_and_non_url_tokens",
+      "new",
+      "subsequent_indent",
+      "text_contains_url_like",
+      "url_preserving_wrap_options"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/wrapping.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/wrapping.py"
+    ],
+    "anchors": [
+      "RtOptions",
+      "adaptive_wrap_line",
+      "adaptive_wrap_lines",
+      "break_words",
+      "initial_indent",
+      "line_contains_url_like",
+      "line_ending",
+      "line_has_mixed_url_and_non_url_tokens",
+      "new",
+      "subsequent_indent",
+      "text_contains_url_like",
+      "url_preserving_wrap_options"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

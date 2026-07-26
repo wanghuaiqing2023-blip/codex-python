@@ -1,0 +1,54 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "external-agent-migration",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 1,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-external-agent-migration",
+        "module": "crate",
+        "source": "codex/codex-rs/external-agent-migration/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/external_agent_migration/__init__.py",
+          "anchor_candidates": [
+            "build_mcp_config_from_external",
+            "count_missing_commands",
+            "count_missing_subagents",
+            "hook_migration_event_names",
+            "hooks_migration_description",
+            "import_commands",
+            "import_hooks",
+            "import_subagents",
+            "missing_command_names",
+            "missing_subagent_names",
+            "COMMAND_SKILL_PREFIX",
+            "EXTERNAL_AGENT_HOOKS_SUBDIR"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

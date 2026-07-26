@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.keymap_setup",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "keymap_setup",
+    "source": "codex/codex-rs/tui/src/keymap_setup.rs",
+    "anchors": [
+      "KEYMAP_ACTION_MENU_VIEW_ID",
+      "KEYMAP_REPLACE_BINDING_MENU_VIEW_ID",
+      "KeymapCaptureView",
+      "KeymapEditOutcome",
+      "active_binding_specs",
+      "build_keymap_action_menu_params",
+      "build_keymap_capture_view",
+      "build_keymap_conflict_params",
+      "build_keymap_replace_binding_menu_params",
+      "keymap_with_edit",
+      "keymap_without_custom_binding",
+      "action_menu_item"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/keymap_setup/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/keymap_setup/__init__.py"
+    ],
+    "anchors": [
+      "KEYMAP_ACTION_MENU_VIEW_ID",
+      "KEYMAP_REPLACE_BINDING_MENU_VIEW_ID",
+      "KeymapCaptureView",
+      "KeymapEditOutcome",
+      "active_binding_specs",
+      "build_keymap_action_menu_params",
+      "build_keymap_capture_view",
+      "build_keymap_conflict_params",
+      "build_keymap_replace_binding_menu_params",
+      "keymap_with_edit",
+      "keymap_without_custom_binding",
+      "action_menu_item"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

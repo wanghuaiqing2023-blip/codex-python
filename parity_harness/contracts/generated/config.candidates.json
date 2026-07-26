@@ -1,0 +1,915 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "config",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 32,
+    "python_files": 29,
+    "modules_with_candidates": 28,
+    "modules_with_anchors": 28
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "crate",
+        "source": "codex/codex-rs/config/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/__init__.py",
+          "anchor_candidates": [
+            "AppRequirementToml",
+            "AppToolApproval",
+            "AppToolRequirementToml",
+            "AppToolsRequirementsToml",
+            "AppsRequirementsToml",
+            "BundledSkillsConfig",
+            "CONFIG_TOML_FILE",
+            "CloudRequirementsLoadError",
+            "CloudRequirementsLoadErrorCode",
+            "CloudRequirementsLoader",
+            "ComputerUseRequirementsToml",
+            "ConfigError"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "cloud_requirements",
+        "source": "codex/codex-rs/config/src/cloud_requirements.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/cloud_requirements.py",
+          "anchor_candidates": [
+            "CloudRequirementsLoadError",
+            "CloudRequirementsLoadErrorCode",
+            "CloudRequirementsLoader",
+            "code",
+            "get",
+            "new",
+            "status_code"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "config_requirements",
+        "source": "codex/codex-rs/config/src/config_requirements.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/config_requirements.py",
+          "anchor_candidates": [
+            "AppRequirementToml",
+            "AppToolRequirementToml",
+            "AppToolsRequirementsToml",
+            "AppsRequirementsToml",
+            "ComputerUseRequirementsToml",
+            "ConfigRequirements",
+            "ConfigRequirementsToml",
+            "ConfigRequirementsWithSources",
+            "ConstrainedWithSource",
+            "FeatureRequirementsToml",
+            "FilesystemConstraints",
+            "FilesystemDenyReadPattern"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "config_toml",
+        "source": "codex/codex-rs/config/src/config_toml.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/config_toml.py",
+          "anchor_candidates": [
+            "AgentRoleToml",
+            "AgentsToml",
+            "AutoReviewToml",
+            "ConfigLockfileToml",
+            "ConfigToml",
+            "DEFAULT_PROJECT_DOC_MAX_BYTES",
+            "DebugConfigLockToml",
+            "DebugToml",
+            "ForcedChatgptWorkspaceIds",
+            "GhostSnapshotToml",
+            "ProjectConfig",
+            "RealtimeAudioConfig"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "constraint",
+        "source": "codex/codex-rs/config/src/constraint.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/constraint.py",
+          "anchor_candidates": [
+            "Constrained",
+            "ConstraintError",
+            "ConstraintResult",
+            "add_validator",
+            "allow_any",
+            "allow_any_from_default",
+            "allow_only",
+            "can_set",
+            "empty_field",
+            "get",
+            "new",
+            "normalized"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "diagnostics",
+        "source": "codex/codex-rs/config/src/diagnostics.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/diagnostics.py",
+          "anchor_candidates": [
+            "ConfigError",
+            "ConfigLoadError",
+            "TextPosition",
+            "TextRange",
+            "config_error",
+            "config_error_from_toml",
+            "config_error_from_typed_toml",
+            "default_range",
+            "first_layer_config_error",
+            "first_layer_config_error_from_entries",
+            "format_config_error",
+            "format_config_error_with_source"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "fingerprint",
+        "source": "codex/codex-rs/config/src/fingerprint.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/fingerprint.py",
+          "anchor_candidates": [
+            "record_origins",
+            "version_for_toml"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "hook_config",
+        "source": "codex/codex-rs/config/src/hook_config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/hook_config.py",
+          "anchor_candidates": [
+            "HookEventsToml",
+            "HookHandlerConfig",
+            "HookStateToml",
+            "HooksFile",
+            "HooksToml",
+            "ManagedHooksRequirementsToml",
+            "MatcherGroup",
+            "handler_count",
+            "into_matcher_groups",
+            "is_empty",
+            "managed_dir_for_current_platform"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "host_name",
+        "source": "codex/codex-rs/config/src/host_name.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/host_name.py",
+          "anchor_candidates": [
+            "host_name"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "key_aliases",
+        "source": "codex/codex-rs/config/src/key_aliases.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/key_aliases.py",
+          "anchor_candidates": [
+            "normalize_key_aliases",
+            "normalized_with_key_aliases",
+            "CONFIG_KEY_ALIASES",
+            "ConfigKeyAlias"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "loader",
+        "source": "codex/codex-rs/config/src/loader/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/loader.py",
+          "anchor_candidates": [
+            "load_config_layers_state",
+            "load_requirements_toml",
+            "merge_requirements_with_remote_sandbox_config",
+            "project_trust_key",
+            "resolve_relative_paths_in_config_toml",
+            "system_config_toml_file",
+            "DEFAULT_PROGRAM_DATA_DIR_WINDOWS",
+            "LegacyManagedConfigToml",
+            "LoadedProjectLayers",
+            "PROJECT_LOCAL_CONFIG_DENYLIST",
+            "ProjectTrustContext",
+            "ProjectTrustDecision"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "loader::layer_io",
+        "source": "codex/codex-rs/config/src/loader/layer_io.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "loader::macos",
+        "source": "codex/codex-rs/config/src/loader/macos.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "marketplace_edit",
+        "source": "codex/codex-rs/config/src/marketplace_edit.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/marketplace_edit.py",
+          "anchor_candidates": [
+            "MarketplaceConfigUpdate",
+            "RemoveMarketplaceConfigOutcome",
+            "record_user_marketplace",
+            "remove_user_marketplace",
+            "remove_user_marketplace_config"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "mcp_edit",
+        "source": "codex/codex-rs/config/src/mcp_edit.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/mcp_edit.py",
+          "anchor_candidates": [
+            "ConfigEditsBuilder",
+            "apply",
+            "load_global_mcp_servers",
+            "new",
+            "apply_blocking",
+            "replace_mcp_servers"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "mcp_types",
+        "source": "codex/codex-rs/config/src/mcp_types.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/mcp_types.py",
+          "anchor_candidates": [
+            "AppToolApproval",
+            "DEFAULT_MCP_SERVER_ENVIRONMENT_ID",
+            "McpServerConfig",
+            "McpServerDisabledReason",
+            "McpServerEnvVar",
+            "McpServerOAuthConfig",
+            "McpServerToolConfig",
+            "McpServerTransportConfig",
+            "is_local_environment",
+            "is_remote_source",
+            "name",
+            "oauth_client_id"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "mcp_types::option_duration_secs",
+        "source": "codex/codex-rs/config/src/mcp_types.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "merge",
+        "source": "codex/codex-rs/config/src/merge.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/merge.py",
+          "anchor_candidates": [
+            "merge_toml_values"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "overrides",
+        "source": "codex/codex-rs/config/src/overrides.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/overrides.py",
+          "anchor_candidates": [
+            "build_cli_overrides_layer",
+            "default_empty_table"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "permissions_toml",
+        "source": "codex/codex-rs/config/src/permissions_toml.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/permissions_toml.py",
+          "anchor_candidates": [
+            "FilesystemPermissionToml",
+            "FilesystemPermissionsToml",
+            "NetworkDomainPermissionToml",
+            "NetworkDomainPermissionsToml",
+            "NetworkMitmActionToml",
+            "NetworkMitmHookToml",
+            "NetworkMitmInjectedHeaderToml",
+            "NetworkMitmToml",
+            "NetworkToml",
+            "NetworkUnixSocketPermissionToml",
+            "NetworkUnixSocketPermissionsToml",
+            "PermissionProfileResolutionError"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "plugin_edit",
+        "source": "codex/codex-rs/config/src/plugin_edit.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/plugin_edit.py",
+          "anchor_candidates": [
+            "PluginConfigEdit",
+            "apply_user_plugin_config_edits",
+            "clear_user_plugin",
+            "set_user_plugin_enabled",
+            "apply_user_plugin_config_edits_blocking"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "profile_toml",
+        "source": "codex/codex-rs/config/src/profile_toml.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/profile_toml.py",
+          "anchor_candidates": [
+            "ConfigProfile",
+            "ProfileTui"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "project_root_markers",
+        "source": "codex/codex-rs/config/src/project_root_markers.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/project_root_markers.py",
+          "anchor_candidates": [
+            "default_project_root_markers",
+            "project_root_markers_from_config",
+            "DEFAULT_PROJECT_ROOT_MARKERS"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "requirements_exec_policy",
+        "source": "codex/codex-rs/config/src/requirements_exec_policy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/requirements_exec_policy.py",
+          "anchor_candidates": [
+            "RequirementsExecPolicy",
+            "RequirementsExecPolicyDecisionToml",
+            "RequirementsExecPolicyParseError",
+            "RequirementsExecPolicyPatternTokenToml",
+            "RequirementsExecPolicyPrefixRuleToml",
+            "RequirementsExecPolicyToml",
+            "to_policy",
+            "to_requirements_policy",
+            "as_decision",
+            "as_ref"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "schema",
+        "source": "codex/codex-rs/config/src/schema.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/schema.py",
+          "anchor_candidates": [
+            "canonicalize",
+            "config_schema",
+            "config_schema_json",
+            "write_config_schema"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "skills_config",
+        "source": "codex/codex-rs/config/src/skills_config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/skills_config.py",
+          "anchor_candidates": [
+            "BundledSkillsConfig",
+            "SkillConfig",
+            "SkillsConfig"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "state",
+        "source": "codex/codex-rs/config/src/state.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/state.py",
+          "anchor_candidates": [
+            "ConfigLayerEntry",
+            "ConfigLayerStack",
+            "ConfigLayerStackOrdering",
+            "ConfigLoadOptions",
+            "LoaderOverrides",
+            "as_layer",
+            "config_folder",
+            "effective_config",
+            "effective_user_config",
+            "get_active_user_layer",
+            "get_layers",
+            "get_user_config_file"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "strict_config",
+        "source": "codex/codex-rs/config/src/strict_config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/strict_config.py",
+          "anchor_candidates": [
+            "config_error_from_ignored_toml_fields",
+            "config_error_from_ignored_toml_value_fields",
+            "config_error_from_ignored_toml_value_fields_for_source_name",
+            "ignored_toml_value_field",
+            "unknown_feature_toml_value_field"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "thread_config",
+        "source": "codex/codex-rs/config/src/thread_config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/thread_config.py",
+          "anchor_candidates": [
+            "NoopThreadConfigLoader",
+            "RemoteThreadConfigLoader",
+            "SessionThreadConfig",
+            "StaticThreadConfigLoader",
+            "ThreadConfigContext",
+            "ThreadConfigLoadError",
+            "ThreadConfigLoadErrorCode",
+            "ThreadConfigLoader",
+            "ThreadConfigSource",
+            "UserThreadConfig",
+            "code",
+            "new"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "thread_config::remote",
+        "source": "codex/codex-rs/config/src/thread_config/remote.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "tui_keymap",
+        "source": "codex/codex-rs/config/src/tui_keymap.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/tui_keymap.py",
+          "anchor_candidates": [
+            "KeybindingSpec",
+            "KeybindingsSpec",
+            "TuiApprovalKeymap",
+            "TuiChatKeymap",
+            "TuiComposerKeymap",
+            "TuiEditorKeymap",
+            "TuiGlobalKeymap",
+            "TuiKeymap",
+            "TuiListKeymap",
+            "TuiPagerKeymap",
+            "TuiVimNormalKeymap",
+            "TuiVimOperatorKeymap"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-config",
+        "module": "types",
+        "source": "codex/codex-rs/config/src/types.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/config/types.py",
+          "anchor_candidates": [
+            "AltScreenMode",
+            "AnalyticsConfigToml",
+            "AppConfig",
+            "AppToolApproval",
+            "AppToolConfig",
+            "AppToolsConfig",
+            "ApprovalsReviewer",
+            "AppsConfigToml",
+            "AppsDefaultConfig",
+            "AuthCredentialsStoreMode",
+            "BundledSkillsConfig",
+            "DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

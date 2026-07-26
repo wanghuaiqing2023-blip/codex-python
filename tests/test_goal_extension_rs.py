@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import json
@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 from pycodex.core.client import ModelClient
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.core.session.turn.runtime import run_user_turn_sampling_from_session
 from pycodex.ext.goal import GoalExtension, GoalRuntimeHandle, install_with_backend
 from pycodex.core.tools.context import ToolPayload
@@ -58,7 +58,7 @@ def test_thread_start_attaches_runtime_and_exposes_goal_tools() -> None:
     builder = ExtensionRegistryBuilder.new()
     extension = install_with_backend(builder, object(), lambda _config: True)
     registry = builder.build()
-    session = InMemoryCodexSession(cwd="C:/work", goal_tools_enabled_value=True)
+    session = Session(cwd="C:/work", goal_tools_enabled_value=True)
     thread_store = ExtensionData("thread-1")
 
     asyncio.run(
@@ -84,7 +84,7 @@ def test_thread_start_attaches_runtime_and_exposes_goal_tools() -> None:
 def test_product_session_keeps_goal_runtime_in_core_like_current_app_server() -> None:
     # Rust: codex-app-server::extensions::thread_extensions does not install
     # codex-goal-extension; product GoalRuntime is owned by codex-core::goals.
-    session = InMemoryCodexSession(cwd="C:/work", state_db=object(), goal_tools_enabled_value=True)
+    session = Session(cwd="C:/work", state_db=object(), goal_tools_enabled_value=True)
 
     assert session.services.extensions.tool_contributors() == ()
     assert session.services.extensions.turn_lifecycle_contributors() == ()
@@ -94,7 +94,7 @@ def test_token_contributor_records_cumulative_usage_for_the_active_turn() -> Non
     # Rust: codex-rs/ext/goal/src/extension.rs::TokenUsageContributor::on_token_usage.
     builder = ExtensionRegistryBuilder.new()
     extension = install_with_backend(builder, object(), lambda _config: True)
-    session = InMemoryCodexSession(cwd="C:/work", goal_tools_enabled_value=True)
+    session = Session(cwd="C:/work", goal_tools_enabled_value=True)
     thread_store = ExtensionData("thread-1")
     turn_store = ExtensionData("turn-1")
     asyncio.run(
@@ -493,3 +493,4 @@ CREATE TABLE thread_goals (
 );
         """
     )
+

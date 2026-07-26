@@ -11,6 +11,8 @@ from pycodex.config import (
     LoaderOverrides,
 )
 
+TEST_ROOT = Path(tempfile.gettempdir()).resolve() / "pycodex-config-state"
+
 
 class ConfigStateTests(unittest.TestCase):
     def test_origins_use_canonical_key_aliases(self) -> None:
@@ -85,23 +87,27 @@ class ConfigStateTests(unittest.TestCase):
 
     def test_with_user_config_profile_inserts_profile_metadata_like_rust(self) -> None:
         # Rust source: ConfigLayerStack::with_user_config_profile.
-        system = ConfigLayerEntry.new(ConfigLayerSource.system("/tmp/system.toml"), {"model": "system"})
+        system = ConfigLayerEntry.new(ConfigLayerSource.system(TEST_ROOT / "system.toml"), {"model": "system"})
         session = ConfigLayerEntry.new(ConfigLayerSource.session_flags(), {"approval_policy": "never"})
         stack = ConfigLayerStack.new([system, session])
+        profile_path = TEST_ROOT / "work.config.toml"
 
-        updated = stack.with_user_config_profile("/tmp/work.config.toml", "work", {"model": "work"})
+        updated = stack.with_user_config_profile(profile_path, "work", {"model": "work"})
 
-        self.assertEqual([layer.name.type for layer in updated.layers], ["system", "user", "session_flags"])
-        self.assertEqual(updated.get_user_config_file(), Path("/tmp/work.config.toml"))
+        self.assertEqual([layer.name.type for layer in updated.layers], ["system", "user", "sessionFlags"])
+        self.assertEqual(updated.get_user_config_file(), profile_path)
         self.assertEqual(updated.get_active_user_layer().name.profile, "work")
         self.assertEqual(updated.effective_user_config(), {"model": "work"})
 
     def test_get_user_layers_supports_precedence_order_and_disabled_filter(self) -> None:
         # Rust source: ConfigLayerStack::get_user_layers.
-        base = ConfigLayerEntry.new(ConfigLayerSource.user("/tmp/config.toml"), {"model": "base"})
-        profile = ConfigLayerEntry.new(ConfigLayerSource.user("/tmp/work.config.toml", "work"), {"model": "work"})
+        base = ConfigLayerEntry.new(ConfigLayerSource.user(TEST_ROOT / "config.toml"), {"model": "base"})
+        profile = ConfigLayerEntry.new(
+            ConfigLayerSource.user(TEST_ROOT / "work.config.toml", "work"),
+            {"model": "work"},
+        )
         disabled = ConfigLayerEntry.new_disabled(
-            ConfigLayerSource.user("/tmp/disabled.config.toml", "disabled"),
+            ConfigLayerSource.user(TEST_ROOT / "disabled.config.toml", "disabled"),
             {"model": "disabled"},
             "disabled by test",
         )
@@ -132,10 +138,10 @@ class ConfigStateTests(unittest.TestCase):
         self.assertEqual(updated.startup_warnings(), ("first", "second"))
 
     def test_effective_config_skips_disabled_layers_and_high_to_low_reverses_order(self) -> None:
-        system = ConfigLayerEntry.new(ConfigLayerSource.system("/tmp/system.toml"), {"model": "system"})
-        user = ConfigLayerEntry.new(ConfigLayerSource.user("/tmp/user.toml"), {"model": "user"})
+        system = ConfigLayerEntry.new(ConfigLayerSource.system(TEST_ROOT / "system.toml"), {"model": "system"})
+        user = ConfigLayerEntry.new(ConfigLayerSource.user(TEST_ROOT / "user.toml"), {"model": "user"})
         disabled_project = ConfigLayerEntry.new_disabled(
-            ConfigLayerSource.project("/tmp/project/.codex"),
+            ConfigLayerSource.project(TEST_ROOT / "project" / ".codex"),
             {"model": "project"},
             "disabled by test",
         )
@@ -150,49 +156,53 @@ class ConfigStateTests(unittest.TestCase):
         )
 
     def test_layer_entry_metadata_raw_toml_as_layer_and_config_folders(self) -> None:
+        user_config = TEST_ROOT / "codex" / "config.toml"
+        hooks_folder = TEST_ROOT / "root" / ".codex"
         layer = ConfigLayerEntry.new_with_raw_toml(
-            ConfigLayerSource.user("/tmp/codex/config.toml"),
+            ConfigLayerSource.user(user_config),
             {"model": "gpt-5"},
             'model = "gpt-5"',
         )
-        overridden = layer.with_hooks_config_folder_override("/tmp/root/.codex")
+        overridden = layer.with_hooks_config_folder_override(hooks_folder)
 
         self.assertEqual(layer.raw_toml_text(), 'model = "gpt-5"')
         self.assertFalse(layer.is_disabled())
-        self.assertEqual(layer.config_folder(), Path("/tmp/codex"))
-        self.assertEqual(overridden.hooks_config_folder(), Path("/tmp/root/.codex"))
+        self.assertEqual(layer.config_folder(), user_config.parent)
+        self.assertEqual(overridden.hooks_config_folder(), hooks_folder)
         self.assertEqual(layer.as_layer().name, layer.name)
         self.assertEqual(layer.as_layer().config, {"model": "gpt-5"})
         self.assertTrue(layer.metadata().version.startswith("sha256:"))
 
     def test_verify_layer_ordering_rejects_precedence_and_project_order_errors(self) -> None:
         session = ConfigLayerEntry.new(ConfigLayerSource.session_flags(), {})
-        system = ConfigLayerEntry.new(ConfigLayerSource.system("/tmp/system.toml"), {})
+        system = ConfigLayerEntry.new(ConfigLayerSource.system(TEST_ROOT / "system.toml"), {})
         with self.assertRaisesRegex(ValueError, "correct precedence order"):
             ConfigLayerStack.new([session, system])
 
-        root_project = ConfigLayerEntry.new(ConfigLayerSource.project("/tmp/project/.codex"), {})
-        same_project = ConfigLayerEntry.new(ConfigLayerSource.project("/tmp/project/.codex"), {})
+        project_folder = TEST_ROOT / "project" / ".codex"
+        root_project = ConfigLayerEntry.new(ConfigLayerSource.project(project_folder), {})
+        same_project = ConfigLayerEntry.new(ConfigLayerSource.project(project_folder), {})
         with self.assertRaisesRegex(ValueError, "root to cwd"):
             ConfigLayerStack.new([root_project, same_project])
 
     def test_with_user_layer_from_preserves_non_user_layers(self) -> None:
-        system = ConfigLayerEntry.new(ConfigLayerSource.system("/tmp/system.toml"), {"model": "system"})
+        system = ConfigLayerEntry.new(ConfigLayerSource.system(TEST_ROOT / "system.toml"), {"model": "system"})
         session = ConfigLayerEntry.new(ConfigLayerSource.session_flags(), {"approval_policy": "never"})
         base = ConfigLayerStack.new([system, session])
-        user = ConfigLayerEntry.new(ConfigLayerSource.user("/tmp/user.toml"), {"model": "user"})
+        user = ConfigLayerEntry.new(ConfigLayerSource.user(TEST_ROOT / "user.toml"), {"model": "user"})
         other = ConfigLayerStack.new([user])
 
         updated = base.with_user_layer_from(other)
 
         self.assertEqual(updated.effective_config(), {"model": "user", "approval_policy": "never"})
-        self.assertEqual([layer.name.type for layer in updated.layers], ["system", "user", "session_flags"])
+        self.assertEqual([layer.name.type for layer in updated.layers], ["system", "user", "sessionFlags"])
 
     def test_loader_overrides_and_config_load_options(self) -> None:
         overrides = LoaderOverrides.without_managed_config_for_tests()
+        codex_home = TEST_ROOT / "codex-home"
 
         self.assertTrue(str(overrides.managed_config_path).endswith("managed_config.toml"))
-        self.assertEqual(overrides.user_config_file(Path("/tmp/codex-home")), Path("/tmp/codex-home/config.toml"))
+        self.assertEqual(overrides.user_config_file(codex_home), codex_home / "config.toml")
         self.assertFalse(ConfigLoadOptions.from_loader_overrides(overrides).strict_config)
 
 

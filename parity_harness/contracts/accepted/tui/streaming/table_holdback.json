@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.streaming.table_holdback",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "streaming::table_holdback",
+    "source": "codex/codex-rs/tui/src/streaming/table_holdback.rs",
+    "anchors": [
+      "TableHoldbackScanner",
+      "TableHoldbackState",
+      "new",
+      "push_source_chunk",
+      "reset",
+      "state",
+      "PreviousLineState",
+      "push_line",
+      "table_candidate_text"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/streaming/table_holdback.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/streaming/table_holdback.py"
+    ],
+    "anchors": [
+      "TableHoldbackScanner",
+      "TableHoldbackState",
+      "new",
+      "push_source_chunk",
+      "reset",
+      "state",
+      "PreviousLineState",
+      "push_line",
+      "table_candidate_text"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

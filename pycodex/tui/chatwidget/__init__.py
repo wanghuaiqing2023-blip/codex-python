@@ -43,6 +43,42 @@ AUTO_REVIEW_DESCRIPTION = "Review changes automatically."
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_STATUS_LINE_ITEMS = ("model", "approval", "sandbox")
 MAX_AGENT_COPY_HISTORY = 20
+
+
+def multi_agent_enable_prompt_params() -> Any:
+    """Build Rust ``ChatWidget::open_multi_agent_enable_prompt`` params."""
+
+    from pycodex.features import Feature
+
+    from ..app_event import AppEvent
+    from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+    from ..history_cell.notices import new_warning_event
+
+    return SelectionViewParams(
+        title=MULTI_AGENT_ENABLE_TITLE,
+        subtitle="Subagents are currently disabled in your config.",
+        items=[
+            SelectionItem(
+                name=MULTI_AGENT_ENABLE_YES,
+                description="Save the setting now. You will need a new session to use it.",
+                actions=[
+                    AppEvent.of(
+                        "UpdateFeatureFlags",
+                        updates=[(Feature.COLLAB, True)],
+                    ),
+                    AppEvent.insert_history_cell(
+                        new_warning_event(MULTI_AGENT_ENABLE_NOTICE)
+                    ),
+                ],
+                dismiss_on_select=True,
+            ),
+            SelectionItem(
+                name=MULTI_AGENT_ENABLE_NO,
+                description="Keep subagents disabled.",
+                dismiss_on_select=True,
+            ),
+        ],
+    )
 PLACEHOLDERS = ("Thinking", "Working", "Reading")
 SIDE_PLACEHOLDERS = ("Side conversation",)
 
@@ -161,7 +197,7 @@ class ChatWidget:
         return {"view": "feedback_consent"}
 
     def open_multi_agent_enable_prompt(self) -> dict[str, str]:
-        return {"title": MULTI_AGENT_ENABLE_TITLE, "yes": MULTI_AGENT_ENABLE_YES, "no": MULTI_AGENT_ENABLE_NO}
+        return multi_agent_enable_prompt_params()
 
     def open_memories_popup(self) -> dict[str, str]:
         return {"view": "memories", "url": MEMORIES_DOC_URL}

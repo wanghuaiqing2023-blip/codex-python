@@ -1,6 +1,10 @@
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import pycodex.app_server.main as app_server_main
 from pycodex.app_server import PluginStartupTasks
 from pycodex.app_server.main import (
     AppServerArgsProjection,
@@ -10,6 +14,7 @@ from pycodex.app_server.main import (
     loader_overrides_from_debug_env,
     main_runtime_call_projection,
     managed_config_path_from_debug_env,
+    run,
 )
 from pycodex.protocol import SessionSource
 
@@ -107,3 +112,36 @@ def test_main_runtime_call_projection_projects_supported_listen_urls() -> None:
         main_runtime_call_projection("arg0", AppServerArgsProjection(listen="unix://socket"), environ={}).transport
         == "unix:socket"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_delegates_main_fields_and_stdio_to_crate_root(monkeypatch) -> None:
+    captured = {}
+    sentinel = object()
+
+    async def fake_run_main_with_transport_options(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        app_server_main,
+        "run_main_with_transport_options",
+        fake_run_main_with_transport_options,
+    )
+    stdin = io.StringIO("")
+    stdout = io.StringIO()
+
+    result = await run(
+        "arg0",
+        AppServerArgsProjection(strict_config=True),
+        stdin=stdin,
+        stdout=stdout,
+        environ={},
+    )
+
+    assert result is sentinel
+    assert captured["arg0_paths"] == "arg0"
+    assert captured["transport"] == "stdio"
+    assert captured["strict_config"] is True
+    assert captured["stdin"] is stdin
+    assert captured["stdout"] is stdout

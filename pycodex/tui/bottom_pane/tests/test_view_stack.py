@@ -922,3 +922,32 @@ def test_cancelled_child_keeps_parent_and_clears_child_accept_marker() -> None:
     assert stack.views == [parent]
     assert parent.dismiss_after_child_accept_value is False
     assert parent.clear_calls == 1
+
+
+def test_terminal_bottom_pane_question_mark_toggles_rust_shortcut_footer() -> None:
+    # Rust owners/tests:
+    # bottom_pane::chat_composer::handle_shortcut_overlay_key and
+    # shift_question_mark_toggles_shortcut_overlay_when_empty.
+    state = TerminalBottomPaneViewState.new()
+
+    action = state.handle_composer_event("text", "?")
+    context = state.render_context_for_size(os.terminal_size((80, 20)), lambda: True)
+
+    assert action.kind == "render"
+    assert state.composer.current_text() == ""
+    assert context.footer_height > 1
+    assert any("customize shortcuts with /keymap" in line for line in context.footer_lines)
+
+    state.handle_composer_event("text", "?")
+    context = state.render_context_for_size(os.terminal_size((80, 20)), lambda: True)
+    assert context.footer_lines == ()
+
+
+def test_terminal_bottom_pane_question_mark_after_text_stays_in_draft() -> None:
+    # Rust test: chat_composer::question_mark_only_toggles_on_first_char.
+    state = TerminalBottomPaneViewState.new()
+
+    state.handle_composer_event("text", "h")
+    state.handle_composer_event("text", "?")
+
+    assert state.composer.current_text() == "h?"

@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.session",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "session",
+    "source": "codex/codex-rs/core/src/session/mod.rs",
+    "anchors": [
+      "PreviousTurnSettings",
+      "set_thread_memory_mode"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/session/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/session/__init__.py"
+    ],
+    "anchors": [
+      "PreviousTurnSettings",
+      "set_thread_memory_mode"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

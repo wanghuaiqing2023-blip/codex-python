@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from pathlib import Path
 
+from pycodex.app_server_protocol.config import ConfigLayerSource
 from pycodex.config import (
     NoopThreadConfigLoader,
     RemoteThreadConfigLoader,
@@ -23,7 +24,7 @@ from pycodex.config.thread_config import (
     thread_config_source_from_proto,
     thread_config_source_to_layer,
 )
-from pycodex.network_proxy import ConfigLayerEntry, ConfigLayerSource
+from pycodex.config.state import ConfigLayerEntry
 
 
 def run(coro):

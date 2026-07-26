@@ -1,0 +1,16 @@
+{
+  "scope": "file-search",
+  "rust_root": "codex/codex-rs/file-search",
+  "python_root": "pycodex/file_search",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": [
+    {
+      "path": "pycodex/file_search/__main__.py",
+      "reason": "Python -m launcher adapter that only delegates to the reviewed main.py owner."
+    }
+  ]
+}

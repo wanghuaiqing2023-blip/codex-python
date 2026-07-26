@@ -100,6 +100,7 @@ def test_create_openai_provider_defaults_and_api_provider_projection(monkeypatch
     assert provider.name == "OpenAI"
     assert provider.requires_openai_auth is True
     assert provider.supports_websockets is True
+    assert provider.http_headers == {"version": "0.1.0"}
     assert provider.request_max_retries() == DEFAULT_REQUEST_MAX_RETRIES
     assert provider.stream_max_retries() == DEFAULT_STREAM_MAX_RETRIES
     assert provider.stream_idle_timeout() == DEFAULT_STREAM_IDLE_TIMEOUT_MS
@@ -107,6 +108,7 @@ def test_create_openai_provider_defaults_and_api_provider_projection(monkeypatch
 
     api = provider.to_api_provider("chatgpt")
     assert api.base_url == CHATGPT_CODEX_BASE_URL
+    assert api.headers["version"] == "0.1.0"
     assert api.headers["OpenAI-Organization"] == "org-1"
     assert api.headers["OpenAI-Project"] == "project-1"
 

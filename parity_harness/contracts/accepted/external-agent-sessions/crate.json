@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-external-agent-sessions.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-external-agent-sessions",
+    "module": "crate",
+    "source": "codex/codex-rs/external-agent-sessions/src/lib.rs",
+    "anchors": [
+      "ExternalAgentSessionMigration",
+      "ImportedExternalAgentSession",
+      "PendingSessionImport",
+      "PrepareSessionImportsError",
+      "SessionSummary",
+      "detect_recent_sessions",
+      "has_current_session_been_imported",
+      "load_session_for_import",
+      "prepare_pending_session_imports",
+      "prepare_validated_session_imports",
+      "record_imported_session",
+      "summarize_session"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/external_agent_sessions/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/external_agent_sessions/__init__.py"
+    ],
+    "anchors": [
+      "ExternalAgentSessionMigration",
+      "ImportedExternalAgentSession",
+      "PendingSessionImport",
+      "PrepareSessionImportsError",
+      "SessionSummary",
+      "detect_recent_sessions",
+      "has_current_session_been_imported",
+      "load_session_for_import",
+      "prepare_pending_session_imports",
+      "prepare_validated_session_imports",
+      "record_imported_session",
+      "summarize_session"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

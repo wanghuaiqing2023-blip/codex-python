@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.markdown_render.table_key_value",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "markdown_render::table_key_value",
+    "source": "codex/codex-rs/tui/src/markdown_render/table_key_value.rs",
+    "anchors": [
+      "render_records",
+      "should_render_records",
+      "CATASTROPHIC_NARRATIVE_CELL_LINES",
+      "CRAMPED_EXPANSIVE_CELL_LINES",
+      "FIELD_GAP",
+      "FIELD_LEADING_PADDING",
+      "MIN_ALIGNED_COMPACT_VALUE_WIDTH",
+      "MIN_ALIGNED_EXPANSIVE_VALUE_WIDTH",
+      "MIN_SCANNABLE_NARRATIVE_WIDTH",
+      "MIN_SCANNABLE_TOKEN_HEAVY_WIDTH",
+      "MIN_VALUE_WIDTH",
+      "STACKED_VALUE_INDENT"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/markdown_render/table_key_value.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/markdown_render/table_key_value.py"
+    ],
+    "anchors": [
+      "render_records",
+      "should_render_records",
+      "CATASTROPHIC_NARRATIVE_CELL_LINES",
+      "CRAMPED_EXPANSIVE_CELL_LINES",
+      "FIELD_GAP",
+      "FIELD_LEADING_PADDING",
+      "MIN_ALIGNED_COMPACT_VALUE_WIDTH",
+      "MIN_ALIGNED_EXPANSIVE_VALUE_WIDTH",
+      "MIN_SCANNABLE_NARRATIVE_WIDTH",
+      "MIN_SCANNABLE_TOKEN_HEAVY_WIDTH",
+      "MIN_VALUE_WIDTH",
+      "STACKED_VALUE_INDENT"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

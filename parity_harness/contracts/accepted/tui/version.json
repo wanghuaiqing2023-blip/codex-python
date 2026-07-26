@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-tui.version",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "version",
+    "source": "codex/codex-rs/tui/src/version.rs",
+    "anchors": [
+      "CODEX_CLI_VERSION"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/version.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/version.py"
+    ],
+    "anchors": [
+      "CODEX_CLI_VERSION"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

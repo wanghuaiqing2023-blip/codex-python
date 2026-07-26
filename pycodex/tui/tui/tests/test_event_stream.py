@@ -258,6 +258,30 @@ def test_windows_console_source_maps_all_transcript_pager_virtual_keys() -> None
     ]
 
 
+def test_windows_console_source_maps_function_key_virtual_keys() -> None:
+    """Rust crossterm KeyCode::F values remain available to configured keymaps."""
+
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": code, "char": "\x00"}
+        for code in range(0x70, 0x7C)
+    ]
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert [source.poll(0.0) for _ in range(12)] == [
+        event_stream.TerminalInputEvent("key", f"f{index}") for index in range(1, 13)
+    ]
+
+
 def test_windows_console_source_maps_virtual_space_with_nul_unicode_char_to_text() -> None:
     # Rust source/product contract:
     # - codex-tui::tui::event_stream treats Space as an ordinary text key when
@@ -537,6 +561,15 @@ def test_terminal_ctrl_t_maps_to_global_transcript_event() -> None:
     """Rust codex-tui::app::input maps Global.open_transcript before composer input."""
 
     assert event_stream.terminal_event_from_char("\x14") == event_stream.TerminalInputEvent("ctrl_t")
+
+
+def test_terminal_c0_control_chars_map_to_semantic_global_keys() -> None:
+    """Rust crossterm reports C0 bytes as the corresponding Ctrl+letter keys."""
+
+    assert event_stream.terminal_event_from_char("\x07") == event_stream.TerminalInputEvent("ctrl_g")
+    assert event_stream.terminal_event_from_char("\x0c") == event_stream.TerminalInputEvent("ctrl_l")
+    assert event_stream.terminal_event_from_char("\x0f") == event_stream.TerminalInputEvent("ctrl_o")
+    assert event_stream.terminal_event_from_char("\x12") == event_stream.TerminalInputEvent("ctrl_r")
 
 
 def test_terminal_stdin_is_terminal_owns_runtime_tty_probe() -> None:
@@ -950,3 +983,25 @@ def test_prefixed_terminal_input_source_replays_turn_input_before_live_source() 
     assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你")
     assert source.poll(0.0) == event_stream.TerminalInputEvent("enter")
     assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "z")
+
+
+def test_ansi_escape_key_maps_function_keys_used_by_conpty() -> None:
+    # Crossterm, used by Rust codex-tui::tui::event_stream, maps these
+    # standard terminal sequences to F1-F12 key events.
+    sequences = {
+        "\x1bOP": "f1",
+        "\x1bOQ": "f2",
+        "\x1bOR": "f3",
+        "\x1bOS": "f4",
+        "\x1b[15~": "f5",
+        "\x1b[17~": "f6",
+        "\x1b[18~": "f7",
+        "\x1b[19~": "f8",
+        "\x1b[20~": "f9",
+        "\x1b[21~": "f10",
+        "\x1b[23~": "f11",
+        "\x1b[24~": "f12",
+    }
+
+    for sequence, key in sequences.items():
+        assert event_stream._ansi_escape_key(sequence) == key

@@ -1,0 +1,22 @@
+{
+  "scope": "rollout",
+  "rust_root": "codex/codex-rs/rollout",
+  "python_root": "pycodex/rollout",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::config",
+    "crate::default_client",
+    "crate::list",
+    "crate::metadata",
+    "crate::policy",
+    "crate::recorder",
+    "crate::search",
+    "crate::session_index",
+    "crate::sqlite_metrics",
+    "crate::state_db"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

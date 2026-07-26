@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.chatwidget.notifications",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::notifications",
+    "source": "codex/codex-rs/tui/src/chatwidget/notifications.rs",
+    "anchors": [
+      "Notification",
+      "agent_turn_preview",
+      "allowed_for",
+      "display",
+      "maybe_post_pending_notification",
+      "notify",
+      "user_input_request_summary",
+      "AGENT_NOTIFICATION_PREVIEW_GRAPHEMES",
+      "priority",
+      "type_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/notifications.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/notifications.py"
+    ],
+    "anchors": [
+      "Notification",
+      "agent_turn_preview",
+      "allowed_for",
+      "display",
+      "maybe_post_pending_notification",
+      "notify",
+      "user_input_request_summary",
+      "AGENT_NOTIFICATION_PREVIEW_GRAPHEMES",
+      "priority",
+      "type_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

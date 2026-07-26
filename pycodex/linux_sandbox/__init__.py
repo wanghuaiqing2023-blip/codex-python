@@ -9,19 +9,16 @@ and network proxy environment mutation remain runtime boundaries.
 from __future__ import annotations
 
 import importlib
-import inspect
 import json
 import sys
 from pathlib import Path
-from collections.abc import Awaitable, Callable
-from typing import Any, Mapping, NoReturn, Sequence
+from typing import Mapping, NoReturn, Sequence
 
 from pycodex.core.spawn import SpawnChildRequest, StdioPolicy, build_spawn_child_request
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile
 
 
 CODEX_LINUX_SANDBOX_ARG0 = "codex-linux-sandbox"
-LinuxSandboxSpawner = Callable[[SpawnChildRequest], Any | Awaitable[Any]]
 
 
 def run_main() -> NoReturn:
@@ -147,40 +144,6 @@ def build_linux_sandbox_spawn_child_request(
     )
 
 
-async def spawn_command_under_linux_sandbox(
-    codex_linux_sandbox_exe: str | Path,
-    command: Sequence[str],
-    command_cwd: str | Path,
-    permission_profile: PermissionProfile,
-    sandbox_policy_cwd: str | Path,
-    use_legacy_landlock: bool,
-    stdio_policy: StdioPolicy,
-    network: object | None,
-    env: Mapping[str, str] | None,
-    *,
-    spawn_child_async: LinuxSandboxSpawner,
-) -> Any:
-    """Rust ``codex-core::landlock::spawn_command_under_linux_sandbox`` boundary."""
-
-    if not callable(spawn_child_async):
-        raise TypeError("spawn_child_async must be callable")
-    request = build_linux_sandbox_spawn_child_request(
-        codex_linux_sandbox_exe,
-        command,
-        command_cwd,
-        permission_profile,
-        sandbox_policy_cwd,
-        use_legacy_landlock,
-        stdio_policy,
-        env=env or {},
-        network=network,
-    )
-    result = spawn_child_async(request)
-    if inspect.isawaitable(result):
-        return await result
-    return result
-
-
 def _string_sequence(value: object, label: str) -> tuple[str, ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise TypeError(f"{label} must be a sequence of strings")
@@ -191,12 +154,10 @@ def _string_sequence(value: object, label: str) -> tuple[str, ...]:
 
 __all__ = [
     "CODEX_LINUX_SANDBOX_ARG0",
-    "LinuxSandboxSpawner",
     "allow_network_for_proxy",
     "create_linux_sandbox_command_args",
     "build_linux_sandbox_spawn_child_request",
     "create_linux_sandbox_command_args_for_permission_profile",
     "linux_sandbox_arg0",
     "run_main",
-    "spawn_command_under_linux_sandbox",
 ]

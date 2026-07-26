@@ -1,0 +1,14 @@
+{
+  "scope": "backend-client",
+  "rust_root": "codex/codex-rs/backend-client",
+  "python_root": "pycodex/backend_client",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::client",
+    "crate::types"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

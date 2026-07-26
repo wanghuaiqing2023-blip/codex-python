@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.tui.event_stream",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "tui::event_stream",
+    "source": "codex/codex-rs/tui/src/tui/event_stream.rs",
+    "anchors": [
+      "CrosstermEventSource",
+      "EventBroker",
+      "EventResult",
+      "EventSource",
+      "TuiEventStream",
+      "new",
+      "pause_events",
+      "poll_crossterm_event",
+      "poll_draw_event",
+      "resume_events",
+      "resume_events_rx",
+      "EventBrokerState"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/tui/event_stream.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/tui/event_stream.py"
+    ],
+    "anchors": [
+      "CrosstermEventSource",
+      "EventBroker",
+      "EventResult",
+      "EventSource",
+      "TuiEventStream",
+      "new",
+      "pause_events",
+      "poll_crossterm_event",
+      "poll_draw_event",
+      "resume_events",
+      "resume_events_rx",
+      "EventBrokerState"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

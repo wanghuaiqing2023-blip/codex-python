@@ -1,11 +1,11 @@
-﻿"""Rust integration parity for ``core/tests/suite/request_compression.rs``."""
+"""Rust integration parity for ``core/tests/suite/request_compression.rs``."""
 
 from __future__ import annotations
 
 import json
 import unittest
 
-from pycodex.core.http_transport import HttpTransportConfig, prepare_request_body_for_transport
+from pycodex.core.client import HttpTransportConfig, prepare_request_body_for_transport
 
 
 class RequestCompressionSuiteParityTests(unittest.TestCase):

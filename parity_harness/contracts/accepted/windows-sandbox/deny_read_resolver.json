@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-windows-sandbox.deny_read_resolver",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "deny_read_resolver",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/deny_read_resolver.rs",
+    "anchors": [
+      "GlobScanPlan",
+      "effective_glob_scan_max_depth",
+      "glob_scan_plan",
+      "resolve_windows_deny_read_paths"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/deny_read_resolver.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/deny_read_resolver.py"
+    ],
+    "anchors": [
+      "GlobScanPlan",
+      "effective_glob_scan_max_depth",
+      "glob_scan_plan",
+      "resolve_windows_deny_read_paths"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_deny_read_resolver.py"
+  ]
+}

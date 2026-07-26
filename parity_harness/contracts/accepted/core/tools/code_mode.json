@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.code_mode",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::code_mode",
+    "source": "codex/codex-rs/core/src/tools/code_mode/mod.rs",
+    "anchors": [
+      "CodeModeExecuteHandler",
+      "CodeModeService",
+      "CodeModeWaitHandler",
+      "DEFAULT_WAIT_YIELD_TIME_MS",
+      "PUBLIC_TOOL_NAME",
+      "WAIT_TOOL_NAME",
+      "allocate_cell_id",
+      "execute",
+      "handle_runtime_response",
+      "is_exec_tool_name",
+      "wait",
+      "build_nested_tool_payload"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/code_mode/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/code_mode/__init__.py"
+    ],
+    "anchors": [
+      "CodeModeExecuteHandler",
+      "CodeModeService",
+      "CodeModeWaitHandler",
+      "DEFAULT_WAIT_YIELD_TIME_MS",
+      "PUBLIC_TOOL_NAME",
+      "WAIT_TOOL_NAME",
+      "allocate_cell_id",
+      "execute",
+      "handle_runtime_response",
+      "is_exec_tool_name",
+      "wait",
+      "build_nested_tool_payload"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

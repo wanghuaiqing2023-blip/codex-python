@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-file-search.cli",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-file-search",
+    "module": "cli",
+    "source": "codex/codex-rs/file-search/src/cli.rs",
+    "anchors": [
+      "Cli"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/file_search/cli.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/file_search/cli.py"
+    ],
+    "anchors": [
+      "Cli"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.realtime_conversation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "realtime_conversation",
+    "source": "codex/codex-rs/core/src/realtime_conversation.rs",
+    "anchors": [
+      "REALTIME_BACKEND_TEXT_PREFIX",
+      "REALTIME_USER_TEXT_PREFIX",
+      "RealtimeConversationManager",
+      "active_handoff_id",
+      "audio_in",
+      "clear_active_handoff",
+      "finish_if_active",
+      "handle_close",
+      "handle_text",
+      "handoff_complete",
+      "handoff_out",
+      "is_running_v2"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/realtime_conversation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/realtime_conversation.py"
+    ],
+    "anchors": [
+      "REALTIME_BACKEND_TEXT_PREFIX",
+      "REALTIME_USER_TEXT_PREFIX",
+      "RealtimeConversationManager",
+      "active_handoff_id",
+      "audio_in",
+      "clear_active_handoff",
+      "finish_if_active",
+      "handle_close",
+      "handle_text",
+      "handoff_complete",
+      "handoff_out",
+      "is_running_v2"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -625,7 +625,9 @@ class TerminalIdleFooterTextProvider:
     app_runtime: Any
 
     def text(self) -> str:
-        return run_terminal_idle_footer_text_from_runtime(self.app_runtime)
+        from ..chatwidget.status_surfaces import runtime_status_line_text
+
+        return runtime_status_line_text(self.app_runtime)
 
     def right_text(self) -> str:
         return terminal_idle_footer_right_text_from_runtime(self.app_runtime)

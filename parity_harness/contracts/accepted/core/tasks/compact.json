@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.tasks.compact",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tasks::compact",
+    "source": "codex/codex-rs/core/src/tasks/compact.rs",
+    "anchors": [
+      "CompactTask",
+      "kind",
+      "run",
+      "span_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tasks/compact.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tasks/compact.py"
+    ],
+    "anchors": [
+      "CompactTask",
+      "kind",
+      "run",
+      "span_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

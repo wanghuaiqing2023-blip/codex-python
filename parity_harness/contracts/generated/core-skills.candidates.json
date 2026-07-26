@@ -1,0 +1,278 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "core-skills",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 11,
+    "python_files": 10,
+    "modules_with_candidates": 7,
+    "modules_with_anchors": 7
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "crate",
+        "source": "codex/codex-rs/core-skills/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/__init__.py",
+          "anchor_candidates": [
+            "build_skill_name_counts"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "config_rules",
+        "source": "codex/codex-rs/core-skills/src/config_rules.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/config_rules.py",
+          "anchor_candidates": [
+            "SkillConfigRule",
+            "SkillConfigRuleSelector",
+            "SkillConfigRules",
+            "resolve_disabled_skill_paths",
+            "skill_config_rules_from_stack",
+            "skill_config_rule_selector"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "injection",
+        "source": "codex/codex-rs/core-skills/src/injection.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "invocation_utils",
+        "source": "codex/codex-rs/core-skills/src/invocation_utils.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/invocation_utils.py",
+          "anchor_candidates": [
+            "build_implicit_skill_path_indexes",
+            "detect_implicit_skill_invocation_for_command",
+            "SCRIPT_EXTENSIONS",
+            "canonicalize_if_exists",
+            "command_basename",
+            "command_reads_file",
+            "detect_skill_doc_read",
+            "detect_skill_script_run",
+            "script_run_token",
+            "tokenize_command"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "loader",
+        "source": "codex/codex-rs/core-skills/src/loader.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "manager",
+        "source": "codex/codex-rs/core-skills/src/manager.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/manager.py",
+          "anchor_candidates": [
+            "SkillsManager",
+            "clear_cache",
+            "new",
+            "skill_roots_for_config",
+            "skills_for_config",
+            "skills_for_cwd"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "mention_counts",
+        "source": "codex/codex-rs/core-skills/src/mention_counts.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/mention_counts.py",
+          "anchor_candidates": [
+            "build_skill_name_counts"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "model",
+        "source": "codex/codex-rs/core-skills/src/model.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/model.py",
+          "anchor_candidates": [
+            "SkillDependencies",
+            "SkillError",
+            "SkillMetadata",
+            "SkillToolDependency"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "remote",
+        "source": "codex/codex-rs/core-skills/src/remote.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/remote.py",
+          "anchor_candidates": [
+            "RemoteSkillDownloadResult",
+            "RemoteSkillProductSurface",
+            "RemoteSkillScope",
+            "RemoteSkillSummary",
+            "export_remote_skill",
+            "list_remote_skills",
+            "REMOTE_SKILLS_API_TIMEOUT",
+            "as_query_product_surface",
+            "as_query_scope",
+            "ensure_codex_backend_auth",
+            "extract_zip_to_dir",
+            "is_zip_payload"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "render",
+        "source": "codex/codex-rs/core-skills/src/render.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-core-skills",
+        "module": "system",
+        "source": "codex/codex-rs/core-skills/src/system.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

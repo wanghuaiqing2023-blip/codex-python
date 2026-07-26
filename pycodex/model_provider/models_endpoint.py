@@ -11,6 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 from urllib.request import Request, urlopen
 
+from pycodex.login.auth.default_client import default_headers
 from pycodex.model_provider_info import ModelProviderInfo
 from pycodex.protocol import ModelsResponse
 
@@ -63,7 +64,12 @@ class OpenAiModelsEndpoint:
         api_provider = self.provider_info.to_api_provider(auth_mode)
         api_auth = resolve_provider_auth(auth, self.provider_info)
         url = _append_client_version_query(_endpoint_url(api_provider.base_url), client_version)
-        headers = {str(key): str(value) for key, value in dict(api_provider.headers or {}).items()}
+        # Rust constructs the endpoint transport with login::default_client,
+        # then applies provider and auth headers to the individual request.
+        headers = default_headers()
+        headers.update(
+            {str(key): str(value) for key, value in dict(api_provider.headers or {}).items()}
+        )
         api_auth.add_auth_headers(headers)
         return await asyncio.to_thread(_fetch_models, url, headers)
 

@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.status.helpers",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "status::helpers",
+    "source": "codex/codex-rs/tui/src/status/helpers.rs",
+    "anchors": [
+      "compose_account_display",
+      "compose_agents_summary",
+      "compose_model_display",
+      "format_directory_display",
+      "format_reset_timestamp",
+      "format_tokens_compact",
+      "plan_type_display_name",
+      "normalize_agents_display_path",
+      "title_case"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/status/helpers.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/status/helpers.py"
+    ],
+    "anchors": [
+      "compose_account_display",
+      "compose_agents_summary",
+      "compose_model_display",
+      "format_directory_display",
+      "format_reset_timestamp",
+      "format_tokens_compact",
+      "plan_type_display_name",
+      "normalize_agents_display_path",
+      "title_case"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

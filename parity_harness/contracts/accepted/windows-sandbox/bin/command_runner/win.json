@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-windows-sandbox.bin.codex-command-runner.win",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "bin::codex-command-runner::win",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/bin/command_runner/win.rs",
+    "anchors": [
+      "main",
+      "READ_ACL_MUTEX_NAME",
+      "effective_cwd",
+      "read_acl_mutex_exists"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/bin/command_runner/win/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/bin/command_runner/win/__init__.py"
+    ],
+    "anchors": [
+      "main",
+      "READ_ACL_MUTEX_NAME",
+      "effective_cwd",
+      "read_acl_mutex_exists"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_command_runner.py",
+    "tests/test_windows_sandbox_runner_transport.py"
+  ]
+}

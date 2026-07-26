@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-utils-readiness.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-readiness",
+    "module": "crate",
+    "source": "codex/codex-rs/utils/readiness/src/lib.rs",
+    "anchors": [
+      "ReadinessError",
+      "ReadinessFlag",
+      "Token",
+      "is_ready",
+      "mark_ready",
+      "subscribe",
+      "wait_ready"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/readiness/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/readiness/__init__.py"
+    ],
+    "anchors": [
+      "ReadinessError",
+      "ReadinessFlag",
+      "Token",
+      "is_ready",
+      "mark_ready",
+      "subscribe",
+      "wait_ready"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

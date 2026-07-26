@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.tool_requests",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::tool_requests",
+    "source": "codex/codex-rs/tui/src/chatwidget/tool_requests.rs",
+    "anchors": [
+      "handle_apply_patch_approval_now",
+      "handle_elicitation_request_now",
+      "handle_exec_approval_now",
+      "handle_request_permissions_now",
+      "handle_request_user_input_now",
+      "on_apply_patch_approval_request",
+      "on_elicitation_request",
+      "on_exec_approval_request",
+      "on_guardian_assessment",
+      "on_request_permissions",
+      "on_request_user_input",
+      "push_approval_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/tool_requests.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/tool_requests.py"
+    ],
+    "anchors": [
+      "handle_apply_patch_approval_now",
+      "handle_elicitation_request_now",
+      "handle_exec_approval_now",
+      "handle_request_permissions_now",
+      "handle_request_user_input_now",
+      "on_apply_patch_approval_request",
+      "on_elicitation_request",
+      "on_exec_approval_request",
+      "on_guardian_assessment",
+      "on_request_permissions",
+      "on_request_user_input",
+      "push_approval_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

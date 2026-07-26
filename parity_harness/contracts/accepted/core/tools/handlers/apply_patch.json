@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.handlers.apply_patch",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::apply_patch",
+    "source": "codex/codex-rs/core/src/tools/handlers/apply_patch.rs",
+    "anchors": [
+      "ApplyPatchHandler",
+      "new",
+      "APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL",
+      "ApplyPatchArgumentDiffConsumer",
+      "apply_patch_payload_command",
+      "consume_diff",
+      "convert_apply_patch_hunks_to_protocol",
+      "create_diff_consumer",
+      "file_paths_for_action",
+      "finish",
+      "handle",
+      "matches_kind"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/apply_patch.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/apply_patch.py"
+    ],
+    "anchors": [
+      "ApplyPatchHandler",
+      "new",
+      "APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL",
+      "ApplyPatchArgumentDiffConsumer",
+      "apply_patch_payload_command",
+      "consume_diff",
+      "convert_apply_patch_hunks_to_protocol",
+      "create_diff_consumer",
+      "file_paths_for_action",
+      "finish",
+      "handle",
+      "matches_kind"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

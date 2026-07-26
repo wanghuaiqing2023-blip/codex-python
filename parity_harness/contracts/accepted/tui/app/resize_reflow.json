@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app.resize_reflow",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::resize_reflow",
+    "source": "codex/codex-rs/tui/src/app/resize_reflow.rs",
+    "anchors": [
+      "ReflowRenderResult",
+      "buffer_initial_history_replay_display_lines",
+      "history_line_wrap_policy",
+      "maybe_run_resize_reflow",
+      "reflow_transcript_now",
+      "render_transcript_lines_for_reflow",
+      "reset_history_emission_state",
+      "should_mark_reflow_as_stream_time",
+      "trailing_run_start",
+      "ReflowCellDisplay",
+      "clear_terminal_for_resize_replay",
+      "display_lines_for_history_insert"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/resize_reflow.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/resize_reflow.py"
+    ],
+    "anchors": [
+      "ReflowRenderResult",
+      "buffer_initial_history_replay_display_lines",
+      "history_line_wrap_policy",
+      "maybe_run_resize_reflow",
+      "reflow_transcript_now",
+      "render_transcript_lines_for_reflow",
+      "reset_history_emission_state",
+      "should_mark_reflow_as_stream_time",
+      "trailing_run_start",
+      "ReflowCellDisplay",
+      "clear_terminal_for_resize_replay",
+      "display_lines_for_history_insert"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

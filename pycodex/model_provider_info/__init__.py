@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+from pycodex import __version__
 from pycodex.protocol.config_types import ModelProviderAuthInfo
 
 
@@ -235,7 +236,7 @@ class ModelProviderInfo:
         return cls(
             name="OpenAI",
             base_url=base_url,
-            http_headers={"version": ""},
+            http_headers={"version": __version__},
             env_http_headers={
                 "OpenAI-Organization": "OPENAI_ORGANIZATION",
                 "OpenAI-Project": "OPENAI_PROJECT",

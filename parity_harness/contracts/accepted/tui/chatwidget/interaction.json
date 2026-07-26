@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.interaction",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::interaction",
+    "source": "codex/codex-rs/tui/src/chatwidget/interaction.rs",
+    "anchors": [
+      "apply_external_edit",
+      "arm_quit_shortcut",
+      "attach_image",
+      "can_launch_external_editor",
+      "can_run_ctrl_l_clear_now",
+      "composer_text_with_pending",
+      "copy_last_agent_markdown_with",
+      "ensure_thread_rename_allowed",
+      "handle_key_event",
+      "handle_paste",
+      "handle_paste_burst_tick",
+      "no_modal_or_popup_active"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/interaction.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/interaction.py"
+    ],
+    "anchors": [
+      "apply_external_edit",
+      "arm_quit_shortcut",
+      "attach_image",
+      "can_launch_external_editor",
+      "can_run_ctrl_l_clear_now",
+      "composer_text_with_pending",
+      "copy_last_agent_markdown_with",
+      "ensure_thread_rename_allowed",
+      "handle_key_event",
+      "handle_paste",
+      "handle_paste_burst_tick",
+      "no_modal_or_popup_active"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.chatwidget.session_flow",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::session_flow",
+    "source": "codex/codex-rs/tui/src/chatwidget/session_flow.rs",
+    "anchors": [
+      "emit_forked_thread_event",
+      "handle_side_thread_session",
+      "handle_thread_session",
+      "handle_thread_session_quiet",
+      "on_thread_name_updated",
+      "set_skills"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/session_flow.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/session_flow.py"
+    ],
+    "anchors": [
+      "emit_forked_thread_event",
+      "handle_side_thread_session",
+      "handle_thread_session",
+      "handle_thread_session_quiet",
+      "on_thread_name_updated",
+      "set_skills"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

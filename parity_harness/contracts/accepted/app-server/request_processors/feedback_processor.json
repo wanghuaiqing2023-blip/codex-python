@@ -1,0 +1,63 @@
+{
+  "contract_id": "codex-app-server.request_processors.feedback_processor",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "request_processors::feedback_processor",
+    "source": "codex/codex-rs/app-server/src/request_processors/feedback_processor.rs",
+    "anchors": [
+      "FeedbackRequestProcessor",
+      "feedback_upload",
+      "new",
+      "auto_review_rollout_filename",
+      "resolve_rollout_path",
+      "upload_feedback_response",
+      "windows_sandbox_log_attachment"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/request_processors_feedback_processor.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/request_processors_feedback_processor.py"
+    ],
+    "anchors": [
+      "FeedbackRequestProcessor",
+      "feedback_upload",
+      "new",
+      "auto_review_rollout_filename",
+      "resolve_rollout_path",
+      "upload_feedback_response",
+      "windows_sandbox_log_attachment"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_config_mod_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_app_server_lib_rs.py",
+    "tests/test_app_server_main_rs.py",
+    "tests/test_app_server_request_processors_feedback_processor_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

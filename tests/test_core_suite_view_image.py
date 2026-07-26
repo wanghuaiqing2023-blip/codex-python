@@ -7,9 +7,9 @@ from pycodex.core.context_manager.history import ContextManager
 from pycodex.core.tools.handlers.view_image import (
     VIEW_IMAGE_UNSUPPORTED_MESSAGE,
     ViewImageHandler,
-    ViewImageToolOptions,
     parse_view_image_arguments,
 )
+from pycodex.core.tools.handlers.view_image_spec import ViewImageToolOptions
 from pycodex.protocol import (
     ContentItem,
     FunctionCallOutputContentItem,

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.tools.handlers.agent_jobs.report_agent_job_result",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::agent_jobs::report_agent_job_result",
+    "source": "codex/codex-rs/core/src/tools/handlers/agent_jobs/report_agent_job_result.rs",
+    "anchors": [
+      "ReportAgentJobResultHandler",
+      "handle",
+      "matches_kind",
+      "spec",
+      "tool_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/agent_jobs/report_agent_job_result.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/agent_jobs/report_agent_job_result.py"
+    ],
+    "anchors": [
+      "ReportAgentJobResultHandler",
+      "handle",
+      "matches_kind",
+      "spec",
+      "tool_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

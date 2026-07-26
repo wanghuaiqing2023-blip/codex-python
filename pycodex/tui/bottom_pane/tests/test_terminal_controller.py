@@ -203,7 +203,8 @@ def test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks() ->
 
 def test_terminal_bottom_pane_controller_active_view_replaces_live_status() -> None:
     # Rust owner: codex-tui::bottom_pane::BottomPane::as_renderable returns the
-    # active BottomPaneView instead of composing it with status and composer.
+    # active BottomPaneView instead of composing it with status, composer, or
+    # the composer's ambient footer.
     writer = FlushTrackingStringIO()
     live = TerminalLiveStatusSurface.active_status("\u2022 Working")
     controller = TerminalBottomPaneController(
@@ -223,6 +224,7 @@ def test_terminal_bottom_pane_controller_active_view_replaces_live_status() -> N
     assert controller.render(check_resize=False) is True
     assert "Working" not in writer.getvalue()
     assert "Edit" in writer.getvalue()
+    assert "gpt-test high" not in writer.getvalue()
 
 
 def test_terminal_bottom_pane_controller_exposes_no_resize_callbacks_for_runtime_glue() -> None:
@@ -352,9 +354,9 @@ def test_terminal_bottom_pane_controller_resizes_tui_viewport_for_active_view() 
     controller.render(check_resize=False)
 
     output = writer.getvalue()
-    assert output.startswith("\x1b[1;14r\x1b[14;1H\r\n\x1b[r\x1b[14;1H\x1b[J")
-    assert "\x1b[15;1HSelect Model and Effort" in output
-    assert "\x1b[18;1Hgpt-test high" in output
+    assert output.startswith("\x1b[1;14r\x1b[14;1H\r\n\r\n\x1b[r\x1b[13;1H\x1b[J")
+    assert "\x1b[14;1HSelect Model and Effort" in output
+    assert "gpt-test high" not in output
 
 
 def test_terminal_bottom_pane_controller_resizes_tui_viewport_for_composer_slash_popup() -> None:

@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-tui.chatwidget.review_popups",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::review_popups",
+    "source": "codex/codex-rs/tui/src/chatwidget/review_popups.rs",
+    "anchors": [
+      "open_review_popup",
+      "show_review_branch_picker",
+      "show_review_commit_picker",
+      "show_review_custom_prompt"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/review_popups.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/review_popups.py"
+    ],
+    "anchors": [
+      "open_review_popup",
+      "show_review_branch_picker",
+      "show_review_commit_picker",
+      "show_review_custom_prompt"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

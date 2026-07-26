@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-shell-command.parse_command",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-command",
+    "module": "parse_command",
+    "source": "codex/codex-rs/shell-command/src/parse_command.rs",
+    "anchors": [
+      "extract_shell_command",
+      "parse_command",
+      "parse_command_impl",
+      "shlex_join",
+      "awk_data_file_operand",
+      "cd_target",
+      "contains_connectors",
+      "drop_small_formatting_commands",
+      "first_non_flag_operand",
+      "is_abs_like",
+      "is_mutating_xargs_command",
+      "is_pathish"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_command/parse_command.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_command/parse_command.py"
+    ],
+    "anchors": [
+      "extract_shell_command",
+      "parse_command",
+      "parse_command_impl",
+      "shlex_join",
+      "awk_data_file_operand",
+      "cd_target",
+      "contains_connectors",
+      "drop_small_formatting_commands",
+      "first_non_flag_operand",
+      "is_abs_like",
+      "is_mutating_xargs_command",
+      "is_pathish"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.installation_id",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "installation_id",
+    "source": "codex/codex-rs/core/src/installation_id.rs",
+    "anchors": [
+      "INSTALLATION_ID_FILENAME",
+      "resolve_installation_id"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/installation_id.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/installation_id.py"
+    ],
+    "anchors": [
+      "INSTALLATION_ID_FILENAME",
+      "resolve_installation_id"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.selection_popup_common",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::selection_popup_common",
+    "source": "codex/codex-rs/tui/src/bottom_pane/selection_popup_common.rs",
+    "anchors": [
+      "ColumnWidthConfig",
+      "ColumnWidthMode",
+      "GenericDisplayRow",
+      "measure_rows_height",
+      "measure_rows_height_with_col_width_mode",
+      "menu_surface_inset",
+      "render_menu_surface",
+      "render_rows",
+      "render_rows_single_line",
+      "render_rows_single_line_with_col_width_mode",
+      "render_rows_with_col_width_mode",
+      "wrap_styled_line"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/selection_popup_common.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/selection_popup_common.py"
+    ],
+    "anchors": [
+      "ColumnWidthConfig",
+      "ColumnWidthMode",
+      "GenericDisplayRow",
+      "measure_rows_height",
+      "measure_rows_height_with_col_width_mode",
+      "menu_surface_inset",
+      "render_menu_surface",
+      "render_rows",
+      "render_rows_single_line",
+      "render_rows_single_line_with_col_width_mode",
+      "render_rows_with_col_width_mode",
+      "wrap_styled_line"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

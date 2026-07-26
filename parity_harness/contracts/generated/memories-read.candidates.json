@@ -1,0 +1,109 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "memories-read",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 4,
+    "python_files": 3,
+    "modules_with_candidates": 3,
+    "modules_with_anchors": 3
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-memories-read",
+        "module": "crate",
+        "source": "codex/codex-rs/memories/read/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/read/__init__.py",
+          "anchor_candidates": [
+            "memory_root"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-memories-read",
+        "module": "citations",
+        "source": "codex/codex-rs/memories/read/src/citations.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/read/citations.py",
+          "anchor_candidates": [
+            "parse_memory_citation",
+            "thread_ids_from_memory_citation"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-memories-read",
+        "module": "metrics",
+        "source": "codex/codex-rs/memories/read/src/metrics.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-memories-read",
+        "module": "usage",
+        "source": "codex/codex-rs/memories/read/src/usage.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/read/usage.py",
+          "anchor_candidates": [
+            "MEMORIES_USAGE_METRIC",
+            "MemoriesUsageKind",
+            "as_tag",
+            "memories_usage_kinds_from_command"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

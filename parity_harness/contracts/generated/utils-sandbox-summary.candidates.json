@@ -1,0 +1,85 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "utils-sandbox-summary",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 3,
+    "python_files": 1,
+    "modules_with_candidates": 2,
+    "modules_with_anchors": 2
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-utils-sandbox-summary",
+        "module": "crate",
+        "source": "codex/codex-rs/utils/sandbox-summary/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/utils/sandbox_summary/__init__.py",
+          "anchor_candidates": [
+            "create_config_summary_entries",
+            "summarize_permission_profile",
+            "summarize_sandbox_policy"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-utils-sandbox-summary",
+        "module": "config_summary",
+        "source": "codex/codex-rs/utils/sandbox-summary/src/config_summary.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-utils-sandbox-summary",
+        "module": "sandbox_summary",
+        "source": "codex/codex-rs/utils/sandbox-summary/src/sandbox_summary.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/utils/sandbox_summary/__init__.py",
+          "anchor_candidates": [
+            "summarize_permission_profile",
+            "summarize_sandbox_policy"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

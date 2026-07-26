@@ -1,0 +1,57 @@
+{
+  "contract_id": "codex-tui.bottom_pane",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane",
+    "source": "codex/codex-rs/tui/src/bottom_pane/mod.rs",
+    "anchors": [
+      "BottomPane",
+      "BottomPaneParams",
+      "CancellationEvent",
+      "DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED",
+      "LocalImageAttachment",
+      "MentionBinding",
+      "QUIT_SHORTCUT_TIMEOUT",
+      "composer_text",
+      "dismiss_app_server_request",
+      "drain_pending_submission_state",
+      "handle_key_event",
+      "handle_paste"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/__init__.py",
+      "pycodex/tui/bottom_pane/terminal_action.py",
+      "pycodex/tui/bottom_pane/terminal_controller.py",
+      "pycodex/tui/bottom_pane/terminal_footprint.py",
+      "pycodex/tui/bottom_pane/terminal_projection.py",
+      "pycodex/tui/bottom_pane/view_stack.py"
+    ],
+    "anchors": [
+      "BottomPane",
+      "BottomPaneParams",
+      "CancellationEvent",
+      "DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED",
+      "LocalImageAttachment",
+      "MentionBinding",
+      "QUIT_SHORTCUT_TIMEOUT",
+      "composer_text",
+      "dismiss_app_server_request",
+      "drain_pending_submission_state",
+      "handle_key_event",
+      "handle_paste"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

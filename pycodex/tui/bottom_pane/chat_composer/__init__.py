@@ -225,18 +225,25 @@ class TerminalCommandPopupState:
         """
 
         if active_view_present:
-            self.visible = False
+            self.hide()
             return False
         visible = terminal_command_popup_visible_for_draft(draft, cursor=cursor)
-        self.visible = visible
-        if visible:
-            first_line = str(draft).split("\n", 1)[0]
-            cursor = len(first_line) if cursor is None else max(0, min(int(cursor), len(first_line)))
-            self.popup.on_composer_text_change(first_line[:cursor])
-        return visible
+        if not visible:
+            self.hide()
+            return False
+        self.visible = True
+        first_line = str(draft).split("\n", 1)[0]
+        cursor = len(first_line) if cursor is None else max(0, min(int(cursor), len(first_line)))
+        self.popup.on_composer_text_change(first_line[:cursor])
+        return True
 
     def hide(self) -> None:
         self.visible = False
+        # Rust replaces ActivePopup::Command with ActivePopup::None, dropping
+        # the popup payload. Reset the retained terminal adapter payload so a
+        # later popup starts with the same fresh selection and scroll state.
+        self.popup.command_filter = ""
+        self.popup.state.reset()
 
     def selected_item(self) -> Any:
         return self.popup.selected_item()
@@ -604,6 +611,8 @@ class TerminalComposerPromptReader:
 
     def read(self) -> Any:
         initial_draft = self._pending_draft
+        if not initial_draft and self.composer is not None:
+            initial_draft = self.composer.current_text()
         self._pending_draft = ""
         result = run_terminal_composer_read_prompt(
             terminal_active=self.terminal_active(),
@@ -811,7 +820,7 @@ def run_terminal_command_popup_input_action(
     key: str,
     *,
     open_command_view: Callable[[str], Any | None] | None = None,
-    show_selection_view: Callable[[Any], Any] | None = None,
+    show_view: Callable[[Any], Any] | None = None,
 ) -> str | InputResult | None:
     """Apply a terminal slash-popup key action within the composer owner.
 
@@ -839,8 +848,8 @@ def run_terminal_command_popup_input_action(
         return action.draft if action.draft is not None else draft
     if action.kind == "open_command_view":
         params = open_command_view(action.command or "") if open_command_view is not None else None
-        if params is not None and show_selection_view is not None:
-            show_selection_view(params)
+        if params is not None and show_view is not None:
+            show_view(params)
             return action.draft if action.draft is not None else ""
         from ...slash_command import SlashCommand
 
@@ -883,7 +892,7 @@ class ChatComposer:
         self.draft.disable_paste_burst = bool(kwargs.pop("disable_paste_burst", False))
         self.placeholder_text = kwargs.pop("placeholder_text", "Ask Codex to do anything")
         self.is_task_running = bool(kwargs.pop("is_task_running", False))
-        self.history_search_active = bool(kwargs.pop("history_search_active", False))
+        history_search_active = bool(kwargs.pop("history_search_active", False))
         self.active_popup = str(kwargs.pop("active_popup", "none")).lower()
         self.history_search_previous_keys = {
             _binding_key(item)
@@ -897,6 +906,9 @@ class ChatComposer:
         self.handlers: dict[str, Callable[[KeyEvent], tuple[InputResult, bool]]] = dict(
             kwargs.pop("handlers", {})
         )
+        self.submit_keys = {
+            KeyEvent.key("enter").binding_key(),
+        }
         self.dispatch_log: list[str] = []
         self.errors: list[str] = []
         self.sync_count = 0
@@ -912,9 +924,32 @@ class ChatComposer:
         self.draft.pending_pastes = list(kwargs.pop("pending_pastes", []))
         self.history = ChatComposerHistory.new()
         self.history_lookup: Callable[[int, int], object | None] | None = None
+        self._history_search: Any | None = None
+        if history_search_active:
+            from .history_search import HistorySearchSession
+
+            self._history_search = HistorySearchSession(
+                original_draft=self._snapshot_history_draft()
+            )
         self.command_popup_state = TerminalCommandPopupState.new(
             kwargs.pop("command_popup_flags", None)
         )
+
+    def set_keymap(self, keymap: Any) -> None:
+        """Apply Rust ``ChatComposer::set_keymap`` submit bindings."""
+
+        composer_keymap = getattr(keymap, "composer", None)
+        bindings = tuple(getattr(composer_keymap, "submit", ()) or ())
+        if not bindings:
+            self.submit_keys = {KeyEvent.key("enter").binding_key()}
+            return
+        self.submit_keys = {
+            KeyEvent.key(
+                str(getattr(binding, "code", "")),
+                modifiers=tuple(str(value) for value in getattr(binding, "modifiers", ())),
+            ).binding_key()
+            for binding in bindings
+        }
 
     @classmethod
     def new_with_config(cls, *args: Any, config: ChatComposerConfig | None = None, **kwargs: Any) -> "ChatComposer":
@@ -927,7 +962,8 @@ class ChatComposer:
         if event.kind.lower() == "release":
             return (InputResult.None_(), False)
         if self.history_search_active:
-            return self._dispatch("history_search", event)
+            self.dispatch_log.append("history_search")
+            return self.handle_history_search_key(event)
         if self.is_history_search_key(event):
             return self.begin_history_search()
 
@@ -947,12 +983,189 @@ class ChatComposer:
         return result
 
     def is_history_search_key(self, key_event: KeyEvent) -> bool:
-        return key_event.binding_key() in self.history_search_previous_keys
+        if key_event.binding_key() in self.history_search_previous_keys:
+            return True
+        return (
+            key_event.code.lower().replace("_", "-") == "ctrl-r"
+            and not key_event.modifiers
+        )
 
     def begin_history_search(self) -> tuple[InputResult, bool]:
-        self.history_search_active = True
+        from .history_search import HistorySearchSession
+
+        self._flush_paste_before_modified_input()
+        self.command_popup_state.hide()
+        self.active_popup = "none"
+        self._history_search = HistorySearchSession(
+            original_draft=self._snapshot_history_draft()
+        )
+        self.history.reset_search()
         self.dispatch_log.append("begin_history_search")
         return (InputResult.None_(), True)
+
+    @property
+    def history_search_active(self) -> bool:
+        return self._history_search is not None
+
+    def history_search_footer_text(self) -> str | None:
+        if self._history_search is None:
+            return None
+        from .history_search import history_search_footer_line
+
+        return history_search_footer_line(self._history_search).text
+
+    def handle_history_search_key(self, key_event: KeyEvent) -> tuple[InputResult, bool]:
+        from ..chat_composer_history import HistorySearchDirection
+
+        event_code = key_event.code.lower().replace("_", "-")
+        if self.is_history_search_key(key_event) or event_code == "up":
+            self._history_search_in_direction(HistorySearchDirection.OLDER)
+            return (InputResult.None_(), True)
+        if event_code in {"ctrl-s", "down"}:
+            self._history_search_in_direction(HistorySearchDirection.NEWER)
+            return (InputResult.None_(), True)
+        if event_code in {"esc", "escape", "ctrl-c"}:
+            self.cancel_history_search()
+            return (InputResult.None_(), True)
+        if event_code == "enter":
+            from .history_search import HistorySearchStatus
+
+            if (
+                self._history_search is not None
+                and self._history_search.status is HistorySearchStatus.MATCH
+            ):
+                self._history_search = None
+                self.history.reset_search()
+                self.set_cursor(len(self.current_text()))
+            return (InputResult.None_(), True)
+        if event_code in {"backspace", "ctrl-h"}:
+            query = "" if self._history_search is None else self._history_search.query[:-1]
+            self._update_history_search_query(query)
+            return (InputResult.None_(), True)
+        if event_code == "ctrl-u":
+            self._update_history_search_query("")
+            return (InputResult.None_(), True)
+        if key_event.code.lower() == "char" and key_event.char is not None and not key_event.modifiers:
+            query = "" if self._history_search is None else self._history_search.query
+            self._update_history_search_query(query + key_event.char)
+            return (InputResult.None_(), True)
+        return (InputResult.None_(), True)
+
+    def cancel_history_search(self) -> bool:
+        if self._history_search is None:
+            return False
+        original = self._history_search.original_draft
+        self._history_search = None
+        self.history.reset_navigation()
+        self._restore_history_draft(original)
+        return True
+
+    def _snapshot_history_draft(self) -> tuple[str, list[Any], int, list[tuple[str, str]], list[str]]:
+        return (
+            self.current_text(),
+            self.text_elements,
+            self.cursor(),
+            list(self.draft.pending_pastes),
+            list(self.remote_image_urls),
+        )
+
+    def _restore_history_draft(
+        self,
+        snapshot: tuple[str, list[Any], int, list[tuple[str, str]], list[str]],
+    ) -> None:
+        text, text_elements, cursor, pending_pastes, remote_image_urls = snapshot
+        if text_elements:
+            self.draft.textarea.set_text_with_elements(text, list(text_elements))
+        else:
+            self.draft.textarea.set_text_clearing_elements(text)
+        self.draft.textarea.set_cursor(cursor)
+        self.draft.pending_pastes = list(pending_pastes)
+        self.remote_image_urls = list(remote_image_urls)
+
+    def _apply_history_entry(self, entry: Any) -> None:
+        if entry.text_elements:
+            self.draft.textarea.set_text_with_elements(entry.text, list(entry.text_elements))
+        else:
+            self.draft.textarea.set_text_clearing_elements(entry.text)
+        self.draft.textarea.set_cursor(len(entry.text))
+        self.draft.pending_pastes = list(entry.pending_pastes)
+        self.remote_image_urls = list(entry.remote_image_urls)
+
+    def _history_search_in_direction(self, direction: Any) -> None:
+        if self._history_search is None:
+            return
+        if not self._history_search.query:
+            original = self._history_search.original_draft
+            self.history.reset_search()
+            from .history_search import HistorySearchStatus
+
+            self._history_search.status = HistorySearchStatus.IDLE
+            self._restore_history_draft(original)
+            return
+        result = self._run_history_search(
+            self._history_search.query,
+            direction,
+            restart=False,
+        )
+        self._apply_history_search_result(result)
+
+    def _update_history_search_query(self, query: str) -> None:
+        if self._history_search is None:
+            return
+        from ..chat_composer_history import HistorySearchDirection
+        from .history_search import HistorySearchStatus
+
+        original = self._history_search.original_draft
+        self._history_search.query = str(query)
+        self._history_search.status = HistorySearchStatus.SEARCHING
+        self._restore_history_draft(original)
+        if not query:
+            self.history.reset_search()
+            self._history_search.status = HistorySearchStatus.IDLE
+            return
+        result = self._run_history_search(
+            str(query),
+            HistorySearchDirection.OLDER,
+            restart=True,
+        )
+        self._apply_history_search_result(result)
+
+    def _run_history_search(self, query: str, direction: Any, *, restart: bool) -> Any:
+        result = self.history.search(query, direction, restart, None)
+        while result.kind == "Pending" and self.history_lookup is not None:
+            pending = None if self.history.search_state is None else self.history.search_state.awaiting
+            log_id = self.history.persistent_log_id
+            if pending is None or log_id is None:
+                break
+            fetched = self.history_lookup(log_id, pending.offset)
+            text = getattr(fetched, "text", fetched)
+            response = self.history.on_entry_response(
+                log_id,
+                pending.offset,
+                None if text is None else str(text),
+                None,
+            )
+            if response.kind != "Search" or response.search_result is None:
+                break
+            result = response.search_result
+        return result
+
+    def _apply_history_search_result(self, result: Any) -> None:
+        if self._history_search is None:
+            return
+        from .history_search import HistorySearchStatus
+
+        if result.kind == "Found" and result.entry is not None:
+            self._history_search.status = HistorySearchStatus.MATCH
+            self._apply_history_entry(result.entry)
+        elif result.kind == "Pending":
+            self._history_search.status = HistorySearchStatus.SEARCHING
+        elif result.kind == "AtBoundary":
+            self._history_search.status = HistorySearchStatus.MATCH
+        elif result.kind == "NotFound":
+            original = self._history_search.original_draft
+            self._history_search.status = HistorySearchStatus.NO_MATCH
+            self._restore_history_draft(original)
 
     def reset_vim_mode_after_successful_dispatch(self, result: InputResult) -> None:
         if result.kind != "None":
@@ -1010,7 +1223,11 @@ class ChatComposer:
             text=visible_text,
             placeholder=placeholder,
             remote_image_urls=tuple(self.remote_image_urls),
-            footer=tuple(self.footer),
+            footer=tuple(
+                [self.history_search_footer_text()]
+                if self.history_search_footer_text() is not None
+                else self.footer
+            ),
             input_enabled=self.input_enabled,
         )
         if buf is not None and hasattr(buf, "append"):
@@ -1355,7 +1572,7 @@ class ChatComposer:
         detect_paste_bursts: bool = False,
         active_view_present: bool = False,
         open_command_view: Callable[[str], Any | None] | None = None,
-        show_selection_view: Callable[[Any], Any] | None = None,
+        show_view: Callable[[Any], Any] | None = None,
     ) -> TerminalComposerInputAction | InputResult:
         """Handle one normalized terminal event through the Rust composer owner."""
 
@@ -1384,8 +1601,16 @@ class ChatComposer:
                 detect_paste_bursts=False,
                 active_view_present=active_view_present,
                 open_command_view=open_command_view,
-                show_selection_view=show_selection_view,
+                show_view=show_view,
             )
+
+        if self.history_search_active:
+            if kind == "text":
+                for char in text:
+                    self.handle_history_search_key(KeyEvent.char_event(char))
+            else:
+                self.handle_history_search_key(KeyEvent.key(kind.replace("_", "-")))
+            return TerminalComposerInputAction("render", self.current_text())
 
         popup_key = terminal_popup_key(kind, text)
         if self.command_popup_state.visible and popup_key in {"up", "down", "tab", "enter", "esc"}:
@@ -1393,12 +1618,27 @@ class ChatComposer:
                 self.command_popup_state.hide()
                 self.active_popup = "none"
                 return TerminalComposerInputAction("render", self.current_text())
+            if popup_key == "enter" and self.is_task_running:
+                selected = self.command_popup_state.selected_item()
+                if selected is not None:
+                    from ...slash_command import SlashCommand
+
+                    try:
+                        command = SlashCommand.parse(selected.command())
+                    except ValueError:
+                        command = None
+                    if command is not None and not command.available_during_task():
+                        self.record_submission(f"/{command.command()}")
+                        self.clear_draft()
+                        self.command_popup_state.hide()
+                        self.active_popup = "none"
+                        return InputResult.Command(command)
             popup_result = run_terminal_command_popup_input_action(
                 self.command_popup_state,
                 self.current_text(),
                 popup_key,
                 open_command_view=open_command_view,
-                show_selection_view=show_selection_view,
+                show_view=show_view,
             )
             if isinstance(popup_result, InputResult):
                 self.record_submission(f"/{popup_result.command.command()}")
@@ -1449,7 +1689,10 @@ class ChatComposer:
         else:
             kind = kind.replace("_", "-")
 
-        result, redraw = self.handle_key_event(KeyEvent.key(kind))
+        key_event = KeyEvent.key(kind)
+        if key_event.binding_key() in self.submit_keys:
+            key_event = KeyEvent.key("enter")
+        result, redraw = self.handle_key_event(key_event)
         if result.kind != "None":
             return result
         return TerminalComposerInputAction(

@@ -106,7 +106,7 @@ def test_core_dispatch_elevated_routes_to_native_capture(tmp_path: Path, monkeyp
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
-    from pycodex.windows_sandbox import elevated
+    from pycodex.windows_sandbox import elevated_impl
     from pycodex.windows_sandbox.process import ProcessCaptureResult
 
     observed: dict[str, object] = {}
@@ -116,7 +116,11 @@ def test_core_dispatch_elevated_routes_to_native_capture(tmp_path: Path, monkeyp
         observed["kwargs"] = kwargs
         return ProcessCaptureResult(0, b"elevated-native", b"")
 
-    monkeypatch.setattr(elevated, "run_elevated_capture", fake_capture)
+    monkeypatch.setattr(
+        elevated_impl,
+        "run_windows_sandbox_capture_for_permission_profile",
+        fake_capture,
+    )
     result = asyncio.run(
         execute_env(
             _request(
@@ -128,7 +132,7 @@ def test_core_dispatch_elevated_routes_to_native_capture(tmp_path: Path, monkeyp
         )
     )
     assert result.stdout.text == "elevated-native"
-    assert observed["kwargs"]["proxy_enforced"] is False
+    assert observed["args"][0].proxy_enforced is False
 
 
 def test_core_dispatch_spawn_failure_does_not_fallback(tmp_path: Path, monkeypatch) -> None:

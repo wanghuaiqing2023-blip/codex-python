@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.agent.role.reload",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "agent::role::reload",
+    "source": "codex/codex-rs/core/src/agent/role.rs",
+    "anchors": [
+      "build_next_config"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/agent/role/reload.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/agent/role/reload.py"
+    ],
+    "anchors": [
+      "build_next_config"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

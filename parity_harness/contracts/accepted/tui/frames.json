@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.frames",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "frames",
+    "source": "codex/codex-rs/tui/src/frames.rs",
+    "anchors": [
+      "ALL_VARIANTS",
+      "FRAMES_BLOCKS",
+      "FRAMES_CODEX",
+      "FRAMES_DEFAULT",
+      "FRAMES_DOTS",
+      "FRAMES_HASH",
+      "FRAMES_HBARS",
+      "FRAMES_OPENAI",
+      "FRAMES_SHAPES",
+      "FRAMES_SLUG",
+      "FRAMES_VBARS",
+      "FRAME_TICK_DEFAULT"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/frames.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/frames.py"
+    ],
+    "anchors": [
+      "ALL_VARIANTS",
+      "FRAMES_BLOCKS",
+      "FRAMES_CODEX",
+      "FRAMES_DEFAULT",
+      "FRAMES_DOTS",
+      "FRAMES_HASH",
+      "FRAMES_HBARS",
+      "FRAMES_OPENAI",
+      "FRAMES_SHAPES",
+      "FRAMES_SLUG",
+      "FRAMES_VBARS",
+      "FRAME_TICK_DEFAULT"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

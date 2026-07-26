@@ -2,15 +2,17 @@ import asyncio
 
 import pytest
 
-from pycodex.network_proxy import (
+from pycodex.network_proxy.config import (
+    NetworkMode,
+    NetworkProxyConfig,
+)
+from pycodex.network_proxy.runtime import (
     BlockedRequest,
     BlockedRequestArgs,
     ConfigState,
-    NetworkMode,
-    NetworkProxyConfig,
-    NetworkProxyConstraints,
     NetworkProxyState,
 )
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def config_with(*, enabled: bool = False, mode: NetworkMode = NetworkMode.FULL) -> NetworkProxyConfig:

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.keymap_setup.debug",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "keymap_setup::debug",
+    "source": "codex/codex-rs/tui/src/keymap_setup/debug.rs",
+    "anchors": [
+      "KeymapDebugView",
+      "build_keymap_debug_view",
+      "DELAYED_MISSING_KEY_HINT",
+      "KeymapDebugReport",
+      "MISSING_KEY_HINT_DELAY",
+      "SHORT_MISSING_KEY_HINT",
+      "desired_height",
+      "handle_key_event",
+      "is_complete",
+      "key_event_debug_summary",
+      "key_modifiers_debug_label",
+      "lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/keymap_setup/debug.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/keymap_setup/debug.py"
+    ],
+    "anchors": [
+      "KeymapDebugView",
+      "build_keymap_debug_view",
+      "DELAYED_MISSING_KEY_HINT",
+      "KeymapDebugReport",
+      "MISSING_KEY_HINT_DELAY",
+      "SHORT_MISSING_KEY_HINT",
+      "desired_height",
+      "handle_key_event",
+      "is_complete",
+      "key_event_debug_summary",
+      "key_modifiers_debug_label",
+      "lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

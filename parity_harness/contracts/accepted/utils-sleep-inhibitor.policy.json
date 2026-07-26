@@ -1,0 +1,17 @@
+{
+  "scope": "utils-sleep-inhibitor",
+  "rust_root": "codex/codex-rs/utils/sleep-inhibitor",
+  "python_root": "pycodex/utils/sleep_inhibitor",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::dummy",
+    "crate::linux_inhibitor",
+    "crate::macos",
+    "crate::macos::iokit",
+    "crate::windows_inhibitor"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

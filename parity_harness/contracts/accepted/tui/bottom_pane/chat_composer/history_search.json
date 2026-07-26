@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.bottom_pane.chat_composer.history_search",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::chat_composer::history_search",
+    "source": "codex/codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs",
+    "anchors": [
+      "HistorySearchSession",
+      "apply_history_search_result",
+      "begin_history_search",
+      "history_search_footer_line",
+      "history_search_highlight_ranges",
+      "HistorySearchStatus",
+      "case_insensitive_match_ranges"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/chat_composer/history_search.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/chat_composer/history_search.py"
+    ],
+    "anchors": [
+      "HistorySearchSession",
+      "apply_history_search_result",
+      "begin_history_search",
+      "history_search_footer_line",
+      "history_search_highlight_ranges",
+      "HistorySearchStatus",
+      "case_insensitive_match_ranges"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

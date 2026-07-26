@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.onboarding.auth.headless_chatgpt_login",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "onboarding::auth::headless_chatgpt_login",
+    "source": "codex/codex-rs/tui/src/onboarding/auth/headless_chatgpt_login.rs",
+    "anchors": [
+      "render_device_code_login",
+      "start_headless_chatgpt_login",
+      "device_code_attempt_matches",
+      "set_device_code_error_for_active_attempt",
+      "set_device_code_state_for_active_attempt"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/onboarding/auth/headless_chatgpt_login.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/onboarding/auth/headless_chatgpt_login.py"
+    ],
+    "anchors": [
+      "render_device_code_login",
+      "start_headless_chatgpt_login",
+      "device_code_attempt_matches",
+      "set_device_code_error_for_active_attempt",
+      "set_device_code_state_for_active_attempt"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

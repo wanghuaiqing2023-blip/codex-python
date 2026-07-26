@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.windows_sandbox",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "windows_sandbox",
+    "source": "codex/codex-rs/core/src/windows_sandbox.rs",
+    "anchors": [
+      "ELEVATED_SANDBOX_NUX_ENABLED",
+      "WindowsSandboxSetupMode",
+      "WindowsSandboxSetupRequest",
+      "elevated_setup_failure_details",
+      "elevated_setup_failure_metric_name",
+      "legacy_windows_sandbox_mode",
+      "legacy_windows_sandbox_mode_from_entries",
+      "resolve_windows_sandbox_mode",
+      "resolve_windows_sandbox_private_desktop",
+      "run_elevated_setup",
+      "run_legacy_setup_preflight",
+      "run_setup_refresh_with_extra_read_roots"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/windows_sandbox.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/windows_sandbox.py"
+    ],
+    "anchors": [
+      "ELEVATED_SANDBOX_NUX_ENABLED",
+      "WindowsSandboxSetupMode",
+      "WindowsSandboxSetupRequest",
+      "elevated_setup_failure_details",
+      "elevated_setup_failure_metric_name",
+      "legacy_windows_sandbox_mode",
+      "legacy_windows_sandbox_mode_from_entries",
+      "resolve_windows_sandbox_mode",
+      "resolve_windows_sandbox_private_desktop",
+      "run_elevated_setup",
+      "run_legacy_setup_preflight",
+      "run_setup_refresh_with_extra_read_roots"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

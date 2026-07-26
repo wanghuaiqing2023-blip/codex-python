@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-core.tools.handlers.plan",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::plan",
+    "source": "codex/codex-rs/core/src/tools/handlers/plan.rs",
+    "anchors": [
+      "PlanHandler",
+      "PlanToolOutput",
+      "PLAN_UPDATED_MESSAGE",
+      "code_mode_result",
+      "handle",
+      "log_preview",
+      "parse_update_plan_arguments",
+      "spec",
+      "success_for_logging",
+      "to_response_item",
+      "tool_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/plan.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/plan.py"
+    ],
+    "anchors": [
+      "PlanHandler",
+      "PlanToolOutput",
+      "PLAN_UPDATED_MESSAGE",
+      "code_mode_result",
+      "handle",
+      "log_preview",
+      "parse_update_plan_arguments",
+      "spec",
+      "success_for_logging",
+      "to_response_item",
+      "tool_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

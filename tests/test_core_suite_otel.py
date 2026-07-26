@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pycodex.core.otel_events import (
+from tests.support.core_otel_events import (
     api_request_event,
     conversation_starts_event,
     extract_log_field,

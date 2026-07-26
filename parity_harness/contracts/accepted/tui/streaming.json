@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-tui.streaming",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "streaming",
+    "source": "codex/codex-rs/tui/src/streaming/mod.rs",
+    "anchors": [
+      "StreamState",
+      "clear",
+      "clear_queue",
+      "drain_n",
+      "enqueue",
+      "is_idle",
+      "new",
+      "oldest_queued_age",
+      "queued_len",
+      "step",
+      "QueuedLine"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/streaming/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/streaming/__init__.py"
+    ],
+    "anchors": [
+      "StreamState",
+      "clear",
+      "clear_queue",
+      "drain_n",
+      "enqueue",
+      "is_idle",
+      "new",
+      "oldest_queued_age",
+      "queued_len",
+      "step",
+      "QueuedLine"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -28,9 +28,9 @@ It also declares the public protocol modules used by downstream crates:
 `pycodex.protocol` mirrors the crate-root surface through package-level
 imports in `pycodex/protocol/__init__.py`. The root re-exports expose
 `AgentPath`, `SessionId`, `ThreadId`, and `ToolName`, while public Rust
-modules map to Python sibling modules. Rust `permissions.rs` is intentionally
-merged into `pycodex/protocol/models.py` because the Python permission model
-shares dataclass and serializer ownership with the Rust `models.rs` contract.
+modules map to Python sibling modules. Rust `permissions.rs`, `session_id.rs`,
+`thread_id.rs`, and the inline `protocol::conversation_start_prompt_serde`
+module have dedicated Python owners.
 
 ## Evidence
 

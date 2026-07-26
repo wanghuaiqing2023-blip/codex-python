@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-thread-store.local",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-thread-store",
+    "module": "local",
+    "source": "codex/codex-rs/thread-store/src/local/mod.rs",
+    "anchors": [
+      "LocalThreadStore",
+      "LocalThreadStoreConfig",
+      "from_config",
+      "live_rollout_path",
+      "append_items",
+      "archive_thread",
+      "create_thread",
+      "discard_thread",
+      "flush_thread",
+      "list_threads",
+      "load_history",
+      "persist_thread"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/thread_store/local/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/thread_store/local/__init__.py"
+    ],
+    "anchors": [
+      "LocalThreadStore",
+      "LocalThreadStoreConfig",
+      "from_config",
+      "live_rollout_path",
+      "append_items",
+      "archive_thread",
+      "create_thread",
+      "discard_thread",
+      "flush_thread",
+      "list_threads",
+      "load_history",
+      "persist_thread"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_thread_store_local_live_writer_rs.py"
+  ]
+}

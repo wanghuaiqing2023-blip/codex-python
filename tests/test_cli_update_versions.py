@@ -1,6 +1,6 @@
 import unittest
 
-from pycodex.cli import extract_version_from_latest_tag, is_newer, is_source_build_version, parse_version
+from pycodex.tui.update_versions import extract_version_from_latest_tag, is_newer, is_source_build_version, parse_version
 
 
 class UpdateVersionTests(unittest.TestCase):

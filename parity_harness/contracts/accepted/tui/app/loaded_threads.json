@@ -1,0 +1,34 @@
+{
+  "contract_id": "codex-tui.app.loaded_threads",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::loaded_threads",
+    "source": "codex/codex-rs/tui/src/app/loaded_threads.rs",
+    "anchors": [
+      "LoadedSubagentThread",
+      "find_loaded_subagent_threads_for_primary",
+      "thread_spawn_parent_thread_id"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/loaded_threads.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/loaded_threads.py"
+    ],
+    "anchors": [
+      "LoadedSubagentThread",
+      "find_loaded_subagent_threads_for_primary",
+      "thread_spawn_parent_thread_id"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

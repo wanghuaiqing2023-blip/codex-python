@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.streaming.chunking",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "streaming::chunking",
+    "source": "codex/codex-rs/tui/src/streaming/chunking.rs",
+    "anchors": [
+      "AdaptiveChunkingPolicy",
+      "ChunkingDecision",
+      "ChunkingMode",
+      "DrainPlan",
+      "QueueSnapshot",
+      "decide",
+      "mode",
+      "reset",
+      "ENTER_OLDEST_AGE",
+      "ENTER_QUEUE_DEPTH_LINES",
+      "EXIT_HOLD",
+      "EXIT_OLDEST_AGE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/streaming/chunking.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/streaming/chunking.py"
+    ],
+    "anchors": [
+      "AdaptiveChunkingPolicy",
+      "ChunkingDecision",
+      "ChunkingMode",
+      "DrainPlan",
+      "QueueSnapshot",
+      "decide",
+      "mode",
+      "reset",
+      "ENTER_OLDEST_AGE",
+      "ENTER_QUEUE_DEPTH_LINES",
+      "EXIT_HOLD",
+      "EXIT_OLDEST_AGE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

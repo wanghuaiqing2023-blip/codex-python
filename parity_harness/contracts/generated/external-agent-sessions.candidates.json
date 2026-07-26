@@ -1,0 +1,118 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "external-agent-sessions",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 5,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-external-agent-sessions",
+        "module": "crate",
+        "source": "codex/codex-rs/external-agent-sessions/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/external_agent_sessions/__init__.py",
+          "anchor_candidates": [
+            "ExternalAgentSessionMigration",
+            "ImportedExternalAgentSession",
+            "PendingSessionImport",
+            "PrepareSessionImportsError",
+            "SessionSummary",
+            "detect_recent_sessions",
+            "has_current_session_been_imported",
+            "load_session_for_import",
+            "prepare_pending_session_imports",
+            "prepare_validated_session_imports",
+            "record_imported_session",
+            "summarize_session"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-external-agent-sessions",
+        "module": "detect",
+        "source": "codex/codex-rs/external-agent-sessions/src/detect.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-external-agent-sessions",
+        "module": "export",
+        "source": "codex/codex-rs/external-agent-sessions/src/export.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-external-agent-sessions",
+        "module": "ledger",
+        "source": "codex/codex-rs/external-agent-sessions/src/ledger.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-external-agent-sessions",
+        "module": "records",
+        "source": "codex/codex-rs/external-agent-sessions/src/records.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

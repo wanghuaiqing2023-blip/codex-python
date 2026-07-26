@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-tui.git_action_directives",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "git_action_directives",
+    "source": "codex/codex-rs/tui/src/git_action_directives.rs",
+    "anchors": [
+      "GitActionDirective",
+      "ParsedAssistantMarkdown",
+      "created_branch_cwd",
+      "last_created_branch_cwd",
+      "parse_assistant_markdown",
+      "parse_attributes",
+      "parse_git_action",
+      "strip_line_directives"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/git_action_directives.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/git_action_directives.py"
+    ],
+    "anchors": [
+      "GitActionDirective",
+      "ParsedAssistantMarkdown",
+      "created_branch_cwd",
+      "last_created_branch_cwd",
+      "parse_assistant_markdown",
+      "parse_attributes",
+      "parse_git_action",
+      "strip_line_directives"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-network-proxy.reasons",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "reasons",
+    "source": "codex/codex-rs/network-proxy/src/reasons.rs",
+    "anchors": [
+      "REASON_DENIED",
+      "REASON_METHOD_NOT_ALLOWED",
+      "REASON_MITM_HOOK_DENIED",
+      "REASON_MITM_REQUIRED",
+      "REASON_NOT_ALLOWED",
+      "REASON_NOT_ALLOWED_LOCAL",
+      "REASON_POLICY_DENIED",
+      "REASON_PROXY_DISABLED",
+      "REASON_UNIX_SOCKET_UNSUPPORTED"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/reasons.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/reasons.py"
+    ],
+    "anchors": [
+      "REASON_DENIED",
+      "REASON_METHOD_NOT_ALLOWED",
+      "REASON_MITM_HOOK_DENIED",
+      "REASON_MITM_REQUIRED",
+      "REASON_NOT_ALLOWED",
+      "REASON_NOT_ALLOWED_LOCAL",
+      "REASON_POLICY_DENIED",
+      "REASON_PROXY_DISABLED",
+      "REASON_UNIX_SOCKET_UNSUPPORTED"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

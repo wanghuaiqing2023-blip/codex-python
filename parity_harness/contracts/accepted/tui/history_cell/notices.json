@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.history_cell.notices",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::notices",
+    "source": "codex/codex-rs/tui/src/history_cell/notices.rs",
+    "anchors": [
+      "CyberPolicyNoticeCell",
+      "DeprecationNoticeCell",
+      "UpdateAvailableHistoryCell",
+      "new",
+      "new_cyber_policy_error_event",
+      "new_deprecation_notice",
+      "new_error_event",
+      "new_info_event",
+      "new_warning_event",
+      "TRUSTED_ACCESS_FOR_CYBER_URL",
+      "display_hyperlink_lines",
+      "display_lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/notices.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/notices.py"
+    ],
+    "anchors": [
+      "CyberPolicyNoticeCell",
+      "DeprecationNoticeCell",
+      "UpdateAvailableHistoryCell",
+      "new",
+      "new_cyber_policy_error_event",
+      "new_deprecation_notice",
+      "new_error_event",
+      "new_info_event",
+      "new_warning_event",
+      "TRUSTED_ACCESS_FOR_CYBER_URL",
+      "display_hyperlink_lines",
+      "display_lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

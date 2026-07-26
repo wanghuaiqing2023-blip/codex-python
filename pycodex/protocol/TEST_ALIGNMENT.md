@@ -17,8 +17,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 - Evidence: Rust `lib.rs` declares the crate module graph and re-exports
   `AgentPath`, `SessionId`, `ThreadId`, and `ToolName` from private modules.
   Python mirrors this through package-root imports/`__all__`, maps public Rust
-  modules to sibling Python modules, and documents the intentional
-  `permissions.rs` merge into `models.py`.
+  modules and the inline prompt serde module to dedicated Python owners.
 - Focused validation: covered by the 2026-06-17 crate-level protocol run
   (`369 passed, 118 subtests passed`).
 
@@ -717,7 +716,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: The Rust protected workspace metadata constants and helper
@@ -983,7 +982,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/session_id.rs`
-- Python module: `pycodex/protocol/ids.py`
+- Python module: `pycodex/protocol/session_id.py`
 - Python tests: `tests/test_protocol_ids_tool_user_input.py`
 - Status: `complete_slice`
 - Evidence: Rust `SessionId::new`, `Default`, `from_string`,
@@ -1000,7 +999,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/thread_id.rs`
-- Python module: `pycodex/protocol/ids.py`
+- Python module: `pycodex/protocol/thread_id.py`
 - Python tests: `tests/test_protocol_ids_tool_user_input.py`
 - Status: `complete_slice`
 - Evidence: Rust `ThreadId::new`, `Default`, `from_string`,
@@ -1109,7 +1108,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemAccessMode` lower-case serde with legacy `none` alias, `can_read`, `can_write`, and `file_system_access_mode_orders_by_conflict_precedence` semantics are mirrored. Python preserves `Read < Write < Deny` conflict precedence and rejects non-string access parsing.
@@ -1119,7 +1118,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `legacy_bridge_preserves_explicit_deny_entries` confirms `FileSystemSandboxPolicy::from_legacy_sandbox_policy_preserving_deny_entries` carries explicit deny entries from an existing restricted policy into the rebuilt policy. Python mirrors that preservation and keeps the policy's `glob_scan_max_depth` metadata intact.
@@ -1129,7 +1128,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `ReadDenyMatcher` tests for exact path descendants, literal deny patterns, ordinary globs, separator-bounded glob segments, and globstar matches are mirrored by Python coverage for exact deny roots, descendants, matching/unmatched glob patterns, invalid literal-glob fallback, and root/nested `.env` globstar matches.
@@ -1139,7 +1138,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `ReadDenyMatcher::build` consumes `FileSystemSandboxPolicy::get_unreadable_globs_with_cwd(cwd)`, whose project-root glob contract resolves symbolic project-root patterns before read-deny matching. Python mirrors `codex-project-roots://` parsing in `get_unreadable_globs_with_cwd` and verifies that root and nested `.env` files are denied while unrelated files are not.
@@ -1149,7 +1148,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `materialize_project_roots_with_workspace_roots_expands_exact_and_glob_entries` is mirrored: symbolic project-root write entries expand once per workspace root, project-root subpaths such as `.git` are joined under each root, project-root glob patterns are resolved under each root, and unrelated literal path entries are preserved.
@@ -1159,7 +1158,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `materialize_project_roots_with_cwd_expands_symbolic_glob_entries` is mirrored and extended at the Python parity boundary for exact project-root entries and project-root subpaths. Absolute cwd expands symbolic entries to concrete paths/globs; relative cwd keeps the policy symbolic.
@@ -1169,7 +1168,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::with_materialized_project_roots_for_workspace_roots` clones and materializes project roots, then appends only non-duplicate concrete entries back to the original policy. Python mirrors this by preserving symbolic entries and avoiding duplicate materialized workspace-root entries.
@@ -1179,7 +1178,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::with_additional_readable_roots` returns unchanged when full-disk read access already exists, skips paths already effectively readable through cwd/project-root resolution, and appends missing explicit read roots. Python mirrors this branch behavior.
@@ -1189,7 +1188,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::with_additional_writable_roots` skips paths already effectively writable through cwd/project-root resolution and appends missing explicit write roots. Python mirrors this branch behavior.
@@ -1199,7 +1198,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::with_additional_legacy_workspace_writable_roots` returns unchanged for non-restricted policies, adds exact explicit writable roots using legacy `WorkspaceWrite` behavior even when symbolic project-root write already exists, and avoids duplicate exact-root write entries on repeated application. Python mirrors those helper semantics.
@@ -1209,7 +1208,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `preserving_deny_entries_keeps_unrestricted_policy_enforceable` confirms `FileSystemSandboxPolicy::preserve_deny_read_restrictions_from` converts an unrestricted replacement into a restricted root-write policy when existing deny entries must be preserved, appends deny-read entries, and carries `glob_scan_max_depth` metadata. Python mirrors that helper behavior.
@@ -1219,7 +1218,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::is_semantically_equivalent_to` compares `semantic_signature(cwd)` and the signature sorts resolved roots, making incidental entry ordering irrelevant. Python mirrors this behavior for reordered policies with the same effective filesystem access model.
@@ -1229,7 +1228,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `semantic_signature(cwd)` builds deterministic signatures from sorted readable roots, writable roots, unreadable roots, and unreadable globs. Python mirrors stable ordering for writable roots and unreadable globs and collapses duplicate glob entries for deterministic comparison.
@@ -1239,7 +1238,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::needs_direct_runtime_enforcement` returns false for non-restricted policies, classifies unbridgeable legacy projections and protected metadata-name cases as requiring direct runtime enforcement, and otherwise compares semantic signatures against the legacy runtime projection. Python mirrors this classification boundary.
@@ -1249,7 +1248,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `sorted_writable_roots` sorts writable-root `read_only_subpaths`, sorts and deduplicates `protected_metadata_names`, and then sorts writable roots by root path. Python mirrors deterministic writable-root details, including default `.codex` read-only metadata and sorted protected metadata names.
@@ -1259,7 +1258,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::include_platform_defaults` returns true for restricted, non-full-read policies that include a readable `FileSystemSpecialPath::Minimal` entry, and `semantic_signature(cwd)` carries that flag. Python mirrors the same condition and signature field.
@@ -1269,7 +1268,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/protocol.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/protocol.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `SandboxPolicy` helper semantics are mirrored for `DangerFullAccess`, `ReadOnly`, `ExternalSandbox`, and `WorkspaceWrite`: full-disk write access, full-network access, constructor defaults, and invalid field/type boundaries. Rust tests `external_sandbox_reports_full_access_flags` and `read_only_reports_network_access_flags` anchor the core flag behavior.
@@ -1279,7 +1278,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/protocol.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/protocol.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `SandboxPolicy` serde uses a kebab-case internal `type` tag and serde defaults for read-only, external-sandbox, and workspace-write variants. Python mirrors danger-full-access, read-only, external-sandbox, and workspace-write mapping roundtrips, including empty `writable_roots` omission and defaulted workspace flags.
@@ -1289,7 +1288,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/protocol.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/protocol.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `WritableRoot::is_path_writable` rejects paths outside the root, paths under configured `read_only_subpaths`, and paths whose first component under the root matches `protected_metadata_names`. Python mirrors that behavior and allows the root itself plus nested metadata-like names below ordinary subdirectories.
@@ -1299,7 +1298,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::get_writable_roots_with_cwd` computes `protected_metadata_names` for each writable root and passes them into `WritableRoot`. Python mirrors that derivation so `.git`, `.agents`, and `.codex` top-level metadata paths under writable roots are not writable, while ordinary source paths remain writable.
@@ -1309,7 +1308,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::get_readable_roots_with_cwd` resolves entries against cwd, keeps entries that can read and remain effectively readable, and deduplicates normalized absolute paths. Python mirrors this behavior and verifies that a specific readable path under a denied root is reported as readable while unreadable roots are empty because the more specific read entry overrides the root deny for that path.
@@ -1319,7 +1318,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::workspace_write` constructs a restricted policy containing root read, symbolic project-roots write, optional `/tmp` and `$TMPDIR` writes, explicit writable roots, and default project metadata read carveouts for `.git`, `.agents`, and `.codex`. Python mirrors those entries, exclusion knobs, and type boundaries.
@@ -1329,7 +1328,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSpecialPath` serde maps legacy `current_working_directory` to `project_roots`, preserves optional project-root subpaths, and keeps future unknown special-path tokens representable. Python mirrors the alias, project-root subpath mapping, unknown-token boundaries, project-root glob prefix helper, and invalid field type errors.
@@ -1339,7 +1338,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemPath` serde uses a snake_case internal `type` tag with `path`, `glob_pattern`, and `special` variants. Python mirrors those tagged shapes, preserves mapping roundtrips and constructor equivalence, and rejects invalid type/field combinations without fallback.
@@ -1348,7 +1347,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxEntry` serializes as a struct containing `path: FileSystemPath` and `access: FileSystemAccessMode`. Python mirrors that mapping contract, keeps the legacy `access: "none"` alias mapped to deny, and rejects non-`FileSystemPath` or non-`FileSystemAccessMode` constructor values without fallback.
@@ -1366,7 +1365,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::from` projects legacy `SandboxPolicy::WorkspaceWrite` through `workspace_write`, preserving the symbolic project-roots entry instead of resolving it eagerly. Python mirrors that projection for `FileSystemSandboxPolicy.from_legacy_sandbox_policy`.
@@ -1375,7 +1374,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust legacy bridge behavior ignores `FileSystemSpecialPath::Unknown` entries when projecting split filesystem policies back to legacy `SandboxPolicy`. Python mirrors this by not converting unknown special entries into legacy roots or permissions.
@@ -1384,7 +1383,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd` and `to_legacy_sandbox_policy` define the split/legacy bridge for danger-full-access, external-sandbox, read-only, and workspace-write policies. Python mirrors the roundtrip identity for policy type, disk/network capability flags, and workspace-write roots/exclusion knobs.
@@ -1393,7 +1392,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::to_legacy_sandbox_policy` returns an error when a split filesystem policy requests writes that cannot be represented by legacy workspace-write roots for the provided cwd. Python mirrors this by raising instead of silently widening, dropping, or translating unsupported write roots.
@@ -1510,7 +1509,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `FileSystemSandboxPolicy::has_full_disk_write_access` reports unrestricted/external and root-write-only policies as full disk write, but `root_write_with_read_only_child_is_not_full_disk_write` proves root write plus a read-only child is a real narrowing entry that must keep child read access, require direct runtime enforcement, and reject lossy legacy projection. Python mirrors those branches.
@@ -1519,7 +1518,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `duplicate_root_deny_prevents_full_disk_write_access` proves a restricted split filesystem policy containing root write plus a duplicate root deny must not be treated as full-disk writable, and root access resolves to `Deny`. Python mirrors the same conflict-precedence branch.
@@ -1528,7 +1527,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `same_specificity_write_override_keeps_full_disk_write_access` proves a read carveout is not a real full-disk-write narrowing entry when a later same-specificity write rule overrides it; the path resolves to `Write` and the policy remains full-disk writable. Python mirrors the same most-specific/latest-rule conflict behavior.
@@ -1537,7 +1536,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `writable_roots_skip_default_dot_codex_when_explicit_user_rule_exists` proves an explicit user write rule for `.codex` wins over default project metadata protection: the workspace writable root does not retain `.codex` in `protected_metadata_names`, does not include the explicit `.codex` path in `read_only_subpaths`, and permits writing `.codex/config.toml`. Python mirrors the same branch.
@@ -1546,7 +1545,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `split_only_nested_carveouts_need_direct_runtime_enforcement` proves a symbolic project-roots write policy with a nested read-only carveout cannot be fully represented by the legacy sandbox projection and must stay in direct runtime enforcement. Python mirrors this classification branch.
@@ -1555,7 +1554,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `legacy_projection_runtime_enforcement_ignores_entry_order` proves direct-runtime-enforcement classification depends on normalized filesystem semantics rather than incidental entry order. Python mirrors this by reversing a legacy workspace-write projection, confirming semantic equivalence, and comparing `needs_direct_runtime_enforcement` results.
@@ -1564,7 +1563,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `legacy_workspace_write_projection_accepts_relative_cwd` proves `FileSystemSandboxPolicy::from_legacy_sandbox_policy_for_cwd` accepts a relative cwd for legacy workspace-write policies and preserves the symbolic project-roots workspace-write shape rather than requiring absolute cwd materialization. Python mirrors that behavior.
@@ -1573,7 +1572,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `with_additional_legacy_workspace_writable_roots_protects_metadata` proves adding a legacy workspace writable root must also preserve read-only protections for existing top-level `.git`, `.agents`, and `.codex` metadata paths below that root. Python mirrors this behavior through `with_additional_legacy_workspace_writable_roots` and default metadata carveout helpers.
@@ -1582,7 +1581,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `writable_roots_proactively_protect_missing_dot_codex` proves workspace writable roots proactively include `.codex` in read-only subpaths even when the directory does not exist yet, so future `.codex/config.toml` writes stay blocked. Python mirrors this behavior.
@@ -1591,7 +1590,7 @@ passed on 2026-06-17 with `369 passed, 118 subtests passed`.
 
 - Rust owner: `codex-protocol`
 - Rust module: `codex/codex-rs/protocol/src/permissions.rs`
-- Python module: `pycodex/protocol/models.py`
+- Python module: `pycodex/protocol/permissions.py`
 - Python tests: `tests/test_protocol_permission_models.py`
 - Status: `complete_slice`
 - Evidence: Rust `missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement` proves legacy workspace-write profile projection and legacy runtime projection both require direct runtime enforcement when symbolic `.git`/`.agents` metadata protections or metadata-name protections cannot be represented by the legacy writable-root contract. Python mirrors both branches, including the internal legacy runtime helper.

@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-core.tasks.user_shell",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tasks::user_shell",
+    "source": "codex/codex-rs/core/src/tasks/user_shell.rs",
+    "anchors": [
+      "UserShellCommandMode",
+      "UserShellCommandTask",
+      "execute_user_shell_command",
+      "new",
+      "USER_SHELL_TIMEOUT_MS",
+      "kind",
+      "persist_user_shell_output",
+      "run",
+      "span_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tasks/user_shell.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tasks/user_shell.py"
+    ],
+    "anchors": [
+      "UserShellCommandMode",
+      "UserShellCommandTask",
+      "execute_user_shell_command",
+      "new",
+      "USER_SHELL_TIMEOUT_MS",
+      "kind",
+      "persist_user_shell_output",
+      "run",
+      "span_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import socket
 
 from pycodex.vendor import import_vendored
 from pycodex.vendor import vendor_packages_path
+from pycodex.codex_api.endpoint import _websocket_client as websocket_client
 from pycodex.codex_api.endpoint._websocket_client import VendoredResponsesWebsocketStream
 
 
@@ -26,6 +28,48 @@ def test_import_vendored_loads_websockets_sync_client_from_vendor_tree() -> None
     assert websockets.__version__ == "11.0.3"
     assert callable(sync_client.connect)
     assert hasattr(compression, "enable_client_permessage_deflate")
+
+
+def test_websocket_tcp_connect_falls_through_blackholed_first_address(monkeypatch) -> None:
+    # Rust crate/module: codex-api/src/endpoint/responses_websocket.rs wraps the
+    # complete multi-address connect in one timeout. A blackholed IPv6 address
+    # must not consume that entire timeout when a reachable IPv4 address exists.
+    connector = getattr(websocket_client, "_connect_tcp_socket", None)
+    assert callable(connector)
+
+    addresses = (
+        (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2001::1", 443, 0, 0)),
+        (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 443)),
+    )
+    sockets = []
+
+    class FakeSocket:
+        def __init__(self, family, socktype, proto) -> None:
+            self.family = family
+            self.timeout = None
+            self.closed = False
+            sockets.append(self)
+
+        def settimeout(self, value) -> None:
+            self.timeout = value
+
+        def connect(self, _address) -> None:
+            if self.family == socket.AF_INET6:
+                raise TimeoutError("IPv6 blackhole")
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(websocket_client.socket, "getaddrinfo", lambda *_args, **_kwargs: addresses)
+    monkeypatch.setattr(websocket_client.socket, "socket", FakeSocket)
+
+    connected, remaining = connector("chatgpt.com", 443, 1.0)
+
+    assert connected is sockets[1]
+    assert sockets[0].closed is True
+    assert 0 < sockets[0].timeout <= 0.3
+    assert sockets[1].timeout > 0.5
+    assert 0 < remaining <= 1.0
 
 
 def test_vendored_stream_send_timeout_does_not_mutate_socket_timeout() -> None:

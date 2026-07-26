@@ -1,0 +1,14 @@
+{
+  "scope": "utils-string",
+  "rust_root": "codex/codex-rs/utils/string",
+  "python_root": "pycodex/utils/string",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::json",
+    "crate::truncate"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

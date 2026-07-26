@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.chatwidget.plan_implementation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::plan_implementation",
+    "source": "codex/codex-rs/tui/src/chatwidget/plan_implementation.rs",
+    "anchors": [
+      "PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX",
+      "PLAN_IMPLEMENTATION_CODING_MESSAGE",
+      "PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE",
+      "PLAN_IMPLEMENTATION_NO_APPROVED_PLAN",
+      "PLAN_IMPLEMENTATION_TITLE",
+      "selection_view_params",
+      "PLAN_IMPLEMENTATION_CLEAR_CONTEXT",
+      "PLAN_IMPLEMENTATION_NO",
+      "PLAN_IMPLEMENTATION_YES"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/plan_implementation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/plan_implementation.py"
+    ],
+    "anchors": [
+      "PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX",
+      "PLAN_IMPLEMENTATION_CODING_MESSAGE",
+      "PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE",
+      "PLAN_IMPLEMENTATION_NO_APPROVED_PLAN",
+      "PLAN_IMPLEMENTATION_TITLE",
+      "selection_view_params",
+      "PLAN_IMPLEMENTATION_CLEAR_CONTEXT",
+      "PLAN_IMPLEMENTATION_NO",
+      "PLAN_IMPLEMENTATION_YES"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

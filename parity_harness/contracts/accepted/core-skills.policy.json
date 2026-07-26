@@ -1,0 +1,11 @@
+{
+  "scope": "core-skills",
+  "rust_root": "codex/codex-rs/core-skills",
+  "python_root": "pycodex/core_skills",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": ["crate::injection", "crate::loader", "crate::system"],
+  "uncovered_python_files": ["pycodex/core_skills/injections.py", "pycodex/core_skills/mentions.py"],
+  "allowed_unowned": []
+}

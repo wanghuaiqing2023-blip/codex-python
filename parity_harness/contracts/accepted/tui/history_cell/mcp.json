@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.history_cell.mcp",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::mcp",
+    "source": "codex/codex-rs/tui/src/history_cell/mcp.rs",
+    "anchors": [
+      "McpInventoryLoadingCell",
+      "McpInvocation",
+      "McpToolCallCell",
+      "call_id",
+      "complete",
+      "empty_mcp_output",
+      "mark_failed",
+      "new",
+      "new_active_mcp_tool_call",
+      "new_mcp_inventory_loading",
+      "new_mcp_tools_output",
+      "new_mcp_tools_output_from_statuses"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/mcp.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/mcp.py"
+    ],
+    "anchors": [
+      "McpInventoryLoadingCell",
+      "McpInvocation",
+      "McpToolCallCell",
+      "call_id",
+      "complete",
+      "empty_mcp_output",
+      "mark_failed",
+      "new",
+      "new_active_mcp_tool_call",
+      "new_mcp_inventory_loading",
+      "new_mcp_tools_output",
+      "new_mcp_tools_output_from_statuses"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

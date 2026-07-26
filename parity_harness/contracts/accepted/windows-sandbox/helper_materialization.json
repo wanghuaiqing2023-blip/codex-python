@@ -1,0 +1,41 @@
+{
+  "contract_id": "codex-windows-sandbox.helper-materialization",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "helper_materialization",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/helper_materialization.rs",
+    "anchors": [
+      "BIN_DIRNAME",
+      "HelperExecutable",
+      "RESOURCES_DIRNAME",
+      "bundled_executable_path_for_exe",
+      "resolve_current_exe_for_launch"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/helper_materialization.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/helper_materialization.py"
+    ],
+    "anchors": [
+      "BIN_DIRNAME",
+      "HelperExecutable",
+      "RESOURCES_DIRNAME",
+      "bundled_executable_path_for_exe",
+      "resolve_current_exe_for_launch"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_setup_orchestrator.py",
+    "tests/test_windows_sandbox_utility_modules.py"
+  ]
+}

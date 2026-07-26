@@ -5,14 +5,14 @@ import json
 
 import pytest
 
-from pycodex.windows_sandbox.setup_helper import decode_payload
+from pycodex.windows_sandbox.bin.setup_main.win import SetupMode, decode_payload
 from pycodex.windows_sandbox.setup_error import SetupFailure
 
 
 def test_setup_helper_decodes_fixed_version_payload() -> None:
     payload = {"version": 5, "codex_home": "C:/tmp", "offline_username": "o"}
     encoded = base64.b64encode(json.dumps(payload).encode()).decode()
-    assert decode_payload(encoded) == payload
+    assert decode_payload(encoded) == {**payload, "mode": SetupMode.FULL.value}
 
 
 def test_setup_helper_rejects_invalid_or_stale_payload() -> None:
@@ -20,4 +20,21 @@ def test_setup_helper_rejects_invalid_or_stale_payload() -> None:
         decode_payload("not-base64")
     encoded = base64.b64encode(b'{"version":4}').decode()
     with pytest.raises(SetupFailure, match="setup version mismatch"):
+        decode_payload(encoded)
+
+
+def test_setup_helper_decodes_read_acl_only_mode() -> None:
+    encoded = base64.b64encode(
+        json.dumps({"version": 5, "mode": "read-acls-only"}).encode()
+    ).decode()
+
+    assert decode_payload(encoded)["mode"] == SetupMode.READ_ACLS_ONLY.value
+
+
+def test_setup_helper_rejects_unknown_mode() -> None:
+    encoded = base64.b64encode(
+        json.dumps({"version": 5, "mode": "python-only"}).encode()
+    ).decode()
+
+    with pytest.raises(SetupFailure, match="invalid setup mode"):
         decode_payload(encoded)

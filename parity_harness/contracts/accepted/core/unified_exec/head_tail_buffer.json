@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-core.unified_exec.head_tail_buffer",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "unified_exec::head_tail_buffer",
+    "source": "codex/codex-rs/core/src/unified_exec/head_tail_buffer.rs",
+    "anchors": [
+      "HeadTailBuffer",
+      "drain_chunks",
+      "new",
+      "omitted_bytes",
+      "push_chunk",
+      "retained_bytes",
+      "snapshot_chunks",
+      "to_bytes"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/unified_exec/head_tail_buffer.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/unified_exec/head_tail_buffer.py"
+    ],
+    "anchors": [
+      "HeadTailBuffer",
+      "drain_chunks",
+      "new",
+      "omitted_bytes",
+      "push_chunk",
+      "retained_bytes",
+      "snapshot_chunks",
+      "to_bytes"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

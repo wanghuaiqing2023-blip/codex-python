@@ -1,0 +1,14 @@
+{
+  "scope": "features",
+  "rust_root": "codex/codex-rs/features",
+  "python_root": "pycodex/features",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::feature_configs",
+    "crate::legacy"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

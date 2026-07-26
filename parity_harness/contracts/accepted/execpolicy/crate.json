@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-execpolicy.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy",
+    "module": "crate",
+    "source": "codex/codex-rs/execpolicy/src/lib.rs",
+    "anchors": [
+      "AmendError",
+      "Decision",
+      "Error",
+      "ErrorLocation",
+      "Evaluation",
+      "ExecPolicyCheckCommand",
+      "MatchOptions",
+      "NetworkRuleProtocol",
+      "PatternToken",
+      "Policy",
+      "PolicyParser",
+      "PrefixPattern"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/execpolicy/__init__.py"
+    ],
+    "anchors": [
+      "AmendError",
+      "Decision",
+      "Error",
+      "ErrorLocation",
+      "Evaluation",
+      "ExecPolicyCheckCommand",
+      "MatchOptions",
+      "NetworkRuleProtocol",
+      "PatternToken",
+      "Policy",
+      "PolicyParser",
+      "PrefixPattern"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

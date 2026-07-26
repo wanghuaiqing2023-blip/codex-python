@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.otel_init",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "otel_init",
+    "source": "codex/codex-rs/core/src/otel_init.rs",
+    "anchors": [
+      "build_provider",
+      "codex_export_filter",
+      "install_sqlite_telemetry",
+      "record_process_start"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/otel_init.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/otel_init.py"
+    ],
+    "anchors": [
+      "build_provider",
+      "codex_export_filter",
+      "install_sqlite_telemetry",
+      "record_process_start"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

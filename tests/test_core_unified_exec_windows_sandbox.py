@@ -70,7 +70,7 @@ def _attempt(level: WindowsSandboxLevel) -> SandboxAttempt:
 
 
 def test_unified_exec_windows_attempt_uses_native_session_spawner(monkeypatch) -> None:
-    import pycodex.windows_sandbox as windows_sandbox
+    import pycodex.windows_sandbox.unified_exec as windows_unified_exec
 
     observed: dict[str, object] = {}
 
@@ -79,13 +79,17 @@ def test_unified_exec_windows_attempt_uses_native_session_spawner(monkeypatch) -
         observed["kwargs"] = kwargs
         return _CompletedPopen()
 
-    monkeypatch.setattr(windows_sandbox, "spawn_windows_sandbox_popen", fake_spawn)
+    monkeypatch.setattr(
+        windows_unified_exec,
+        "spawn_windows_sandbox_session_legacy",
+        fake_spawn,
+    )
     manager = UnifiedExecProcessManager()
     output = manager.exec_command(_request(_attempt(WindowsSandboxLevel.RESTRICTED_TOKEN)))
     assert b"native-unified" in output.raw_output
-    assert observed["kwargs"]["stdin_open"] is False
-    assert observed["kwargs"]["tty"] is False
-    assert observed["kwargs"]["use_private_desktop"] is True
+    assert observed["args"][10] is False
+    assert observed["args"][9] is False
+    assert observed["args"][11] is True
 
 
 def test_unified_exec_windows_attempt_with_disabled_level_never_falls_back(monkeypatch) -> None:
@@ -120,7 +124,7 @@ def test_unified_runtime_projects_additional_permissions_into_native_attempt() -
 
 def test_unified_exec_forwards_effective_deny_paths_to_native_spawner(monkeypatch, tmp_path: Path) -> None:
     # Rust owners: core::unified_exec::process_manager and windows-sandbox::spawn_prep.
-    import pycodex.windows_sandbox.elevated as elevated
+    import pycodex.windows_sandbox.unified_exec as windows_unified_exec
 
     denied = tmp_path / "secret"
     profile = PermissionProfile.read_only()
@@ -132,10 +136,15 @@ def test_unified_exec_forwards_effective_deny_paths_to_native_spawner(monkeypatc
     observed: dict[str, object] = {}
 
     def fake_spawn(*args, **kwargs):
-        observed.update(kwargs)
+        observed["args"] = args
+        observed["kwargs"] = kwargs
         return _CompletedPopen()
 
-    monkeypatch.setattr(elevated, "spawn_elevated_popen", fake_spawn)
+    monkeypatch.setattr(
+        windows_unified_exec,
+        "spawn_windows_sandbox_session_elevated_for_permission_profile",
+        fake_spawn,
+    )
     attempt = _attempt(WindowsSandboxLevel.ELEVATED)
     attempt = SandboxAttempt(
         sandbox=attempt.sandbox,
@@ -152,4 +161,4 @@ def test_unified_exec_forwards_effective_deny_paths_to_native_spawner(monkeypatc
 
     asyncio.run(runtime.run(req, attempt, None))
 
-    assert observed["additional_deny_read_paths"] == (denied.resolve(),)
+    assert observed["args"][10] == (denied.resolve(),)

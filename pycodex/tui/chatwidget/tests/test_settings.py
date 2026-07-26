@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pycodex.protocol import Settings
 from pycodex.tui.chatwidget.settings import (
     CollaborationMode,
     CollaborationModeMask,
@@ -86,7 +87,11 @@ class Widget:
     def __init__(self) -> None:
         self.config = SettingsConfig(model="gpt")
         self.current_collaboration_mode = CollaborationMode(
-            model_value="gpt", reasoning_effort_value=ReasoningEffortConfig.MEDIUM
+            mode=ModeKind.DEFAULT,
+            settings=Settings(
+                model="gpt",
+                reasoning_effort=ReasoningEffortConfig.MEDIUM,
+            ),
         )
         self.active_collaboration_mask = None
         self.thread_id = None
@@ -253,7 +258,10 @@ def test_thread_settings_update_applies_only_current_thread_and_refreshes_runtim
                 "permission_profile_snapshot": {"profile": "trusted"},
                 "model": "o4-plan",
                 "effort": ReasoningEffortConfig.HIGH,
-                "collaboration_mode": CollaborationMode(mode=ModeKind.PLAN, model_value="old"),
+                "collaboration_mode": CollaborationMode(
+                    mode=ModeKind.PLAN,
+                    settings=Settings(model="old"),
+                ),
             },
         },
     )
@@ -308,11 +316,17 @@ def test_collaboration_mask_applies_plan_override_dismisses_nudge_and_reports_mo
 
 def test_display_name_and_image_error_message_use_effective_model() -> None:
     widget = Widget()
-    widget.current_collaboration_mode = CollaborationMode(model_value="")
+    widget.current_collaboration_mode = CollaborationMode(
+        mode=ModeKind.DEFAULT,
+        settings=Settings(model=""),
+    )
 
     assert model_display_name(widget) == "Default"
 
-    widget.current_collaboration_mode = CollaborationMode(model_value="gpt-test")
+    widget.current_collaboration_mode = CollaborationMode(
+        mode=ModeKind.DEFAULT,
+        settings=Settings(model="gpt-test"),
+    )
     assert image_inputs_not_supported_message(widget) == (
         "Model gpt-test does not support image inputs. Remove images or switch models."
     )

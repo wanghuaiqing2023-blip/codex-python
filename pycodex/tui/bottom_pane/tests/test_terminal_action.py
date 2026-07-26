@@ -205,7 +205,7 @@ def test_terminal_action_builds_surface_requests_from_bottom_pane_context() -> N
         layout_active=True,
         check_resize=False,
         draft="/m",
-        footer_text="gpt-test high",
+        footer_text="",
         popup_lines=popup,
         popup_cursor=(4, 0),
         live_status=active,

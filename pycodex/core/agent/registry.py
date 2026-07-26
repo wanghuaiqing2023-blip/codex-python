@@ -9,10 +9,30 @@ from typing import Iterable
 from pycodex.protocol import AgentPath, SessionSource, SubAgentSource, ThreadId
 from pycodex.protocol.error import CodexErr
 
-from pycodex.core.config.agent_roles import format_agent_nickname
-
-
 I32_MAX = 2_147_483_647
+
+
+def format_agent_nickname(name: str, nickname_reset_count: int) -> str:
+    """Add the Rust ordinal suffix after the nickname pool resets."""
+
+    if not isinstance(name, str):
+        raise TypeError("name must be a string")
+    if isinstance(nickname_reset_count, bool) or not isinstance(nickname_reset_count, int):
+        raise TypeError("nickname_reset_count must be an integer")
+    if nickname_reset_count == 0:
+        return name
+    value = nickname_reset_count + 1
+    if value % 100 in (11, 12, 13):
+        suffix = "th"
+    elif value % 10 == 1:
+        suffix = "st"
+    elif value % 10 == 2:
+        suffix = "nd"
+    elif value % 10 == 3:
+        suffix = "rd"
+    else:
+        suffix = "th"
+    return f"{name} the {value}{suffix}"
 
 
 @dataclass
@@ -251,6 +271,7 @@ __all__ = [
     "AgentRegistry",
     "SpawnReservation",
     "exceeds_thread_spawn_depth_limit",
+    "format_agent_nickname",
     "next_thread_spawn_depth",
     "session_depth",
 ]

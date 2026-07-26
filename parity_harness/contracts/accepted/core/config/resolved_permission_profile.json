@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.config.resolved_permission_profile",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "config::resolved_permission_profile",
+    "source": "codex/codex-rs/core/src/config/resolved_permission_profile.rs",
+    "anchors": [
+      "BuiltInPermissionProfileId",
+      "PermissionProfileSnapshot",
+      "PermissionProfileState",
+      "ResolvedPermissionProfile",
+      "active",
+      "active_permission_profile",
+      "active_with_profile_workspace_roots",
+      "can_set_legacy_permission_profile",
+      "from_active_profile",
+      "from_constrained_active_profile",
+      "from_constrained_legacy",
+      "from_constrained_resolved"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/config/resolved_permission_profile.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/config/resolved_permission_profile.py"
+    ],
+    "anchors": [
+      "BuiltInPermissionProfileId",
+      "PermissionProfileSnapshot",
+      "PermissionProfileState",
+      "ResolvedPermissionProfile",
+      "active",
+      "active_permission_profile",
+      "active_with_profile_workspace_roots",
+      "can_set_legacy_permission_profile",
+      "from_active_profile",
+      "from_constrained_active_profile",
+      "from_constrained_legacy",
+      "from_constrained_resolved"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

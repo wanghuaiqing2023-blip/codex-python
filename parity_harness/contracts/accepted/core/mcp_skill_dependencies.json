@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.mcp_skill_dependencies",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "mcp_skill_dependencies",
+    "source": "codex/codex-rs/core/src/mcp_skill_dependencies.rs",
+    "anchors": [
+      "maybe_install_mcp_dependencies",
+      "maybe_prompt_and_install_mcp_dependencies",
+      "MCP_DEPENDENCY_OPTION_INSTALL",
+      "MCP_DEPENDENCY_OPTION_SKIP",
+      "SKILL_MCP_DEPENDENCY_PROMPT_ID",
+      "canonical_mcp_dependency_key",
+      "canonical_mcp_key",
+      "canonical_mcp_server_key",
+      "collect_missing_mcp_dependencies",
+      "filter_prompted_mcp_dependencies",
+      "format_missing_mcp_dependencies",
+      "mcp_dependency_to_server_config"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/mcp_skill_dependencies.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/mcp_skill_dependencies.py"
+    ],
+    "anchors": [
+      "maybe_install_mcp_dependencies",
+      "maybe_prompt_and_install_mcp_dependencies",
+      "MCP_DEPENDENCY_OPTION_INSTALL",
+      "MCP_DEPENDENCY_OPTION_SKIP",
+      "SKILL_MCP_DEPENDENCY_PROMPT_ID",
+      "canonical_mcp_dependency_key",
+      "canonical_mcp_key",
+      "canonical_mcp_server_key",
+      "collect_missing_mcp_dependencies",
+      "filter_prompted_mcp_dependencies",
+      "format_missing_mcp_dependencies",
+      "mcp_dependency_to_server_config"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

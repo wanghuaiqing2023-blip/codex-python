@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.history_cell.exec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::exec",
+    "source": "codex/codex-rs/tui/src/history_cell/exec.rs",
+    "anchors": [
+      "UnifiedExecInteractionCell",
+      "UnifiedExecProcessDetails",
+      "new",
+      "new_unified_exec_interaction",
+      "new_unified_exec_processes_output",
+      "UnifiedExecProcessesCell",
+      "desired_height",
+      "display_lines",
+      "raw_lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/exec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/exec.py"
+    ],
+    "anchors": [
+      "UnifiedExecInteractionCell",
+      "UnifiedExecProcessDetails",
+      "new",
+      "new_unified_exec_interaction",
+      "new_unified_exec_processes_output",
+      "UnifiedExecProcessesCell",
+      "desired_height",
+      "display_lines",
+      "raw_lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

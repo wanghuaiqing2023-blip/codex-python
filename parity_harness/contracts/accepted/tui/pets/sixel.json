@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.pets.sixel",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets::sixel",
+    "source": "codex/codex-rs/tui/src/pets/sixel.rs",
+    "anchors": [
+      "encode_rgba",
+      "PALETTE_COLOR_COUNT",
+      "Palette",
+      "SIXEL_BAND_HEIGHT",
+      "ST",
+      "TRANSPARENT_ALPHA_THRESHOLD",
+      "TRANSPARENT_BACKGROUND_DCS",
+      "active_colors_for_band",
+      "byte_to_sixel_percent",
+      "color_index_at",
+      "flush_run",
+      "from_rgba"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/sixel.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pets/sixel.py"
+    ],
+    "anchors": [
+      "encode_rgba",
+      "PALETTE_COLOR_COUNT",
+      "Palette",
+      "SIXEL_BAND_HEIGHT",
+      "ST",
+      "TRANSPARENT_ALPHA_THRESHOLD",
+      "TRANSPARENT_BACKGROUND_DCS",
+      "active_colors_for_band",
+      "byte_to_sixel_percent",
+      "color_index_at",
+      "flush_run",
+      "from_rgba"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

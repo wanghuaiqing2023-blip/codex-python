@@ -1,0 +1,21 @@
+{
+  "scope": "config",
+  "rust_root": "codex/codex-rs/config",
+  "python_root": "pycodex/config",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::loader::layer_io",
+    "crate::loader::macos",
+    "crate::mcp_types::option_duration_secs",
+    "crate::thread_config::remote"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": [
+    {
+      "path": "pycodex/config/toml_compat.py",
+      "reason": "Python runtime compatibility adapter for tomllib availability; Rust uses the external toml crate and has no corresponding production module."
+    }
+  ]
+}

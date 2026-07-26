@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.table_detect",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "table_detect",
+    "source": "codex/codex-rs/tui/src/table_detect.rs",
+    "anchors": [
+      "FenceKind",
+      "FenceTracker",
+      "advance",
+      "is_markdown_fence_info",
+      "is_table_delimiter_line",
+      "is_table_header_line",
+      "kind",
+      "new",
+      "parse_fence_marker",
+      "parse_table_segments",
+      "strip_blockquote_prefix",
+      "is_table_delimiter_segment"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/table_detect.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/table_detect.py"
+    ],
+    "anchors": [
+      "FenceKind",
+      "FenceTracker",
+      "advance",
+      "is_markdown_fence_info",
+      "is_table_delimiter_line",
+      "is_table_header_line",
+      "kind",
+      "new",
+      "parse_fence_marker",
+      "parse_table_segments",
+      "strip_blockquote_prefix",
+      "is_table_delimiter_segment"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

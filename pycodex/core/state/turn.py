@@ -8,15 +8,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+import threading
 from typing import Any
 
 from pycodex.protocol.models import (
     AdditionalPermissionProfile,
-    FileSystemAccessMode,
     FileSystemPermissions,
-    FileSystemSandboxEntry,
     NetworkPermissions,
 )
+from pycodex.protocol.permissions import FileSystemAccessMode, FileSystemSandboxEntry
 from pycodex.protocol.request_permissions import (
     RequestPermissionProfile,
     RequestPermissionsResponse,
@@ -80,6 +80,10 @@ class TurnState:
         default_factory=dict
     )
     pending_user_input: dict[str, Any] = field(default_factory=dict)
+    pending_user_input_lock: threading.Lock = field(
+        default_factory=threading.Lock,
+        repr=False,
+    )
     pending_elicitations: dict[tuple[str, Any], Any] = field(default_factory=dict)
     pending_dynamic_tools: dict[str, Any] = field(default_factory=dict)
     _granted_permissions: AdditionalPermissionProfile | None = None

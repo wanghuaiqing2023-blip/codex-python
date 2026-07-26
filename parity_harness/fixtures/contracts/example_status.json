@@ -1,0 +1,44 @@
+{
+  "contract_id": "harness-fixture.status",
+  "evidence_status": "implemented",
+  "rust": {
+    "workspace": "parity_harness/fixtures/example_repo/rust",
+    "crate": "parity-harness-fixture",
+    "module": "status",
+    "source": "parity_harness/fixtures/example_repo/rust/src/status.rs",
+    "anchors": ["render_status"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "parity_harness/fixtures/example_repo/python/demo/status/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "parity_harness/fixtures/example_repo/python/demo/status/__init__.py",
+      "parity_harness/fixtures/example_repo/python/demo/status/formatter.py"
+    ],
+    "anchors": ["render_status"]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate",
+      "python_root": "parity_harness/fixtures/example_repo/python",
+      "allowed_unowned": [
+        {
+          "path": "parity_harness/fixtures/example_repo/python/demo/__init__.py",
+          "reason": "namespace package marker for the bounded status fixture"
+        }
+      ]
+    }
+  },
+  "fixture_refs": [
+    "parity_harness/fixtures/traces/rust_reference.json",
+    "parity_harness/fixtures/traces/python_matching.json",
+    "parity_harness/fixtures/traces/python_missing.json",
+    "parity_harness/fixtures/traces/python_duplicate.json",
+    "parity_harness/fixtures/traces/python_out_of_order.json",
+    "parity_harness/fixtures/traces/rust_unavailable.json",
+    "parity_harness/fixtures/outcomes/success.json",
+    "parity_harness/fixtures/outcomes/false_claim.json",
+    "parity_harness/fixtures/outcomes/config_restart.json"
+  ]
+}

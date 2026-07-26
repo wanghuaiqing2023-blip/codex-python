@@ -164,6 +164,41 @@ def _key_kind(key_event: Any) -> str:
     return str(getattr(key_event, "kind", "press")).lower()
 
 
+def _binding_matches_event(binding: Any, key_event: Any) -> bool:
+    binding_code = str(getattr(binding, "code", "")).lower()
+    event_code = _key_code(key_event).lower()
+    binding_modifiers = {
+        str(modifier).lower().replace("ctrl", "control")
+        for modifier in getattr(binding, "modifiers", ())
+    }
+    event_modifiers = {
+        str(modifier).lower().replace("ctrl", "control")
+        for modifier in getattr(key_event, "modifiers", ())
+    }
+    return binding_code == event_code and binding_modifiers == event_modifiers
+
+
+def keymap_command_for_event(runtime_keymap: Any, key_event: Any) -> Optional[str]:
+    """Resolve Rust ``app::input`` global-key precedence from ``RuntimeKeymap``."""
+
+    app_keymap = getattr(runtime_keymap, "app", None)
+    if app_keymap is None:
+        return None
+    for command in (
+        "toggle_vim_mode",
+        "toggle_fast_mode",
+        "toggle_raw_output",
+        "open_transcript",
+        "open_external_editor",
+        "copy",
+        "clear_terminal",
+    ):
+        bindings = getattr(app_keymap, command, ())
+        if any(_binding_matches_event(binding, key_event) for binding in bindings):
+            return command
+    return None
+
+
 async def handle_key_event(state: AppInputState, key_event: Any, command: Optional[str] = None) -> InputActionPlan:
     code = _key_code(key_event).lower()
     kind = _key_kind(key_event)
@@ -222,6 +257,7 @@ __all__ = [
     "app_keymap_shortcuts_available",
     "apply_raw_output_mode",
     "handle_key_event",
+    "keymap_command_for_event",
     "launch_external_editor",
     "refresh_status_line",
     "reject_side_backtrack_esc",

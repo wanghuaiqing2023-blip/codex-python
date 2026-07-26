@@ -1,8 +1,8 @@
 import pytest
 
-from pycodex.network_proxy import (
+from pycodex.network_proxy.config import NetworkMode
+from pycodex.network_proxy.policy import (
     Host,
-    NetworkMode,
     compile_allowlist_globset,
     compile_denylist_globset,
     is_global_wildcard_domain_pattern,

@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.notifications",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "notifications",
+    "source": "codex/codex-rs/tui/src/notifications/mod.rs",
+    "anchors": [
+      "DesktopNotificationBackend",
+      "detect_backend",
+      "for_method",
+      "method",
+      "notify",
+      "supports_osc9"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/notifications/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/notifications/__init__.py"
+    ],
+    "anchors": [
+      "DesktopNotificationBackend",
+      "detect_backend",
+      "for_method",
+      "method",
+      "notify",
+      "supports_osc9"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

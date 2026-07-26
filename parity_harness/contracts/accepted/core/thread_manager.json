@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.thread_manager",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "thread_manager",
+    "source": "codex/codex-rs/core/src/thread_manager.rs",
+    "anchors": [
+      "ForkSnapshot",
+      "NewThread",
+      "StartThreadOptions",
+      "ThreadManager",
+      "ThreadShutdownReport",
+      "agent_control",
+      "auth_manager",
+      "build_models_manager",
+      "default_environment_selections",
+      "environment_manager",
+      "fork_thread",
+      "fork_thread_from_history"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/thread_manager.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/thread_manager.py"
+    ],
+    "anchors": [
+      "ForkSnapshot",
+      "NewThread",
+      "StartThreadOptions",
+      "ThreadManager",
+      "ThreadShutdownReport",
+      "agent_control",
+      "auth_manager",
+      "build_models_manager",
+      "default_environment_selections",
+      "environment_manager",
+      "fork_thread",
+      "fork_thread_from_history"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

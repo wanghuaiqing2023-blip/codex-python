@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.tool_lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::tool_lifecycle",
+    "source": "codex/codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
+    "anchors": [
+      "handle_file_change_completed_now",
+      "handle_mcp_tool_call_completed_now",
+      "handle_mcp_tool_call_started_now",
+      "handle_queued_item_completed_now",
+      "handle_queued_item_started_now",
+      "on_collab_agent_tool_call",
+      "on_collab_event",
+      "on_file_change_completed",
+      "on_image_generation_begin",
+      "on_image_generation_end",
+      "on_mcp_tool_call_completed",
+      "on_mcp_tool_call_started"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/tool_lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/tool_lifecycle.py"
+    ],
+    "anchors": [
+      "handle_file_change_completed_now",
+      "handle_mcp_tool_call_completed_now",
+      "handle_mcp_tool_call_started_now",
+      "handle_queued_item_completed_now",
+      "handle_queued_item_started_now",
+      "on_collab_agent_tool_call",
+      "on_collab_event",
+      "on_file_change_completed",
+      "on_image_generation_begin",
+      "on_image_generation_end",
+      "on_mcp_tool_call_completed",
+      "on_mcp_tool_call_started"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

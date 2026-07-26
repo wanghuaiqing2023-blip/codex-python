@@ -10,9 +10,11 @@ command runtime.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from pycodex.protocol import CollaborationModeMask, ModeKind
 
 from .._porting import RustTuiModule
 
@@ -44,11 +46,6 @@ class InputResultKind(Enum):
     NONE = "None"
 
 
-class ModeKind(Enum):
-    PLAN = "Plan"
-    OTHER = "Other"
-
-
 class ExecCommandSource(Enum):
     USER_SHELL = "UserShell"
     OTHER = "Other"
@@ -78,12 +75,6 @@ class QueuedUserMessage:
 
     def into_user_message(self) -> UserMessage:
         return self.user_message
-
-
-@dataclass
-class CollaborationModeMask:
-    mode: Optional[ModeKind] = None
-    reasoning_effort: Any = None
 
 
 @dataclass
@@ -312,7 +303,10 @@ class InputFlowModel:
             collaboration_mode.mode is ModeKind.PLAN
             and self.plan_mode_reasoning_effort is not None
         ):
-            collaboration_mode.reasoning_effort = self.plan_mode_reasoning_effort
+            collaboration_mode = replace(
+                collaboration_mode,
+                reasoning_effort=self.plan_mode_reasoning_effort,
+            )
         if self.agent_turn_running and self.active_collaboration_mask != collaboration_mode:
             self.add_error_message("Cannot switch collaboration mode while a turn is running.")
             return

@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.chatwidget.exec_state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::exec_state",
+    "source": "codex/codex-rs/tui/src/chatwidget/exec_state.rs",
+    "anchors": [
+      "RunningCommand",
+      "UnifiedExecProcessSummary",
+      "UnifiedExecWaitState",
+      "UnifiedExecWaitStreak",
+      "command_execution_command_and_parsed",
+      "is_duplicate",
+      "is_standard_tool_call",
+      "is_unified_exec_source",
+      "new",
+      "update_command_display"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/exec_state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/exec_state.py"
+    ],
+    "anchors": [
+      "RunningCommand",
+      "UnifiedExecProcessSummary",
+      "UnifiedExecWaitState",
+      "UnifiedExecWaitStreak",
+      "command_execution_command_and_parsed",
+      "is_duplicate",
+      "is_standard_tool_call",
+      "is_unified_exec_source",
+      "new",
+      "update_command_display"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
+from pycodex.app_server_protocol.config import ConfigLayerSource
 from pycodex.config.config_requirements import (
     ConfigRequirementsToml,
     ConfigRequirementsWithSources,
@@ -49,7 +50,6 @@ from pycodex.config.loader import (
     validate_cli_overrides_strictly,
 )
 from pycodex.config.state import ConfigLayerEntry, ConfigLoadOptions, LoaderOverrides
-from pycodex.network_proxy import ConfigLayerSource
 from pycodex.protocol.config_types import ApprovalsReviewer, AskForApproval, TrustLevel
 
 
@@ -72,17 +72,23 @@ def test_loader_well_known_paths_match_platform_contract() -> None:
     ) == PureWindowsPath("D:/ProgramData/OpenAI/Codex/requirements.toml")
 
 
-def test_insert_layer_by_precedence_matches_rust_ordering() -> None:
+def test_insert_layer_by_precedence_matches_rust_ordering(tmp_path: Path) -> None:
     # Rust: insert_layer_by_precedence keeps lower precedence first.
     layers = [
-        ConfigLayerEntry.new(ConfigLayerSource.user(Path("/tmp/config.toml")), {"model": "user"}),
+        ConfigLayerEntry.new(ConfigLayerSource.user(tmp_path / "config.toml"), {"model": "user"}),
         ConfigLayerEntry.new(ConfigLayerSource.session_flags(), {"model": "session"}),
     ]
 
-    insert_layer_by_precedence(layers, ConfigLayerEntry.new(ConfigLayerSource.system(Path("/etc/codex/config.toml")), {}))
-    insert_layer_by_precedence(layers, ConfigLayerEntry.new(ConfigLayerSource.project(Path("/work/.codex")), {}))
+    insert_layer_by_precedence(
+        layers,
+        ConfigLayerEntry.new(ConfigLayerSource.system(tmp_path / "system.toml"), {}),
+    )
+    insert_layer_by_precedence(
+        layers,
+        ConfigLayerEntry.new(ConfigLayerSource.project(tmp_path / "work" / ".codex"), {}),
+    )
 
-    assert [layer.name.type for layer in layers] == ["system", "user", "project", "session_flags"]
+    assert [layer.name.type for layer in layers] == ["system", "user", "project", "sessionFlags"]
 
 
 def test_sanitize_project_config_removes_denylist_and_formats_warning(tmp_path: Path) -> None:
@@ -256,8 +262,8 @@ def test_append_legacy_managed_config_layers_resolves_paths_and_preserves_raw_to
     append_legacy_managed_config_layers(layers, loaded, tmp_path / "home")
 
     assert [layer.name.type for layer in layers] == [
-        "legacy_managed_config_toml_from_file",
-        "legacy_managed_config_toml_from_mdm",
+        "legacyManagedConfigTomlFromFile",
+        "legacyManagedConfigTomlFromMdm",
     ]
     assert layers[0].config["model_instructions_file"] == str(
         (managed_file.parent / "managed.md").resolve(strict=False)
@@ -557,9 +563,9 @@ trust_level = "trusted"
         "system",
         "user",
         "project",
-        "session_flags",
-        "session_flags",
-        "legacy_managed_config_toml_from_file",
+        "sessionFlags",
+        "sessionFlags",
+        "legacyManagedConfigTomlFromFile",
     ]
     assert stack.layers[2].config == {
         "model_instructions_file": str((project / ".codex" / "project.md").resolve(strict=False))
@@ -595,6 +601,6 @@ def test_load_config_layers_state_autoloads_managed_config_layer(tmp_path: Path)
     assert [layer.name.type for layer in stack.layers] == [
         "system",
         "user",
-        "legacy_managed_config_toml_from_file",
+        "legacyManagedConfigTomlFromFile",
     ]
     assert stack.layers[-1].config == {"model": "managed"}

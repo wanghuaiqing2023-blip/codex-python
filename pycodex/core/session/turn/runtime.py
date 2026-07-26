@@ -54,7 +54,7 @@ from pycodex.core.plugins.mentions import (
     build_connector_slug_counts,
 )
 from pycodex.utils.string import truncate_middle_with_token_budget
-from pycodex.tools.original_image_detail import can_request_original_image_detail
+from pycodex.core.original_image_detail import can_request_original_image_detail
 from pycodex.core_skills.mentions import build_skill_name_counts
 from pycodex.core.skills import build_skill_injections, collect_explicit_skill_mentions
 from pycodex.core.responses_retry import (
@@ -89,7 +89,8 @@ from pycodex.core.tools.handlers.shell import ShellCommandHandler, ShellCommandT
 from pycodex.core.tools.handlers.unified_exec import ExecCommandArgs, get_command
 from pycodex.protocol.exec_output import bytes_to_string_smart
 from pycodex.shell_command.parse_command import parse_command
-from pycodex.apply_patch import convert_apply_patch_to_protocol, parse_patch, verify_apply_patch_args
+from pycodex.apply_patch import parse_patch, verify_apply_patch_args
+from pycodex.core.apply_patch import convert_apply_patch_to_protocol
 from pycodex.core.stream_events_utils import AssistantMessageStreamParsers, OutputItemResult, SamplingOutputState
 from pycodex.core.stream_events_utils import get_last_assistant_message_from_turn
 from pycodex.core.stream_events_utils import handle_non_tool_response_item
@@ -2740,7 +2741,11 @@ async def _sample_with_retry(
                 await _emit_sampling_retry_decision(sess, turn_context, decision)
                 retries = decision.retries
                 if decision.delay is not None:
-                    await _sleep_for_sampling_retry(sess, decision.delay.total_seconds())
+                    await _sleep_for_sampling_retry(
+                        sess,
+                        decision.delay.total_seconds(),
+                        cancellation_token=getattr(sampling_request, "cancellation_token", None),
+                    )
                 continue
             if decision.action is RetryableResponseStreamAction.FALLBACK_TRANSPORT:
                 if _activate_sampling_fallback_transport(sess, turn_context):
@@ -2766,22 +2771,23 @@ async def _sample_once_with_cancellation(
 
     sample_task = asyncio.create_task(_maybe_await(sampler(sampling_request)))
     cancellation_task = asyncio.create_task(_await_token_cancelled(cancellation_waiter))
-    done, pending = await asyncio.wait(
-        (sample_task, cancellation_task),
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    if cancellation_task in done:
-        sample_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await sample_task
-        raise CodexErr.simple("turn_aborted")
-    cancellation_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await cancellation_task
-    result = await sample_task
-    if _token_cancelled(cancellation_token):
-        raise CodexErr.simple("turn_aborted")
-    return result
+    try:
+        done, _pending = await asyncio.wait(
+            (sample_task, cancellation_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancellation_task in done:
+            raise CodexErr.simple("turn_aborted")
+        result = await sample_task
+        if _token_cancelled(cancellation_token):
+            raise CodexErr.simple("turn_aborted")
+        return result
+    finally:
+        for task in (sample_task, cancellation_task):
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 def _provider_stream_max_retries(provider: Any) -> int:
@@ -2883,12 +2889,41 @@ async def _emit_sampling_retry_decision(sess: Any, turn_context: Any, decision: 
         )
 
 
-async def _sleep_for_sampling_retry(sess: Any, seconds: float) -> None:
+async def _sleep_for_sampling_retry(
+    sess: Any,
+    seconds: float,
+    *,
+    cancellation_token: Any = None,
+) -> None:
+    if _token_cancelled(cancellation_token):
+        raise CodexErr.simple("turn_aborted")
     sleeper = getattr(sess, "sleep_for_sampling_retry", None) or getattr(sess, "sleep_for_retry", None)
-    if callable(sleeper):
-        await _maybe_await(sleeper(seconds))
+    sleep_awaitable = _maybe_await(sleeper(seconds)) if callable(sleeper) else asyncio.sleep(seconds)
+    cancellation_waiter = _token_cancelled_waiter(cancellation_token)
+    if cancellation_waiter is None:
+        await sleep_awaitable
+        if _token_cancelled(cancellation_token):
+            raise CodexErr.simple("turn_aborted")
         return
-    await asyncio.sleep(seconds)
+
+    sleep_task = asyncio.create_task(sleep_awaitable)
+    cancellation_task = asyncio.create_task(_await_token_cancelled(cancellation_waiter))
+    try:
+        done, _pending = await asyncio.wait(
+            (sleep_task, cancellation_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if cancellation_task in done:
+            raise CodexErr.simple("turn_aborted")
+        await sleep_task
+        if _token_cancelled(cancellation_token):
+            raise CodexErr.simple("turn_aborted")
+    finally:
+        for task in (sleep_task, cancellation_task):
+            if not task.done():
+                task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 async def _has_pending_mailbox_items(sess: Any) -> bool:
@@ -5630,6 +5665,82 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+async def run_user_turn_http_sampling_from_session(
+    sess: Any,
+    input: tuple[UserInput, ...] | list[UserInput],
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    *,
+    auth: Any = None,
+    endpoint: str | None = None,
+    timeout: float | None = None,
+    opener: Any = None,
+    built_tools: BuiltToolsFn | None = None,
+    effort: Any = None,
+    summary: Any = None,
+    service_tier: str | None = None,
+    thread_settings: Any = None,
+    responsesapi_client_metadata: Mapping[str, str] | None = None,
+    additional_context: Mapping[str, Any] | None = None,
+    environments: tuple[Any, ...] | list[Any] | None = None,
+    turn_metadata_header: str | None = None,
+    output_schema: Any = None,
+    output_schema_strict: bool | None = None,
+    max_tool_followups: int | None = None,
+    sampling_max_retries: int | None = None,
+    retry_sleep: Any = None,
+    on_retry_decision: Any = None,
+) -> UserTurnSamplingResult:
+    """Run a user turn through the Core client HTTP sampler."""
+
+    from pycodex.core.client import (
+        http_sampling_stream_max_retries,
+        http_transport_config_from_provider,
+        model_client_http_sampler,
+    )
+
+    config = http_transport_config_from_provider(
+        model_client,
+        provider,
+        auth=auth,
+        endpoint=endpoint,
+        timeout=timeout,
+        turn_metadata_header=turn_metadata_header,
+    )
+    if sampling_max_retries is None:
+        sampling_max_retries = http_sampling_stream_max_retries(provider)
+    sampler = model_client_http_sampler(
+        model_client.new_session(),
+        config,
+        opener=opener,
+        max_retries=sampling_max_retries,
+        sleep=retry_sleep,
+        on_retry_decision=on_retry_decision,
+    )
+    return await run_user_turn_sampling_from_session(
+        sess,
+        input,
+        model_client,
+        provider,
+        model_info,
+        sampler,
+        built_tools=built_tools,
+        effort=effort,
+        summary=summary,
+        service_tier=service_tier,
+        thread_settings=thread_settings,
+        responsesapi_client_metadata=responsesapi_client_metadata,
+        additional_context=additional_context,
+        environments=environments,
+        output_schema=output_schema,
+        output_schema_strict=output_schema_strict,
+        max_tool_followups=max_tool_followups,
+        emit_user_prompt_turn_item=False,
+        emit_response_item_turn_item=False,
+    )
+
+
 __all__ = [
     "BuiltToolsFn",
     "SamplerFn",
@@ -5639,6 +5750,7 @@ __all__ = [
     "build_user_input_op_responses_request_from_session",
     "build_user_turn_responses_request_from_session",
     "run_user_input_op_sampling_from_session",
+    "run_user_turn_http_sampling_from_session",
     "run_user_turn_sampling_from_session",
 ]
 

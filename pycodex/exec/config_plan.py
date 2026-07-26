@@ -1492,6 +1492,8 @@ def _exec_approval_policy_override(
     interactive: bool = False,
     active_project: ProjectTrust | None = None,
 ) -> AskForApproval | GranularApprovalConfig:
+    if cli.dangerously_bypass_approvals_and_sandbox:
+        return AskForApproval.NEVER
     if cli.approval_policy is not None:
         return cli.approval_policy
     configured = (config_toml or {}).get("approval_policy")

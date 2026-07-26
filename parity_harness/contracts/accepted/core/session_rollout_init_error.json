@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.session_rollout_init_error",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "session_rollout_init_error",
+    "source": "codex/codex-rs/core/src/session_rollout_init_error.rs",
+    "anchors": [
+      "map_session_init_error",
+      "map_rollout_io_error"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/session_rollout_init_error.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/session_rollout_init_error.py"
+    ],
+    "anchors": [
+      "map_session_init_error",
+      "map_rollout_io_error"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

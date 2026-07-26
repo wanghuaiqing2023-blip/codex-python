@@ -5,10 +5,13 @@ Upstream source: ``codex/codex-rs/tui/src/app/platform_actions.rs``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, FrozenSet, List, Optional, Set
+from dataclasses import dataclass, field
+from pathlib import Path
+from threading import Thread
+from typing import Any, FrozenSet, Set
 
 from .._porting import RustTuiModule
+from ..app_event import AppEvent
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -37,15 +40,6 @@ class KeyEvent:
 
 
 @dataclass(frozen=True, eq=True)
-class OpenWorldWritableWarningConfirmation:
-    preset: Any = None
-    profile_selection: Any = None
-    sample_paths: Optional[List[str]] = None
-    extra_count: int = 0
-    failed_scan: bool = True
-
-
-@dataclass(frozen=True, eq=True)
 class WorldWritableScanPlan:
     action: str
     cwd: Any = None
@@ -53,6 +47,7 @@ class WorldWritableScanPlan:
     logs_base_dir: Any = None
     permission_profile: Any = None
     tx: Any = None
+    worker: Thread | None = field(default=None, compare=False, repr=False)
 
 
 def _event_code(value: Any) -> str:
@@ -74,10 +69,19 @@ def _event_modifiers(value: Any) -> Set[str]:
     return {str(part).lower() for part in raw}
 
 
-def send_world_writable_scan_failed(tx: Any = None) -> OpenWorldWritableWarningConfirmation:
+def send_world_writable_scan_failed(tx: Any = None) -> AppEvent:
     """Build/send the Rust failure event for a failed world-writable scan."""
 
-    event = OpenWorldWritableWarningConfirmation(sample_paths=[])
+    event = AppEvent(
+        "OpenWorldWritableWarningConfirmation",
+        {
+            "preset": None,
+            "profile_selection": None,
+            "sample_paths": [],
+            "extra_count": 0,
+            "failed_scan": True,
+        },
+    )
     if tx is not None:
         tx.send(event)
     return event
@@ -103,44 +107,52 @@ def spawn_world_writable_scan(
     permission_profile: Any,
     tx: Any = None,
 ) -> WorldWritableScanPlan:
-    """Plan the Rust Windows world-writable scan side effect.
+    """Spawn Rust's blocking Windows world-writable scan side effect."""
 
-    Rust returns early when sandbox permissions cannot be resolved from the
-    permission profile; otherwise it spawns a blocking scan task that emits
-    ``send_world_writable_scan_failed`` on failure. Python records that exact
-    module-local decision without performing filesystem permission scans.
-    """
+    from pycodex import windows_sandbox
 
-    if not _permission_profile_resolves(permission_profile):
+    cwd_path = Path(cwd)
+    logs_path = Path(logs_base_dir)
+    try:
+        permissions = (
+            windows_sandbox.ResolvedWindowsSandboxPermissions
+            .try_from_permission_profile_for_cwd(permission_profile, cwd_path)
+        )
+    except (TypeError, ValueError):
         return WorldWritableScanPlan("noop_unresolved_permissions")
-    return WorldWritableScanPlan(
+
+    def run_scan() -> None:
+        try:
+            windows_sandbox.apply_world_writable_scan_and_denies_for_permissions(
+                logs_path,
+                cwd_path,
+                env_map,
+                permissions,
+                logs_path,
+            )
+        except Exception:
+            send_world_writable_scan_failed(tx)
+
+    worker = Thread(
+        target=run_scan,
+        name="pycodex-world-writable-scan",
+        daemon=True,
+    )
+    plan = WorldWritableScanPlan(
         "spawn_blocking_world_writable_scan",
-        cwd=cwd,
+        cwd=cwd_path,
         env_map=env_map,
-        logs_base_dir=logs_base_dir,
+        logs_base_dir=logs_path,
         permission_profile=permission_profile,
         tx=tx,
+        worker=worker,
     )
-
-
-def _permission_profile_resolves(permission_profile: Any) -> bool:
-    if permission_profile is None:
-        return False
-    if isinstance(permission_profile, dict):
-        if permission_profile.get("resolves") is False:
-            return False
-        if permission_profile.get("valid") is False:
-            return False
-    if getattr(permission_profile, "resolves", True) is False:
-        return False
-    if getattr(permission_profile, "valid", True) is False:
-        return False
-    return True
+    worker.start()
+    return plan
 
 
 __all__ = [
     "KeyEvent",
-    "OpenWorldWritableWarningConfirmation",
     "RUST_MODULE",
     "WindowsSandboxState",
     "WorldWritableScanPlan",

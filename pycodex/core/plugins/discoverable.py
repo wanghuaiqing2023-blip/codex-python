@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from pycodex.core.config.edit import ToolSuggestDiscoverableType
-from pycodex.core.context import PluginCapabilitySummary
+from pycodex.plugin import PluginCapabilitySummary
 from pycodex.core_plugins import (
     OPENAI_BUNDLED_MARKETPLACE_NAME,
     OPENAI_CURATED_MARKETPLACE_NAME,

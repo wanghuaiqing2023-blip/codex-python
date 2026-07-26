@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.interrupts",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::interrupts",
+    "source": "codex/codex-rs/tui/src/chatwidget/interrupts.rs",
+    "anchors": [
+      "InterruptManager",
+      "QueuedInterrupt",
+      "flush_all",
+      "is_empty",
+      "new",
+      "push_apply_patch_approval",
+      "push_elicitation",
+      "push_exec_approval",
+      "push_item_completed",
+      "push_item_started",
+      "push_request_permissions",
+      "push_user_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/interrupts.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/interrupts.py"
+    ],
+    "anchors": [
+      "InterruptManager",
+      "QueuedInterrupt",
+      "flush_all",
+      "is_empty",
+      "new",
+      "push_apply_patch_approval",
+      "push_elicitation",
+      "push_exec_approval",
+      "push_item_completed",
+      "push_item_started",
+      "push_request_permissions",
+      "push_user_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

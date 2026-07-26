@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.session.handlers",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "session::handlers",
+    "source": "codex/codex-rs/core/src/session/handlers.rs",
+    "anchors": [
+      "clean_background_terminals",
+      "compact",
+      "dynamic_tool_response",
+      "exec_approval",
+      "inter_agent_communication",
+      "interrupt",
+      "patch_approval",
+      "persist_thread_memory_mode_update",
+      "realtime_conversation_list_voices",
+      "refresh_mcp_servers",
+      "reload_user_config",
+      "request_permissions_response"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/session/handlers.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/session/handlers.py"
+    ],
+    "anchors": [
+      "clean_background_terminals",
+      "compact",
+      "dynamic_tool_response",
+      "exec_approval",
+      "inter_agent_communication",
+      "interrupt",
+      "patch_approval",
+      "persist_thread_memory_mode_update",
+      "realtime_conversation_list_voices",
+      "refresh_mcp_servers",
+      "reload_user_config",
+      "request_permissions_response"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

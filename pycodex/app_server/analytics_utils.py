@@ -1,28 +1,22 @@
-"""Analytics client setup helper ported from ``codex-app-server/src/analytics_utils.rs``."""
+"""Analytics client construction owned by ``codex-app-server::analytics_utils``."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
-
-@dataclass(frozen=True)
-class AnalyticsEventsClientConfigProjection:
-    auth_manager: Any
-    chatgpt_base_url: str
-    analytics_enabled: bool
+from pycodex.analytics import AnalyticsEventsClient
 
 
-def analytics_events_client_from_config_projection(
+def analytics_events_client_from_config(
     auth_manager: Any,
     config: Any,
-) -> AnalyticsEventsClientConfigProjection:
-    """Mirror the app-server-owned constructor arguments for AnalyticsEventsClient."""
+) -> AnalyticsEventsClient:
+    """Construct the production analytics client from the App-server config."""
 
-    return AnalyticsEventsClientConfigProjection(
+    return AnalyticsEventsClient(
         auth_manager=auth_manager,
-        chatgpt_base_url=str(_field(config, "chatgpt_base_url", "")).rstrip("/"),
-        analytics_enabled=bool(_field(config, "analytics_enabled", False)),
+        base_url=str(_field(config, "chatgpt_base_url", "")).rstrip("/"),
+        analytics_enabled=_field(config, "analytics_enabled"),
     )
 
 
@@ -32,7 +26,4 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
-__all__ = [
-    "AnalyticsEventsClientConfigProjection",
-    "analytics_events_client_from_config_projection",
-]
+__all__ = ["analytics_events_client_from_config"]

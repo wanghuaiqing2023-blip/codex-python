@@ -1,4 +1,4 @@
-﻿import json
+import json
 import unittest
 import asyncio
 import base64
@@ -11,7 +11,7 @@ from unittest.mock import patch
 from pycodex.codex_api.endpoint.responses_websocket import ResponsesWebsocketMemoryStream, ResponsesWebsocketTextMessage
 from pycodex.codex_api.error import ApiError
 from pycodex.codex_client import TransportError
-from pycodex.core.http_transport import (
+from pycodex.core.client import (
     CODEX_EXEC_ORIGINATOR,
     CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR,
     HttpTransportConfig,
@@ -21,12 +21,12 @@ from pycodex.core.http_transport import (
     model_client_http_sampler,
     model_client_websocket_preferred_sampler,
     prewarm_model_client_websocket_session,
-    response_items_from_responses_payload,
-    run_user_turn_http_sampling_from_session,
     send_prepared_http_sampling_request,
 )
+from pycodex.codex_api.endpoint.responses import response_items_from_responses_payload
+from pycodex.core.session.turn.runtime import run_user_turn_http_sampling_from_session
 from pycodex.core.client import ModelClient
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session as CoreSession
 from pycodex.core.tools.context import FunctionToolOutput
 from pycodex.core.tools.registry import ToolRegistry
 from pycodex.core.tools.router import ToolRouter
@@ -135,7 +135,7 @@ def _run_sampler(sampler, request):
     )
 
 
-class Session:
+class SamplingSessionStub:
     def __init__(self) -> None:
         self.turn_context = type("TurnContext", (), {"model_info": None, "user_instructions": None, "cwd": "C:/work"})()
         self.history: list[ResponseItem] = []
@@ -1642,7 +1642,7 @@ class HttpTransportTests(unittest.TestCase):
                 opener=lambda _request: SseResponse(),
             )
 
-        self.assertEqual(caught.exception.kind, "response_stream_failed")
+        self.assertEqual(caught.exception.kind, "stream")
         self.assertIn("stream closed before response.completed", str(caught.exception))
 
     def test_send_prepared_http_sampling_request_ignores_completed_without_response_until_stream_closes(self) -> None:
@@ -1668,7 +1668,7 @@ class HttpTransportTests(unittest.TestCase):
                 opener=lambda _request: MissingResponseCompletedSseResponse(),
             )
 
-        self.assertEqual(caught.exception.kind, "response_stream_failed")
+        self.assertEqual(caught.exception.kind, "stream")
         self.assertIn("stream closed before response.completed", str(caught.exception))
 
     def test_send_prepared_http_sampling_request_errors_when_sse_closes_before_completed(self) -> None:
@@ -1697,7 +1697,7 @@ class HttpTransportTests(unittest.TestCase):
                 opener=lambda _request: DroppedSseResponse(),
             )
 
-        self.assertEqual(caught.exception.kind, "response_stream_failed")
+        self.assertEqual(caught.exception.kind, "stream")
         self.assertIn("stream closed before response.completed", str(caught.exception))
 
     def test_send_prepared_http_sampling_request_maps_sse_rate_limit_failed_to_stream_retry(self) -> None:
@@ -2246,7 +2246,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             sampler = model_client_http_sampler(
                 client.new_session(),
                 HttpTransportConfig("https://api.example.test/responses"),
@@ -2305,7 +2305,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             sampler = model_client_http_sampler(
                 client.new_session(),
                 HttpTransportConfig("https://api.example.test/responses"),
@@ -2366,7 +2366,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             sampler = model_client_http_sampler(
                 client.new_session(),
                 HttpTransportConfig("https://api.example.test/responses"),
@@ -2465,7 +2465,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             sampler = model_client_http_sampler(
                 client.new_session(),
                 transport_config(),
@@ -2526,7 +2526,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "is_azure_responses_endpoint": lambda: False,
@@ -2591,7 +2591,7 @@ class HttpTransportTests(unittest.TestCase):
                     "service_tier_for_request": lambda _self, tier: tier,
                 },
             )()
-            session = InMemoryCodexSession(
+            session = CoreSession(
                 "C:/work",
                 model_info=model_info,
                 session_source=SessionSource.subagent(SubAgentSource.other_source("guardian")),
@@ -2641,7 +2641,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "stream_max_retries": 1,
@@ -2701,7 +2701,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = InMemoryCodexSession("C:/work")
+            session = CoreSession("C:/work")
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "is_azure_responses_endpoint": lambda: False,
@@ -2773,7 +2773,7 @@ class HttpTransportTests(unittest.TestCase):
                 },
             )()
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = InMemoryCodexSession("C:/work", model_info=model_info)
+            session = CoreSession("C:/work", model_info=model_info)
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "is_azure_responses_endpoint": lambda: False,
@@ -2848,7 +2848,7 @@ class HttpTransportTests(unittest.TestCase):
                 thread_id="00000000-0000-0000-0000-000000000123",
                 installation_id="install",
             )
-            session = InMemoryCodexSession("C:/work", model_info=model_info)
+            session = CoreSession("C:/work", model_info=model_info)
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "is_azure_responses_endpoint": lambda: False,
@@ -2932,7 +2932,7 @@ class HttpTransportTests(unittest.TestCase):
                 thread_id="00000000-0000-0000-0000-000000000124",
                 installation_id="install",
             )
-            session = InMemoryCodexSession("C:/work", model_info=model_info)
+            session = CoreSession("C:/work", model_info=model_info)
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "is_azure_responses_endpoint": lambda: False,
@@ -3005,7 +3005,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "is_azure_responses_endpoint": lambda: False,
@@ -3077,7 +3077,7 @@ class HttpTransportTests(unittest.TestCase):
 
         async def run():
             client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
-            session = Session()
+            session = SamplingSessionStub()
             provider = {
                 "base_url": "https://api.example.test/v1",
                 "is_azure_responses_endpoint": lambda: False,
@@ -3115,4 +3115,5 @@ class HttpTransportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

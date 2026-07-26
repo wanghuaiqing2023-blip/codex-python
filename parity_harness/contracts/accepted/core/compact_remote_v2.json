@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.compact_remote_v2",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "compact_remote_v2",
+    "source": "codex/codex-rs/core/src/compact_remote_v2.rs",
+    "anchors": [
+      "run_inline_remote_auto_compact_task",
+      "run_remote_compact_task",
+      "MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES",
+      "RETAINED_MESSAGE_TOKEN_BUDGET",
+      "build_v2_compacted_history",
+      "collect_compaction_output",
+      "is_retained_for_remote_compaction_v2",
+      "log_remote_compaction_request_failure",
+      "message_text_token_count",
+      "run_remote_compact_task_inner",
+      "run_remote_compact_task_inner_impl",
+      "run_remote_compaction_request_v2"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/compact_remote_v2.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/compact_remote_v2.py"
+    ],
+    "anchors": [
+      "run_inline_remote_auto_compact_task",
+      "run_remote_compact_task",
+      "MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES",
+      "RETAINED_MESSAGE_TOKEN_BUDGET",
+      "build_v2_compacted_history",
+      "collect_compaction_output",
+      "is_retained_for_remote_compaction_v2",
+      "log_remote_compaction_request_failure",
+      "message_text_token_count",
+      "run_remote_compact_task_inner",
+      "run_remote_compact_task_inner_impl",
+      "run_remote_compaction_request_v2"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

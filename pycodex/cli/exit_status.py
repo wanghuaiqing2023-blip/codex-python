@@ -6,13 +6,14 @@ Ported from ``codex/codex-rs/cli/src/exit_status.rs``.
 from __future__ import annotations
 
 
-def exit_code_from_returncode(returncode: int | None) -> int:
+def handle_exit_status(returncode: int | None) -> int:
     """Return the Codex CLI process exit code for a subprocess return code.
 
     Rust's Unix implementation preserves normal process exit codes and maps
     signal termination to ``128 + signal``. Python represents signal
     termination as a negative return code, so ``-15`` maps to ``143``.
-    Missing status information falls back to ``1``.
+    Missing status information falls back to ``1``. The Python caller performs
+    the final process exit after its normal cleanup.
     """
 
     if returncode is None:

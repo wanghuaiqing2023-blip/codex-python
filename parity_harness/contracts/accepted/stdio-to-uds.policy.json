@@ -1,0 +1,13 @@
+{
+  "scope": "stdio-to-uds",
+  "rust_root": "codex/codex-rs/stdio-to-uds",
+  "python_root": "pycodex/stdio_to_uds",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "bin::codex-stdio-to-uds"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

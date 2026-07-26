@@ -7,9 +7,7 @@ from tempfile import TemporaryDirectory
 
 from pycodex.cli import (
     DebugSandboxConfigBuilderResult,
-    DebugSandboxPidTracker,
     ManagedRequirementsMode,
-    WINDOWS_STDIN_FORWARD_CHUNK_SIZE,
     build_debug_sandbox_config_load_plan,
     build_debug_sandbox_backend_args_plan,
     build_debug_sandbox_backend_args_from_plan,
@@ -32,14 +30,11 @@ from pycodex.cli import (
     build_debug_sandbox_windows_session_plan,
     build_debug_sandbox_windows_session_plan_from_config,
     cli_overrides_use_legacy_sandbox_mode,
-    collect_debug_sandbox_descendant_pids,
     collect_debug_sandbox_seatbelt_denials,
     config_uses_permission_profiles,
     debug_sandbox_child_arg0,
     debug_sandbox_child_env,
     debug_sandbox_child_spawn_plan_from_execution_plan,
-    debug_sandbox_list_child_pids,
-    debug_sandbox_pid_is_alive,
     debug_sandbox_seatbelt_env,
     debug_sandbox_subprocess_argv,
     execute_debug_sandbox_run_flow_plan,
@@ -47,7 +42,6 @@ from pycodex.cli import (
     format_debug_sandbox_denial_summary,
     format_debug_sandbox_network_proxy_error,
     loader_overrides_with_managed_requirements_mode,
-    parse_debug_sandbox_seatbelt_denial_message,
     raise_debug_sandbox_child_run_exit_status,
     raise_debug_sandbox_exit_status,
     run_debug_sandbox_backend_args_plan_with_exit_status,
@@ -66,6 +60,16 @@ from pycodex.cli import (
     should_default_legacy_config_to_read_only,
     start_debug_sandbox_network_proxy_plan,
     with_permissions_profile_override,
+)
+from pycodex.cli.debug_sandbox.pid_tracker import (
+    PidTracker,
+    list_child_pids,
+    pid_is_alive,
+    track_descendants,
+)
+from pycodex.cli.debug_sandbox.seatbelt import parse_message
+from pycodex.cli.debug_sandbox.windows_stdio_bridge import (
+    STDIN_FORWARD_CHUNK_SIZE,
     windows_output_forward_bytes,
     windows_stdin_forward_chunks,
 )
@@ -103,9 +107,9 @@ class CliDebugSandboxTests(unittest.TestCase):
 
     def test_pid_tracker_new_rejects_non_positive_root_like_rust(self) -> None:
         # Rust parity: codex-cli/src/debug_sandbox/pid_tracker.rs PidTracker::new.
-        self.assertIsNone(DebugSandboxPidTracker.new(0))
-        self.assertIsNone(DebugSandboxPidTracker.new(-1))
-        self.assertIsNotNone(DebugSandboxPidTracker.new(123))
+        self.assertIsNone(PidTracker.new(0))
+        self.assertIsNone(PidTracker.new(-1))
+        self.assertIsNotNone(PidTracker.new(123))
 
     def test_pid_tracker_collects_recursive_descendants_like_rust(self) -> None:
         # Rust parity: codex-cli/src/debug_sandbox/pid_tracker.rs track_descendants/add_pid_watch.
@@ -117,7 +121,7 @@ class CliDebugSandboxTests(unittest.TestCase):
         }
 
         self.assertEqual(
-            collect_debug_sandbox_descendant_pids(
+            track_descendants(
                 10,
                 list_children=lambda pid: children.get(pid, []),
                 is_alive=lambda pid: pid != 12,
@@ -125,21 +129,21 @@ class CliDebugSandboxTests(unittest.TestCase):
             {10, 11, 12, 13},
         )
         self.assertEqual(
-            collect_debug_sandbox_descendant_pids(0, list_children=lambda pid: [1]),
+            track_descendants(0, list_children=lambda pid: [1]),
             set(),
         )
 
     def test_pid_tracker_child_listing_boundary_is_platform_guarded(self) -> None:
         # Rust parity: codex-cli/src/debug_sandbox/pid_tracker.rs list_child_pids is macOS native.
-        self.assertFalse(debug_sandbox_pid_is_alive(0))
-        self.assertEqual(debug_sandbox_list_child_pids(10, platform="win32"), [])
+        self.assertFalse(pid_is_alive(0))
+        self.assertEqual(list_child_pids(10, platform="win32"), [])
 
         class Result:
             returncode = 0
             stdout = "11\nnot-a-pid\n12\n"
 
         self.assertEqual(
-            debug_sandbox_list_child_pids(
+            list_child_pids(
                 10,
                 platform="darwin",
                 runner=lambda *args, **kwargs: Result(),
@@ -273,11 +277,11 @@ class CliDebugSandboxTests(unittest.TestCase):
 
     def test_windows_stdin_forward_chunks_match_rust_forwarder_size(self) -> None:
         # Rust parity: codex-cli/src/debug_sandbox.rs windows_stdio_bridge::spawn_input_forwarder.
-        data = b"a" * WINDOWS_STDIN_FORWARD_CHUNK_SIZE + b"tail"
+        data = b"a" * STDIN_FORWARD_CHUNK_SIZE + b"tail"
 
         self.assertEqual(
             windows_stdin_forward_chunks(data),
-            [b"a" * WINDOWS_STDIN_FORWARD_CHUNK_SIZE, b"tail"],
+            [b"a" * STDIN_FORWARD_CHUNK_SIZE, b"tail"],
         )
         self.assertEqual(windows_stdin_forward_chunks(b""), [])
         with self.assertRaisesRegex(TypeError, "data must be bytes"):
@@ -1122,7 +1126,7 @@ class CliDebugSandboxTests(unittest.TestCase):
             codex_home="C:/codex",
             use_elevated=True,
         )
-        stdin = b"a" * WINDOWS_STDIN_FORWARD_CHUNK_SIZE + b"tail"
+        stdin = b"a" * STDIN_FORWARD_CHUNK_SIZE + b"tail"
 
         result = run_debug_sandbox_windows_session_io_bridge(
             plan,
@@ -1138,7 +1142,7 @@ class CliDebugSandboxTests(unittest.TestCase):
 
         self.assertEqual(
             result.stdin_chunks,
-            (b"a" * WINDOWS_STDIN_FORWARD_CHUNK_SIZE, b"tail"),
+            (b"a" * STDIN_FORWARD_CHUNK_SIZE, b"tail"),
         )
         self.assertEqual(result.stdout, b"output")
         self.assertEqual(result.stderr, b"error")
@@ -1152,7 +1156,7 @@ class CliDebugSandboxTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("write", b"a" * WINDOWS_STDIN_FORWARD_CHUNK_SIZE),
+                ("write", b"a" * STDIN_FORWARD_CHUNK_SIZE),
                 ("write", b"tail"),
                 ("close", None),
                 ("terminate", None),
@@ -1578,7 +1582,7 @@ class CliDebugSandboxTests(unittest.TestCase):
 
     def test_seatbelt_parse_message_matches_rust_regex(self) -> None:
         # Rust parity: codex-cli/src/debug_sandbox/seatbelt.rs parse_message.
-        parsed = parse_debug_sandbox_seatbelt_denial_message(
+        parsed = parse_message(
             "Sandbox: processname(1234) deny(1) file-read-data /tmp/secret"
         )
         self.assertIsNotNone(parsed)
@@ -1586,9 +1590,9 @@ class CliDebugSandboxTests(unittest.TestCase):
         self.assertEqual(parsed.pid, 1234)
         self.assertEqual(parsed.name, "processname")
         self.assertEqual(parsed.capability, "file-read-data /tmp/secret")
-        self.assertIsNone(parse_debug_sandbox_seatbelt_denial_message("not sandbox"))
+        self.assertIsNone(parse_message("not sandbox"))
         self.assertIsNone(
-            parse_debug_sandbox_seatbelt_denial_message(
+            parse_message(
                 "Sandbox: processname(not-a-pid) deny(1) file-read-data"
             )
         )

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-windows-sandbox.hide-users",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "hide_users",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/hide_users.rs",
+    "anchors": [
+      "USERLIST_KEY_PATH",
+      "hide_current_user_profile_dir",
+      "hide_newly_created_users"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/hide_users.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/hide_users.py"
+    ],
+    "anchors": [
+      "USERLIST_KEY_PATH",
+      "hide_current_user_profile_dir",
+      "hide_newly_created_users"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_command_runner.py",
+    "tests/test_windows_sandbox_setup_helper.py",
+    "tests/test_windows_sandbox_utility_modules.py"
+  ]
+}

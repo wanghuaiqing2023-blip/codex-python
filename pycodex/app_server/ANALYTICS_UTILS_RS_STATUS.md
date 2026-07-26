@@ -12,19 +12,18 @@ Status: `complete`
 
 ## Covered
 
-- `analytics_events_client_from_config_projection(...)` mirrors the
-  app-server-owned constructor argument shaping for
+- `analytics_events_client_from_config(...)` returns the production
+  `AnalyticsEventsClient` and mirrors the app-server-owned construction of
   `AnalyticsEventsClient::new(...)`: pass through the auth manager, trim all
   trailing `/` characters from `config.chatgpt_base_url`, and pass
   `config.analytics_enabled`.
-- The projection accepts object- and mapping-shaped configs so the current
-  runtime projections can share this module without depending on a concrete
-  `codex-core::Config` port.
+- Object- and mapping-shaped configs are accepted at the existing Python
+  `codex-core::Config` compatibility boundary.
 
 ## Deferred dependency/runtime boundaries
 
 - `AnalyticsEventsClient` queueing, event encoding, and transport behavior are
-  owned by the sibling `codex-analytics` crate and are not implemented here.
+  owned by the sibling `codex-analytics` crate.
 - Auth manager behavior and config loading remain owned by their respective
   crates/modules.
 
@@ -39,8 +38,5 @@ Status: `complete`
 
 ## Validation
 
-- 2026-06-19: `python -m pytest tests/test_app_server_analytics_utils_rs.py -q`
-  -> `2 passed`.
-- 2026-06-19: `python -m py_compile
-  pycodex/app_server/analytics_utils.py
-  tests/test_app_server_analytics_utils_rs.py`.
+- 2026-07-23: `python -B -m pytest -q
+  tests/test_app_server_analytics_utils_rs.py` -> `2 passed`.

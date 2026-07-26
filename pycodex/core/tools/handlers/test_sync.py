@@ -9,12 +9,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
+from pycodex.core.tools.handlers import test_sync_spec
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import ToolName
 
 JsonValue = Any
 
-TEST_SYNC_TOOL_NAME = "test_sync_tool"
 DEFAULT_TEST_SYNC_TIMEOUT_MS = 1_000
 
 _BARRIERS: dict[str, "_BarrierState"] = {}
@@ -116,54 +116,12 @@ class _ReusableBarrier:
             return 1
 
 
-def create_test_sync_tool() -> dict[str, JsonValue]:
-    return {
-        "type": "function",
-        "name": TEST_SYNC_TOOL_NAME,
-        "description": "Internal synchronization helper used by Codex integration tests.",
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "sleep_before_ms": {
-                    "type": "number",
-                    "description": "Optional delay in milliseconds before any other action",
-                },
-                "sleep_after_ms": {
-                    "type": "number",
-                    "description": "Optional delay in milliseconds after completing the barrier",
-                },
-                "barrier": {
-                    "type": "object",
-                    "properties": {
-                        "id": {
-                            "type": "string",
-                            "description": "Identifier shared by concurrent calls that should rendezvous",
-                        },
-                        "participants": {
-                            "type": "number",
-                            "description": "Number of tool calls that must arrive before the barrier opens",
-                        },
-                        "timeout_ms": {
-                            "type": "number",
-                            "description": "Maximum time in milliseconds to wait at the barrier",
-                        },
-                    },
-                    "required": ["id", "participants"],
-                    "additionalProperties": False,
-                },
-            },
-            "additionalProperties": False,
-        },
-    }
-
-
 class TestSyncHandler:
     def tool_name(self) -> ToolName:
-        return ToolName.plain(TEST_SYNC_TOOL_NAME)
+        return ToolName.plain(test_sync_spec.TEST_SYNC_TOOL_NAME)
 
     def spec(self) -> dict[str, JsonValue]:
-        return create_test_sync_tool()
+        return test_sync_spec.create_test_sync_tool()
 
     def supports_parallel_tool_calls(self) -> bool:
         return True
@@ -279,11 +237,9 @@ def _ensure_usize(value: JsonValue, field_name: str) -> int:
 
 __all__ = [
     "DEFAULT_TEST_SYNC_TIMEOUT_MS",
-    "TEST_SYNC_TOOL_NAME",
     "BarrierArgs",
     "TestSyncArgs",
     "TestSyncHandler",
-    "create_test_sync_tool",
     "parse_test_sync_arguments",
     "wait_on_barrier",
 ]

@@ -1,0 +1,11 @@
+{
+  "scope": "app-server-test-client",
+  "rust_root": "codex/codex-rs/app-server-test-client",
+  "python_root": "pycodex/app_server_test_client",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

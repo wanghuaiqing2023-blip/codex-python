@@ -449,7 +449,7 @@ def _protocol_source(source: Any) -> ConfigLayerSource:
 
 
 def _state_user_source(config_toml: Path | str) -> Any:
-    from pycodex.network_proxy import ConfigLayerSource as StateConfigLayerSource
+    from pycodex.app_server_protocol.config import ConfigLayerSource as StateConfigLayerSource
 
     return StateConfigLayerSource.user(Path(config_toml), None)
 

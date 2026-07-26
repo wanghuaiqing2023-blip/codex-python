@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.landlock",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "landlock",
+    "source": "codex/codex-rs/core/src/landlock.rs",
+    "anchors": [
+      "spawn_command_under_linux_sandbox"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/landlock.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/landlock.py"
+    ],
+    "anchors": [
+      "spawn_command_under_linux_sandbox"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

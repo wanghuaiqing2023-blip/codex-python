@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.config.edit",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "config::edit",
+    "source": "codex/codex-rs/core/src/config/edit.rs",
+    "anchors": [
+      "ConfigEdit",
+      "ConfigEditsBuilder",
+      "apply",
+      "apply_blocking",
+      "clear_legacy_windows_sandbox_keys",
+      "for_config",
+      "for_config_path",
+      "keymap_binding_clear_edit",
+      "keymap_binding_edit",
+      "keymap_bindings_edit",
+      "model_availability_nux_count_edits",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/config/edit/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/config/edit/__init__.py"
+    ],
+    "anchors": [
+      "ConfigEdit",
+      "ConfigEditsBuilder",
+      "apply",
+      "apply_blocking",
+      "clear_legacy_windows_sandbox_keys",
+      "for_config",
+      "for_config_path",
+      "keymap_binding_clear_edit",
+      "keymap_binding_edit",
+      "keymap_bindings_edit",
+      "model_availability_nux_count_edits",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -22,6 +22,25 @@ def _skill(path: Path, name: str) -> None:
     path.write_text(f"---\nname: {name}\ndescription: {name}\n---\n", encoding="utf-8")
 
 
+def test_product_session_services_owns_model_client(tmp_path: Path, monkeypatch) -> None:
+    # Rust: codex-core::state::service::SessionServices owns the ModelClient
+    # used by session::turn to activate the WebSocket-to-HTTP fallback.
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=tmp_path)
+    model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+    model_client = ModelClient(
+        session_id="session",
+        thread_id=str(uuid4()),
+        installation_id="install",
+    )
+
+    session = create_exec_core_session(config, model_info, model_client=model_client)
+
+    assert session.services.model_client is model_client
+
+
 @pytest.mark.asyncio
 async def test_product_session_turn_context_carries_provider_capabilities_and_auth_manager(
     tmp_path: Path,

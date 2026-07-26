@@ -433,7 +433,9 @@ async def _account_before_external_mutation(session: Any) -> None:
             allow_budget_limit_steering=False,
         )
         return
-    state_db = await require_state_db_for_thread_goals(session)
+    state_db = await state_db_for_thread_goals(session)
+    if state_db is None:
+        return
     await account_thread_goal_wall_clock_usage(session, state_db)
 
 
@@ -491,7 +493,9 @@ async def _maybe_schedule_goal_continuation(session: Any) -> None:
         return
     if await _session_ignores_goals(session):
         return
-    state_db = await require_state_db_for_thread_goals(session)
+    state_db = await state_db_for_thread_goals(session)
+    if state_db is None:
+        return
     goals = _thread_goals(state_db)
     state_goal = await _maybe_await(_call_required(goals, "get_thread_goal", _thread_id(session)))
     if state_goal is None or state_goal.status is not StateThreadGoalStatus.ACTIVE:
@@ -537,7 +541,9 @@ def _external_set_previous_goal(external_set: Any) -> Any:
 async def _restore_thread_goal_runtime_after_resume(session: Any) -> None:
     if await _session_ignores_goals(session):
         return
-    state_db = await require_state_db_for_thread_goals(session)
+    state_db = await state_db_for_thread_goals(session)
+    if state_db is None:
+        return
     state_goal = await _maybe_await(
         _call_required(_thread_goals(state_db), "get_thread_goal", _thread_id(session))
     )
@@ -594,6 +600,20 @@ async def require_state_db_for_thread_goals(session: Any) -> Any:
     method = getattr(session, "require_state_db_for_thread_goals", None)
     if callable(method):
         return await _maybe_await(method())
+    state_db = await state_db_for_thread_goals(session)
+    if state_db is None:
+        raise RuntimeError("thread goals require a persisted thread; this thread is ephemeral")
+    return state_db
+
+
+async def state_db_for_thread_goals(session: Any) -> Any | None:
+    method = getattr(session, "state_db_for_thread_goals", None)
+    if callable(method):
+        return await _maybe_await(method())
+    config = getattr(session, "session_config", None)
+    ephemeral = config.get("ephemeral") if isinstance(config, dict) else getattr(config, "ephemeral", None)
+    if ephemeral is True:
+        return None
     runtime = _goal_runtime(session)
     if runtime.state_db is not None:
         return runtime.state_db

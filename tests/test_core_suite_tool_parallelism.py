@@ -11,7 +11,7 @@ from pycodex.core.tools.registry import ToolRegistry
 from pycodex.core.tools.router import ToolRouter, build_tool_call
 from pycodex.protocol import ContentItem, ResponseItem, ToolName, UserInput
 
-from test_core_turn_runtime import ParallelEchoHandler, Session
+from test_core_turn_runtime import ParallelEchoHandler, TurnSessionStub as Session
 
 
 class ParallelBarrierHandler:

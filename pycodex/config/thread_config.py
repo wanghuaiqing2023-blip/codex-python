@@ -10,7 +10,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pycodex.network_proxy import ConfigLayerEntry, ConfigLayerSource
+from pycodex.app_server_protocol.config import ConfigLayerSource
+from pycodex.config.state import ConfigLayerEntry
 
 JsonValue = Any
 REMOTE_THREAD_CONFIG_LOAD_TIMEOUT_SECONDS = 5

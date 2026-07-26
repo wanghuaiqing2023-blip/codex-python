@@ -6,10 +6,15 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from queue import Queue
 from types import SimpleNamespace
 from typing import Any
 
 from pycodex.app_server_protocol.account import GetAccountRateLimitsResponse, RateLimitSnapshot, RateLimitWindow
+from pycodex.app_server_protocol.item import (
+    ToolRequestUserInputAnswer,
+    ToolRequestUserInputResponse,
+)
 from pycodex.app_server_protocol import ThreadGoalStatus as AppThreadGoalStatus
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
@@ -30,6 +35,7 @@ from pycodex.protocol import (
     ModeKind,
     PermissionProfile,
     Personality,
+    PlanItem,
     NetworkPermissions,
     NetworkApprovalContext,
     NetworkApprovalProtocol,
@@ -45,6 +51,7 @@ from pycodex.protocol import (
     ReviewTarget,
     TurnItem,
     UpdatePlanArgs,
+    WindowsSandboxLevel,
 )
 from pycodex.protocol.request_permissions import (
     PermissionGrantScope,
@@ -58,6 +65,11 @@ from pycodex.protocol.approvals import (
     GuardianAssessmentEvent,
     GuardianAssessmentStatus,
     GuardianCommandSource,
+)
+from pycodex.protocol.request_user_input import (
+    RequestUserInputEvent,
+    RequestUserInputQuestion,
+    RequestUserInputQuestionOption,
 )
 from pycodex.tui.app.runtime import (
     CoreExecActiveThreadRuntime,
@@ -88,6 +100,13 @@ from pycodex.tui.bottom_pane.mcp_server_elicitation import McpServerElicitationV
 from pycodex.tui.bottom_pane.view_stack import TerminalBottomPaneViewState
 from pycodex.tui.app_event_sender import AppEventSender
 from pycodex.tui.chatwidget.protocol import ServerNotification, ServerRequest
+from pycodex.tui.chatwidget.input_restore import ThreadInputState
+from pycodex.tui.chatwidget.plan_implementation import (
+    PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX,
+    PLAN_IMPLEMENTATION_CODING_MESSAGE,
+    selection_view_params,
+)
+from pycodex.tui.collaboration_modes import default_mode_mask, plan_mask
 from pycodex.tui.status.card import new_status_output_with_rate_limits_handle
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 
@@ -98,6 +117,23 @@ def _jwt_with_claims(claims: dict[str, object]) -> str:
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
     return f"{encode_json({'alg': 'none', 'typ': 'JWT'})}.{encode_json(claims)}.sig"
+
+
+def test_open_agent_picker_event_opens_multi_agent_enable_prompt_when_disabled() -> None:
+    # Rust: app::session_lifecycle::open_agent_picker checks Feature::Collab
+    # before showing the agent picker.
+    active = ExecFunctionActiveThreadRuntime(lambda _prompt: 0)
+    active.features = SimpleNamespace(enabled=lambda _feature: False)
+    app = TuiAppRuntime(active)
+    shown: list[object] = []
+    app.bind_active_view_sink(shown.append)
+
+    plan = app.handle_app_event(AppEvent.open_agent_picker())
+
+    assert plan.action == "open_agent_picker"
+    assert len(shown) == 1
+    assert shown[0].title == "Enable subagents?"
+    assert [item.name for item in shown[0].items] == ["Yes, enable", "Not now"]
 
 
 def test_core_active_thread_applies_override_turn_context_without_user_turn() -> None:
@@ -134,6 +170,120 @@ def test_core_active_thread_applies_override_turn_context_without_user_turn() ->
     assert session_config.approval_policy is AskForApproval.NEVER
     assert session_config.permission_profile.type == "disabled"
     assert session_config.active_permission_profile == active
+
+
+def test_status_line_setup_persists_and_refreshes_live_runtime(tmp_path: Path) -> None:
+    # Rust source: codex-tui/src/app/event_dispatch.rs
+    # AppEvent::StatusLineSetup persists both edits, updates Config, and calls
+    # ChatWidget::setup_status_line before the view closes.
+    from pycodex.core.config.edit import read_toml_mapping
+    from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
+
+    active = ExecFunctionActiveThreadRuntime(lambda _prompt: 0)
+    active.session_config = SimpleNamespace(
+        codex_home=tmp_path,
+        config_layer_stack=None,
+        tui_status_line=["model"],
+        tui_status_line_use_colors=True,
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active)
+
+    plan = runtime.handle_app_event(
+        AppEvent(
+            "StatusLineSetup",
+            {
+                "items": [
+                    StatusLineItem.MODEL_WITH_REASONING,
+                    StatusLineItem.CURRENT_DIR,
+                ],
+                "use_theme_colors": False,
+            },
+        )
+    )
+
+    assert plan.action == "setup_status_line"
+    assert active.session_config.tui_status_line == [
+        "model-with-reasoning",
+        "current-dir",
+    ]
+    assert active.session_config.tui_status_line_use_colors is False
+    assert runtime.chat_widget.config.tui_status_line == [
+        "model-with-reasoning",
+        "current-dir",
+    ]
+    assert runtime.chat_widget.config.tui_status_line_use_colors is False
+    saved = read_toml_mapping(tmp_path / "config.toml")
+    assert saved["tui"]["status_line"] == [
+        "model-with-reasoning",
+        "current-dir",
+    ]
+    assert saved["tui"]["status_line_use_colors"] is False
+
+
+def test_startup_sync_projects_status_line_config_into_chatwidget() -> None:
+    # Rust source: chatwidget::constructor receives the loaded Config and
+    # refresh_status_surfaces reads tui.status_line from that same object.
+    active = ExecFunctionActiveThreadRuntime(lambda _prompt: 0)
+    active.session_config = SimpleNamespace(
+        tui_status_line=["context-used"],
+        tui_status_line_use_colors=True,
+        tui_terminal_title=["project-name"],
+    )
+
+    runtime = TuiAppRuntime(active_thread_runtime=active)
+
+    assert runtime.chat_widget.config.tui_status_line == ["context-used"]
+    assert runtime.chat_widget.config.tui_status_line_use_colors is True
+    assert runtime.chat_widget.config.tui_terminal_title == ["project-name"]
+
+
+def test_startup_sync_installs_configured_runtime_keymap() -> None:
+    """Rust chatwidget::constructor installs Config.tui_keymap for app::input."""
+
+    active = ExecFunctionActiveThreadRuntime(lambda _prompt: 0)
+    active.session_config = SimpleNamespace(
+        tui_keymap={
+            "global": {
+                "open_external_editor": "f12",
+                "toggle_vim_mode": "ctrl-g",
+            }
+        }
+    )
+
+    runtime = TuiAppRuntime(active_thread_runtime=active)
+
+    assert runtime.runtime_keymap.app.open_external_editor[0].code == "F12"
+    assert runtime.runtime_keymap.app.toggle_vim_mode[0].code == "g"
+    assert runtime.runtime_keymap.app.toggle_vim_mode[0].modifiers == frozenset({"CONTROL"})
+    assert runtime.chat_widget.runtime_keymap is runtime.runtime_keymap
+
+
+def test_unqualified_startup_fork_queues_rust_fork_picker(tmp_path: Path) -> None:
+    # Rust source: lib.rs runs resume_picker::run_fork_picker_with_app_server
+    # for `codex fork` without an id or --last.
+    row = SimpleNamespace(
+        thread_id="11111111-2222-4333-8444-555555555555",
+        thread_name="Seeded resume picker prompt",
+        cwd=tmp_path,
+    )
+
+    class Runtime:
+        session_config = SimpleNamespace()
+
+        def list_resume_threads(self):
+            return (row,)
+
+    runtime = TuiAppRuntime(
+        Runtime(),
+        cwd=tmp_path,
+        startup_session_action="fork",
+    )
+
+    assert len(runtime.pending_active_views) == 1
+    view = runtime.pending_active_views[0]
+    assert view.title == "Fork a previous session"
+    assert view.view_id == "fork-session-picker"
+    assert view.items[0].name == "Seeded resume picker prompt"
 
 
 def test_core_active_thread_applies_override_to_frozen_exec_session_config() -> None:
@@ -273,6 +423,98 @@ def test_permission_menu_selection_updates_concrete_core_permission_profiles() -
         assert app.submitted_ops[-1].kind == "OverrideTurnContext"
         assert app.submitted_ops[-1].payload["permission_profile"] == expected_profile
         assert app.submitted_ops[-1].payload["approvals_reviewer"] is ApprovalsReviewer.USER
+
+
+def test_permission_profile_selection_starts_windows_world_writable_audit(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # Fixed Rust baseline 1c7832f:
+    # app::event_dispatch runs app::platform_actions::spawn_world_writable_scan
+    # after applying a managed profile while Windows sandboxing is enabled.
+    calls: list[tuple[Path, Path, PermissionProfile]] = []
+
+    def fake_spawn(cwd, _env, logs_base_dir, permission_profile, _tx):
+        calls.append((Path(cwd), Path(logs_base_dir), permission_profile))
+        return SimpleNamespace(action="spawn_blocking_world_writable_scan")
+
+    monkeypatch.setattr(
+        "pycodex.tui.app.runtime.platform_actions.spawn_world_writable_scan",
+        fake_spawn,
+    )
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=tmp_path,
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=PermissionProfile.read_only(),
+            windows_sandbox_level=WindowsSandboxLevel.RESTRICTED_TOKEN,
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path / ".codex",
+    )
+    app = TuiAppRuntime(runtime)
+    assert calls == [
+        (tmp_path, tmp_path / ".codex", PermissionProfile.read_only())
+    ]
+    calls.clear()
+
+    app.apply_permission_profile_selection(
+        PermissionProfileSelection(
+            profile_id=":read-only",
+            approval_policy="on-request",
+            approvals_reviewer="user",
+            display_label="Read Only",
+        )
+    )
+
+    assert calls == [
+        (tmp_path, tmp_path / ".codex", PermissionProfile.read_only())
+    ]
+    assert app.world_writable_scan_plans[-1].action == "spawn_blocking_world_writable_scan"
+
+
+def test_world_writable_scan_failure_event_opens_warning_view(
+    tmp_path: Path,
+) -> None:
+    # Fixed Rust baseline 1c7832f:
+    # platform_actions sends AppEvent::OpenWorldWritableWarningConfirmation,
+    # and app::event_dispatch delegates it to the chatwidget warning surface.
+    from pycodex.tui.app.platform_actions import send_world_writable_scan_failed
+
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+            permission_profile=PermissionProfile.read_only(),
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path / ".codex",
+    )
+    app = TuiAppRuntime(runtime)
+
+    send_world_writable_scan_failed(app.app_event_sender)
+    app.drain_app_events()
+
+    assert app.pending_active_views
+    view = app.pending_active_views[-1]
+    assert "couldn't complete the world-writable scan" in str(view.header)
+    assert [item.name for item in view.items] == [
+        "Continue",
+        "Continue and don't warn again",
+    ]
+    for event in view.items[1].actions:
+        app.handle_app_event(event)
+    assert app.chat_widget.config.notices.hide_world_writable_warning is True
+    assert "hide_world_writable_warning = true" in (
+        tmp_path / ".codex" / "config.toml"
+    ).read_text(encoding="utf-8")
 
 
 def test_app_runtime_flushes_queued_info_history_cells_to_bound_sink() -> None:
@@ -1867,6 +2109,25 @@ def test_core_exec_session_lifecycle_new_resume_and_fork_change_real_thread_stat
                         "payload": user_item.to_mapping(),
                     }
                 ),
+                json.dumps(
+                    {
+                        "timestamp": timestamp,
+                        "type": "turn_context",
+                        "payload": {
+                            "cwd": str(tmp_path),
+                            "approval_policy": "never",
+                            "sandbox_policy": {"type": "read-only"},
+                            "model": "gpt-test",
+                            "collaboration_mode": {
+                                "mode": "plan",
+                                "settings": {
+                                    "model": "gpt-test",
+                                    "reasoning_effort": "high",
+                                },
+                            },
+                        },
+                    }
+                ),
             )
         )
         + "\n",
@@ -1888,7 +2149,13 @@ def test_core_exec_session_lifecycle_new_resume_and_fork_change_real_thread_stat
     assert resumed == saved_id
     assert model_client.state.thread_id == saved_id
     assert active._model_history_snapshot() == (user_item,)
+    assert active._resumed_reference_context_item is not None
+    assert active._resumed_reference_context_item.collaboration_mode.mode is ModeKind.PLAN
     assert sink_threads[-1] == saved_id
+    # Rust app_server_session::thread_session_state_from_thread_resume_response
+    # intentionally does not restore the historical turn's collaboration mode.
+    assert app.chat_widget.active_mode_kind() is ModeKind.DEFAULT
+    assert app.user_turn_command("continue planning").payload["collaboration_mode"].mode is ModeKind.DEFAULT
 
     forked = app.fork_current_session()
     assert forked not in {"old", saved_id}
@@ -1904,17 +2171,176 @@ def test_core_exec_session_lifecycle_new_resume_and_fork_change_real_thread_stat
     assert sink_threads[-1] == fresh
 
 
+def test_startup_resume_last_installs_latest_session_for_current_cwd(tmp_path) -> None:
+    # Rust owners: cli::finalize_resume_interactive and app::session_lifecycle.
+    # ``resume --last`` is consumed before the terminal loop starts rather than
+    # being retained as inert launch metadata.
+    expected = SimpleNamespace(
+        thread_id="current-cwd-thread",
+        rollout_path=tmp_path / "current.jsonl",
+        cwd=tmp_path,
+    )
+    other = SimpleNamespace(
+        thread_id="other-cwd-thread",
+        rollout_path=tmp_path / "other.jsonl",
+        cwd=tmp_path / "other",
+    )
+
+    class LifecycleRuntime:
+        def __init__(self) -> None:
+            self.resumed = None
+            self.include_non_interactive = None
+
+        def list_resume_threads(self, *, include_non_interactive=False):
+            self.include_non_interactive = include_non_interactive
+            return (other, expected)
+
+        def resume_thread_target(self, target):
+            self.resumed = target
+            return SimpleNamespace(
+                thread_id=target.thread_id,
+                session=SimpleNamespace(
+                    thread_id=target.thread_id,
+                    cwd=target.cwd,
+                    rollout_path=target.rollout_path,
+                    collaboration_mode=None,
+                ),
+                turns=(),
+            )
+
+        def submit_thread_op(self, _thread_id, _op):
+            return QueueActiveThreadEventStream(Queue())
+
+    runtime = LifecycleRuntime()
+    app = TuiAppRuntime(
+        runtime,
+        cwd=tmp_path,
+        startup_session_action="resume",
+        startup_session_last=True,
+    )
+
+    assert runtime.resumed is expected
+    assert runtime.include_non_interactive is False
+    assert app.current_displayed_thread_id() == expected.thread_id
+    assert app.startup_session_selected_path == expected.rollout_path
+
+
 def test_plan_mode_is_carried_by_the_next_terminal_user_turn() -> None:
     runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: "ok")
     app = TuiAppRuntime(runtime, cwd=Path("C:/repo"))
 
-    mode = app.activate_plan_mode()
+    mask = plan_mask(None)
+    assert mask is not None
+    app.chat_widget.set_collaboration_mask_from_user_action(mask)
+    mode = app.chat_widget.effective_collaboration_mode()
+    app.drain_app_events()
     app.submit_user_turn("inspect the parser")
 
     op = app.submitted_ops[-1]
     assert mode.mode.value == "plan"
     assert op.payload["collaboration_mode"] == mode
     assert user_turn_prompt(op) == "inspect the parser"
+
+
+def test_replay_thread_snapshot_restores_plan_collaboration_mode_without_input() -> None:
+    # Rust test: app::tests::replay_thread_snapshot_restores_collaboration_mode_without_input.
+    # app::thread_routing must invoke chatwidget::input_restore before replaying
+    # turns so a resumed thread's next UserTurn remains in Plan mode.
+    app = TuiAppRuntime(ExecFunctionActiveThreadRuntime(lambda _prompt: "ok"), cwd=Path("C:/repo"))
+    restored_mask = plan_mask(None)
+    assert restored_mask is not None
+    restored_mode = CollaborationMode(
+        mode=ModeKind.PLAN,
+        settings=Settings(model="gpt-restored", reasoning_effort=ReasoningEffort.HIGH),
+    )
+    snapshot = ThreadEventSnapshot(
+        input_state=ThreadInputState(
+            current_collaboration_mode=restored_mode,
+            active_collaboration_mask=restored_mask,
+        )
+    )
+
+    app.replay_thread_snapshot(snapshot)
+
+    assert app.chat_widget.active_mode_kind() is ModeKind.PLAN
+    assert app.active_collaboration_mode.mode is ModeKind.PLAN
+    resumed_turn = app.user_turn_command("continue planning")
+    assert resumed_turn.payload["collaboration_mode"].mode is ModeKind.PLAN
+
+
+def test_plan_implementation_default_action_uses_app_event_fifo() -> None:
+    # Rust owners:
+    # - chatwidget::plan_implementation::selection_view_params
+    # - chatwidget::input_flow::submit_user_message_with_mode
+    # - app::event_dispatch::AppEvent::CodexOp
+    runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: "ok")
+    app = TuiAppRuntime(runtime, cwd=Path("C:/repo"))
+    app.bind_codex_op_sink(app.submit_op)
+    plan = plan_mask(None)
+    default = default_mode_mask(None)
+    assert plan is not None and default is not None
+    app.chat_widget.set_collaboration_mask_from_user_action(plan)
+    app.drain_app_events()
+    app.submitted_ops.clear()
+
+    params = selection_view_params(default, "- Inspect\n- Implement", None)
+    params.items[0].actions[0](app.app_event_sender)
+    app.drain_app_events()
+
+    assert [op.kind for op in app.submitted_ops] == ["OverrideTurnContext", "UserTurn"]
+    override, user_turn = app.submitted_ops
+    assert override.payload["collaboration_mode"].mode is ModeKind.DEFAULT
+    assert user_turn.payload["collaboration_mode"].mode is ModeKind.DEFAULT
+    assert user_turn_prompt(user_turn) == PLAN_IMPLEMENTATION_CODING_MESSAGE
+
+
+def test_codex_op_dispatch_uses_bound_product_turn_sink() -> None:
+    # Rust app::event_dispatch owns AppEvent::CodexOp. It must reach the bound
+    # product turn runner rather than the bottom-pane helper that only returns
+    # an event stream to direct approval callers.
+    app = TuiAppRuntime(ExecFunctionActiveThreadRuntime(lambda _prompt: "ok"), cwd=Path("C:/repo"))
+    dispatched: list[AppCommand] = []
+    app.bind_codex_op_sink(dispatched.append)
+    op = AppCommand.interrupt()
+
+    app.dispatch_app_event(AppEvent.of("CodexOp", op=op))
+
+    assert dispatched == [op]
+
+
+def test_plan_implementation_clear_context_action_submits_on_fresh_thread() -> None:
+    # Rust owner: app::event_dispatch::ClearUiAndSubmitUserMessage starts a new
+    # resumable thread and carries the approved plan as its initial user input.
+    class LifecycleRuntime:
+        def __init__(self) -> None:
+            self.submitted = []
+            self.thread_id = "old-thread"
+
+        def submit_thread_op(self, thread_id, op):
+            self.submitted.append((str(thread_id), op))
+            return QueueActiveThreadEventStream(Queue())
+
+        def start_new_thread(self):
+            return SimpleNamespace(thread_id="fresh-thread", turns=[])
+
+    runtime = LifecycleRuntime()
+    app = TuiAppRuntime(runtime, thread_id="old-thread", cwd=Path("C:/repo"))
+    app.bind_codex_op_sink(app.submit_op)
+    default = default_mode_mask(None)
+    assert default is not None
+    params = selection_view_params(default, "- Inspect\n- Implement", "42% used")
+
+    params.items[1].actions[0](app.app_event_sender)
+    app.drain_app_events()
+
+    assert app.current_displayed_thread_id() == "fresh-thread"
+    assert len(runtime.submitted) == 1
+    target_thread, user_turn = runtime.submitted[0]
+    assert target_thread == "fresh-thread"
+    assert user_turn.kind == "UserTurn"
+    prompt = user_turn_prompt(user_turn)
+    assert prompt.startswith(PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX)
+    assert prompt.endswith("- Inspect\n- Implement")
 
 
 def test_core_exec_active_thread_runtime_message_history_metadata_lookup_and_append(tmp_path) -> None:
@@ -2994,7 +3420,11 @@ def test_core_exec_active_thread_runtime_does_not_map_model_function_call_to_com
         if event.kind == "TurnCompleted":
             break
 
-    assert [event.kind for event in events] == ["TurnStarted", "TurnCompleted"]
+    assert [event.kind for event in events] == [
+        "TurnStarted",
+        "RawResponseItemCompleted",
+        "TurnCompleted",
+    ]
 
 
 def test_core_exec_active_thread_runtime_preserves_reasoning_summary_config(monkeypatch) -> None:
@@ -3053,16 +3483,11 @@ def test_core_exec_active_thread_runtime_preserves_reasoning_summary_config(monk
     assert seen["model_reasoning_summary"] == "none"
 
 
-def test_core_exec_active_thread_runtime_maps_done_only_assistant_item_to_chatwidget(monkeypatch) -> None:
+def test_core_exec_active_thread_runtime_keeps_raw_response_item_out_of_chatwidget(monkeypatch) -> None:
     # Rust source/test contract:
-    # - codex-rs/core/src/session/turn.rs::ResponseEvent::OutputItemDone
-    #   calls handle_output_item_done, which emits a completed
-    #   TurnItem::AgentMessage for assistant messages.
-    # - tests/test_core_stream_events_utils.py::
-    #   test_handle_output_item_done_records_non_tool_item_and_emits_turn_items
-    #   proves the Rust-derived core contract in Python.
-    # - codex-tui::app must project that same response_output_item_done event
-    #   into ItemCompleted(AgentMessage), not only into tool lifecycle events.
+    # Rust app-server maps EventMsg::RawResponseItem to
+    # RawResponseItemCompleted, and codex-tui::chatwidget::protocol ignores it.
+    # Canonical ItemCompleted events come from the core item lifecycle instead.
     async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
         observer = kwargs["session_event_observer"]
         observer(
@@ -3100,10 +3525,9 @@ def test_core_exec_active_thread_runtime_maps_done_only_assistant_item_to_chatwi
         if event.kind == "TurnCompleted":
             break
 
-    assert [event.kind for event in events] == ["TurnStarted", "ItemCompleted", "TurnCompleted"]
-    assert events[1].payload["item"]["kind"] == "AgentMessage"
-    assert events[1].payload["item"]["content"][0]["text"] == "done-only assistant answer"
-    assert app_runtime.chat_widget.assistant_text() == "done-only assistant answer"
+    assert [event.kind for event in events] == ["TurnStarted", "RawResponseItemCompleted", "TurnCompleted"]
+    assert events[1].payload["item"]["type"] == "message"
+    assert app_runtime.chat_widget.assistant_text() == ""
 
 
 def test_core_exec_active_thread_runtime_exposes_model_client_thread_identity() -> None:
@@ -4157,13 +4581,14 @@ def test_core_exec_active_thread_runtime_surfaces_exec_command_item_before_agent
 
     assert [event.kind for event in events] == [
         "TurnStarted",
+        "RawResponseItemCompleted",
         "ItemStarted",
         "ItemCompleted",
         "AgentMessageDelta",
         "TurnCompleted",
     ]
-    started_item = events[1].payload["item"]
-    completed_item = events[2].payload["item"]
+    started_item = events[2].payload["item"]
+    completed_item = events[3].payload["item"]
     assert started_item["kind"] == "CommandExecution"
     assert started_item["command"] == "Get-Content README.md"
     assert str(started_item["cwd"]) == "C:\\repo"
@@ -4298,6 +4723,137 @@ def test_session_event_mapper_accepts_dict_item_completed_agent_message() -> Non
     assert notifications[0].kind == "ItemCompleted"
     assert notifications[0].payload["item"]["kind"] == "AgentMessage"
     assert notifications[0].payload["item"]["content"][0]["text"] == "done-only answer"
+
+
+def test_session_event_mapper_preserves_dict_agent_and_plan_deltas() -> None:
+    # Rust sources:
+    # - codex-core/src/session/turn.rs::PlanStreamState::push_delta
+    # - codex-app-server/src/bespoke_event_handling.rs::EventMsg::PlanDelta
+    agent = _server_notifications_from_session_event(
+        {
+            "type": "agent_message_content_delta",
+            "thread_id": "thread-live",
+            "turn_id": "turn-live",
+            "item_id": "message-1",
+            "delta": "Visible answer",
+        },
+        thread_id="thread-fallback",
+        turn_id="turn-fallback",
+    )
+    plan = _server_notifications_from_session_event(
+        {
+            "type": "plan_delta",
+            "thread_id": "thread-live",
+            "turn_id": "turn-live",
+            "item_id": "plan-1",
+            "delta": "- Inspect the parser\n",
+        },
+        thread_id="thread-fallback",
+        turn_id="turn-fallback",
+    )
+
+    assert agent == (
+        ServerNotification(
+            "AgentMessageDelta",
+            {
+                "delta": "Visible answer",
+                "item_id": "message-1",
+                "thread_id": "thread-live",
+                "turn_id": "turn-live",
+            },
+        ),
+    )
+    assert plan == (
+        ServerNotification(
+            "PlanDelta",
+            {
+                "delta": "- Inspect the parser\n",
+                "item_id": "plan-1",
+                "thread_id": "thread-live",
+                "turn_id": "turn-live",
+            },
+        ),
+    )
+
+
+def test_session_request_user_input_maps_through_app_server_request() -> None:
+    # Rust source: codex-app-server/src/bespoke_event_handling.rs maps
+    # EventMsg::RequestUserInput to ToolRequestUserInput with core identities.
+    question = RequestUserInputQuestion(
+        id="approach",
+        header="Approach",
+        question="Which implementation approach?",
+        options=(
+            RequestUserInputQuestionOption(
+                "Direct implementation",
+                "Implement the plan now.",
+            ),
+        ),
+    )
+
+    requests = _server_notifications_from_session_event(
+        SimpleNamespace(
+            type="request_user_input",
+            payload=RequestUserInputEvent(
+                call_id="call-input",
+                turn_id="turn-input",
+                questions=(question,),
+            ),
+        ),
+        thread_id="thread-input",
+        turn_id="turn-fallback",
+    )
+
+    assert requests == (
+        ServerRequest(
+            "ToolRequestUserInput",
+            id="call-input",
+            request_id="call-input",
+            params={
+                "thread_id": "thread-input",
+                "turn_id": "turn-input",
+                "item_id": "call-input",
+                "questions": [question.to_mapping()],
+            },
+        ),
+    )
+
+
+def test_core_active_thread_routes_user_input_answer_to_existing_session() -> None:
+    # Rust source: codex-core/src/session/handlers.rs::request_user_input_response
+    # forwards Op::UserInputAnswer to Session::notify_user_input_response.
+    received: list[tuple[str, ToolRequestUserInputResponse]] = []
+
+    class Session:
+        async def notify_user_input_response(
+            self,
+            sub_id: str,
+            response: ToolRequestUserInputResponse,
+        ) -> None:
+            received.append((sub_id, response))
+
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+    runtime._core_session = Session()
+    response = ToolRequestUserInputResponse(
+        {"approach": ToolRequestUserInputAnswer(("Direct implementation",))}
+    )
+
+    stream = runtime.submit_thread_op(
+        "thread-input",
+        AppCommand.user_input_answer("turn-input", response),
+    )
+
+    assert stream.next_event(0) is None
+    assert received == [("turn-input", response)]
 
 
 def test_session_goal_event_maps_to_canonical_goal_notification() -> None:
@@ -4440,6 +4996,82 @@ def test_core_runtime_does_not_add_delta_fallback_after_completed_agent_item(mon
             break
 
     assert [event.kind for event in events] == ["TurnStarted", "ItemCompleted", "TurnCompleted"]
+
+
+def test_core_runtime_does_not_reinject_raw_final_text_after_plan_output(monkeypatch) -> None:
+    # Rust owners:
+    # - codex-core::session::turn routes proposed-plan markup only through PlanDelta/Plan.
+    # - codex-tui::app consumes those typed events without synthesizing AgentMessageDelta.
+    plan_item = TurnItem.plan(PlanItem("turn-1-plan", "- create 5.txt\n"))
+    raw_plan = "<proposed_plan>\n- create 5.txt\n</proposed_plan>\n"
+
+    async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
+        observer = kwargs["session_event_observer"]
+        observer(
+            {
+                "type": "plan_delta",
+                "thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "item_id": "turn-1-plan",
+                "delta": "- create 5.txt\n",
+            }
+        )
+        observer(
+            {
+                "type": "item_completed",
+                "thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "item": plan_item.to_mapping(),
+            }
+        )
+        return UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text(raw_plan),)),),
+            turn_status="completed",
+        )
+
+    monkeypatch.setattr(
+        "pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred",
+        fake_core_sampling,
+    )
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=object(),
+        model_client=object(),
+        provider=object(),
+        model_info=object(),
+        auth=None,
+    )
+    stream = runtime.submit_thread_op(
+        "primary",
+        AppCommand.user_turn(
+            [{"kind": "Text", "text": "prompt"}],
+            cwd=".",
+            approval_policy=None,
+            active_permission_profile=None,
+            model="",
+            effort=None,
+            summary=None,
+            service_tier=None,
+            final_output_json_schema=None,
+            collaboration_mode=None,
+            personality=None,
+        ),
+    )
+    events = []
+    while True:
+        event = stream.next_event(timeout=1)
+        assert event is not None
+        events.append(event)
+        if event.kind == "TurnCompleted":
+            break
+
+    assert [event.kind for event in events] == [
+        "TurnStarted",
+        "PlanDelta",
+        "ItemCompleted",
+        "TurnCompleted",
+    ]
+    assert all(event.kind != "AgentMessageDelta" for event in events)
 
 
 def test_core_exec_active_thread_runtime_forwards_reasoning_delta(monkeypatch) -> None:
@@ -4831,3 +5463,26 @@ def test_goal_replace_confirmation_emits_replace_event_before_mutation() -> None
             ThreadGoalSetMode.replace_existing(),
         )
     ]
+
+
+def test_backtrack_escape_without_previous_message_uses_app_backtrack_chain() -> None:
+    """Rust codex-tui::app::input -> app_backtrack no-target contract."""
+
+    app = TuiAppRuntime(ExecFunctionActiveThreadRuntime(lambda _prompt: 0))
+    history: list[object] = []
+    app.bind_history_cell_sink(history.append)
+
+    assert app.handle_backtrack_escape(
+        composer_is_empty=True,
+        overlay_open=False,
+        transcript_cells=[],
+    ) == "prime"
+    assert history == []
+
+    assert app.handle_backtrack_escape(
+        composer_is_empty=True,
+        overlay_open=False,
+        transcript_cells=[],
+    ) == "no_target"
+    assert len(history) == 1
+    assert "No previous message to edit." in str(history[0])

@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.get_git_diff",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "get_git_diff",
+    "source": "codex/codex-rs/tui/src/get_git_diff.rs",
+    "anchors": [
+      "get_git_diff",
+      "DIFF_COMMAND_TIMEOUT",
+      "inside_git_repo",
+      "run_git_capture_diff",
+      "run_git_capture_stdout",
+      "run_git_command"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/get_git_diff.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/get_git_diff.py"
+    ],
+    "anchors": [
+      "get_git_diff",
+      "DIFF_COMMAND_TIMEOUT",
+      "inside_git_repo",
+      "run_git_capture_diff",
+      "run_git_capture_stdout",
+      "run_git_command"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

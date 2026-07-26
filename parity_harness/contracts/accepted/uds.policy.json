@@ -1,0 +1,13 @@
+{
+  "scope": "uds",
+  "rust_root": "codex/codex-rs/uds",
+  "python_root": "pycodex/uds",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::platform"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

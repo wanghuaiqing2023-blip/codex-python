@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.chatwidget.goal_validation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::goal_validation",
+    "source": "codex/codex-rs/tui/src/chatwidget/goal_validation.rs",
+    "anchors": [
+      "GoalObjectiveValidationSource",
+      "goal_objective_is_allowed",
+      "goal_objective_with_pending_pastes_is_allowed",
+      "GOAL_TOO_LONG_FILE_HINT",
+      "goal_objective_char_count_is_allowed"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/goal_validation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/goal_validation.py"
+    ],
+    "anchors": [
+      "GoalObjectiveValidationSource",
+      "goal_objective_is_allowed",
+      "goal_objective_with_pending_pastes_is_allowed",
+      "GOAL_TOO_LONG_FILE_HINT",
+      "goal_objective_char_count_is_allowed"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

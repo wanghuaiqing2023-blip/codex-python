@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-app-server.config_manager_service",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "config_manager_service",
+    "source": "codex/codex-rs/app-server/src/config_manager_service.rs",
+    "anchors": [
+      "ConfigManagerError",
+      "apply_merge",
+      "compute_override_metadata"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/config_manager_service.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/config_manager_service.py"
+    ],
+    "anchors": [
+      "ConfigManagerError",
+      "apply_merge",
+      "compute_override_metadata"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_config_manager_service_rs.py"
+  ]
+}

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from pycodex.core.context import NetworkRuleSaved
 from pycodex.core.goals import goal_token_delta_for_usage, should_ignore_goal_for_mode, validate_goal_budget
-from pycodex.core.session.runtime import InMemoryInputQueue
+from pycodex.core.session.input_queue import InputQueue
 from pycodex.core.state.turn import MailboxDeliveryPhase, TurnState
 from pycodex.core.stream_events_utils import AssistantMessageStreamParsers
 from pycodex.protocol import (
@@ -54,7 +54,7 @@ class CoreSessionRootParityTests(unittest.IsolatedAsyncioTestCase):
         # trigger_turn_mailbox_mail_waits_for_next_turn_after_answer_boundary,
         # steered_input_reopens_mailbox_delivery_for_current_turn,
         # tool_calls_reopen_mailbox_delivery_for_current_turn.
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState()
         active_turn = SimpleNamespace(
             task=SimpleNamespace(turn_context=SimpleNamespace(sub_id="turn-1")),
@@ -98,3 +98,5 @@ class CoreSessionRootParityTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

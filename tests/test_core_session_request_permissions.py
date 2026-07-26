@@ -1,9 +1,9 @@
-import asyncio
+﻿import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     NetworkPermissions,
@@ -35,7 +35,7 @@ class CoreSessionRequestPermissionsTests(unittest.IsolatedAsyncioTestCase):
                 scope=PermissionGrantScope.TURN,
             )
 
-        session = InMemoryCodexSession(
+        session = Session(
             cwd=Path.cwd() / "session-default",
             request_permissions_callback=callback,
         )
@@ -79,7 +79,7 @@ class CoreSessionRequestPermissionsTests(unittest.IsolatedAsyncioTestCase):
                 scope=PermissionGrantScope.TURN,
             )
 
-        session = InMemoryCodexSession(
+        session = Session(
             cwd=session_cwd,
             request_permissions_callback=callback,
         )
@@ -101,7 +101,7 @@ class CoreSessionRequestPermissionsTests(unittest.IsolatedAsyncioTestCase):
         # Rust behavior source:
         # codex/codex-rs/core/src/session/mod.rs notify_request_permissions_response
         # normalizes the response, records grants, and sends it to the pending waiter.
-        session = InMemoryCodexSession(
+        session = Session(
             cwd=Path.cwd(),
             request_permissions_event_roundtrip_enabled=True,
         )
@@ -150,7 +150,7 @@ class CoreSessionRequestPermissionsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_notify_request_permissions_response_ignores_unmatched_call_id(self) -> None:
         # Rust test source: notify_request_permissions_response_ignores_unmatched_call_id.
-        session = InMemoryCodexSession(cwd=Path.cwd())
+        session = Session(cwd=Path.cwd())
 
         await session.notify_request_permissions_response(
             "missing-call",
@@ -181,7 +181,7 @@ class CoreSessionRequestPermissionsTests(unittest.IsolatedAsyncioTestCase):
             async def cancelled(self):
                 await self._event.wait()
 
-        session = InMemoryCodexSession(
+        session = Session(
             cwd=Path.cwd(),
             request_permissions_event_roundtrip_enabled=True,
         )
@@ -211,3 +211,4 @@ class CoreSessionRequestPermissionsTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

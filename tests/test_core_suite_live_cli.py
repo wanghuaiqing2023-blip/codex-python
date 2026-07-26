@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from pycodex.cli.parser import main
+from pycodex.cli.main import main
 
 
 class _FakeResponse:
@@ -53,8 +53,8 @@ def _run_cli_with_fake_responses(tmpdir: str, prompt: str, responses: list[dict[
             "OPENAI_MODEL": "",
         },
     ):
-        with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+        with patch("pycodex.core.client.urlopen", side_effect=opener):
+            with patch("pycodex.cli.main.read_auth_json", return_value=None):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 code = main(

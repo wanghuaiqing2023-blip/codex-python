@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "crate",
+    "source": "codex/codex-rs/core/src/lib.rs",
+    "anchors": [
+      "ARCHIVED_SESSIONS_SUBDIR",
+      "AgentsMdManager",
+      "AttestationContext",
+      "AttestationProvider",
+      "CodexThread",
+      "CodexThreadSettingsOverrides",
+      "Cursor",
+      "DEFAULT_AGENTS_MD_FILENAME",
+      "EventPersistenceMode",
+      "ForkSnapshot",
+      "INTERACTIVE_SESSION_SOURCES",
+      "LOCAL_AGENTS_MD_FILENAME"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/__init__.py"
+    ],
+    "anchors": [
+      "ARCHIVED_SESSIONS_SUBDIR",
+      "AgentsMdManager",
+      "AttestationContext",
+      "AttestationProvider",
+      "CodexThread",
+      "CodexThreadSettingsOverrides",
+      "Cursor",
+      "DEFAULT_AGENTS_MD_FILENAME",
+      "EventPersistenceMode",
+      "ForkSnapshot",
+      "INTERACTIVE_SESSION_SOURCES",
+      "LOCAL_AGENTS_MD_FILENAME"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -12,8 +12,6 @@ from pycodex.core.tools.handlers.agent_jobs import (
     SpawnAgentsOnCsvHandler,
     build_agent_job_items,
     build_worker_prompt,
-    create_report_agent_job_result_tool,
-    create_spawn_agents_on_csv_tool,
     csv_escape,
     default_output_csv_path,
     ensure_unique_headers,
@@ -22,6 +20,10 @@ from pycodex.core.tools.handlers.agent_jobs import (
     parse_csv,
     render_instruction_template,
     render_job_csv,
+)
+from pycodex.core.tools.handlers.agent_jobs_spec import (
+    create_report_agent_job_result_tool,
+    create_spawn_agents_on_csv_tool,
 )
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.context import ToolCallSource, ToolInvocation

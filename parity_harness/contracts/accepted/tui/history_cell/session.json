@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.history_cell.session",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::session",
+    "source": "codex/codex-rs/tui/src/history_cell/session.rs",
+    "anchors": [
+      "SESSION_HEADER_MAX_INNER_WIDTH",
+      "SessionHeaderHistoryCell",
+      "SessionInfoCell",
+      "card_inner_width",
+      "format_directory_inner",
+      "has_yolo_permissions",
+      "is_yolo_mode",
+      "new",
+      "new_session_info",
+      "new_with_style",
+      "padded_emoji",
+      "with_border"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/session.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/session.py"
+    ],
+    "anchors": [
+      "SESSION_HEADER_MAX_INNER_WIDTH",
+      "SessionHeaderHistoryCell",
+      "SessionInfoCell",
+      "card_inner_width",
+      "format_directory_inner",
+      "has_yolo_permissions",
+      "is_yolo_mode",
+      "new",
+      "new_session_info",
+      "new_with_style",
+      "padded_emoji",
+      "with_border"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

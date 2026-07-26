@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.status_surface_preview",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::status_surface_preview",
+    "source": "codex/codex-rs/tui/src/bottom_pane/status_surface_preview.rs",
+    "anchors": [
+      "StatusSurfacePreviewData",
+      "StatusSurfacePreviewItem",
+      "from_iter",
+      "iter",
+      "rate_limit_item_description",
+      "rate_limit_item_name",
+      "set_live",
+      "set_placeholder",
+      "status_line_for_items",
+      "suppress_placeholder",
+      "value_for",
+      "PreviewValue"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/status_surface_preview.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/status_surface_preview.py"
+    ],
+    "anchors": [
+      "StatusSurfacePreviewData",
+      "StatusSurfacePreviewItem",
+      "from_iter",
+      "iter",
+      "rate_limit_item_description",
+      "rate_limit_item_name",
+      "set_live",
+      "set_placeholder",
+      "status_line_for_items",
+      "suppress_placeholder",
+      "value_for",
+      "PreviewValue"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

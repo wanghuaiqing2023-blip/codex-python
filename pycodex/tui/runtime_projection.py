@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from pycodex.protocol import ModeKind
 from pycodex.utils.sandbox_summary import summarize_permission_profile
 
 from .app.runtime import ActiveThreadRuntime, TuiAppRuntime
@@ -192,6 +193,19 @@ def _runtime_model_with_reasoning(app_runtime: TuiAppRuntime) -> str:
 
 
 def _runtime_header_reasoning_effort(app_runtime: TuiAppRuntime) -> str | None:
+    widget = getattr(app_runtime, "chat_widget", None)
+    effective_mode = getattr(widget, "effective_collaboration_mode", None)
+    active_mode = getattr(widget, "active_mode_kind", None)
+    active_mode = active_mode() if callable(active_mode) else None
+    if active_mode is ModeKind.PLAN and callable(effective_mode):
+        try:
+            effort = effective_mode().reasoning_effort()
+        except (AttributeError, TypeError, ValueError):
+            effort = None
+        if effort is not None:
+            label = str(getattr(effort, "value", effort)).replace("-", "_").lower()
+            if label and label != "default":
+                return label
     details = _runtime_model_details(app_runtime)
     for detail in details:
         normalized = str(detail).strip().lower().replace("-", "_")
@@ -217,7 +231,12 @@ def _runtime_header_reasoning_effort(app_runtime: TuiAppRuntime) -> str | None:
 
 
 def _runtime_show_fast_status(app_runtime: TuiAppRuntime) -> bool:
-    return any(str(detail).strip().lower() == "fast" for detail in _runtime_model_details(app_runtime))
+    widget = getattr(app_runtime, "chat_widget", None)
+    should_show = getattr(widget, "should_show_fast_status", None)
+    current_tier = getattr(widget, "current_service_tier", None)
+    if not callable(should_show) or not callable(current_tier):
+        return False
+    return bool(should_show(_runtime_display_model(app_runtime), current_tier()))
 
 
 def _runtime_model_details(app_runtime: TuiAppRuntime) -> tuple[str, ...]:
@@ -454,6 +473,17 @@ def _runtime_status_line_item_ids(app_runtime: TuiAppRuntime) -> tuple[Any, ...]
     return (value,)
 
 
+def _runtime_status_line_use_colors(app_runtime: TuiAppRuntime) -> bool:
+    value = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        getattr(getattr(app_runtime, "chat_widget", None), "config", None),
+        names=("tui_status_line_use_colors", "status_line_use_colors"),
+    )
+    return bool(value)
+
+
 def _runtime_status_line_value(app_runtime: TuiAppRuntime, item: StatusLineItem, status: str) -> str | None:
     if item == StatusLineItem.MODEL_NAME:
         return _runtime_display_model(app_runtime)
@@ -490,7 +520,7 @@ def _runtime_status_line_value(app_runtime: TuiAppRuntime, item: StatusLineItem,
         return "fast" if " fast" in text else None
     if item == StatusLineItem.RAW_OUTPUT:
         raw = bool(getattr(getattr(app_runtime, "chat_widget", None), "raw_mode", False))
-        return "raw" if raw else None
+        return "raw output" if raw else None
     if item == StatusLineItem.THREAD_TITLE:
         return getattr(app_runtime, "thread_name", None) or getattr(app_runtime, "thread_id", None)
     agent_label = getattr(getattr(app_runtime, "chat_widget", None), "active_agent_label", None)
@@ -608,5 +638,6 @@ __all__ = [
     "_runtime_startup_tooltip",
     "_runtime_startup_warnings",
     "_runtime_status_line_item_ids",
+    "_runtime_status_line_use_colors",
     "_runtime_status_line_value",
 ]

@@ -1,7 +1,7 @@
 import unittest
 
 from pycodex.core import plugins
-from pycodex.core.context import PluginCapabilitySummary
+from pycodex.plugin import PluginCapabilitySummary
 from pycodex.core.plugins.discoverable import list_tool_suggest_discoverable_plugins
 from pycodex.core.plugins.injection import build_plugin_injections
 from pycodex.core.plugins.mentions import (
