@@ -8,52 +8,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
+from pycodex.core.tools.handlers import plan_spec
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import EventMsg, ResponseInputItem, ToolName, UpdatePlanArgs
 
 JsonValue = Any
 
 PLAN_UPDATED_MESSAGE = "Plan updated"
-UPDATE_PLAN_TOOL_NAME = "update_plan"
-
 PlanUpdateCallback = Callable[[UpdatePlanArgs], None]
-
-
-def create_update_plan_tool() -> dict[str, JsonValue]:
-    return {
-        "type": "function",
-        "name": UPDATE_PLAN_TOOL_NAME,
-        "description": (
-            "Updates the task plan.\n"
-            "Provide an optional explanation and a list of plan items, each with a step and status.\n"
-            "At most one step can be in_progress at a time.\n"
-        ),
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "explanation": {"type": "string"},
-                "plan": {
-                    "type": "array",
-                    "description": "The list of steps",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "step": {"type": "string"},
-                            "status": {
-                                "type": "string",
-                                "description": "One of: pending, in_progress, completed",
-                            },
-                        },
-                        "required": ["step", "status"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["plan"],
-            "additionalProperties": False,
-        },
-    }
 
 
 @dataclass(frozen=True)
@@ -87,10 +49,10 @@ class PlanHandler:
         self._on_plan_update = on_plan_update
 
     def tool_name(self) -> ToolName:
-        return ToolName.plain(UPDATE_PLAN_TOOL_NAME)
+        return ToolName.plain(plan_spec.UPDATE_PLAN_TOOL_NAME)
 
     def spec(self) -> dict[str, JsonValue]:
-        return create_update_plan_tool()
+        return plan_spec.create_update_plan_tool()
 
     def supports_parallel_tool_calls(self) -> bool:
         return False
@@ -165,10 +127,8 @@ def _is_plan_mode(value: Any) -> bool:
 
 __all__ = [
     "PLAN_UPDATED_MESSAGE",
-    "UPDATE_PLAN_TOOL_NAME",
     "PlanHandler",
     "PlanToolOutput",
     "PlanUpdateCallback",
-    "create_update_plan_tool",
     "parse_update_plan_arguments",
 ]

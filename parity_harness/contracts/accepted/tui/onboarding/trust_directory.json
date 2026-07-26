@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-tui.onboarding.trust_directory",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "onboarding::trust_directory",
+    "source": "codex/codex-rs/tui/src/onboarding/trust_directory.rs",
+    "anchors": [
+      "TrustDirectorySelection",
+      "TrustDirectoryWidget",
+      "should_quit",
+      "get_step_state",
+      "handle_key_event",
+      "handle_quit",
+      "handle_trust",
+      "render_ref"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/onboarding/trust_directory.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/onboarding/trust_directory.py"
+    ],
+    "anchors": [
+      "TrustDirectorySelection",
+      "TrustDirectoryWidget",
+      "should_quit",
+      "get_step_state",
+      "handle_key_event",
+      "handle_quit",
+      "handle_trust",
+      "render_ref"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

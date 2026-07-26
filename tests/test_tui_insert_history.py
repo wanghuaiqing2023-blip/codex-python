@@ -47,7 +47,7 @@ from pycodex.tui.insert_history import (
 from pycodex.tui.history_cell.messages import UserHistoryCell, new_user_prompt
 from pycodex.tui.line_truncation import Line as SemanticLine
 from pycodex.tui.line_truncation import Span as SemanticSpan
-from pycodex.tui.tests.harness.native_compare import vt_screen_text
+from tests.e2e.support.vt_screen import vt_screen_text
 
 
 class FlushTrackingStringIO(StringIO):

@@ -10,7 +10,7 @@ from typing import Any
 
 from pycodex.protocol import AskForApproval, FileChange, GitSha, ReviewDecision, SessionSource, ThreadId, TurnAbortReason
 from pycodex.protocol.config_types import ForcedLoginMethod, ReasoningEffort, ReasoningSummary, SandboxMode, Verbosity
-from pycodex.protocol.models import SandboxPolicy
+from pycodex.protocol.protocol import SandboxPolicy
 from pycodex.protocol.parse_command import ParsedCommand
 
 from .account import AuthMode

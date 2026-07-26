@@ -5,8 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pycodex.config.schema import config_schema
-from pycodex.core.config.schema import canonicalize, config_schema_json, write_config_schema
+from pycodex.config.schema import canonicalize, config_schema, config_schema_json, write_config_schema
 
 
 class CoreConfigSchemaTests(unittest.TestCase):
@@ -28,8 +27,8 @@ class CoreConfigSchemaTests(unittest.TestCase):
         )
 
     def test_config_schema_json_matches_rust_fixture_after_canonicalization(self) -> None:
-        # Rust crate: codex-core
-        # Rust module: src/config/schema.rs
+        # Rust crate: codex-config
+        # Rust module: src/schema.rs
         # Rust test: config_schema_matches_fixture
         fixture_path = Path("codex/codex-rs/core/config.schema.json")
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -42,8 +41,8 @@ class CoreConfigSchemaTests(unittest.TestCase):
         )
 
     def test_write_config_schema_writes_generated_json(self) -> None:
-        # Rust crate: codex-core
-        # Rust module: src/config/schema.rs
+        # Rust crate: codex-config
+        # Rust module: src/schema.rs
         # Rust test: config_schema_matches_fixture write-back branch
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "config.schema.json"

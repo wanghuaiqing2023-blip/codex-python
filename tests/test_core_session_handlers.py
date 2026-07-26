@@ -1,7 +1,9 @@
-import tempfile
+﻿import tempfile
 import unittest
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from pycodex.core.session.handlers import (
     CompactTask,
@@ -9,11 +11,11 @@ from pycodex.core.session.handlers import (
     RegularTask,
     ResponseItemTurnInput,
     UserInputTurnInput,
-    UserShellCommandTask,
     dispatch_session_op,
     thread_rollback,
 )
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
+from pycodex.core.tasks.user_shell import UserShellCommandMode, UserShellCommandTask
 from pycodex.protocol import (
     CodexErrorInfo,
     ConversationAudioParams,
@@ -66,14 +68,14 @@ def _append_turn(path: Path, index: int) -> None:
     append_response_item_to_rollout(path, _message_payload("assistant", f"turn {index} assistant"))
 
 
-def _history_texts(session: InMemoryCodexSession) -> list[str]:
+def _history_texts(session: Session) -> list[str]:
     return [item.content[0].text for item in session.history]
 
 
 class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
     async def test_thread_rollback_requires_positive_num_turns(self) -> None:
         # Rust test: thread_rollback_fails_when_num_turns_is_zero
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         await thread_rollback(session, "sub-1", 0)
 
@@ -84,7 +86,7 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_thread_rollback_fails_when_turn_in_progress(self) -> None:
         # Rust test: thread_rollback_fails_when_turn_in_progress
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         session.active_turn_in_progress = True
 
         await thread_rollback(session, "sub-1", 1)
@@ -96,7 +98,7 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_thread_rollback_fails_without_persisted_thread_history(self) -> None:
         # Rust test: thread_rollback_fails_without_persisted_thread_history
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             history=[_message_payload("user", "existing")],
         )
@@ -115,7 +117,7 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
             rollout_path = Path(temp_dir) / "rollout.jsonl"
             _append_turn(rollout_path, 1)
             _append_turn(rollout_path, 2)
-            session = InMemoryCodexSession(cwd=temp_dir)
+            session = Session(cwd=temp_dir)
             session.rollout_path = rollout_path
 
             await thread_rollback(session, "sub-1", 1)
@@ -137,7 +139,7 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
             _append_turn(rollout_path, 1)
             _append_turn(rollout_path, 2)
             _append_turn(rollout_path, 3)
-            session = InMemoryCodexSession(cwd=temp_dir)
+            session = Session(cwd=temp_dir)
             session.rollout_path = rollout_path
 
             await thread_rollback(session, "sub-1", 1)
@@ -152,7 +154,7 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
             rollout_path = Path(temp_dir) / "rollout.jsonl"
             _append_turn(rollout_path, 1)
             _append_turn(rollout_path, 2)
-            session = InMemoryCodexSession(cwd=temp_dir)
+            session = Session(cwd=temp_dir)
             session.rollout_path = rollout_path
 
             should_exit = await dispatch_session_op(session, "sub-1", Op.thread_rollback(1))
@@ -166,7 +168,7 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             rollout_path = Path(temp_dir) / "rollout.jsonl"
             _append_turn(rollout_path, 1)
-            session = InMemoryCodexSession(cwd=temp_dir)
+            session = Session(cwd=temp_dir)
             session.rollout_path = rollout_path
 
             should_exit = await dispatch_session_op(session, "sub-1", {"type": "thread_rollback", "num_turns": 1})
@@ -729,23 +731,26 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_dispatch_session_op_run_user_shell_command_uses_active_turn_auxiliary(self) -> None:
         # Rust source: session::handlers::run_user_shell_command active-turn branch
-        calls: list[tuple[object, str, object, str]] = []
-
         async def active_turn_context_and_cancellation_token() -> tuple[str, str]:
             return ("turn-context", "cancel-token")
 
-        async def execute_user_shell_command(turn_context: object, command: str, cancellation_token: object, mode: str) -> None:
-            calls.append((turn_context, command, cancellation_token, mode))
-
         session = SimpleNamespace(
             active_turn_context_and_cancellation_token=active_turn_context_and_cancellation_token,
-            execute_user_shell_command=execute_user_shell_command,
         )
 
-        should_exit = await dispatch_session_op(session, "sub-1", Op.run_user_shell_command("echo hi"))
+        execute = AsyncMock()
+        with patch("pycodex.core.session.handlers.execute_user_shell_command", execute):
+            should_exit = await dispatch_session_op(session, "sub-1", Op.run_user_shell_command("echo hi"))
+            await asyncio.sleep(0)
 
         self.assertFalse(should_exit)
-        self.assertEqual(calls, [("turn-context", "echo hi", "cancel-token", "active_turn_auxiliary")])
+        execute.assert_awaited_once_with(
+            session,
+            "turn-context",
+            "echo hi",
+            "cancel-token",
+            UserShellCommandMode.ACTIVE_TURN_AUXILIARY,
+        )
 
     async def test_dispatch_session_op_run_user_shell_command_spawns_new_task_without_active_turn(self) -> None:
         # Rust source: session::handlers::run_user_shell_command no-active-turn branch
@@ -1403,3 +1408,4 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(raw_events[0].msg.payload.message, "Failed to shutdown thread persistence")
         self.assertEqual(raw_events[0].msg.payload.codex_error_info, CodexErrorInfo.other())
         self.assertEqual(raw_events[1].id, "sub-1")
+

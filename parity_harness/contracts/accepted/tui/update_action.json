@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.update_action",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "update_action",
+    "source": "codex/codex-rs/tui/src/update_action.rs",
+    "anchors": [
+      "UpdateAction",
+      "command_args",
+      "command_str",
+      "from_install_context",
+      "get_update_action"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/update_action.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/update_action.py"
+    ],
+    "anchors": [
+      "UpdateAction",
+      "command_args",
+      "command_str",
+      "from_install_context",
+      "get_update_action"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

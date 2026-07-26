@@ -1,4 +1,4 @@
-from pycodex.core.safety_check_downgrade import (
+from tests.support.core_safety_check_downgrade import (
     CYBER_POLICY_MESSAGE,
     TRUSTED_ACCESS_FOR_CYBER_VERIFICATION,
     SafetyCheckAttempt,

@@ -2,31 +2,35 @@ import asyncio
 import socket
 
 import pytest
-import pycodex.network_proxy as network_proxy
+import pycodex.network_proxy.proxy as network_proxy
 
-from pycodex.network_proxy import (
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
+    NetworkMode,
+    NetworkProxyConfig,
+)
+from pycodex.network_proxy.proxy import (
     ALLOW_LOCAL_BINDING_ENV_KEY,
     PROXY_GIT_SSH_COMMAND_ENV_KEY,
-    ConfigState,
     DEFAULT_NO_PROXY_VALUE,
     ELECTRON_GET_USE_PROXY_ENV_KEY,
     NODE_USE_ENV_PROXY_ENV_KEY,
     PROXY_ACTIVE_ENV_KEY,
     PROXY_ENV_KEYS,
-    NetworkMode,
     NetworkProxy,
-    NetworkProxyConfig,
-    NetworkProxyConstraints,
     NetworkProxyHandle,
-    NetworkProxyState,
     NetworkProxyTask,
-    StaticNetworkProxyReloader,
     apply_proxy_env_overrides,
     has_proxy_url_env_vars,
     proxy_url_env_value,
     reserve_windows_managed_listeners,
     windows_managed_loopback_addr,
 )
+from pycodex.network_proxy.runtime import (
+    ConfigState,
+    NetworkProxyState,
+)
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def network_proxy_state_for_config(config: NetworkProxyConfig) -> NetworkProxyState:

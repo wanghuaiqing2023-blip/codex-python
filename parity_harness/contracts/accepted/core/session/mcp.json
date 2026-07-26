@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.session.mcp",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "session::mcp",
+    "source": "codex/codex-rs/core/src/session/mcp.rs",
+    "anchors": [
+      "McpServerElicitationOutcome",
+      "call_tool",
+      "cancel_mcp_startup",
+      "list_resource_templates",
+      "list_resources",
+      "mcp_elicitation_reviewer",
+      "read_resource",
+      "refresh_mcp_servers_if_requested",
+      "refresh_mcp_servers_now",
+      "request_mcp_server_elicitation",
+      "resolve_elicitation",
+      "GuardianElicitationReview"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/session/mcp.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/session/mcp.py"
+    ],
+    "anchors": [
+      "McpServerElicitationOutcome",
+      "call_tool",
+      "cancel_mcp_startup",
+      "list_resource_templates",
+      "list_resources",
+      "mcp_elicitation_reviewer",
+      "read_resource",
+      "refresh_mcp_servers_if_requested",
+      "refresh_mcp_servers_now",
+      "request_mcp_server_elicitation",
+      "resolve_elicitation",
+      "GuardianElicitationReview"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

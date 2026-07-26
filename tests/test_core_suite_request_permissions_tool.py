@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from pycodex.core.tools.handlers.utils import apply_granted_turn_permissions
+from pycodex.core.tools.handlers import apply_granted_turn_permissions
 from pycodex.exec.local_runtime import (
     LocalHttpShellInvocation,
     _local_http_apply_patch_preapproved,

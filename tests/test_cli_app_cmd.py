@@ -4,12 +4,14 @@ from tempfile import TemporaryDirectory
 
 from pycodex.cli import (
     AppCommand,
+    workspace_for_app_command,
+)
+from pycodex.cli.desktop_app.mac import (
     CODEX_DMG_URL_ARM64,
     CODEX_DMG_URL_X64,
     candidate_applications_dirs,
     candidate_codex_app_paths,
     default_mac_dmg_url,
-    display_windows_workspace_path,
     find_codex_app_in_mount,
     mac_app_install_plan,
     mac_copy_app_bundle_command,
@@ -18,8 +20,8 @@ from pycodex.cli import (
     mac_mount_dmg_command,
     mac_open_app_command,
     parse_hdiutil_attach_mount_point,
-    workspace_for_app_command,
 )
+from pycodex.cli.desktop_app.windows import display_workspace_path
 
 
 class CliAppCommandTests(unittest.TestCase):
@@ -46,15 +48,15 @@ class CliAppCommandTests(unittest.TestCase):
     def test_display_windows_workspace_path_matches_rust_extended_prefix_handling(self) -> None:
         # Rust parity: codex-cli/src/desktop_app/windows.rs display_workspace_path.
         self.assertEqual(
-            display_windows_workspace_path(r"\\?\C:\Users\fcoury\code\codex"),
+            display_workspace_path(r"\\?\C:\Users\fcoury\code\codex"),
             r"C:\Users\fcoury\code\codex",
         )
         self.assertEqual(
-            display_windows_workspace_path(r"\\?\UNC\server\share\codex"),
+            display_workspace_path(r"\\?\UNC\server\share\codex"),
             r"\\server\share\codex",
         )
         self.assertEqual(
-            display_windows_workspace_path(r"C:\Users\fcoury\code\codex"),
+            display_workspace_path(r"C:\Users\fcoury\code\codex"),
             r"C:\Users\fcoury\code\codex",
         )
 

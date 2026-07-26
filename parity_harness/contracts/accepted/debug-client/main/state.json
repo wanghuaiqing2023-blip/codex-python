@@ -1,0 +1,34 @@
+{
+  "contract_id": "codex-debug-client.main.state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-debug-client",
+    "module": "main::state",
+    "source": "codex/codex-rs/debug-client/src/state.rs",
+    "anchors": [
+      "PendingRequest",
+      "ReaderEvent",
+      "State"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/debug_client/state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/debug_client/state.py"
+    ],
+    "anchors": [
+      "PendingRequest",
+      "ReaderEvent",
+      "State"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

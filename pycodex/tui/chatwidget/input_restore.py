@@ -10,6 +10,7 @@ transformations remain testable without ratatui or the full chat runtime.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -450,8 +451,7 @@ class InputRestoreModel:
             self.remote_image_urls = []
             self.composer = ComposerDraftSnapshot()
         else:
-            self.current_collaboration_mode = input_state.current_collaboration_mode
-            self.active_collaboration_mask = input_state.active_collaboration_mask
+            restore_thread_collaboration_state(self, input_state)
             self.agent_turn_running = input_state.agent_turn_running
             self.input_queue.user_turn_pending_start = input_state.user_turn_pending_start
             if input_state.composer is None:
@@ -533,6 +533,35 @@ def user_message_for_restore(
         restored.text_elements = list(history_record.override.text_elements)
         return restored
     return message
+
+
+def restore_thread_collaboration_state(target: Any, input_state: Any) -> bool:
+    """Restore the collaboration fields owned by Rust ``input_restore``.
+
+    The product ``ChatWidget`` and the semantic ``InputRestoreModel`` share
+    this operation so app-level snapshot replay does not duplicate Plan-mode
+    restoration outside the owning module.
+    """
+
+    if input_state is None:
+        return False
+    missing = object()
+    if isinstance(input_state, Mapping):
+        current = input_state.get("current_collaboration_mode", missing)
+        mask = input_state.get("active_collaboration_mask", missing)
+    else:
+        current = getattr(input_state, "current_collaboration_mode", missing)
+        mask = getattr(input_state, "active_collaboration_mask", missing)
+    if current is missing and mask is missing:
+        return False
+    if current is not missing:
+        setattr(target, "current_collaboration_mode", current)
+    if mask is not missing:
+        setattr(target, "active_collaboration_mask", mask)
+    sync = getattr(target, "_sync_collaboration_mode_state", None)
+    if callable(sync):
+        sync()
+    return True
 
 
 def merge_user_messages(messages: Iterable[UserMessage]) -> UserMessage:
@@ -617,5 +646,6 @@ __all__ = [
     "UserMessageHistoryRecordKind",
     "merge_user_messages",
     "merge_user_messages_with_history_record",
+    "restore_thread_collaboration_state",
     "user_message_for_restore",
 ]

@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 import io
 import os
 import json
@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pathlib import Path
 
-from pycodex.cli.features import (
+from pycodex.cli.main.features import (
     FeatureCliError,
     FeatureToggles,
     FeaturesSubcommand,
@@ -28,24 +28,28 @@ from pycodex.cli.features import (
     run_features_command,
     under_development_feature_warning,
 )
-from pycodex.cli.parser import (
-    CliParseError,
+from pycodex.cli.main import (
     _collect_cloud_attempt_diffs,
-    _parse_mcp_env_pair,
     _print_local_app_server_connect_hint,
     _build_tui_core_active_thread_runtime,
     _read_responses_api_auth_header,
     _resolve_exec_remote_endpoint,
-    _remote_control_human_lines,
-    _remote_control_start_human_message,
     _run_cloud_command,
     _run_stdio_to_uds,
     _select_cloud_attempt_diff,
-    _validate_mcp_server_name,
     default_reachability_plan,
     main,
     parse_args,
     reject_remote_mode_for_subcommand,
+)
+from pycodex.cli.main.spec import CliParseError
+from pycodex.cli.mcp_cmd import (
+    parse_env_pair,
+    validate_server_name,
+)
+from pycodex.cli.remote_control_cmd import (
+    _remote_control_human_lines,
+    _remote_control_start_human_message,
 )
 from pycodex.cli import DoctorUpdateCheck, NpmRootCheck, UpdateAction
 from pycodex.cli.login import AuthDotJson
@@ -71,7 +75,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self._provider_reachability_patch = None
         if self._testMethodName.startswith("test_main_doctor_"):
             self._provider_reachability_patch = patch(
-                "pycodex.cli.parser.doctor_provider_reachability_check",
+                "pycodex.cli.main.doctor_provider_reachability_check",
                 return_value=DoctorUpdateCheck(
                     status="warn",
                     summary="provider reachability checks are skipped in tests",
@@ -179,21 +183,21 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_mcp_env_pair_matches_rust(self):
         # Rust parity: codex-cli/src/mcp_cmd.rs parse_env_pair.
-        self.assertEqual(_parse_mcp_env_pair(" TOKEN =abc"), ("TOKEN", "abc"))
-        self.assertEqual(_parse_mcp_env_pair("TOKEN="), ("TOKEN", ""))
+        self.assertEqual(parse_env_pair(" TOKEN =abc"), ("TOKEN", "abc"))
+        self.assertEqual(parse_env_pair("TOKEN="), ("TOKEN", ""))
         with self.assertRaisesRegex(RuntimeError, "environment entries must be in KEY=VALUE form"):
-            _parse_mcp_env_pair("TOKEN")
+            parse_env_pair("TOKEN")
         with self.assertRaisesRegex(RuntimeError, "environment entries must be in KEY=VALUE form"):
-            _parse_mcp_env_pair(" =abc")
+            parse_env_pair(" =abc")
 
     def test_mcp_server_name_validation_matches_rust(self):
         # Rust parity: codex-cli/src/mcp_cmd.rs validate_server_name.
         for name in ("acme", "acme_1", "acme-1", "A1"):
-            _validate_mcp_server_name(name)
+            validate_server_name(name)
         for name in ("", "bad.name", "bad/name", "bad name", "é"):
             with self.subTest(name=name):
                 with self.assertRaisesRegex(RuntimeError, "invalid server name"):
-                    _validate_mcp_server_name(name)
+                    validate_server_name(name)
 
     def test_parse_plugin_marketplace_add_supports_sparse_and_ref(self):
         parsed = parse_args(
@@ -980,7 +984,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             output = io.BytesIO()
             stderr = io.StringIO()
-            with patch("pycodex.cli.parser.sys.stdout", output):
+            with patch("pycodex.cli.main.sys.stdout", output):
                 code = _run_stdio_to_uds(
                     (str(socket_path),),
                     stdout=io.StringIO(),
@@ -1323,7 +1327,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
 
-        with patch("pycodex.cli.parser.sys.platform", "linux"):
+        with patch("pycodex.cli.main.sys.platform", "linux"):
             code = main(["app", "/tmp/my-workspace"], stdout=stdout, stderr=stderr)
 
         self.assertEqual(code, 0)
@@ -1482,7 +1486,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         stdout = io.StringIO()
 
         try:
-            with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"):
+            with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"):
                 code = _run_cloud_command(
                     ("unknown",),
                     stdout=stdout,
@@ -1505,7 +1509,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         stdout = io.StringIO()
 
         try:
-            with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"):
+            with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"):
                 code = _run_cloud_command(
                     ("unknown",),
                     stdout=stdout,
@@ -1527,8 +1531,8 @@ class TopLevelCliParserTests(unittest.TestCase):
         stdout = io.StringIO()
 
         try:
-            with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-                "pycodex.cli.parser._list_cloud_tasks",
+            with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+                "pycodex.cli.main._list_cloud_tasks",
                 return_value=([
                     {
                         "id": "task-1",
@@ -1577,11 +1581,11 @@ class TopLevelCliParserTests(unittest.TestCase):
             captured["url"] = url
             return {"task": {"id": "task-99"}, "turn_history": []}
 
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             side_effect=fake_request_json,
-        ), patch("pycodex.cli.parser._collect_cloud_attempt_diffs", return_value=[{"diff": "diff-1"}]), patch(
-            "pycodex.cli.parser._apply_task_diff_with_git",
+        ), patch("pycodex.cli.main._collect_cloud_attempt_diffs", return_value=[{"diff": "diff-1"}]), patch(
+            "pycodex.cli.main._apply_task_diff_with_git",
             return_value=0,
         ):
             code = main([
@@ -1596,11 +1600,11 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_cloud_diff_normalizes_task_id_from_url(self):
         stdout = io.StringIO()
 
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value={"task": {"id": "task-99"}},
         ), patch(
-            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            "pycodex.cli.main._collect_cloud_attempt_diffs",
             return_value=[{"diff": "diff-from-url"}],
         ):
             code = main(
@@ -1651,7 +1655,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_exec_fails_without_env(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"):
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"):
             code = main(["cloud", "exec", "write tests"], stderr=stderr)
 
         self.assertEqual(code, 2)
@@ -1671,7 +1675,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         stderr = io.StringIO()
 
         try:
-            with patch("pycodex.cli.parser._cloud_auth_token", side_effect=RuntimeError("Not logged in.")):
+            with patch("pycodex.cli.main._cloud_auth_token", side_effect=RuntimeError("Not logged in.")):
                 code = main(["cloud"], stderr=stderr)
         finally:
             if previous_fallback is None:
@@ -1685,7 +1689,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_status_requires_auth(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", side_effect=RuntimeError("Not logged in.")):
+        with patch("pycodex.cli.main._cloud_auth_token", side_effect=RuntimeError("Not logged in.")):
             code = main(["cloud", "status", "task-1"], stderr=stderr)
 
         self.assertEqual(code, 2)
@@ -1703,8 +1707,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             observed["payload"] = payload
             return {"task": {"id": "task-123"}}
 
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             side_effect=fake_request_json,
         ):
             code = main(
@@ -1746,8 +1750,8 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_status_bad_payload(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value="not-a-dict",
         ):
             code = main(["cloud", "status", "task-1"], stderr=stderr)
@@ -1767,8 +1771,8 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         stderr = io.StringIO()
         stdout = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             side_effect=fake_request_json,
         ):
             code = main(
@@ -1796,14 +1800,14 @@ class TopLevelCliParserTests(unittest.TestCase):
             captured["applied_diff"] = diff
             return 0
 
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value={"task": {"id": "task-1"}},
         ), patch(
-            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            "pycodex.cli.main._collect_cloud_attempt_diffs",
             side_effect=fake_collect_cloud_attempt_diffs,
         ), patch(
-            "pycodex.cli.parser._apply_task_diff_with_git",
+            "pycodex.cli.main._apply_task_diff_with_git",
             side_effect=fake_apply_task_diff_with_git,
         ):
             code = main(["cloud", "apply", "--attempt", "2", "task-1"])
@@ -1815,11 +1819,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_apply_out_of_range_attempt_prints_hint(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value={"task": {"id": "task-1"}},
         ), patch(
-            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            "pycodex.cli.main._collect_cloud_attempt_diffs",
             return_value=[
                 {"diff": "diff-1"},
                 {"diff": "diff-2"},
@@ -1832,11 +1836,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_apply_collect_diff_failure_returns_error(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value={"task": {"id": "task-1"}},
         ), patch(
-            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            "pycodex.cli.main._collect_cloud_attempt_diffs",
             side_effect=RuntimeError("collect failed"),
         ):
             code = main(["cloud", "apply", "task-1"], stderr=stderr)
@@ -1846,8 +1850,8 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_apply_bad_payload_format(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value="not-a-dict",
         ):
             code = main(["cloud", "apply", "task-1"], stderr=stderr)
@@ -1857,11 +1861,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_diff_respects_attempt(self):
         stdout = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value={"task": {"id": "task-1"}},
         ), patch(
-            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            "pycodex.cli.main._collect_cloud_attempt_diffs",
             return_value=[
                 {"diff": "diff-1"},
                 {"diff": "diff-2"},
@@ -1874,11 +1878,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_diff_collect_failure_returns_error(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value={"task": {"id": "task-1"}},
         ), patch(
-            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            "pycodex.cli.main._collect_cloud_attempt_diffs",
             side_effect=RuntimeError("collect failed"),
         ):
             code = main(["cloud", "diff", "task-1"], stdout=io.StringIO(), stderr=stderr)
@@ -1888,11 +1892,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_cloud_diff_no_diffs_returns_exit_1(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
-            "pycodex.cli.parser._cloud_request_json",
+        with patch("pycodex.cli.main._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.main._cloud_request_json",
             return_value={"task": {"id": "task-1"}},
         ), patch(
-            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            "pycodex.cli.main._collect_cloud_attempt_diffs",
             return_value=[],
         ):
             code = main(["cloud", "diff", "task-1"], stdout=io.StringIO(), stderr=stderr)
@@ -1937,7 +1941,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 return {"sibling_turns": siblings}
             raise AssertionError("unexpected request to _cloud_request_json")
 
-        with patch("pycodex.cli.parser._cloud_request_json", side_effect=fake_request_json):
+        with patch("pycodex.cli.main._cloud_request_json", side_effect=fake_request_json):
             attempts = _collect_cloud_attempt_diffs(payload, token="access-token", task_id="task-1")
 
         self.assertEqual(len(attempts), 4)
@@ -1978,7 +1982,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 return {"sibling_turns": siblings}
             raise AssertionError("unexpected request")
 
-        with patch("pycodex.cli.parser._cloud_request_json", side_effect=fake_request_json):
+        with patch("pycodex.cli.main._cloud_request_json", side_effect=fake_request_json):
             attempts = _collect_cloud_attempt_diffs(payload, token="access-token", task_id="task-1")
 
         self.assertEqual(len(attempts), 2)
@@ -5200,7 +5204,7 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_login_defaults_to_chatgpt_login_flow(self):
         stderr = io.StringIO()
 
-        with patch("pycodex.cli.parser.run_chatgpt_login", return_value=0) as chatgpt_login:
+        with patch("pycodex.cli.main.run_chatgpt_login", return_value=0) as chatgpt_login:
             code = main(["login"], stderr=stderr)
 
         self.assertEqual(code, 0)
@@ -5211,7 +5215,7 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_login_defaults_to_chatgpt_login_flow_with_experimental_overrides(self):
         stderr = io.StringIO()
 
-        with patch("pycodex.cli.parser.run_chatgpt_login", return_value=0) as chatgpt_login:
+        with patch("pycodex.cli.main.run_chatgpt_login", return_value=0) as chatgpt_login:
             code = main(
                 [
                     "login",
@@ -5257,7 +5261,7 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_login_device_auth(self):
         stderr = io.StringIO()
 
-        with patch("pycodex.cli.parser._run_device_auth_login", return_value=0) as device_auth_call:
+        with patch("pycodex.cli.main._run_device_auth_login", return_value=0) as device_auth_call:
             code = main(["login", "--device-auth"], stderr=stderr)
 
         self.assertEqual(code, 0)
@@ -5267,7 +5271,7 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_login_device_auth_with_experimental_overrides(self):
         stderr = io.StringIO()
 
-        with patch("pycodex.cli.parser._run_device_auth_login", return_value=0) as device_auth_call:
+        with patch("pycodex.cli.main._run_device_auth_login", return_value=0) as device_auth_call:
             code = main(
                 [
                     "login",
@@ -5739,8 +5743,8 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_doctor_reports_status(self):
         stdout = io.StringIO()
 
-        with patch("pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"), patch(
-            "pycodex.cli.parser.doctor_terminal_check",
+        with patch("pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"), patch(
+            "pycodex.cli.main.doctor_terminal_check",
             return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
         ):
             code = main(["doctor"], stdout=stdout)
@@ -5760,12 +5764,12 @@ class TopLevelCliParserTests(unittest.TestCase):
             (Path(tmpdir) / "config.toml").write_text("check_for_update_on_startup = false\n", encoding="utf-8")
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.2.4"
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.2.4"
                 ), patch(
-                    "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+                    "pycodex.cli.doctor.doctor_managed_by_npm", return_value=False
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -5793,12 +5797,12 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", side_effect=RuntimeError("offline")
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", side_effect=RuntimeError("offline")
                 ), patch(
-                    "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+                    "pycodex.cli.doctor.doctor_managed_by_npm", return_value=False
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -5819,12 +5823,12 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=UpdateAction.NPM_GLOBAL_LATEST), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=UpdateAction.NPM_GLOBAL_LATEST), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
                 ), patch(
-                    "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=True
+                    "pycodex.cli.doctor.doctor_managed_by_npm", return_value=True
                 ), patch(
-                    "pycodex.cli.doctor_updates.npm_global_root_check",
+                    "pycodex.cli.doctor.npm_global_root_check",
                     return_value=NpmRootCheck.mismatch(Path("running-pkg"), Path("npm-root") / "@openai" / "codex"),
                 ) as npm_root_check:
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -5868,10 +5872,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 return "1.0.0"
 
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=UpdateAction.BREW_UPGRADE), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", side_effect=fake_fetch
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=UpdateAction.BREW_UPGRADE), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", side_effect=fake_fetch
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -5892,17 +5896,17 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_installation_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.doctor_installation_check",
                     return_value=DoctorUpdateCheck(
                         status="ok",
                         summary="installation looks consistent",
                         details=("install context: other", "managed by npm: false"),
                     ),
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -5923,17 +5927,17 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_system_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.system_check",
                     return_value=DoctorUpdateCheck(
                         status="ok",
                         summary="OS language en-US",
                         details=("os: TestOS", "os language: en-US"),
                     ),
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -5954,10 +5958,10 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(
                         status="ok",
                         summary="terminal metadata was detected",
@@ -5983,17 +5987,17 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_runtime_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.runtime_check",
                     return_value=DoctorUpdateCheck(
                         status="ok",
                         summary="running local build on test-arch",
                         details=("version: test", "platform: test-arch"),
                     ),
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -6015,17 +6019,17 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_search_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.search_check",
                     return_value=DoctorUpdateCheck(
                         status="ok",
                         summary="search is OK (system)",
                         details=("search command: rg", "search provider: system"),
                     ),
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -6046,17 +6050,17 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_background_server_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.background_server_check",
                     return_value=DoctorUpdateCheck(
                         status="ok",
                         summary="background server is not running",
                         details=("status: not running",),
                     ),
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
@@ -6073,8 +6077,8 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_doctor_json_config_failure_uses_rust_fallback_check_set(self):
         stdout = io.StringIO()
-        with patch("pycodex.cli.parser.find_codex_home", side_effect=RuntimeError("home missing")), patch(
-            "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+        with patch("pycodex.cli.main.find_codex_home", side_effect=RuntimeError("home missing")), patch(
+            "pycodex.cli.doctor.doctor_managed_by_npm", return_value=False
         ):
             code = main(["doctor", "--json"], stdout=stdout)
 
@@ -6112,9 +6116,9 @@ class TopLevelCliParserTests(unittest.TestCase):
         stdout = io.StringIO()
         with tempfile.TemporaryDirectory() as tmpdir:
             codex_home = Path(tmpdir)
-            with patch("pycodex.cli.parser.find_codex_home", return_value=codex_home), patch(
-                "pycodex.cli.parser.read_toml_mapping", side_effect=RuntimeError("broken config")
-            ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False):
+            with patch("pycodex.cli.main.find_codex_home", return_value=codex_home), patch(
+                "pycodex.cli.main.read_toml_mapping", side_effect=RuntimeError("broken config")
+            ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False):
                 code = main(["doctor", "--json"], stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
@@ -6136,10 +6140,10 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=UpdateAction.NPM_GLOBAL_LATEST), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=True), patch(
-                    "pycodex.cli.doctor_updates.npm_global_root_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=UpdateAction.NPM_GLOBAL_LATEST), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=True), patch(
+                    "pycodex.cli.doctor.npm_global_root_check",
                     return_value=NpmRootCheck.mismatch(Path("running-pkg"), Path("npm-root") / "@openai" / "codex"),
                 ):
                     code = main(["doctor", "--summary"], stdout=stdout)
@@ -6158,13 +6162,13 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_search_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.search_check",
                     return_value=DoctorUpdateCheck(status="warning", summary="search warning", details=()),
                 ), patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--summary"], stdout=stdout)
@@ -6183,13 +6187,13 @@ class TopLevelCliParserTests(unittest.TestCase):
             os.environ["CODEX_HOME"] = tmpdir
             stdout = io.StringIO()
             try:
-                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
-                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
-                    "pycodex.cli.parser.doctor_installation_check",
+                with patch("pycodex.cli.doctor.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor.updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.main.doctor_installation_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="installation looks consistent", details=()),
                 ) as installation_check, patch(
-                    "pycodex.cli.parser.doctor_terminal_check",
+                    "pycodex.cli.main.doctor_terminal_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--all"], stdout=stdout)
@@ -6223,14 +6227,14 @@ class TopLevelCliParserTests(unittest.TestCase):
             stderr.write("native-err\n")
             return SimpleNamespace(exit_code=7, error_message=None)
 
-        with patch("pycodex.cli.parser.sys.platform", "win32"), patch(
-            "pycodex.cli.parser.build_debug_sandbox_windows_product_plan",
+        with patch("pycodex.cli.main.sys.platform", "win32"), patch(
+            "pycodex.cli.main.build_debug_sandbox_windows_product_plan",
             return_value=native_plan,
         ) as build_plan, patch(
-            "pycodex.cli.parser.run_debug_sandbox_windows_product_session",
+            "pycodex.cli.main.run_debug_sandbox_windows_product_session",
             side_effect=run_product,
         ) as run_native, patch(
-            "pycodex.cli.parser.subprocess.run",
+            "pycodex.cli.main.subprocess.run",
             side_effect=AssertionError("unrestricted subprocess fallback"),
         ):
             code = main(
@@ -6343,9 +6347,9 @@ class TopLevelCliParserTests(unittest.TestCase):
             exit_code = 0
             error_message = None
 
-        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
-            "pycodex.cli.parser.core_exec_enabled", return_value=False
-        ), patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=SuccessResult()):
+        with patch("pycodex.cli.main.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.main.core_exec_enabled", return_value=False
+        ), patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=SuccessResult()):
             code = main(["--strict-config", "exec", "--full-auto", "prompt"], stderr=stderr, stdin="")
 
         self.assertEqual(code, 0)
@@ -6361,8 +6365,14 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_allows_strict_config_for_app_server_root(self):
         stderr = io.StringIO()
+        stdout = io.StringIO()
 
-        code = main(["--strict-config", "app-server"], stderr=stderr)
+        code = main(
+            ["--strict-config", "app-server"],
+            stderr=stderr,
+            stdout=stdout,
+            stdin=io.BytesIO(),
+        )
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr.getvalue(), "")
@@ -6484,10 +6494,10 @@ class TopLevelCliParserTests(unittest.TestCase):
             exit_code = 0
             error_message = None
 
-        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
-            "pycodex.cli.parser.core_exec_enabled", return_value=False
+        with patch("pycodex.cli.main.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.main.core_exec_enabled", return_value=False
         ), patch(
-            "pycodex.cli.parser.remote_exec_session_connect_and_run",
+            "pycodex.cli.main.remote_exec_session_connect_and_run",
             return_value=SuccessResult(),
         ):
             code = main(["exec"], stdin="Summarize this\n", stderr=stderr)
@@ -6503,10 +6513,10 @@ class TopLevelCliParserTests(unittest.TestCase):
             exit_code = 0
             error_message = None
 
-        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
-            "pycodex.cli.parser.core_exec_enabled", return_value=False
+        with patch("pycodex.cli.main.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.main.core_exec_enabled", return_value=False
         ), patch(
-            "pycodex.cli.parser.remote_exec_session_connect_and_run",
+            "pycodex.cli.main.remote_exec_session_connect_and_run",
             return_value=SuccessResult(),
         ):
             code = main(["exec", "-"], stdin="Summarize this\n", stderr=stderr)
@@ -6521,7 +6531,7 @@ class TopLevelCliParserTests(unittest.TestCase):
             with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
                 with patch("pycodex.exec.config_plan.get_git_repo_root", return_value=None):
                     with patch(
-                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        "pycodex.cli.main.remote_exec_session_connect_and_run",
                         side_effect=AssertionError("runtime should not start for untrusted cwd"),
                     ):
                         stderr = io.StringIO()
@@ -6541,10 +6551,10 @@ class TopLevelCliParserTests(unittest.TestCase):
             exit_code = 0
             error_message = None
 
-        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
-            "pycodex.cli.parser.core_exec_enabled", return_value=False
+        with patch("pycodex.cli.main.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.main.core_exec_enabled", return_value=False
         ), patch(
-            "pycodex.cli.parser.remote_exec_session_connect_and_run",
+            "pycodex.cli.main.remote_exec_session_connect_and_run",
             return_value=SuccessResult(),
         ):
             code = main(["exec", "--full-auto", "prompt"], stderr=stderr, stdin="")
@@ -6586,28 +6596,28 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "PYCODEX_EXEC_CORE": "0",
                 },
             ):
-                with patch("pycodex.cli.parser.read_toml_mapping", side_effect=fake_read_toml_mapping) as read_toml, patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                with patch("pycodex.cli.main.read_toml_mapping", side_effect=fake_read_toml_mapping) as read_toml, patch(
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.APPLIED,
                 ) as migrate, patch(
-                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    "pycodex.cli.main.build_exec_config_bootstrap_plan",
                     side_effect=fake_build_bootstrap_plan,
                 ), patch(
-                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    "pycodex.cli.main.prepare_exec_run_plan",
                     return_value=SimpleNamespace(prompt_summary=()),
                 ), patch(
-                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                    "pycodex.cli.main.ensure_exec_trusted_directory"
                 ), patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("local", object(), codex_home),
                 ), patch(
-                    "pycodex.cli.parser._build_exec_session_config",
+                    "pycodex.cli.main._build_exec_session_config",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    "pycodex.cli.main._build_noninteractive_exec_event_processor",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    "pycodex.cli.main.remote_exec_session_connect_and_run",
                     return_value=SuccessResult(),
                 ):
                     code = main(["exec", "--profile", "work", "hello"], stderr=io.StringIO(), stdin="")
@@ -6649,30 +6659,30 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
             ):
                 with patch(
-                    "pycodex.cli.parser.read_toml_mapping",
+                    "pycodex.cli.main.read_toml_mapping",
                     side_effect=fake_read_toml_mapping,
                 ) as read_toml, patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.SKIPPED_NO_SESSIONS,
                 ) as migrate, patch(
-                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    "pycodex.cli.main.build_exec_config_bootstrap_plan",
                     side_effect=fake_build_bootstrap_plan,
                 ), patch(
-                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    "pycodex.cli.main.prepare_exec_run_plan",
                     return_value=SimpleNamespace(prompt_summary=()),
                 ), patch(
-                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                    "pycodex.cli.main.ensure_exec_trusted_directory"
                 ), patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("local", object(), codex_home),
                 ), patch(
-                    "pycodex.cli.parser._build_exec_session_config",
+                    "pycodex.cli.main._build_exec_session_config",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    "pycodex.cli.main._build_noninteractive_exec_event_processor",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    "pycodex.cli.main.remote_exec_session_connect_and_run",
                     return_value=SuccessResult(),
                 ):
                     code = main(["exec", "hello"], stderr=io.StringIO(), stdin="")
@@ -6718,30 +6728,30 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
             ):
                 with patch(
-                    "pycodex.cli.parser.read_toml_mapping",
+                    "pycodex.cli.main.read_toml_mapping",
                     side_effect=fake_read_toml_mapping,
                 ) as read_toml, patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.APPLIED,
                 ) as migrate, patch(
-                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    "pycodex.cli.main.build_exec_config_bootstrap_plan",
                     side_effect=fake_build_bootstrap_plan,
                 ), patch(
-                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    "pycodex.cli.main.prepare_exec_run_plan",
                     return_value=SimpleNamespace(prompt_summary=()),
                 ), patch(
-                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                    "pycodex.cli.main.ensure_exec_trusted_directory"
                 ), patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("local", object(), codex_home),
                 ), patch(
-                    "pycodex.cli.parser._build_exec_session_config",
+                    "pycodex.cli.main._build_exec_session_config",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    "pycodex.cli.main._build_noninteractive_exec_event_processor",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    "pycodex.cli.main.remote_exec_session_connect_and_run",
                     return_value=SuccessResult(),
                 ):
                     code = main(["--profile", "work", "review", "hello"], stderr=io.StringIO(), stdin="")
@@ -6782,30 +6792,30 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
             ):
                 with patch(
-                    "pycodex.cli.parser.read_toml_mapping",
+                    "pycodex.cli.main.read_toml_mapping",
                     side_effect=fake_read_toml_mapping,
                 ) as read_toml, patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.SKIPPED_NO_SESSIONS,
                 ) as migrate, patch(
-                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    "pycodex.cli.main.build_exec_config_bootstrap_plan",
                     side_effect=fake_build_bootstrap_plan,
                 ), patch(
-                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    "pycodex.cli.main.prepare_exec_run_plan",
                     return_value=SimpleNamespace(prompt_summary=()),
                 ), patch(
-                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                    "pycodex.cli.main.ensure_exec_trusted_directory"
                 ), patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("local", object(), codex_home),
                 ), patch(
-                    "pycodex.cli.parser._build_exec_session_config",
+                    "pycodex.cli.main._build_exec_session_config",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    "pycodex.cli.main._build_noninteractive_exec_event_processor",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    "pycodex.cli.main.remote_exec_session_connect_and_run",
                     return_value=SuccessResult(),
                 ):
                     code = main(["--profile", "work", "review", "hello"], stderr=io.StringIO(), stdin="")
@@ -6840,8 +6850,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             return FakeResult()
 
         try:
-            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+            with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -6905,8 +6915,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-test",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "--cd", str(project), "prompt"], stdout=stdout, stderr=stderr)
@@ -6954,8 +6964,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-test",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "--ignore-rules", "prompt"], stdout=stdout, stderr=stderr)
@@ -6989,9 +6999,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-test",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_review_http_sampling", side_effect=fake_run) as run_review:
-                        with patch("pycodex.cli.parser.persist_local_http_exec_rollout") as persist_rollout:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_review_http_sampling", side_effect=fake_run) as run_review:
+                        with patch("pycodex.cli.main.persist_local_http_exec_rollout") as persist_rollout:
                             stdout = io.StringIO()
                             stderr = io.StringIO()
                             code = main(["review", "--uncommitted"], stdout=stdout, stderr=stderr)
@@ -7039,10 +7049,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-test",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_review:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_review:
                         with patch(
-                            "pycodex.cli.parser.run_exec_review_http_sampling",
+                            "pycodex.cli.main.run_exec_review_http_sampling",
                             side_effect=AssertionError("local HTTP review runner should not run when core exec is enabled"),
                         ):
                             stdout = io.StringIO()
@@ -7088,10 +7098,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_review:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_review:
                         with patch(
-                            "pycodex.cli.parser.run_exec_review_http_sampling",
+                            "pycodex.cli.main.run_exec_review_http_sampling",
                             side_effect=AssertionError("local HTTP review runner should not be the API-key default"),
                         ):
                             stdout = io.StringIO()
@@ -7145,8 +7155,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-test",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -7200,8 +7210,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -7261,8 +7271,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["bare prompt"], stdout=stdout, stderr=stderr)
@@ -7322,8 +7332,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["line1\r\nline2\rline3"], stdout=stdout, stderr=stderr)
@@ -7373,8 +7383,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-core",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_core:
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "line1\r\nline2\rline3"], stdout=stdout, stderr=stderr)
@@ -7417,10 +7427,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-core",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_core:
                         with patch(
-                            "pycodex.cli.parser._run_tui",
+                            "pycodex.cli.main._run_tui",
                             side_effect=AssertionError("prompt should run through core exec"),
                         ):
                             stdout = io.StringIO()
@@ -7465,9 +7475,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-core",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
-                        with patch("pycodex.cli.parser._run_tui", side_effect=AssertionError("prompt should run through core exec")):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_core:
+                        with patch("pycodex.cli.main._run_tui", side_effect=AssertionError("prompt should run through core exec")):
                             stdout = io.StringIO()
                             stderr = io.StringIO()
                             code = main(["bare prompt"], stdout=stdout, stderr=stderr)
@@ -7513,10 +7523,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 tokens={"access_token": "access-token", "account_id": "workspace-123"},
             )
             with patch.dict(os.environ, {"CODEX_HOME": tmpdir}, clear=True):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=auth):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                with patch("pycodex.cli.main.read_auth_json", return_value=auth):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_core:
                         with patch(
-                            "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                            "pycodex.cli.main._resolve_exec_remote_endpoint",
                             side_effect=AssertionError("default exec should not resolve app-server endpoint"),
                         ):
                             stdout = io.StringIO()
@@ -7573,21 +7583,21 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
             ):
                 with patch(
-                    "pycodex.cli.parser.read_toml_mapping",
+                    "pycodex.cli.main.read_toml_mapping",
                     side_effect=fake_read_toml_mapping,
                 ) as read_toml, patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.APPLIED,
                 ) as migrate, patch(
-                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    "pycodex.cli.main.build_exec_config_bootstrap_plan",
                     side_effect=fake_build_bootstrap_plan,
                 ), patch(
-                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    "pycodex.cli.main.prepare_exec_run_plan",
                     return_value=SimpleNamespace(prompt_summary="hello"),
                 ), patch(
-                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                    "pycodex.cli.main.ensure_exec_trusted_directory"
                 ), patch(
-                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                    "pycodex.cli.main.build_default_core_exec_runtime",
                     return_value=(
                         SimpleNamespace(state=SimpleNamespace(session_id="s", thread_id="t")),
                         SimpleNamespace(),
@@ -7595,17 +7605,17 @@ class TopLevelCliParserTests(unittest.TestCase):
                         None,
                     ),
                 ), patch(
-                    "pycodex.cli.parser.run_core_exec_command",
+                    "pycodex.cli.main.run_core_exec_command",
                     side_effect=fake_core_run,
                 ) as run_core, patch(
-                    "pycodex.cli.parser.emit_core_exec_result",
+                    "pycodex.cli.main.emit_core_exec_result",
                 ), patch(
-                    "pycodex.cli.parser.emit_core_exec_config_summary",
+                    "pycodex.cli.main.emit_core_exec_config_summary",
                 ), patch(
-                    "pycodex.cli.parser._build_exec_session_config",
+                    "pycodex.cli.main._build_exec_session_config",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    "pycodex.cli.main._build_noninteractive_exec_event_processor",
                     return_value=SimpleNamespace(),
                 ):
                     code = main(["--profile", "work", "hello"], stdout=io.StringIO(), stderr=io.StringIO())
@@ -7649,21 +7659,21 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
             ):
                 with patch(
-                    "pycodex.cli.parser.read_toml_mapping",
+                    "pycodex.cli.main.read_toml_mapping",
                     side_effect=fake_read_toml_mapping,
                 ) as read_toml, patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY,
                 ) as migrate, patch(
-                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    "pycodex.cli.main.build_exec_config_bootstrap_plan",
                     side_effect=fake_build_bootstrap_plan,
                 ), patch(
-                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    "pycodex.cli.main.prepare_exec_run_plan",
                     return_value=SimpleNamespace(prompt_summary="hello"),
                 ), patch(
-                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                    "pycodex.cli.main.ensure_exec_trusted_directory"
                 ), patch(
-                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                    "pycodex.cli.main.build_default_core_exec_runtime",
                     return_value=(
                         SimpleNamespace(state=SimpleNamespace(session_id="s", thread_id="t")),
                         SimpleNamespace(),
@@ -7671,17 +7681,17 @@ class TopLevelCliParserTests(unittest.TestCase):
                         None,
                     ),
                 ), patch(
-                    "pycodex.cli.parser.run_core_exec_command",
+                    "pycodex.cli.main.run_core_exec_command",
                     side_effect=fake_core_run,
                 ) as run_core, patch(
-                    "pycodex.cli.parser.emit_core_exec_result",
+                    "pycodex.cli.main.emit_core_exec_result",
                 ), patch(
-                    "pycodex.cli.parser.emit_core_exec_config_summary",
+                    "pycodex.cli.main.emit_core_exec_config_summary",
                 ), patch(
-                    "pycodex.cli.parser._build_exec_session_config",
+                    "pycodex.cli.main._build_exec_session_config",
                     return_value=SimpleNamespace(),
                 ), patch(
-                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    "pycodex.cli.main._build_noninteractive_exec_event_processor",
                     return_value=SimpleNamespace(),
                 ):
                     code = main(["--profile", "work", "hello"], stdout=io.StringIO(), stderr=io.StringIO())
@@ -7743,8 +7753,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -7804,6 +7814,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir) / "project"
             project.mkdir()
+            (project / ".git").mkdir()
             with patch.dict(
                 os.environ,
                 {
@@ -7815,8 +7826,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", return_value=FakeResponse()):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", return_value=FakeResponse()):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -7872,8 +7883,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -7939,6 +7950,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir) / "project"
             project.mkdir()
+            (project / ".git").mkdir()
             with patch.dict(
                 os.environ,
                 {
@@ -7951,8 +7963,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8047,8 +8059,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8117,8 +8129,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -8238,8 +8250,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8375,8 +8387,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8463,8 +8475,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8555,8 +8567,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8654,8 +8666,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8782,8 +8794,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8882,8 +8894,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -8972,8 +8984,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-smoke",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -9076,8 +9088,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -9170,8 +9182,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -9258,8 +9270,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -9357,8 +9369,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -9430,8 +9442,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", return_value=FakeResponse()):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", return_value=FakeResponse()):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -9518,8 +9530,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -9605,8 +9617,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", return_value=FakeResponse()):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", return_value=FakeResponse()):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -9673,9 +9685,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
                     with patch("pycodex.exec.local_runtime.run_exec_tool_output_http_sampling", side_effect=fake_followup):
-                        with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.cli.main.read_auth_json", return_value=None):
                             stdout = io.StringIO()
                             stderr = io.StringIO()
                             code = main(
@@ -9732,8 +9744,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             return FakeResponse()
 
         try:
-            with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+            with patch("pycodex.core.client.urlopen", side_effect=opener):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -9811,9 +9823,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                 return FakeResponse()
 
             try:
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
                     with patch.dict(os.environ, {"CODEX_HOME": tmpdir}):
-                        with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.cli.main.read_auth_json", return_value=None):
                             stdout = io.StringIO()
                             stderr = io.StringIO()
                             code = main(["exec", "resume", thread_id, "hello"], stdout=stdout, stderr=stderr)
@@ -9922,8 +9934,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -10005,7 +10017,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
             ):
                 with patch("pycodex.exec.local_runtime.run_exec_user_turn_http_sampling", side_effect=fake_run):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "resume", thread_id, "resume interrupted"], stdout=stdout, stderr=stderr)
@@ -10109,8 +10121,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -10249,8 +10261,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -10329,8 +10341,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             return FakeResult()
 
         try:
-            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+            with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10369,7 +10381,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         os.environ.pop("CODEX_API_KEY", None)
 
         try:
-            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+            with patch("pycodex.cli.main.read_auth_json", return_value=None):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10405,7 +10417,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10449,8 +10461,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", return_value=ContextWindowResponse()):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", return_value=ContextWindowResponse()):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10470,7 +10482,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         os.environ.pop("CODEX_API_KEY", None)
 
         try:
-            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+            with patch("pycodex.cli.main.read_auth_json", return_value=None):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10527,8 +10539,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", return_value=ContextWindowResponse()):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", return_value=ContextWindowResponse()):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10560,8 +10572,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10599,8 +10611,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10630,8 +10642,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             raise RuntimeError("Responses API request failed with HTTP 400: bad schema")
 
         try:
-            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+            with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10665,8 +10677,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             raise RuntimeError("Responses API request failed with HTTP 400: bad schema")
 
         try:
-            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+            with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10712,8 +10724,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10746,8 +10758,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10782,9 +10794,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                        with patch("pycodex.core.client.http_sampling_stream_max_retries", return_value=0):
                             with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
@@ -10851,8 +10863,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
                         with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=1):
                             with patch("pycodex.core.session.turn.runtime._sleep_for_sampling_retry", side_effect=no_retry_sleep):
                                 stdout = io.StringIO()
@@ -10896,9 +10908,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                        with patch("pycodex.core.client.http_sampling_stream_max_retries", return_value=0):
                             with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
@@ -10941,9 +10953,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                        with patch("pycodex.core.client.http_sampling_stream_max_retries", return_value=0):
                             with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
@@ -10974,9 +10986,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                        with patch("pycodex.core.client.http_sampling_stream_max_retries", return_value=0):
                             with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
@@ -11004,9 +11016,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_MODEL": "",
                 },
             ):
-                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
-                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                with patch("pycodex.core.client.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                        with patch("pycodex.core.client.http_sampling_stream_max_retries", return_value=0):
                             with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
@@ -11045,8 +11057,8 @@ class TopLevelCliParserTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 last_message_path = Path(tmpdir) / "last-message.txt"
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -11099,8 +11111,8 @@ class TopLevelCliParserTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 last_message_path = Path(tmpdir) / "last-message.txt"
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
@@ -11159,10 +11171,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         try:
             with patch(
-                "pycodex.cli.parser.read_auth_json",
+                "pycodex.cli.main.read_auth_json",
                 return_value=AuthDotJson(openai_api_key="sk-auth-json"),
             ):
-                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -11229,8 +11241,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -11286,10 +11298,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         try:
             with patch(
-                "pycodex.cli.parser.read_auth_json",
+                "pycodex.cli.main.read_auth_json",
                 return_value=AuthDotJson(openai_api_key="sk-auth-json"),
             ):
-                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -11325,10 +11337,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11363,10 +11375,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11396,11 +11408,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("ws://127.0.0.1:4500", fake_endpoint, Path(tmpdir)),
                 ):
                     with patch(
-                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        "pycodex.cli.main.remote_exec_session_connect_and_run",
                         return_value=FailedResult(),
                     ):
                         stderr = io.StringIO()
@@ -11442,11 +11454,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("ws://127.0.0.1:4500", fake_endpoint, Path(tmpdir)),
                 ):
                     with patch(
-                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        "pycodex.cli.main.remote_exec_session_connect_and_run",
                         return_value=FailedResult(),
                     ):
                         stderr = io.StringIO()
@@ -11486,11 +11498,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=(f"unix://{endpoint_path}", fake_endpoint, Path(tmpdir)),
                 ):
                     with patch(
-                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        "pycodex.cli.main.remote_exec_session_connect_and_run",
                         return_value=FailedResult(),
                     ):
                         stderr = io.StringIO()
@@ -11620,10 +11632,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11655,10 +11667,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11688,10 +11700,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11721,10 +11733,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11754,10 +11766,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11788,10 +11800,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11821,10 +11833,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
             try:
                 with patch(
-                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    "pycodex.cli.main._resolve_exec_remote_endpoint",
                     return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
                 ):
-                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                    with patch("pycodex.cli.main.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
                         code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
@@ -11955,7 +11967,7 @@ class TopLevelCliParserTests(unittest.TestCase):
             seen.append(prompt)
             return 0, "terminal answer\n"
 
-        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+        with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
             code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\r\n/quit\n"))
 
         self.assertEqual(code, 0)
@@ -11984,7 +11996,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         def fake_exec(_prompt):
             return 0, "assistant reply\n"
 
-        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+        with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
             code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\n/quit\n"))
 
         self.assertEqual(code, 0)
@@ -12004,7 +12016,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         def fake_exec(_prompt):
             return 7, "ERROR: live auth failed\nTry `codex login`.\n"
 
-        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+        with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
             code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\n"))
 
         self.assertEqual(code, 7)
@@ -12027,7 +12039,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         def fake_exec(_prompt):
             return 0, long_answer + "\n"
 
-        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+        with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
             code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("long answer\n/quit\n"))
 
         self.assertEqual(code, 0)
@@ -12059,7 +12071,7 @@ class TopLevelCliParserTests(unittest.TestCase):
             return 0, long_answer + "\n"
 
         with patch("pycodex.tui.shutil.get_terminal_size", return_value=os.terminal_size((40, 10))):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
                 code = main([], stdout=stdout, stderr=stderr, stdin=TtyInput("long\n\n\n\nq\nquit\n"))
 
         self.assertEqual(code, 0)
@@ -12081,7 +12093,7 @@ class TopLevelCliParserTests(unittest.TestCase):
             return 0, "short transcript answer\n"
 
         with patch("pycodex.tui.shutil.get_terminal_size", return_value=os.terminal_size((60, 12))):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
                 code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\n/transcript\nq\nquit\n"))
 
         self.assertEqual(code, 0)
@@ -12101,7 +12113,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         stderr = io.StringIO()
 
         with patch(
-            "pycodex.cli.parser._build_tui_core_active_thread_runtime",
+            "pycodex.cli.main._build_tui_core_active_thread_runtime",
             return_value=ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "")),
         ):
             code = main(["--no-alt-screen"], stdout=stdout, stderr=stderr, stdin=io.StringIO("/quit\n"))
@@ -12131,7 +12143,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=runtime):
                 with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         ["--no-alt-screen"],
@@ -12166,7 +12178,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         runtime.session_config = SimpleNamespace(tui_alternate_screen=AltScreenMode.NEVER)
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=runtime):
                 with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         [],
@@ -12194,20 +12206,20 @@ class TopLevelCliParserTests(unittest.TestCase):
         parsed = parse_args([])
         codex_home = Path("C:/Users/test/.codex")
 
-        with patch("pycodex.cli.parser.find_codex_home", return_value=str(codex_home)):
+        with patch("pycodex.cli.main.find_codex_home", return_value=str(codex_home)):
             with patch(
-                "pycodex.cli.parser.read_toml_mapping",
+                "pycodex.cli.main.read_toml_mapping",
                 return_value={"model": "gpt-5.5", "model_reasoning_summary": "none"},
             ):
                 with patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.SKIPPED_MARKER,
                 ):
-                    with patch("pycodex.cli.parser.ensure_exec_trusted_directory"):
-                        with patch("pycodex.cli.parser._execpolicy_rules_for_local_http_exec", return_value=()):
-                            with patch("pycodex.cli.parser.read_auth_json", return_value={}):
+                    with patch("pycodex.cli.main.ensure_exec_trusted_directory"):
+                        with patch("pycodex.cli.main._execpolicy_rules_for_local_http_exec", return_value=()):
+                            with patch("pycodex.cli.main.read_auth_json", return_value={}):
                                 with patch(
-                                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                                    "pycodex.cli.main.build_default_core_exec_runtime",
                                     return_value=(
                                         SimpleNamespace(thread_id=None, session_id=None),
                                         SimpleNamespace(),
@@ -12228,17 +12240,17 @@ class TopLevelCliParserTests(unittest.TestCase):
         codex_home = Path("C:/Users/test/.codex")
         config_toml = {"projects": {str(root).lower(): {"trust_level": "trusted"}}}
 
-        with patch("pycodex.cli.parser.find_codex_home", return_value=str(codex_home)):
-            with patch("pycodex.cli.parser.read_toml_mapping", return_value=config_toml):
+        with patch("pycodex.cli.main.find_codex_home", return_value=str(codex_home)):
+            with patch("pycodex.cli.main.read_toml_mapping", return_value=config_toml):
                 with patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.SKIPPED_MARKER,
                 ):
-                    with patch("pycodex.cli.parser.ensure_exec_trusted_directory"):
-                        with patch("pycodex.cli.parser._execpolicy_rules_for_local_http_exec", return_value=()):
-                            with patch("pycodex.cli.parser.read_auth_json", return_value={}):
+                    with patch("pycodex.cli.main.ensure_exec_trusted_directory"):
+                        with patch("pycodex.cli.main._execpolicy_rules_for_local_http_exec", return_value=()):
+                            with patch("pycodex.cli.main.read_auth_json", return_value={}):
                                 with patch(
-                                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                                    "pycodex.cli.main.build_default_core_exec_runtime",
                                     return_value=(
                                         SimpleNamespace(thread_id=None, session_id=None),
                                         SimpleNamespace(),
@@ -12264,17 +12276,17 @@ class TopLevelCliParserTests(unittest.TestCase):
             "permission_profile": ":danger-no-sandbox",
         }
 
-        with patch("pycodex.cli.parser.find_codex_home", return_value=str(codex_home)):
-            with patch("pycodex.cli.parser.read_toml_mapping", return_value=config_toml):
+        with patch("pycodex.cli.main.find_codex_home", return_value=str(codex_home)):
+            with patch("pycodex.cli.main.read_toml_mapping", return_value=config_toml):
                 with patch(
-                    "pycodex.cli.parser.maybe_migrate_personality",
+                    "pycodex.cli.main.maybe_migrate_personality",
                     return_value=PersonalityMigrationStatus.SKIPPED_MARKER,
                 ):
-                    with patch("pycodex.cli.parser.ensure_exec_trusted_directory"):
-                        with patch("pycodex.cli.parser._execpolicy_rules_for_local_http_exec", return_value=()):
-                            with patch("pycodex.cli.parser.read_auth_json", return_value={}):
+                    with patch("pycodex.cli.main.ensure_exec_trusted_directory"):
+                        with patch("pycodex.cli.main._execpolicy_rules_for_local_http_exec", return_value=()):
+                            with patch("pycodex.cli.main.read_auth_json", return_value={}):
                                 with patch(
-                                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                                    "pycodex.cli.main.build_default_core_exec_runtime",
                                     return_value=(
                                         SimpleNamespace(thread_id=None, session_id=None),
                                         SimpleNamespace(),
@@ -12302,7 +12314,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime) as build_runtime:
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=runtime) as build_runtime:
                 code = main(
                     ["--no-alt-screen"],
                     stdout=stdout,
@@ -12332,7 +12344,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         stderr = io.StringIO()
 
         with patch.dict(os.environ, {"TERM": "dumb"}):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime") as build_runtime:
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime") as build_runtime:
                 code = main(
                     ["--no-alt-screen"],
                     stdout=stdout,
@@ -13055,6 +13067,11 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(reply_call["result"]["structuredContent"]["threadId"], thread_id)
 
     def test_main_resume_without_fallback_uses_terminal_tui_path(self):
+        class ResumeRuntime(ExecFunctionActiveThreadRuntime):
+            def list_resume_threads(self, *, include_non_interactive: bool = False):
+                del include_non_interactive
+                return ()
+
         class TtyInput(io.StringIO):
             def isatty(self):
                 return True
@@ -13065,10 +13082,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         stdout = TtyOutput()
         stderr = io.StringIO()
-        runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
+        runtime = ResumeRuntime(lambda _prompt: (0, "unused"))
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=runtime):
                 with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         ["resume", "--last"],
@@ -13093,7 +13110,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         previous = os.environ.get("PYCODEX_RESUME_EXEC_FALLBACK")
         os.environ["PYCODEX_RESUME_EXEC_FALLBACK"] = "1"
         try:
-            with patch("pycodex.cli.parser._run_noninteractive_exec", return_value=7) as run_noninteractive:
+            with patch("pycodex.cli.main._run_noninteractive_exec", return_value=7) as run_noninteractive:
                 code = main(
                     ["resume", "abc", "--include-non-interactive", "--all"],
                     stdout=stdout,
@@ -13116,7 +13133,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_fork_routes_to_terminal_tui_startup(self):
         stderr = io.StringIO()
-        with patch("pycodex.cli.parser._run_tui", return_value=13) as run_tui:
+        with patch("pycodex.cli.main._run_tui", return_value=13) as run_tui:
             code = main(["fork", "abc"], stderr=stderr)
 
         self.assertEqual(code, 13)
@@ -13142,7 +13159,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
-            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+            with patch("pycodex.cli.main._build_tui_core_active_thread_runtime", return_value=runtime):
                 with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         ["fork"],
@@ -13168,7 +13185,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         previous = os.environ.get("PYCODEX_FORK_EXEC_FALLBACK")
         os.environ["PYCODEX_FORK_EXEC_FALLBACK"] = "1"
         try:
-            with patch("pycodex.cli.parser._run_noninteractive_exec", return_value=11) as run_noninteractive:
+            with patch("pycodex.cli.main._run_noninteractive_exec", return_value=11) as run_noninteractive:
                 code = main(
                     ["fork", "abc", "--all"],
                     stdout=stdout,
@@ -13560,7 +13577,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("Usage: codex features", stdout.getvalue())
 
     def test_main_features_list_with_search_sets_web_search_override(self):
-        with patch("pycodex.cli.parser.run_features_command", return_value=0) as run_features:
+        with patch("pycodex.cli.main.run_features_command", return_value=0) as run_features:
             code = main(["--search", "features", "list"])
 
         self.assertEqual(code, 0)
@@ -13877,8 +13894,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "LOCAL_OPENAI_KEY": "sk-local",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
@@ -13928,9 +13945,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
                     with patch(
-                        "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                        "pycodex.cli.main.run_exec_user_turn_with_shell_tools_http_sampling",
                         side_effect=fake_run,
                     ) as run_tool_loop:
                         stdout = io.StringIO()
@@ -13977,10 +13994,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run) as run_core:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_exec_user_turn_http_sampling", side_effect=fake_run) as run_core:
                         with patch(
-                            "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                            "pycodex.cli.main.run_exec_user_turn_with_shell_tools_http_sampling",
                             side_effect=AssertionError("legacy shell loop should not run by default"),
                         ):
                             stdout = io.StringIO()
@@ -14029,10 +14046,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_core:
                         with patch(
-                            "pycodex.cli.parser.run_exec_user_turn_http_sampling",
+                            "pycodex.cli.main.run_exec_user_turn_http_sampling",
                             side_effect=AssertionError("local HTTP wrapper should not run when core exec is enabled"),
                         ):
                             stdout = io.StringIO()
@@ -14081,10 +14098,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.run_core_exec_command", side_effect=fake_run) as run_core:
                         with patch(
-                            "pycodex.cli.parser.run_exec_user_turn_http_sampling",
+                            "pycodex.cli.main.run_exec_user_turn_http_sampling",
                             side_effect=AssertionError("legacy local HTTP runner should not be the API-key default"),
                         ):
                             stdout = io.StringIO()
@@ -14133,9 +14150,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                 clear=False,
             ):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS", None)
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
                     with patch(
-                        "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                        "pycodex.cli.main.run_exec_user_turn_with_shell_tools_http_sampling",
                         side_effect=fake_run,
                     ):
                         stdout = io.StringIO()
@@ -14191,9 +14208,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                 },
                 clear=False,
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
                     with patch(
-                        "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                        "pycodex.cli.main.run_exec_user_turn_with_shell_tools_http_sampling",
                         side_effect=fake_run,
                     ):
                         stdout = io.StringIO()
@@ -14248,10 +14265,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.align_local_http_exec_resume_model_client", side_effect=fake_align):
                         with patch(
-                            "pycodex.cli.parser.run_exec_resume_user_turn_http_sampling",
+                            "pycodex.cli.main.run_exec_resume_user_turn_http_sampling",
                             side_effect=fake_resume_run,
                         ) as resume_runner:
                             stdout = io.StringIO()
@@ -14318,14 +14335,14 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.resolve_core_exec_resume_target", side_effect=fake_align):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.resolve_core_exec_resume_target", side_effect=fake_align):
                         with patch(
-                            "pycodex.cli.parser.run_core_exec_command",
+                            "pycodex.cli.main.run_core_exec_command",
                             side_effect=fake_resume_run,
                         ) as resume_runner:
                             with patch(
-                                "pycodex.cli.parser.run_exec_resume_user_turn_http_sampling",
+                                "pycodex.cli.main.run_exec_resume_user_turn_http_sampling",
                                 side_effect=AssertionError("local HTTP resume runner should not run when core exec is enabled"),
                             ):
                                 stdout = io.StringIO()
@@ -14380,10 +14397,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.resolve_core_exec_resume_target", return_value=None):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.resolve_core_exec_resume_target", return_value=None):
                         with patch(
-                            "pycodex.cli.parser.run_core_exec_command",
+                            "pycodex.cli.main.run_core_exec_command",
                             side_effect=fake_resume_run,
                         ) as resume_runner:
                             stdout = io.StringIO()
@@ -14435,9 +14452,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
-                        with patch("pycodex.cli.parser.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                        with patch("pycodex.cli.main.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
                             stdout = io.StringIO()
                             stderr = io.StringIO()
                             code = main(["exec", "resume", "named-session", "hello"], stdout=stdout, stderr=stderr)
@@ -14488,9 +14505,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
-                        with patch("pycodex.cli.parser.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                        with patch("pycodex.cli.main.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
                             stdout = io.StringIO()
                             stderr = io.StringIO()
                             code = main(["exec", "resume", "--last", "hello"], stdout=stdout, stderr=stderr)
@@ -14549,9 +14566,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
-                        with patch("pycodex.cli.parser.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.main.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                        with patch("pycodex.cli.main.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
                             stdout = io.StringIO()
                             stderr = io.StringIO()
                             code = main(
@@ -14578,7 +14595,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
@@ -14598,7 +14615,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "OPENAI_API_KEY": "sk-env",
                 },
             ):
-                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.main.read_auth_json", return_value=None):
                     stdout = io.StringIO()
                     stderr = io.StringIO()
                     code = main(["exec", "hello"], stdout=stdout, stderr=stderr)

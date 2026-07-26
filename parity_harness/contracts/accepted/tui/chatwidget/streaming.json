@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.streaming",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::streaming",
+    "source": "codex/codex-rs/tui/src/chatwidget/streaming.rs",
+    "anchors": [
+      "active_cell_is_stream_tail",
+      "clear_active_stream_tail",
+      "defer_or_handle",
+      "finalize_completed_assistant_message",
+      "flush_answer_stream_with_separator",
+      "flush_interrupt_queue",
+      "handle_stream_finished",
+      "handle_streaming_delta",
+      "has_active_stream_tail",
+      "maybe_restore_status_indicator_after_stream_idle",
+      "on_agent_message_delta",
+      "on_agent_message_item_completed"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/streaming.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/streaming.py"
+    ],
+    "anchors": [
+      "active_cell_is_stream_tail",
+      "clear_active_stream_tail",
+      "defer_or_handle",
+      "finalize_completed_assistant_message",
+      "flush_answer_stream_with_separator",
+      "flush_interrupt_queue",
+      "handle_stream_finished",
+      "handle_streaming_delta",
+      "has_active_stream_tail",
+      "maybe_restore_status_indicator_after_stream_idle",
+      "on_agent_message_delta",
+      "on_agent_message_item_completed"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

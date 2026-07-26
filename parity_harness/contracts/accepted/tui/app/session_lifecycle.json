@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.app.session_lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::session_lifecycle",
+    "source": "codex/codex-rs/tui/src/app/session_lifecycle.rs",
+    "anchors": [
+      "attach_live_thread_for_selection",
+      "can_fallback_from_include_turns_error",
+      "closed_state_for_thread_read_error",
+      "is_terminal_thread_read_error",
+      "open_agent_picker",
+      "refresh_agent_picker_thread_liveness",
+      "resume_target_session",
+      "select_agent_thread",
+      "start_fresh_session_with_summary_hint"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/session_lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/session_lifecycle.py"
+    ],
+    "anchors": [
+      "attach_live_thread_for_selection",
+      "can_fallback_from_include_turns_error",
+      "closed_state_for_thread_read_error",
+      "is_terminal_thread_read_error",
+      "open_agent_picker",
+      "refresh_agent_picker_thread_liveness",
+      "resume_target_session",
+      "select_agent_thread",
+      "start_fresh_session_with_summary_hint"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

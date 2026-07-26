@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.plugins.render",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "plugins::render",
+    "source": "codex/codex-rs/core/src/plugins/render.rs",
+    "anchors": [
+      "render_explicit_plugin_instructions"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/plugins/render.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/plugins/render.py"
+    ],
+    "anchors": [
+      "render_explicit_plugin_instructions"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

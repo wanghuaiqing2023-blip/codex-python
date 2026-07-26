@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.runtimes.apply_patch",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::runtimes::apply_patch",
+    "source": "codex/codex-rs/core/src/tools/runtimes/apply_patch.rs",
+    "anchors": [
+      "ApplyPatchApprovalKey",
+      "ApplyPatchRequest",
+      "ApplyPatchRuntime",
+      "ApplyPatchRuntimeOutput",
+      "committed_delta",
+      "approval_keys",
+      "escalate_on_failure",
+      "exec_approval_requirement",
+      "permission_request_payload",
+      "run",
+      "sandbox_cwd",
+      "sandbox_preference"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/runtimes/apply_patch.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/runtimes/apply_patch.py"
+    ],
+    "anchors": [
+      "ApplyPatchApprovalKey",
+      "ApplyPatchRequest",
+      "ApplyPatchRuntime",
+      "ApplyPatchRuntimeOutput",
+      "committed_delta",
+      "approval_keys",
+      "escalate_on_failure",
+      "exec_approval_requirement",
+      "permission_request_payload",
+      "run",
+      "sandbox_cwd",
+      "sandbox_preference"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

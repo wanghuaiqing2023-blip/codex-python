@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.pets.picker",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pets::picker",
+    "source": "codex/codex-rs/tui/src/pets/picker.rs",
+    "anchors": [
+      "PET_PICKER_VIEW_ID",
+      "build_pet_picker_params",
+      "PET_PICKER_PREVIEW_WIDTH",
+      "PetPickerEntry",
+      "available_pet_entries",
+      "custom_pet_entries"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pets/picker.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pets/picker.py"
+    ],
+    "anchors": [
+      "PET_PICKER_VIEW_ID",
+      "build_pet_picker_params",
+      "PET_PICKER_PREVIEW_WIDTH",
+      "PetPickerEntry",
+      "available_pet_entries",
+      "custom_pet_entries"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

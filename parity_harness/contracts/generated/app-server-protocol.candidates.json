@@ -1,0 +1,1235 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "app-server-protocol",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 42,
+    "python_files": 37,
+    "modules_with_candidates": 37,
+    "modules_with_anchors": 36
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "bin::export",
+        "source": "codex/codex-rs/app-server-protocol/src/bin/export.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/export.py",
+          "anchor_candidates": []
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "bin::write_schema_fixtures",
+        "source": "codex/codex-rs/app-server-protocol/src/bin/write_schema_fixtures.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "crate",
+        "source": "codex/codex-rs/app-server-protocol/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/__init__.py",
+          "anchor_candidates": [
+            "ApplyPatchApprovalParams",
+            "ApplyPatchApprovalResponse",
+            "ClientInfo",
+            "ConversationGitInfo",
+            "ConversationSummary",
+            "ExecCommandApprovalParams",
+            "ExecCommandApprovalResponse",
+            "GenerateTsOptions",
+            "GetAuthStatusParams",
+            "GetAuthStatusResponse",
+            "GetConversationSummaryParams",
+            "GetConversationSummaryResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "experimental_api",
+        "source": "codex/codex-rs/app-server-protocol/src/experimental_api.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/experimental_api.py",
+          "anchor_candidates": [
+            "ExperimentalApi",
+            "ExperimentalField",
+            "experimental_fields",
+            "experimental_required_message",
+            "experimental_reason"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "export",
+        "source": "codex/codex-rs/app-server-protocol/src/export.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/export.py",
+          "anchor_candidates": [
+            "GENERATED_TS_HEADER",
+            "GenerateTsOptions",
+            "GeneratedSchema",
+            "filter_experimental_ts_tree",
+            "generate_index_ts_tree",
+            "generate_internal_json_schema",
+            "generate_json",
+            "generate_json_with_experimental",
+            "generate_ts",
+            "generate_ts_with_options",
+            "generate_types",
+            "trim_trailing_line_whitespace"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "jsonrpc_lite",
+        "source": "codex/codex-rs/app-server-protocol/src/jsonrpc_lite.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/jsonrpc_lite.py",
+          "anchor_candidates": [
+            "JSONRPCError",
+            "JSONRPCErrorError",
+            "JSONRPCMessage",
+            "JSONRPCNotification",
+            "JSONRPCRequest",
+            "JSONRPCResponse",
+            "JSONRPC_VERSION",
+            "RequestId",
+            "Result"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::common",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/common.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/common.py",
+          "anchor_candidates": [
+            "AuthMode",
+            "ClientNotification",
+            "ClientRequest",
+            "ClientRequestSerializationScope",
+            "FuzzyFileSearchMatchType",
+            "FuzzyFileSearchParams",
+            "FuzzyFileSearchResponse",
+            "FuzzyFileSearchResult",
+            "FuzzyFileSearchSessionCompletedNotification",
+            "FuzzyFileSearchSessionStartParams",
+            "FuzzyFileSearchSessionStartResponse",
+            "FuzzyFileSearchSessionStopParams"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::event_mapping",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/event_mapping.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/event_mapping.py",
+          "anchor_candidates": [
+            "item_event_to_server_notification"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::item_builders",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/item_builders.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/item_builders.py",
+          "anchor_candidates": [
+            "build_command_execution_approval_request_item",
+            "build_command_execution_begin_item",
+            "build_command_execution_end_item",
+            "build_file_change_approval_request_item",
+            "build_file_change_begin_item",
+            "build_file_change_end_item",
+            "build_item_from_guardian_event",
+            "convert_patch_changes",
+            "guardian_auto_approval_review_notification",
+            "format_file_change_diff",
+            "map_patch_change_kind"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::mappers",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/mappers.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::serde_helpers",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/serde_helpers.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::thread_history",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/thread_history.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/thread_history.py",
+          "anchor_candidates": [
+            "ThreadHistoryBuilder",
+            "active_turn_id_if_explicit",
+            "active_turn_position",
+            "active_turn_snapshot",
+            "active_turn_start_index",
+            "build_turns_from_rollout_items",
+            "finish",
+            "handle_event",
+            "handle_rollout_item",
+            "has_active_turn",
+            "reset",
+            "build_user_inputs"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v1",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v1.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/v1.py",
+          "anchor_candidates": [
+            "ApplyPatchApprovalParams",
+            "ApplyPatchApprovalResponse",
+            "ClientInfo",
+            "ConversationGitInfo",
+            "ConversationSummary",
+            "ExecCommandApprovalParams",
+            "ExecCommandApprovalResponse",
+            "ExecOneOffCommandParams",
+            "GetAuthStatusParams",
+            "GetAuthStatusResponse",
+            "GetConversationSummaryParams",
+            "GetConversationSummaryResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::account",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/account.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/account.py",
+          "anchor_candidates": [
+            "Account",
+            "AccountLoginCompletedNotification",
+            "AccountRateLimitsUpdatedNotification",
+            "AccountUpdatedNotification",
+            "AddCreditsNudgeCreditType",
+            "AddCreditsNudgeEmailStatus",
+            "CancelLoginAccountParams",
+            "CancelLoginAccountResponse",
+            "CancelLoginAccountStatus",
+            "ChatgptAuthTokensRefreshParams",
+            "ChatgptAuthTokensRefreshReason",
+            "ChatgptAuthTokensRefreshResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::apps",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/apps.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/apps.py",
+          "anchor_candidates": [
+            "AppBranding",
+            "AppInfo",
+            "AppListUpdatedNotification",
+            "AppMetadata",
+            "AppReview",
+            "AppScreenshot",
+            "AppSummary",
+            "AppsListParams",
+            "AppsListResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::attestation",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/attestation.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/attestation.py",
+          "anchor_candidates": [
+            "AttestationGenerateParams",
+            "AttestationGenerateResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::collaboration_mode",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/collaboration_mode.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/collaboration_mode.py",
+          "anchor_candidates": [
+            "CollaborationModeListParams",
+            "CollaborationModeListResponse",
+            "CollaborationModeMask"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::command_exec",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/command_exec.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/command_exec.py",
+          "anchor_candidates": [
+            "CommandExecOutputDeltaNotification",
+            "CommandExecOutputStream",
+            "CommandExecParams",
+            "CommandExecResizeParams",
+            "CommandExecResizeResponse",
+            "CommandExecResponse",
+            "CommandExecTerminalSize",
+            "CommandExecTerminateParams",
+            "CommandExecTerminateResponse",
+            "CommandExecWriteParams",
+            "CommandExecWriteResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::config",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/config.py",
+          "anchor_candidates": [
+            "AnalyticsConfig",
+            "AppConfig",
+            "AppToolApproval",
+            "AppToolConfig",
+            "AppToolsConfig",
+            "AppsConfig",
+            "AppsDefaultConfig",
+            "CommandMigration",
+            "ComputerUseRequirements",
+            "Config",
+            "ConfigBatchWriteParams",
+            "ConfigEdit"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::environment",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/environment.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/environment.py",
+          "anchor_candidates": [
+            "EnvironmentAddParams",
+            "EnvironmentAddResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::experimental_feature",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/experimental_feature.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/experimental_feature.py",
+          "anchor_candidates": [
+            "ExperimentalFeature",
+            "ExperimentalFeatureEnablementSetParams",
+            "ExperimentalFeatureEnablementSetResponse",
+            "ExperimentalFeatureListParams",
+            "ExperimentalFeatureListResponse",
+            "ExperimentalFeatureStage"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::feedback",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/feedback.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/feedback.py",
+          "anchor_candidates": [
+            "FeedbackUploadParams",
+            "FeedbackUploadResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::fs",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/fs.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/fs.py",
+          "anchor_candidates": [
+            "FsChangedNotification",
+            "FsCopyParams",
+            "FsCopyResponse",
+            "FsCreateDirectoryParams",
+            "FsCreateDirectoryResponse",
+            "FsGetMetadataParams",
+            "FsGetMetadataResponse",
+            "FsReadDirectoryEntry",
+            "FsReadDirectoryParams",
+            "FsReadDirectoryResponse",
+            "FsReadFileParams",
+            "FsReadFileResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::hook",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/hook.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/hook.py",
+          "anchor_candidates": [
+            "HookCompletedNotification",
+            "HookEventName",
+            "HookExecutionMode",
+            "HookHandlerType",
+            "HookOutputEntry",
+            "HookOutputEntryKind",
+            "HookRunStatus",
+            "HookRunSummary",
+            "HookScope",
+            "HookSource",
+            "HookStartedNotification",
+            "HookTrustStatus"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::item",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/item.py",
+          "anchor_candidates": [
+            "AgentMessageDeltaNotification",
+            "AutoReviewDecisionSource",
+            "CollabAgentState",
+            "CollabAgentStatus",
+            "CollabAgentTool",
+            "CollabAgentToolCallStatus",
+            "CommandAction",
+            "CommandExecutionApprovalDecision",
+            "CommandExecutionOutputDeltaNotification",
+            "CommandExecutionRequestApprovalParams",
+            "CommandExecutionRequestApprovalResponse",
+            "CommandExecutionSource"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::mcp",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/mcp.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/mcp.py",
+          "anchor_candidates": [
+            "ListMcpServerStatusParams",
+            "ListMcpServerStatusResponse",
+            "McpAuthStatus",
+            "McpElicitationArrayType",
+            "McpElicitationBooleanType",
+            "McpElicitationConstOption",
+            "McpElicitationNumberType",
+            "McpElicitationObjectType",
+            "McpElicitationSchema",
+            "McpElicitationStringFormat",
+            "McpElicitationStringType",
+            "McpResourceReadParams"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::model",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/model.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/model.py",
+          "anchor_candidates": [
+            "Model",
+            "ModelAvailabilityNux",
+            "ModelListParams",
+            "ModelListResponse",
+            "ModelProviderCapabilitiesReadParams",
+            "ModelProviderCapabilitiesReadResponse",
+            "ModelRerouteReason",
+            "ModelReroutedNotification",
+            "ModelServiceTier",
+            "ModelUpgradeInfo",
+            "ModelVerification",
+            "ModelVerificationNotification"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::notification",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/notification.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/notification.py",
+          "anchor_candidates": [
+            "DeprecationNoticeNotification",
+            "ErrorNotification",
+            "GuardianWarningNotification",
+            "ServerRequestResolvedNotification",
+            "WarningNotification"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::permissions",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/permissions.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/permissions.py",
+          "anchor_candidates": [
+            "ActivePermissionProfile",
+            "AdditionalFileSystemPermissions",
+            "AdditionalNetworkPermissions",
+            "AdditionalPermissionProfile",
+            "ExecPolicyAmendment",
+            "FileSystemAccessMode",
+            "FileSystemPath",
+            "FileSystemSandboxEntry",
+            "FileSystemSpecialPath",
+            "GrantedPermissionProfile",
+            "NetworkAccess",
+            "NetworkApprovalContext"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::plugin",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/plugin.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/plugin.py",
+          "anchor_candidates": [
+            "HookErrorInfo",
+            "HookMetadata",
+            "HooksListEntry",
+            "HooksListParams",
+            "HooksListResponse",
+            "MarketplaceAddParams",
+            "MarketplaceAddResponse",
+            "MarketplaceInterface",
+            "MarketplaceLoadErrorInfo",
+            "MarketplaceRemoveParams",
+            "MarketplaceRemoveResponse",
+            "MarketplaceUpgradeErrorInfo"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::process",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/process.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/process.py",
+          "anchor_candidates": [
+            "ProcessExitedNotification",
+            "ProcessKillParams",
+            "ProcessKillResponse",
+            "ProcessOutputDeltaNotification",
+            "ProcessOutputStream",
+            "ProcessResizePtyParams",
+            "ProcessResizePtyResponse",
+            "ProcessSpawnParams",
+            "ProcessSpawnResponse",
+            "ProcessTerminalSize",
+            "ProcessWriteStdinParams",
+            "ProcessWriteStdinResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::realtime",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/realtime.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/realtime.py",
+          "anchor_candidates": [
+            "ThreadRealtimeAppendAudioParams",
+            "ThreadRealtimeAppendAudioResponse",
+            "ThreadRealtimeAppendTextParams",
+            "ThreadRealtimeAppendTextResponse",
+            "ThreadRealtimeAudioChunk",
+            "ThreadRealtimeClosedNotification",
+            "ThreadRealtimeErrorNotification",
+            "ThreadRealtimeItemAddedNotification",
+            "ThreadRealtimeListVoicesParams",
+            "ThreadRealtimeListVoicesResponse",
+            "ThreadRealtimeOutputAudioDeltaNotification",
+            "ThreadRealtimeSdpNotification"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::remote_control",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/remote_control.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/remote_control.py",
+          "anchor_candidates": [
+            "RemoteControlConnectionStatus",
+            "RemoteControlDisableResponse",
+            "RemoteControlEnableResponse",
+            "RemoteControlStatusChangedNotification",
+            "RemoteControlStatusReadResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::review",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/review.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/review.py",
+          "anchor_candidates": [
+            "ReviewDelivery",
+            "ReviewStartParams",
+            "ReviewStartResponse",
+            "ReviewTarget"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::shared",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/shared.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/shared.py",
+          "anchor_candidates": [
+            "ApprovalsReviewer",
+            "AskForApproval",
+            "CodexErrorInfo",
+            "NonSteerableTurnKind",
+            "SandboxMode"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::thread",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/thread.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/thread.py",
+          "anchor_candidates": [
+            "ContextCompactedNotification",
+            "DynamicToolSpec",
+            "MemoryResetResponse",
+            "MockExperimentalMethodParams",
+            "MockExperimentalMethodResponse",
+            "SortDirection",
+            "ThreadActiveFlag",
+            "ThreadApproveGuardianDeniedActionParams",
+            "ThreadApproveGuardianDeniedActionResponse",
+            "ThreadArchiveParams",
+            "ThreadArchiveResponse",
+            "ThreadArchivedNotification"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::thread_data",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/thread_data.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/thread_data.py",
+          "anchor_candidates": [
+            "GitInfo",
+            "SessionSource",
+            "Thread",
+            "ThreadSource",
+            "Turn",
+            "TurnError",
+            "TurnItemsView"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::turn",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/turn.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/turn.py",
+          "anchor_candidates": [
+            "AdditionalContextEntry",
+            "AdditionalContextKind",
+            "ByteRange",
+            "TextElement",
+            "TurnCompletedNotification",
+            "TurnDiffUpdatedNotification",
+            "TurnEnvironmentParams",
+            "TurnInterruptParams",
+            "TurnInterruptResponse",
+            "TurnPlanStep",
+            "TurnPlanStepStatus",
+            "TurnPlanUpdatedNotification"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "protocol::v2::windows_sandbox",
+        "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/windows_sandbox.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/windows_sandbox.py",
+          "anchor_candidates": [
+            "WindowsSandboxReadiness",
+            "WindowsSandboxReadinessResponse",
+            "WindowsSandboxSetupCompletedNotification",
+            "WindowsSandboxSetupMode",
+            "WindowsSandboxSetupStartParams",
+            "WindowsSandboxSetupStartResponse",
+            "WindowsWorldWritableWarningNotification"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-protocol",
+        "module": "schema_fixtures",
+        "source": "codex/codex-rs/app-server-protocol/src/schema_fixtures.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_protocol/schema_fixtures.py",
+          "anchor_candidates": [
+            "SchemaFixtureOptions",
+            "generate_typescript_schema_fixture_subtree_for_tests",
+            "read_schema_fixture_subtree",
+            "read_schema_fixture_tree",
+            "write_schema_fixtures",
+            "write_schema_fixtures_with_options",
+            "canonicalize_json",
+            "collect_files_recursive",
+            "ensure_empty_dir",
+            "normalize_relative_fixture_path",
+            "read_file_bytes",
+            "schema_array_item_sort_key"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

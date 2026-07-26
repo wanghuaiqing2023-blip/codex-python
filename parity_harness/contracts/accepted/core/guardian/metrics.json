@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.guardian.metrics",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "guardian::metrics",
+    "source": "codex/codex-rs/core/src/guardian/metrics.rs",
+    "anchors": [
+      "emit_guardian_review_metrics",
+      "approval_request_source_tag",
+      "bool_tag",
+      "decision_tag",
+      "emit_guardian_token_usage_histograms",
+      "failure_reason_tag",
+      "guardian_review_metric_tags",
+      "optional_bool_tag",
+      "outcome_tag",
+      "reviewed_action_tag",
+      "risk_level_tag",
+      "session_kind_tag"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/guardian/metrics.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/guardian/metrics.py"
+    ],
+    "anchors": [
+      "emit_guardian_review_metrics",
+      "approval_request_source_tag",
+      "bool_tag",
+      "decision_tag",
+      "emit_guardian_token_usage_histograms",
+      "failure_reason_tag",
+      "guardian_review_metric_tags",
+      "optional_bool_tag",
+      "outcome_tag",
+      "reviewed_action_tag",
+      "risk_level_tag",
+      "session_kind_tag"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

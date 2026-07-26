@@ -1,0 +1,97 @@
+{
+  "contract_id": "codex-state.model.thread_metadata",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "model::thread_metadata",
+    "source": "codex/codex-rs/state/src/model/thread_metadata.rs",
+    "anchors": [
+      "Anchor",
+      "BackfillStats",
+      "ExtractionOutcome",
+      "SortDirection",
+      "SortKey",
+      "ThreadMetadata",
+      "ThreadMetadataBuilder",
+      "ThreadRow",
+      "ThreadsPage",
+      "anchor_from_item",
+      "build",
+      "datetime_to_epoch_millis"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/model/thread_metadata.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/model/thread_metadata.py"
+    ],
+    "anchors": [
+      "Anchor",
+      "BackfillStats",
+      "ExtractionOutcome",
+      "SortDirection",
+      "SortKey",
+      "ThreadMetadata",
+      "ThreadMetadataBuilder",
+      "ThreadRow",
+      "ThreadsPage",
+      "anchor_from_item",
+      "build",
+      "datetime_to_epoch_millis"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_agent_graph_store_local_rs.py",
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_cli_state_db_recovery.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_core_goals.py",
+    "tests/test_core_paths.py",
+    "tests/test_core_suite_sqlite_state.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_memories_write_phase2_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_state_agent_job_model_rs.py",
+    "tests/test_state_audit_rs.py",
+    "tests/test_state_backfill_state_rs.py",
+    "tests/test_state_extract_rs.py",
+    "tests/test_state_graph_rs.py",
+    "tests/test_state_lib_rs.py",
+    "tests/test_state_log_model_rs.py",
+    "tests/test_state_migrations_rs.py",
+    "tests/test_state_model_mod_rs.py",
+    "tests/test_state_paths_rs.py",
+    "tests/test_state_runtime_logs_rs.py",
+    "tests/test_state_runtime_memories_rs.py",
+    "tests/test_state_runtime_rs.py",
+    "tests/test_state_runtime_test_support_rs.py",
+    "tests/test_state_runtime_threads_rs.py",
+    "tests/test_state_telemetry_rs.py",
+    "tests/test_state_thread_metadata_model_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_thread_store_local_archive_unarchive_rs.py",
+    "tests/test_thread_store_local_list_threads_rs.py",
+    "tests/test_thread_store_local_read_thread_rs.py",
+    "tests/test_thread_store_local_search_threads_rs.py",
+    "tests/test_thread_store_local_update_metadata_rs.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

@@ -48,6 +48,12 @@ from .selection_popup_common import TerminalPopupLine
 from .request_user_input import RequestUserInputOverlay
 from .mcp_server_elicitation import McpServerElicitationOverlay
 from .pending_thread_approvals import PendingThreadApprovals
+from .footer import (
+    FooterMode,
+    ShortcutsState,
+    shortcut_overlay_lines,
+    toggle_shortcut_mode,
+)
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -261,11 +267,16 @@ class TerminalBottomPaneRenderContext:
     cursor_visible: bool = True
     popup_cursor: tuple[int, int] | None = None
     active_tail_lines: tuple[str, ...] = ()
+    footer_lines: tuple[str, ...] = ()
     composer_height: int = 1
 
     @property
     def active_tail_height(self) -> int:
         return len(self.active_tail_lines)
+
+    @property
+    def footer_height(self) -> int:
+        return max(1, len(self.footer_lines))
 
 
 @dataclass
@@ -282,6 +293,7 @@ class TerminalBottomPaneViewState:
     view_stack: BottomPaneViewStack = field(default_factory=BottomPaneViewStack)
     selection_events: list[object] = field(default_factory=list)
     active_tail_lines: tuple[str, ...] = ()
+    footer_mode: FooterMode = FooterMode.COMPOSER_EMPTY
     pending_thread_approvals: PendingThreadApprovals = field(
         default_factory=PendingThreadApprovals.new
     )
@@ -379,6 +391,22 @@ class TerminalBottomPaneViewState:
         if active.active and active.draft is not None:
             return TerminalComposerInputAction("render", self.composer.current_text())
 
+        if (
+            str(event_kind).lower() == "text"
+            and str(event_text) == "?"
+            and not self.composer.current_text()
+            and self.active_view is None
+            and not self.command_popup_visible
+        ):
+            self.footer_mode = toggle_shortcut_mode(
+                self.footer_mode,
+                ctrl_c_hint=False,
+                is_empty=True,
+            )
+            return TerminalComposerInputAction("render", self.composer.current_text())
+        if self.footer_mode is FooterMode.SHORTCUT_OVERLAY:
+            self.footer_mode = FooterMode.COMPOSER_EMPTY
+
         return self.composer.handle_terminal_event(
             event_kind,
             event_text,
@@ -386,7 +414,7 @@ class TerminalBottomPaneViewState:
             detect_paste_bursts=detect_paste_bursts,
             active_view_present=self.active_view is not None,
             open_command_view=open_command_view,
-            show_selection_view=self.show_selection_view,
+            show_view=self.show_view,
         )
 
     def show_selection_view(self, params: SelectionViewParams) -> None:
@@ -488,6 +516,15 @@ class TerminalBottomPaneViewState:
             cursor_visible=(popup_cursor is not None if popup_projection.is_active_view else composer_cursor_visible()),
             popup_cursor=popup_cursor,
             active_tail_lines=self.active_tail_lines,
+            footer_lines=(
+                (self.composer.history_search_footer_text(),)
+                if self.composer.history_search_footer_text() is not None
+                else (
+                    tuple(shortcut_overlay_lines(ShortcutsState()))
+                    if self.footer_mode is FooterMode.SHORTCUT_OVERLAY
+                    else ()
+                )
+            ),
             composer_height=composer_height,
         )
 

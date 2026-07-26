@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.notifications.bel",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "notifications::bel",
+    "source": "codex/codex-rs/tui/src/notifications/bel.rs",
+    "anchors": [
+      "BelBackend",
+      "PostNotification",
+      "notify",
+      "execute_winapi",
+      "is_ansi_code_supported",
+      "write_ansi"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/notifications/bel.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/notifications/bel.py"
+    ],
+    "anchors": [
+      "BelBackend",
+      "PostNotification",
+      "notify",
+      "execute_winapi",
+      "is_ansi_code_supported",
+      "write_ansi"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

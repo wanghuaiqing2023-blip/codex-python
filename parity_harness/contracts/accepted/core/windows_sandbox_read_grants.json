@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.windows_sandbox_read_grants",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "windows_sandbox_read_grants",
+    "source": "codex/codex-rs/core/src/windows_sandbox_read_grants.rs",
+    "anchors": [
+      "grant_read_root_non_elevated"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/windows_sandbox_read_grants.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/windows_sandbox_read_grants.py"
+    ],
+    "anchors": [
+      "grant_read_root_non_elevated"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

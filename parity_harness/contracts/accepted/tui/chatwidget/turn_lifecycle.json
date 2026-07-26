@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.chatwidget.turn_lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::turn_lifecycle",
+    "source": "codex/codex-rs/tui/src/chatwidget/turn_lifecycle.rs",
+    "anchors": [
+      "TurnLifecycleState",
+      "finish",
+      "mark_budget_limited",
+      "new",
+      "reset_thread",
+      "restore_running",
+      "set_prevent_idle_sleep",
+      "start",
+      "take_budget_limited"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/turn_lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/turn_lifecycle.py"
+    ],
+    "anchors": [
+      "TurnLifecycleState",
+      "finish",
+      "mark_budget_limited",
+      "new",
+      "reset_thread",
+      "restore_running",
+      "set_prevent_idle_sleep",
+      "start",
+      "take_budget_limited"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

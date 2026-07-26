@@ -1,4 +1,4 @@
-﻿import json
+import json
 import asyncio
 import os
 import unittest
@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 from pycodex.core.client import ModelClient
 from pycodex.core.context import GoalContext
-from pycodex.core.tools.handlers.utils import apply_granted_turn_permissions, record_granted_request_permissions
-from pycodex.core.http_transport import run_user_turn_http_sampling_from_session
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.tools.handlers import apply_granted_turn_permissions, record_granted_request_permissions
+from pycodex.core.session.turn.runtime import run_user_turn_http_sampling_from_session
+from pycodex.core.session.session import Session
 from pycodex.core.state.service import SessionServices
 from pycodex.core.context_manager.history import (
     estimate_item_token_count,
@@ -23,9 +23,11 @@ from pycodex.core.tools.registry import ToolRegistry
 from pycodex.core.tools.router import ToolRouter
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
 from pycodex.core.session.turn.runtime import (
+    built_tools,
     build_user_turn_responses_request_from_session,
     run_user_turn_sampling_from_session,
 )
+from pycodex.models_manager import builtin_collaboration_mode_presets, model_info_from_slug
 from pycodex.protocol import (
     AdditionalContextEntry,
     AdditionalContextKind,
@@ -86,6 +88,13 @@ from pycodex.protocol import (
     UsageLimitReachedError,
     WindowsSandboxLevel,
 )
+from pycodex.protocol.request_user_input import (
+    RequestUserInputAnswer,
+    RequestUserInputArgs,
+    RequestUserInputQuestion,
+    RequestUserInputQuestionOption,
+    RequestUserInputResponse,
+)
 
 
 class FakeResponse:
@@ -142,15 +151,64 @@ class FeatureSet:
         return feature in self.features
 
 
-def non_lifecycle_events(session: InMemoryCodexSession):
+def non_lifecycle_events(session: Session):
     return tuple(event for event in session.emitted_events if event.type not in {"task_started", "task_complete"})
 
 
-def events_of_type(session: InMemoryCodexSession, event_type: str):
+def events_of_type(session: Session, event_type: str):
     return tuple(event for event in session.emitted_events if event.type == event_type)
 
 
 class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_request_user_input_waits_for_turn_scoped_response(self) -> None:
+        # Rust source: codex-core/src/session/mod.rs::request_user_input and
+        # notify_user_input_response. The request remains pending by sub_id
+        # until Op::UserInputAnswer resolves the same turn channel.
+        session = Session(cwd="C:/work/project")
+        turn = SimpleNamespace(sub_id="turn-input")
+        args = RequestUserInputArgs(
+            (
+                RequestUserInputQuestion(
+                    id="approach",
+                    header="Approach",
+                    question="Which implementation approach?",
+                    options=(
+                        RequestUserInputQuestionOption(
+                            "Direct implementation",
+                            "Implement the selected plan now.",
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        pending = asyncio.create_task(
+            session.request_user_input(turn, "call-input", args)
+        )
+        await asyncio.sleep(0)
+
+        self.assertFalse(pending.done())
+        event = session.emitted_events[-1]
+        self.assertEqual(event.type, "request_user_input")
+        self.assertEqual(event.payload.call_id, "call-input")
+        self.assertEqual(event.payload.turn_id, "turn-input")
+        self.assertEqual(event.payload.questions, args.questions)
+        self.assertIn(
+            "turn-input",
+            session.active_turn.turn_state.pending_user_input,
+        )
+
+        response = RequestUserInputResponse(
+            {"approach": RequestUserInputAnswer(("Direct implementation",))}
+        )
+        await session.notify_user_input_response("turn-input", response)
+
+        self.assertEqual(await pending, response)
+        self.assertNotIn(
+            "turn-input",
+            session.active_turn.turn_state.pending_user_input,
+        )
+
     async def test_new_default_turn_copies_models_manager_presets_into_context(self) -> None:
         # Rust: core/src/session/turn_context.rs::TurnContext::new obtains
         # available_models from SessionServices.models_manager.
@@ -165,7 +223,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 return [model]
 
         models_manager = ModelsManager()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             services=SessionServices(models_manager=models_manager),
         )
@@ -179,7 +237,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Fixed Rust owner/anchor:
         # codex-core::session::Session stores windows_sandbox_level and
         # codex-core::session::TurnContext copies it for ToolOrchestrator.
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             windows_sandbox_level=WindowsSandboxLevel.ELEVATED,
         )
@@ -231,7 +289,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             user_instructions="project instructions",
@@ -280,7 +338,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             turn_id="turn-1",
             model_info=model_info,
@@ -334,7 +392,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             current_date="2026-05-30",
@@ -372,7 +430,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             current_date="2026-01-01",
@@ -411,7 +469,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             current_date="2026-01-01",
@@ -453,7 +511,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             current_date="2026-07-02",
@@ -510,7 +568,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_user_texts.count("<external_browser_info>tab one</external_browser_info>"), 1)
 
     async def test_in_memory_session_replace_last_turn_images_rewrites_tool_output_images(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             history=[
                 ResponseItem.message("user", (ContentItem.input_text("look"),)),
@@ -543,7 +601,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "user",
             (ContentItem.input_image("data:image/png;base64,AAA"),),
         )
-        session = InMemoryCodexSession(cwd="C:/work/project", history=[user_image])
+        session = Session(cwd="C:/work/project", history=[user_image])
 
         replaced = await session.replace_last_turn_images("Invalid image")
 
@@ -551,7 +609,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history, [user_image])
 
     async def test_in_memory_session_record_conversation_items_truncates_function_output_history(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=SimpleNamespace(slug="gpt-test", truncation_policy=TruncationPolicyConfig.bytes(10)),
         )
@@ -571,7 +629,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("chars truncated", history_output.to_text())
 
     async def test_in_memory_session_record_conversation_items_truncates_custom_tool_output_history(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         turn = SimpleNamespace(truncation_policy=TruncationPolicyConfig.bytes(8), model_info=None)
         image = FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA")
         item = ResponseItem(
@@ -597,14 +655,14 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_new_default_turn_carries_session_source(self) -> None:
         source = SessionSource.subagent(SubAgentSource.other_source("guardian"))
-        session = InMemoryCodexSession(cwd="C:/work/project", session_source=source)
+        session = Session(cwd="C:/work/project", session_source=source)
 
         turn = await session.new_default_turn()
 
         self.assertEqual(turn.session_source, source)
 
     async def test_in_memory_session_input_queue_drains_pending_items_for_active_turn(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         await session.inject_if_running(
             (
                 {"type": "text", "text": "queued steer"},
@@ -621,7 +679,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_inject_if_running_returns_items_without_active_turn(self) -> None:
         # Rust source: codex-core/src/session/inject.rs inject_if_running None branch.
-        session = InMemoryCodexSession(cwd="C:/work/project", active_turn=None)
+        session = Session(cwd="C:/work/project", active_turn=None)
         item = ResponseItem.message("user", (ContentItem.input_text("outside turn"),))
 
         result = await session.inject_if_running([item])
@@ -631,7 +689,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_inject_no_new_turn_queues_when_active_turn_exists(self) -> None:
         # Rust source: codex-core/src/session/inject.rs inject_no_new_turn first tries active injection.
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         item = ResponseItem.message("user", (ContentItem.input_text("active turn"),))
 
         await session.inject_no_new_turn([item], None)
@@ -641,7 +699,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending, (item,))
 
     async def test_in_memory_session_record_user_prompt_emits_turn_item_events(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
+        session = Session(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
         turn = await session.new_default_turn()
         text_element = TextElement(
             ByteRange(0, len("hello".encode("utf-8"))),
@@ -671,7 +729,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Rust sources:
         # - codex-core/src/context/goal_context.rs
         # - codex-core/src/event_mapping.rs
-        session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
+        session = Session(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
         turn = await session.new_default_turn()
         rendered = GoalContext.new("Continue the active goal.").render()
 
@@ -681,7 +739,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.emitted_events, [])
 
     async def test_in_memory_session_record_response_item_emits_turn_item_events(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
+        session = Session(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
         turn = await session.new_default_turn()
         response_item = ResponseItem.message("assistant", (ContentItem.output_text("done"),), id="msg-1")
 
@@ -701,7 +759,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_http_sampling_uses_pending_input_followup(self) -> None:
         bodies = []
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         class Response:
             def __init__(self, text):
@@ -777,7 +835,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             features=FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED),
@@ -843,7 +901,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
         handler = EchoHandler()
         router = ToolRouter.from_parts(ToolRegistry.from_tools([handler]), ())
@@ -884,7 +942,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "context_window": 100,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
 
         async def sampler(_request):
@@ -924,7 +982,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             limit_id="codex",
             primary=RateLimitWindow(used_percent=100.0, window_minutes=60),
         )
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
 
         async def sampler(_request):
@@ -960,7 +1018,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             history=[ResponseItem.message("user", (ContentItem.input_image("data:image/png;base64,AAA"),))],
@@ -1006,7 +1064,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             reasoning_effort="high",
@@ -1044,7 +1102,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             service_tier="priority",
@@ -1081,7 +1139,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "service_tier_for_request": lambda _self, tier: tier if tier == "priority" else None,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             service_tier=ServiceTier.FAST,
@@ -1102,21 +1160,21 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["body"]["service_tier"], "priority")
 
     async def test_in_memory_session_turn_config_inherits_service_tier(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project", service_tier="priority")
+        session = Session(cwd="C:/work/project", service_tier="priority")
 
         turn = await session.new_default_turn()
 
         self.assertEqual(turn.config.service_tier, "priority")
 
     async def test_in_memory_session_turn_config_inherits_allow_login_shell(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project", allow_login_shell=True)
+        session = Session(cwd="C:/work/project", allow_login_shell=True)
 
         turn = await session.new_default_turn()
 
         self.assertTrue(turn.config.permissions.allow_login_shell)
 
     async def test_in_memory_session_update_settings_applies_turn_local_environments_once(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             environments=(TurnEnvironmentSelection("sticky", Path("C:/work/project")),),
         )
@@ -1131,7 +1189,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sticky_turn.environments, session.environments)
 
     async def test_in_memory_session_default_turn_overlays_cwd_onto_sticky_primary_environment(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             environments=(TurnEnvironmentSelection("sticky", Path("C:/work/selected")),),
         )
@@ -1144,7 +1202,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.config.cwd, Path("C:/work/project"))
 
     async def test_in_memory_session_turn_local_environment_preserves_selected_cwd(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             environments=(TurnEnvironmentSelection("sticky", Path("C:/work/selected")),),
         )
@@ -1158,7 +1216,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.config.cwd, Path("C:/work/explicit"))
 
     async def test_in_memory_session_environment_context_renders_multiple_turn_environments(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             environments=(
                 TurnEnvironmentSelection("local", Path("C:/work/local")),
@@ -1181,7 +1239,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<current_date>2026-05-30</current_date>", context_text)
 
     async def test_in_memory_session_default_turn_supplies_local_time_context(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(turn)
@@ -1197,7 +1255,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_in_memory_session_default_turn_uses_iana_timezone_on_windows(self) -> None:
         # Rust: codex-core::session::turn_context::local_time_context uses
         # iana_time_zone::get_timezone rather than a localized display name.
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         turn = await session.new_default_turn()
 
@@ -1205,7 +1263,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Standard Time", turn.timezone)
 
     async def test_in_memory_session_update_settings_applies_final_output_json_schema(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
 
         await session.update_settings(SessionSettingsUpdate(final_output_json_schema=schema))
@@ -1217,7 +1275,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(turn_without_schema.final_output_json_schema)
 
     async def test_in_memory_session_turn_config_inherits_reasoning_settings(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             reasoning_effort="high",
             reasoning_summary="concise",
@@ -1233,7 +1291,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             mode="default",
             settings=SimpleNamespace(model="gpt-5.2-codex", reasoning_effort=ReasoningEffort.HIGH),
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             collaboration_mode=collaboration_mode,
         )
@@ -1253,7 +1311,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             mode="default",
             settings=SimpleNamespace(model="gpt-5.2-codex"),
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=base_model_info,
             collaboration_mode=collaboration_mode,
@@ -1270,7 +1328,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reference.model, "gpt-5.2-codex")
 
     async def test_in_memory_session_preview_and_update_settings(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=SimpleNamespace(slug="gpt-base"),
         )
@@ -1299,7 +1357,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.service_tier, "priority")
 
     async def test_in_memory_session_settings_normalize_service_tier_values(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         preview = await session.preview_settings(SessionSettingsUpdate(service_tier=ServiceTier.FAST))
         self.assertEqual(preview.service_tier, "priority")
@@ -1317,7 +1375,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.service_tier, SERVICE_TIER_DEFAULT_REQUEST_VALUE)
 
     async def test_in_memory_session_update_settings_projects_sandbox_policy_to_permission_profile(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         applied = await session.update_settings(
             SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only())
@@ -1347,7 +1405,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
             NetworkSandboxPolicy.RESTRICTED,
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             permission_profile=base_profile,
             file_system_sandbox_policy=base_file_system,
@@ -1360,7 +1418,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.file_system_sandbox_policy, projected)
 
     async def test_in_memory_session_preview_settings_projects_sandbox_policy_to_permission_profile(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         preview = await session.preview_settings(
             SessionSettingsUpdate(sandbox_policy=SandboxPolicy.workspace_write((), False, False))
@@ -1387,7 +1445,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
             NetworkSandboxPolicy.RESTRICTED,
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             permission_profile=base_profile,
             file_system_sandbox_policy=base_file_system,
@@ -1400,7 +1458,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview.file_system_sandbox_policy, projected)
 
     async def test_in_memory_session_applies_protocol_thread_settings_overrides(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=SimpleNamespace(slug="gpt-base"),
             collaboration_mode=CollaborationMode(
@@ -1440,7 +1498,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             mode="default",
             settings=SimpleNamespace(model="gpt-current", reasoning_effort=ReasoningEffort.HIGH),
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=SimpleNamespace(slug="gpt-base"),
             model_provider_id="openai",
@@ -1459,7 +1517,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(snapshot.collaboration_mode, collaboration_mode)
 
     async def test_in_memory_session_thread_config_snapshot_reflects_sandbox_projection(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         updates = SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only())
 
         applied = await session.update_settings(updates)
@@ -1487,7 +1545,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
             NetworkSandboxPolicy.RESTRICTED,
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             permission_profile=base_profile,
             file_system_sandbox_policy=base_file_system,
@@ -1502,7 +1560,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.sandbox_policy(), session.sandbox_policy)
 
     async def test_in_memory_session_settings_snapshot_tracks_workspace_roots(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=SimpleNamespace(slug="gpt-base"),
             workspace_roots=("C:/work/project", "C:/work/shared"),
@@ -1534,14 +1592,14 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_turn_inherits_session_features(self) -> None:
         features = object()
-        session = InMemoryCodexSession(cwd="C:/work/project", features=features)
+        session = Session(cwd="C:/work/project", features=features)
 
         turn = await session.new_default_turn()
 
         self.assertIs(turn.features, features)
 
     async def test_in_memory_session_turn_inherits_approvals_reviewer(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             approvals_reviewer=ApprovalsReviewer.AUTO_REVIEW,
         )
@@ -1551,7 +1609,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(turn.config.approvals_reviewer, ApprovalsReviewer.AUTO_REVIEW)
 
     async def test_in_memory_session_reference_context_preserves_turn_id(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project", turn_id="turn-123")
+        session = Session(cwd="C:/work/project", turn_id="turn-123")
 
         turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(turn)
@@ -1561,7 +1619,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reference.turn_id, "turn-123")
 
     async def test_in_memory_session_reference_context_preserves_reasoning_effort_and_auto_summary(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             reasoning_effort="high",
             reasoning_summary="concise",
@@ -1576,7 +1634,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reference.summary, "auto")
 
     async def test_in_memory_session_reference_context_writes_auto_summary_compat_field(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             reasoning_summary=ReasoningSummary.CONCISE,
         )
@@ -1598,7 +1656,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
             NetworkSandboxPolicy.RESTRICTED,
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             permission_profile=base_profile,
             file_system_sandbox_policy=base_file_system,
@@ -1615,7 +1673,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(deny_entry, turn.file_system_sandbox_policy.entries)
 
     async def test_in_memory_session_reference_context_serializes_reasoning_effort_enum(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             reasoning_effort=ReasoningEffort.HIGH,
         )
@@ -1630,7 +1688,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_in_memory_session_reference_context_preserves_sandbox_policies(self) -> None:
         sandbox_policy = SandboxPolicy.read_only()
         file_system_policy = FileSystemSandboxPolicy.default()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             sandbox_policy=sandbox_policy,
             file_system_sandbox_policy=file_system_policy,
@@ -1645,7 +1703,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reference.file_system_sandbox_policy, file_system_policy)
 
     async def test_in_memory_session_reference_context_normalizes_network_item(self) -> None:
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             network=SimpleNamespace(
                 allowed_domains=("api.example.com",),
@@ -1677,7 +1735,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "get_model_instructions": lambda _self, _personality: "Use the new model policy.",
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         await session.set_previous_turn_settings(SimpleNamespace(model="gpt-old", realtime_active=False))
 
         turn = await session.new_default_turn()
@@ -1700,7 +1758,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             collaboration_mode=SimpleNamespace(
@@ -1714,6 +1772,80 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         developer_sections = [content.text for content in session.recorded_batches[0][0].content]
         self.assertIn("<permissions instructions>", developer_sections[0])
         self.assertEqual(developer_sections[1], "<collaboration_mode>Plan before editing.</collaboration_mode>")
+
+    async def test_plan_mode_first_request_uses_builtin_context_and_core_tool_surface(self) -> None:
+        # Rust owners:
+        # - models-manager/src/collaboration_mode_presets.rs::builtin_collaboration_mode_presets
+        # - core/src/session/turn.rs::built_tools
+        # - core/src/tools/handlers/plan.rs and request_user_input_spec.rs
+        # Contract: /plan's typed collaboration mode reaches the same turn context
+        # that builds model instructions and tools. update_plan remains registered
+        # (its handler rejects Plan-mode calls), while request_user_input is usable.
+        model_info = model_info_from_slug("gpt-5.4")
+        plan_mask = next(
+            mask
+            for mask in builtin_collaboration_mode_presets()
+            if mask.mode is ModeKind.PLAN
+        )
+        collaboration_mode = CollaborationMode(
+            ModeKind.DEFAULT,
+            Settings(model=model_info.slug),
+        ).apply_mask(plan_mask)
+        session = Session(
+            cwd="C:/work/project",
+            model_info=model_info,
+            collaboration_mode=collaboration_mode,
+        )
+        model_client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000010",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        captured_turns = []
+
+        async def capture_built_tools(sess, turn_context):
+            captured_turns.append(turn_context)
+            return await built_tools(sess, turn_context)
+
+        request_plan = await build_user_turn_responses_request_from_session(
+            session,
+            (UserInput.text_input("Inspect the parser before proposing a plan."),),
+            model_client,
+            provider,
+            model_info,
+            built_tools=capture_built_tools,
+        )
+
+        self.assertEqual(len(captured_turns), 1)
+        turn_context = captured_turns[0]
+        self.assertEqual(turn_context.collaboration_mode, collaboration_mode)
+        self.assertIs(turn_context.collaboration_mode.mode, ModeKind.PLAN)
+        self.assertIs(turn_context.reasoning_effort, ReasoningEffort.MEDIUM)
+
+        tools = {
+            tool.get("name"): tool
+            for tool in request_plan.request["tools"]
+            if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+        }
+        self.assertIn("update_plan", tools)
+        self.assertIn("request_user_input", tools)
+        self.assertIn("only available in Plan mode", tools["request_user_input"]["description"])
+
+        developer_sections = [
+            content.text
+            for item in request_plan.request["input"]
+            if item.role == "developer"
+            for content in item.content
+        ]
+        self.assertIn(
+            f"<collaboration_mode>{plan_mask.developer_instructions}</collaboration_mode>",
+            developer_sections,
+        )
+        self.assertEqual(
+            request_plan.request["input"][-1].content[0].text,
+            "Inspect the parser before proposing a plan.",
+        )
 
     async def test_in_memory_session_initial_context_supports_granular_approval_policy(self) -> None:
         model_info = type(
@@ -1732,7 +1864,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             request_permissions=False,
             mcp_elicitations=True,
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             approval_policy=granular,
@@ -1758,7 +1890,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 developer_instructions="Plan before editing.",
             ),
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             collaboration_mode=collaboration_mode,
         )
@@ -1781,7 +1913,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_reference_context_defaults_collaboration_mode(self) -> None:
         model_info = type("ModelInfo", (), {"slug": "gpt-5.2-codex"})()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
 
         turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(turn)
@@ -1806,7 +1938,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             developer_instructions="Follow the project policy.",
@@ -1833,7 +1965,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             developer_instructions="Review shell approvals carefully.",
@@ -1866,7 +1998,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             realtime_active=True,
@@ -1890,7 +2022,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             realtime_active=True,
@@ -1915,7 +2047,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         await session.set_previous_turn_settings(SimpleNamespace(model="gpt-test", realtime_active=True))
 
         turn = await session.new_default_turn()
@@ -1939,7 +2071,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
 
         first_turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(first_turn)
@@ -1965,7 +2097,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info, realtime_active=True)
+        session = Session(cwd="C:/work/project", model_info=model_info, realtime_active=True)
 
         first_turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(first_turn)
@@ -1993,7 +2125,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         previous_turn = await session.new_default_turn()
         previous_item = TurnContextItem(
             cwd=previous_turn.cwd,
@@ -2022,7 +2154,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Realtime conversation ended.", item.content[0].text)
 
     async def test_in_memory_session_next_turn_is_first_is_consumed_like_session_state(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         self.assertTrue(await session.take_next_turn_is_first())
         self.assertFalse(await session.take_next_turn_is_first())
@@ -2047,7 +2179,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "get_model_instructions": lambda _self, _personality: "base",
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             personality="friendly",
@@ -2074,7 +2206,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "get_model_instructions": lambda _self, _personality: "base",
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             personality="friendly",
@@ -2104,7 +2236,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             personality="friendly",
@@ -2132,7 +2264,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
 
         self.assertIsNone(await session.reference_context_item())
         turn = await session.new_default_turn()
@@ -2158,7 +2290,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
 
         first_turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(first_turn)
@@ -2192,7 +2324,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             current_date="2026-07-02",
@@ -2230,7 +2362,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(turn)
         reference = await session.reference_context_item()
@@ -2259,7 +2391,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "support_verbosity": False,
             },
         )()
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         turn = await session.new_default_turn()
         await session.record_context_updates_and_set_reference_context_item(turn)
         reference = await session.reference_context_item()
@@ -2282,7 +2414,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.compacted_items[0].replacement_history, (replacement,))
 
     async def test_in_memory_session_inject_no_new_turn_records_items_and_flushes(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project", active_turn=None)
+        session = Session(cwd="C:/work/project", active_turn=None)
         item = {
             "type": "message",
             "role": "user",
@@ -2298,7 +2430,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.flush_rollout_count, 1)
 
     async def test_in_memory_session_records_session_and_turn_permission_grants(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         session_response = RequestPermissionsResponse(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
             scope=PermissionGrantScope.SESSION,
@@ -2319,7 +2451,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await session.strict_auto_review())
 
     async def test_in_memory_session_new_turn_clears_turn_grants_but_keeps_session_grants(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         session_response = RequestPermissionsResponse(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
             scope=PermissionGrantScope.SESSION,
@@ -2352,7 +2484,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 scope=PermissionGrantScope.SESSION,
             )
 
-        session = InMemoryCodexSession(cwd="C:/work/project", request_permissions_callback=callback)
+        session = Session(cwd="C:/work/project", request_permissions_callback=callback)
         requested_child = session.cwd / "child"
         args = RequestPermissionsArgs(
             RequestPermissionProfile(
@@ -2378,7 +2510,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 scope=PermissionGrantScope.TURN,
             )
 
-        session = InMemoryCodexSession(cwd="C:/work/project", request_permissions_callback=callback)
+        session = Session(cwd="C:/work/project", request_permissions_callback=callback)
         args = RequestPermissionsArgs(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True))
         )
@@ -2399,7 +2531,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 strict_auto_review=True,
             )
 
-        session = InMemoryCodexSession(cwd="C:/work/project", request_permissions_callback=callback)
+        session = Session(cwd="C:/work/project", request_permissions_callback=callback)
         args = RequestPermissionsArgs(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True))
         )
@@ -2420,7 +2552,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 strict_auto_review=True,
             )
 
-        session = InMemoryCodexSession(cwd="C:/work/project", request_permissions_callback=callback)
+        session = Session(cwd="C:/work/project", request_permissions_callback=callback)
         args = RequestPermissionsArgs(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True))
         )
@@ -2443,7 +2575,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         def callback(parent_ctx, call_id, args, cwd, cancel_token):
             raise AssertionError("approval never should not request permissions from the client")
 
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             approval_policy=AskForApproval.NEVER,
             request_permissions_callback=callback,
@@ -2470,7 +2602,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         def callback(parent_ctx, call_id, args, cwd, cancel_token):
             raise AssertionError("granular policy should not request permissions from the client")
 
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             approval_policy=GranularApprovalConfig(
                 sandbox_approval=True,
@@ -2492,7 +2624,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.strict_auto_review_enabled)
 
     async def test_in_memory_session_strict_turn_grant_feeds_orchestrator_plan(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         response = RequestPermissionsResponse(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
             scope=PermissionGrantScope.TURN,
@@ -2521,7 +2653,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 strict_auto_review=True,
             )
 
-        session = InMemoryCodexSession(cwd="C:/work/project", request_permissions_callback=callback)
+        session = Session(cwd="C:/work/project", request_permissions_callback=callback)
         args = RequestPermissionsArgs(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True))
         )
@@ -2541,7 +2673,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "strict_auto_review": True,
             }
 
-        session = InMemoryCodexSession(cwd="C:/work/project", request_permissions_callback=callback)
+        session = Session(cwd="C:/work/project", request_permissions_callback=callback)
         args = RequestPermissionsArgs(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True))
         )
@@ -2554,7 +2686,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session.strict_auto_review_enabled)
 
     async def test_in_memory_session_request_permissions_without_callback_records_no_grants(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         args = RequestPermissionsArgs(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True))
         )
@@ -2570,7 +2702,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         def callback(parent_ctx, call_id, args, cwd, cancel_token):
             return None
 
-        session = InMemoryCodexSession(cwd="C:/work/project", request_permissions_callback=callback)
+        session = Session(cwd="C:/work/project", request_permissions_callback=callback)
         args = RequestPermissionsArgs(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True))
         )
@@ -2583,7 +2715,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session.strict_auto_review_enabled)
 
     async def test_in_memory_session_grants_feed_later_permission_application(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         response = RequestPermissionsResponse(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
             scope=PermissionGrantScope.SESSION,
@@ -2604,7 +2736,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_in_memory_session_turn_grants_feed_later_permission_application(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         response = RequestPermissionsResponse(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
             scope=PermissionGrantScope.TURN,
@@ -2626,7 +2758,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await session.granted_session_permissions())
 
     async def test_in_memory_session_recorded_grant_preapproves_matching_inline_permissions(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         granted = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
         response = RequestPermissionsResponse(
             RequestPermissionProfile.from_additional_permission_profile(granted),
@@ -2646,7 +2778,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(effective.permissions_preapproved)
 
     async def test_in_memory_session_recorded_grant_does_not_preapprove_broader_inline_permissions(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         granted = AdditionalPermissionProfile(
             file_system=FileSystemPermissions.from_read_write_roots(None, (session.cwd / "child",))
         )
@@ -2671,7 +2803,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(effective.permissions_preapproved)
 
     async def test_in_memory_session_relative_deny_glob_grant_preapproves_matching_inline_permissions(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         requested = AdditionalPermissionProfile(
             file_system=FileSystemPermissions(
                 entries=(
@@ -2702,7 +2834,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(effective.permissions_preapproved)
 
     async def test_in_memory_session_new_turn_stops_turn_grant_application(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         response = RequestPermissionsResponse(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
             scope=PermissionGrantScope.TURN,
@@ -2721,7 +2853,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(effective.additional_permissions)
 
     async def test_in_memory_session_session_grant_applies_after_new_turn(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         response = RequestPermissionsResponse(
             RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
             scope=PermissionGrantScope.SESSION,
@@ -2749,7 +2881,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             max_context_window=None,
             effective_context_window_percent=80,
         )
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         turn_context = await session.new_default_turn()
 
         await session.set_total_tokens_full(turn_context)
@@ -2765,7 +2897,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_total_token_usage_delegates_to_state_history_tail_accounting(self) -> None:
         model_info = SimpleNamespace(slug="gpt-test")
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         turn_context = await session.new_default_turn()
         counted = ResponseItem.message("assistant", (ContentItem.output_text("already counted by API"),))
         added_user = ResponseItem.message("user", (ContentItem.input_text("new user message"),))
@@ -2789,7 +2921,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_in_memory_session_total_token_usage_breakdown_delegates_to_state_history(self) -> None:
         model_info = SimpleNamespace(slug="gpt-test")
-        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        session = Session(cwd="C:/work/project", model_info=model_info)
         turn_context = await session.new_default_turn()
         counted = ResponseItem.message("assistant", (ContentItem.output_text("already counted by API"),))
         added_user = ResponseItem.message("user", (ContentItem.input_text("new user message"),))
@@ -2821,7 +2953,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_in_memory_session_update_rate_limits_merges_and_emits_token_count(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         turn_context = await session.new_default_turn()
         previous = RateLimitSnapshot(
             limit_id="codex",
@@ -2853,7 +2985,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             support_verbosity=False,
             service_tier_for_request=lambda tier: tier,
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             model_info=model_info,
             thread_id="thread-900",
@@ -2917,7 +3049,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 seen["body"] = json.loads(request.data.decode("utf-8"))
                 return FakeResponse()
 
-            session = InMemoryCodexSession(
+            session = Session(
                 cwd="C:/work/project",
                 model_info=model_info,
                 user_instructions="project instructions",
@@ -2942,7 +3074,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         async def build_sampling_result() -> list[str]:
-            session = InMemoryCodexSession(
+            session = Session(
                 cwd="C:/work/project",
                 model_info=model_info,
                 thread_id="thread-900",
@@ -2985,7 +3117,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # core::session::Session::request_command_approval derives allow/deny
         # network amendments, emits ExecApprovalRequestEvent, and waits under
         # the effective approval id before tool execution resumes.
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         turn = SimpleNamespace(sub_id="turn-network")
         context = NetworkApprovalContext("example.com", NetworkApprovalProtocol.HTTPS)
 
@@ -3029,7 +3161,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("approval-network", session.active_turn.turn_state.pending_approvals)
 
     async def test_in_memory_session_rate_limits_default_missing_limit_id_to_codex_after_other_bucket(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         await session.record_rate_limits_info(
             RateLimitSnapshot(
                 limit_id="codex_other",
@@ -3049,7 +3181,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.latest_rate_limits.primary.used_percent, 30.0)
 
     async def test_in_memory_session_rate_limits_carry_credits_and_plan_type_across_buckets(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         await session.record_rate_limits_info(
             RateLimitSnapshot(
                 limit_id="codex",
@@ -3077,5 +3209,6 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

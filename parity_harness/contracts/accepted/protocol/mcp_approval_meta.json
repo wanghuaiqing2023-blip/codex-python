@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-protocol.mcp_approval_meta",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "mcp_approval_meta",
+    "source": "codex/codex-rs/protocol/src/mcp_approval_meta.rs",
+    "anchors": [
+      "APPROVALS_REVIEWER_KEY",
+      "APPROVAL_KIND_KEY",
+      "APPROVAL_KIND_MCP_TOOL_CALL",
+      "APPROVAL_KIND_TOOL_SUGGESTION",
+      "CONNECTOR_DESCRIPTION_KEY",
+      "CONNECTOR_ID_KEY",
+      "CONNECTOR_NAME_KEY",
+      "PERSIST_ALWAYS",
+      "PERSIST_KEY",
+      "PERSIST_SESSION",
+      "REQUEST_TYPE_APPROVAL_REQUEST",
+      "REQUEST_TYPE_KEY"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/mcp_approval_meta.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/mcp_approval_meta.py"
+    ],
+    "anchors": [
+      "APPROVALS_REVIEWER_KEY",
+      "APPROVAL_KIND_KEY",
+      "APPROVAL_KIND_MCP_TOOL_CALL",
+      "APPROVAL_KIND_TOOL_SUGGESTION",
+      "CONNECTOR_DESCRIPTION_KEY",
+      "CONNECTOR_ID_KEY",
+      "CONNECTOR_NAME_KEY",
+      "PERSIST_ALWAYS",
+      "PERSIST_KEY",
+      "PERSIST_SESSION",
+      "REQUEST_TYPE_APPROVAL_REQUEST",
+      "REQUEST_TYPE_KEY"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_small_modules.py"
+  ]
+}

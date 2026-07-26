@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.app_link_view",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::app_link_view",
+    "source": "codex/codex-rs/tui/src/bottom_pane/app_link_view.rs",
+    "anchors": [
+      "AppLinkElicitationTarget",
+      "AppLinkSuggestionType",
+      "AppLinkView",
+      "AppLinkViewParams",
+      "from_url_app_server_request",
+      "new_with_keymap",
+      "AppLinkScreen",
+      "CONNECTOR_AUTH_FAILURE_CONNECTOR_ID_KEY",
+      "CONNECTOR_AUTH_FAILURE_CONNECTOR_NAME_KEY",
+      "CONNECTOR_AUTH_FAILURE_IS_AUTH_FAILURE_KEY",
+      "CONNECTOR_AUTH_FAILURE_META_KEY",
+      "MCP_CODEX_APPS_SERVER_NAME"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/app_link_view.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/app_link_view.py"
+    ],
+    "anchors": [
+      "AppLinkElicitationTarget",
+      "AppLinkSuggestionType",
+      "AppLinkView",
+      "AppLinkViewParams",
+      "from_url_app_server_request",
+      "new_with_keymap",
+      "AppLinkScreen",
+      "CONNECTOR_AUTH_FAILURE_CONNECTOR_ID_KEY",
+      "CONNECTOR_AUTH_FAILURE_CONNECTOR_NAME_KEY",
+      "CONNECTOR_AUTH_FAILURE_IS_AUTH_FAILURE_KEY",
+      "CONNECTOR_AUTH_FAILURE_META_KEY",
+      "MCP_CODEX_APPS_SERVER_NAME"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

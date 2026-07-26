@@ -2466,9 +2466,8 @@ def materialize_session_rollout(
     if ephemeral:
         return None
     timestamp = meta.timestamp
-    date = timestamp[:10]
-    year, month, day = date[:4], date[5:7], date[8:10]
-    file_timestamp = timestamp.replace(":", "-").replace("+00-00", "Z")
+    file_timestamp = _rollout_filename_timestamp(timestamp)
+    year, month, day = file_timestamp[:4], file_timestamp[5:7], file_timestamp[8:10]
     path = Path(codex_home) / SESSIONS_SUBDIR / year / month / day / f"rollout-{file_timestamp}-{meta.id}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     line = {
@@ -3182,10 +3181,18 @@ def _optional_string(value: object | None) -> str | None:
 
 
 def _rollout_path_for_meta(codex_home: Path, meta: SessionMeta) -> Path:
-    date = meta.timestamp[:10]
-    year, month, day = date[:4], date[5:7], date[8:10]
-    file_timestamp = meta.timestamp.replace(":", "-").replace("+00-00", "Z")
+    file_timestamp = _rollout_filename_timestamp(meta.timestamp)
+    year, month, day = file_timestamp[:4], file_timestamp[5:7], file_timestamp[8:10]
     return Path(codex_home) / SESSIONS_SUBDIR / year / month / day / f"rollout-{file_timestamp}-{meta.id}.jsonl"
+
+
+def _rollout_filename_timestamp(timestamp: str) -> str:
+    """Format Rust ``precompute_log_file_info`` local, second-precision names."""
+
+    parsed = _parse_rfc3339(timestamp)
+    if parsed is None:
+        raise ValueError(f"invalid rollout timestamp: {timestamp!r}")
+    return parsed.astimezone().strftime("%Y-%m-%dT%H-%M-%S")
 
 
 def _normalized_path(path: Path) -> str:

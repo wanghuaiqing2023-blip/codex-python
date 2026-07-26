@@ -1,0 +1,15 @@
+{
+  "contract_id": "codex-core-skills.remote", "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs", "crate": "codex-core-skills",
+    "module": "remote", "source": "codex/codex-rs/core-skills/src/remote.rs",
+    "anchors": ["RemoteSkillDownloadResult", "RemoteSkillProductSurface", "RemoteSkillScope", "RemoteSkillSummary", "export_remote_skill", "list_remote_skills", "REMOTE_SKILLS_API_TIMEOUT", "as_query_product_surface", "as_query_scope", "ensure_codex_backend_auth", "extract_zip_to_dir", "is_zip_payload"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_skills/remote.py", "layout": "module-file",
+    "implementation_files": ["pycodex/core_skills/remote.py"],
+    "anchors": ["RemoteSkillDownloadResult", "RemoteSkillProductSurface", "RemoteSkillScope", "RemoteSkillSummary", "export_remote_skill", "list_remote_skills", "REMOTE_SKILLS_API_TIMEOUT", "as_query_product_surface", "as_query_scope", "ensure_codex_backend_auth", "extract_zip_to_dir", "is_zip_payload"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

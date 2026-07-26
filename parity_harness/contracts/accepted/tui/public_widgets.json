@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-tui.public_widgets",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "public_widgets",
+    "source": "codex/codex-rs/tui/src/public_widgets/mod.rs",
+    "anchors": [
+      "module:composer_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/public_widgets/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/public_widgets/__init__.py"
+    ],
+    "anchors": [
+      "module:composer_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

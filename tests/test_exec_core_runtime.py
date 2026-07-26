@@ -57,8 +57,10 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             sorted(core_runtime.__all__),
             [
                 "CoreExecResumeTarget",
+                "CoreExecRuntimeState",
                 "align_core_exec_resume_model_client",
                 "build_default_core_exec_runtime",
+                "build_default_core_exec_runtime_state",
                 "core_exec_config_summary",
                 "core_exec_enabled",
                 "core_exec_initial_messages_from_rollout",
@@ -135,6 +137,29 @@ class ExecCoreRuntimeTests(unittest.TestCase):
         self.assertEqual([call[0] for call in manager.calls], ["list", "default", "info"])
         self.assertEqual(manager.calls[1][1], "gpt-test")
         self.assertIs(manager.calls[2][2], manager_config)
+
+    def test_build_default_core_exec_runtime_state_preserves_resolved_models_manager(self) -> None:
+        # Rust: codex-core/src/thread_manager.rs stores one SharedModelsManager
+        # and passes that same service to Session after startup model refresh.
+        manager = SimpleNamespace()
+        resolved_model_info = object()
+        config = SimpleNamespace(model="gpt-test", to_models_manager_config=lambda: object())
+
+        with (
+            patch(
+                "pycodex.exec.core_runtime._build_default_local_http_exec_runtime",
+                return_value=("client", "provider", object(), "auth"),
+            ),
+            patch("pycodex.exec.core_runtime._resolve_core_model_info", return_value=resolved_model_info),
+        ):
+            state = core_runtime.build_default_core_exec_runtime_state(
+                config,
+                models_manager=manager,
+            )
+
+        self.assertIs(state.models_manager, manager)
+        self.assertIs(state.model_info, resolved_model_info)
+        self.assertEqual(state.model_client, "client")
 
     def test_build_default_core_exec_runtime_uses_bundled_model_contract(self) -> None:
         # Rust source: codex-core/src/session/mod.rs resolves ModelInfo through

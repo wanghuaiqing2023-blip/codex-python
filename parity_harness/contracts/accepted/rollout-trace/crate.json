@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-rollout-trace.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rollout-trace",
+    "module": "crate",
+    "source": "codex/codex-rs/rollout-trace/src/lib.rs",
+    "anchors": [
+      "AgentResultTracePayload",
+      "CODEX_ROLLOUT_TRACE_ROOT_ENV",
+      "CodeCellTraceContext",
+      "CompactionCheckpointTracePayload",
+      "CompactionTraceAttempt",
+      "CompactionTraceContext",
+      "InferenceTraceAttempt",
+      "InferenceTraceContext",
+      "McpCallTraceContext",
+      "REDUCED_STATE_FILE_NAME",
+      "RawEventSeq",
+      "RawPayloadId"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rollout_trace/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/rollout_trace/__init__.py"
+    ],
+    "anchors": [
+      "AgentResultTracePayload",
+      "CODEX_ROLLOUT_TRACE_ROOT_ENV",
+      "CodeCellTraceContext",
+      "CompactionCheckpointTracePayload",
+      "CompactionTraceAttempt",
+      "CompactionTraceContext",
+      "InferenceTraceAttempt",
+      "InferenceTraceContext",
+      "McpCallTraceContext",
+      "REDUCED_STATE_FILE_NAME",
+      "RawEventSeq",
+      "RawPayloadId"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

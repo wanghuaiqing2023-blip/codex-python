@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.test_support",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "test_support",
+    "source": "codex/codex-rs/core/src/test_support.rs",
+    "anchors": [
+      "all_model_presets",
+      "auth_manager_from_auth",
+      "auth_manager_from_auth_with_home",
+      "builtin_collaboration_mode_presets",
+      "construct_model_info_offline",
+      "get_model_offline",
+      "models_manager_with_provider",
+      "resume_thread_from_rollout_with_user_shell_override",
+      "set_deterministic_process_ids",
+      "set_thread_manager_test_mode",
+      "start_thread_with_user_shell_override",
+      "thread_manager_with_models_provider"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/test_support.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/test_support.py"
+    ],
+    "anchors": [
+      "all_model_presets",
+      "auth_manager_from_auth",
+      "auth_manager_from_auth_with_home",
+      "builtin_collaboration_mode_presets",
+      "construct_model_info_offline",
+      "get_model_offline",
+      "models_manager_with_provider",
+      "resume_thread_from_rollout_with_user_shell_override",
+      "set_deterministic_process_ids",
+      "set_thread_manager_test_mode",
+      "start_thread_with_user_shell_override",
+      "thread_manager_with_models_provider"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

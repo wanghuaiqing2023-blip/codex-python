@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.status.rate_limits",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "status::rate_limits",
+    "source": "codex/codex-rs/tui/src/status/rate_limits.rs",
+    "anchors": [
+      "CreditsSnapshotDisplay",
+      "RATE_LIMIT_STALE_THRESHOLD_MINUTES",
+      "RateLimitSnapshotDisplay",
+      "RateLimitWindowDisplay",
+      "StatusRateLimitData",
+      "StatusRateLimitRow",
+      "StatusRateLimitValue",
+      "compose_rate_limit_data",
+      "compose_rate_limit_data_many",
+      "format_status_limit_summary",
+      "rate_limit_snapshot_display_for_limit",
+      "render_status_limit_progress_bar"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/status/rate_limits.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/status/rate_limits.py"
+    ],
+    "anchors": [
+      "CreditsSnapshotDisplay",
+      "RATE_LIMIT_STALE_THRESHOLD_MINUTES",
+      "RateLimitSnapshotDisplay",
+      "RateLimitWindowDisplay",
+      "StatusRateLimitData",
+      "StatusRateLimitRow",
+      "StatusRateLimitValue",
+      "compose_rate_limit_data",
+      "compose_rate_limit_data_many",
+      "format_status_limit_summary",
+      "rate_limit_snapshot_display_for_limit",
+      "render_status_limit_progress_bar"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

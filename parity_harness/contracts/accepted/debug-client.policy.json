@@ -1,0 +1,20 @@
+{
+  "scope": "debug-client",
+  "rust_root": "codex/codex-rs/debug-client",
+  "python_root": "pycodex/debug_client",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": [
+    {
+      "path": "pycodex/debug_client/__init__.py",
+      "reason": "Python package re-export surface for the Rust binary child modules; it defines no independent runtime implementation."
+    },
+    {
+      "path": "pycodex/debug_client/__main__.py",
+      "reason": "Python -m launcher adapter that only delegates to the reviewed main.py owner."
+    }
+  ]
+}

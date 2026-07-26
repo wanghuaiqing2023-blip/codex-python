@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-tui.chatwidget.input_restore",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::input_restore",
+    "source": "codex/codex-rs/tui/src/chatwidget/input_restore.rs",
+    "anchors": [
+      "capture_thread_input_state",
+      "enqueue_rejected_steer",
+      "on_interrupted_turn",
+      "pop_latest_queued_user_message",
+      "pop_next_queued_user_message",
+      "restore_thread_input_state",
+      "restore_user_message_to_composer",
+      "set_initial_user_message_submit_suppressed",
+      "set_queue_autosend_suppressed",
+      "submit_initial_user_message_if_pending",
+      "drain_pending_messages_for_restore"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/input_restore.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/input_restore.py"
+    ],
+    "anchors": [
+      "capture_thread_input_state",
+      "enqueue_rejected_steer",
+      "on_interrupted_turn",
+      "pop_latest_queued_user_message",
+      "pop_next_queued_user_message",
+      "restore_thread_input_state",
+      "restore_user_message_to_composer",
+      "set_initial_user_message_submit_suppressed",
+      "set_queue_autosend_suppressed",
+      "submit_initial_user_message_if_pending",
+      "drain_pending_messages_for_restore"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

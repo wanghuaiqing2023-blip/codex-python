@@ -4,12 +4,12 @@ import unittest
 
 from pycodex.core import (
     AppsInstructions,
-    PluginCapabilitySummary,
-    render_apps_section,
     render_explicit_plugin_instructions,
     render_plugins_section,
 )
+from pycodex.core.plugins.render import render_apps_section
 from pycodex.app_server_protocol.apps import AppInfo
+from pycodex.plugin import PluginCapabilitySummary
 from pycodex.protocol import (
     APPS_INSTRUCTIONS_CLOSE_TAG,
     APPS_INSTRUCTIONS_OPEN_TAG,

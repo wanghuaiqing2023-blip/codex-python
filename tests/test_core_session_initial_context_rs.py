@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.core.state.service import SessionServices
 from pycodex.core_skills import SkillLoadOutcome, SkillMetadata
 from pycodex.extension_api import ExtensionRegistryBuilder, PromptFragment
@@ -75,7 +75,7 @@ class InitialContextRustParityTests(unittest.IsolatedAsyncioTestCase):
             skills_manager=_SkillsManager(skills),
             plugins_manager=_PluginsManager(),
         )
-        session = InMemoryCodexSession(
+        session = Session(
             cwd="C:/work/project",
             services=services,
             user_instructions="workspace rules",
@@ -100,3 +100,4 @@ class InitialContextRustParityTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

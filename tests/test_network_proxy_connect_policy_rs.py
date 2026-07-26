@@ -3,16 +3,20 @@ import socket
 
 import pytest
 
-from pycodex.network_proxy import (
-    ConfigState,
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
     NetworkProxyConfig,
-    NetworkProxyConstraints,
     NetworkProxyNetworkConfig,
-    NetworkProxyState,
-    StaticNetworkProxyReloader,
+)
+from pycodex.network_proxy.connect_policy import (
     TargetCheckedTcpConnector,
     TargetRejectedError,
 )
+from pycodex.network_proxy.runtime import (
+    ConfigState,
+    NetworkProxyState,
+)
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def state_for_allow_local_binding(allow_local_binding: bool) -> NetworkProxyState:

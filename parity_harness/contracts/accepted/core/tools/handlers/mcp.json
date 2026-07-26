@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.handlers.mcp",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::mcp",
+    "source": "codex/codex-rs/core/src/tools/handlers/mcp.rs",
+    "anchors": [
+      "McpHandler",
+      "new",
+      "LEGACY_MCP_TOOL_NAME_PREFIX",
+      "MCP_TOOL_NAME_DELIMITER",
+      "build_mcp_search_text",
+      "ensure_mcp_prefix",
+      "handle",
+      "hook_tool_name",
+      "join_tool_name",
+      "mcp_hook_tool_input",
+      "post_tool_use_payload",
+      "pre_tool_use_payload"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/mcp.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/mcp.py"
+    ],
+    "anchors": [
+      "McpHandler",
+      "new",
+      "LEGACY_MCP_TOOL_NAME_PREFIX",
+      "MCP_TOOL_NAME_DELIMITER",
+      "build_mcp_search_text",
+      "ensure_mcp_prefix",
+      "handle",
+      "hook_tool_name",
+      "join_tool_name",
+      "mcp_hook_tool_input",
+      "post_tool_use_payload",
+      "pre_tool_use_payload"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

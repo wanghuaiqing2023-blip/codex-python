@@ -73,6 +73,11 @@ from .prompt import (
     render_guardian_transcript_entries_with_offset,
     split_guardian_truncation_bounds,
 )
+from .review_session import (
+    GuardianReviewSessionManager,
+    build_guardian_review_session_config,
+    prompt_cache_key_override_for_review_session,
+)
 
 GUARDIAN_REVIEW_TIMEOUT_SECONDS = 90
 MAX_CONSECUTIVE_GUARDIAN_DENIALS_PER_TURN = 3
@@ -203,6 +208,7 @@ __all__ = [
     "GuardianRejectionCircuitBreaker",
     "GuardianRejectionCircuitBreakerAction",
     "GuardianReviewAnalyticsResult",
+    "GuardianReviewSessionManager",
     "GuardianShellApprovalRequest",
     "GuardianTranscriptCursor",
     "GuardianTranscriptEntry",
@@ -231,10 +237,12 @@ __all__ = [
     "guardian_truncate_text",
     "is_guardian_reviewer_source",
     "parse_guardian_assessment",
+    "prompt_cache_key_override_for_review_session",
     "routes_approval_to_guardian",
     "approval_request_source_tag",
     "bool_tag",
     "build_guardian_prompt_items",
+    "build_guardian_review_session_config",
     "collect_guardian_transcript_entries",
     "decision_tag",
     "emit_guardian_review_metrics",

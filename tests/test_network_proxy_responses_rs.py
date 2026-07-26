@@ -1,8 +1,9 @@
-from pycodex.network_proxy import (
+from pycodex.network_proxy.network_policy import (
     NetworkDecisionSource,
     NetworkPolicyDecision,
     NetworkProtocol,
-    PolicyDecisionDetails,
+)
+from pycodex.network_proxy.reasons import (
     REASON_DENIED,
     REASON_METHOD_NOT_ALLOWED,
     REASON_MITM_HOOK_DENIED,
@@ -10,6 +11,9 @@ from pycodex.network_proxy import (
     REASON_NOT_ALLOWED,
     REASON_NOT_ALLOWED_LOCAL,
     REASON_PROXY_DISABLED,
+)
+from pycodex.network_proxy.responses import (
+    PolicyDecisionDetails,
     blocked_header_value,
     blocked_message,
     blocked_message_with_policy,

@@ -1,0 +1,86 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "utils-absolute-path",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 3,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-utils-absolute-path",
+        "module": "crate",
+        "source": "codex/codex-rs/utils/absolute-path/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/utils/absolute_path/__init__.py",
+          "anchor_candidates": [
+            "AbsolutePathBuf",
+            "AbsolutePathBufGuard",
+            "ancestors",
+            "as_path",
+            "canonicalize",
+            "canonicalize_existing_preserving_symlinks",
+            "canonicalize_preserving_symlinks",
+            "current_dir",
+            "display",
+            "from_absolute_path",
+            "from_absolute_path_checked",
+            "into_path_buf"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-utils-absolute-path",
+        "module": "absolutize",
+        "source": "codex/codex-rs/utils/absolute-path/src/absolutize.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-utils-absolute-path",
+        "module": "test_support",
+        "source": "codex/codex-rs/utils/absolute-path/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

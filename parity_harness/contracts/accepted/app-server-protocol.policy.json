@@ -1,0 +1,20 @@
+{
+  "scope": "app-server-protocol",
+  "rust_root": "codex/codex-rs/app-server-protocol",
+  "python_root": "pycodex/app_server_protocol",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "bin::export",
+    "bin::write_schema_fixtures",
+    "crate::protocol",
+    "crate::protocol::mappers",
+    "crate::protocol::serde_helpers",
+    "crate::protocol::v2"
+  ],
+  "uncovered_python_files": [
+    "pycodex/app_server_protocol/elicitation.py"
+  ],
+  "allowed_unowned": []
+}

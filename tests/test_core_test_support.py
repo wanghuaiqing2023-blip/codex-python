@@ -14,10 +14,7 @@ from pycodex.core.test_support import (
     set_thread_manager_test_mode,
     thread_manager_with_models_provider_home_and_state,
 )
-from pycodex.core.unified_exec import (
-    UnifiedExecProcessManager,
-    deterministic_process_ids_for_tests,
-)
+from pycodex.core.unified_exec import UnifiedExecProcessManager
 from pycodex.models_manager import ModelsManagerConfig
 from pycodex.models_manager.test_support import construct_model_info_from_candidates
 from pycodex.protocol import (
@@ -64,7 +61,6 @@ class CoreTestSupportTests(unittest.TestCase):
         self.assertTrue(thread_manager.should_use_test_thread_manager_behavior())
 
         set_deterministic_process_ids(False)
-        self.assertFalse(deterministic_process_ids_for_tests())
         random_manager = UnifiedExecProcessManager()
         self.assertFalse(random_manager.deterministic_process_ids)
 

@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-tui.bottom_pane.prompt_args",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::prompt_args",
+    "source": "codex/codex-rs/tui/src/bottom_pane/prompt_args.rs",
+    "anchors": [
+      "parse_slash_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/prompt_args.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/prompt_args.py"
+    ],
+    "anchors": [
+      "parse_slash_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

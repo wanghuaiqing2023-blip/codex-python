@@ -3,12 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.cli import parser
+import pycodex.cli.main as parser
 from pycodex.features import Feature
 from pycodex.protocol import AskForApproval, PermissionProfile
 from pycodex.tui import TuiAppRuntime
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
 from pycodex.tui.runtime_projection import _runtime_status_line_item_ids, _runtime_status_line_value
+
+
+def _runtime_state() -> SimpleNamespace:
+    return SimpleNamespace(
+        model_client=object(),
+        provider=SimpleNamespace(id="openai"),
+        model_info=SimpleNamespace(id="gpt-test", name="gpt-test"),
+        resolved_auth=None,
+        models_manager=object(),
+    )
 
 
 def test_tui_root_config_overrides_reach_runtime_status_line(monkeypatch, tmp_path: Path) -> None:
@@ -26,15 +36,16 @@ def test_tui_root_config_overrides_reach_runtime_status_line(monkeypatch, tmp_pa
     monkeypatch.setattr(parser, "ensure_exec_trusted_directory", lambda _check: None)
     monkeypatch.setattr(parser, "_execpolicy_rules_for_local_http_exec", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(parser, "local_http_exec_max_tool_rounds", lambda: 4)
+    runtime_call: dict[str, object] = {}
+
+    def build_runtime_state(*_args, **kwargs):
+        runtime_call.update(kwargs)
+        return _runtime_state()
+
     monkeypatch.setattr(
         parser,
-        "build_default_core_exec_runtime",
-        lambda *_args, **_kwargs: (
-            object(),
-            SimpleNamespace(id="openai"),
-            SimpleNamespace(id="gpt-test", name="gpt-test"),
-            None,
-        ),
+        "build_default_core_exec_runtime_state",
+        build_runtime_state,
     )
 
     parsed = parser.parse_args(
@@ -58,6 +69,9 @@ def test_tui_root_config_overrides_reach_runtime_status_line(monkeypatch, tmp_pa
 
     assert runtime.session_config.tui_status_line == ("model-name", "context-used")
     assert runtime.session_config.tui_status_line_use_colors is False
+    # Rust codex-models-manager owns client_version_to_whole(); the TUI must
+    # not replace that crate version with its separate product version.
+    assert "client_version" not in runtime_call
     assert _runtime_status_line_item_ids(app_runtime) == ("model-name", "context-used")
     assert _runtime_status_line_value(app_runtime, StatusLineItem.CONTEXT_USED, "Ready") == "Context 0% used"
 
@@ -81,13 +95,8 @@ def test_tui_runtime_uses_explicit_config_permission_profile(monkeypatch, tmp_pa
     monkeypatch.setattr(parser, "local_http_exec_max_tool_rounds", lambda: 4)
     monkeypatch.setattr(
         parser,
-        "build_default_core_exec_runtime",
-        lambda *_args, **_kwargs: (
-            object(),
-            SimpleNamespace(id="openai"),
-            SimpleNamespace(id="gpt-test", name="gpt-test"),
-            None,
-        ),
+        "build_default_core_exec_runtime_state",
+        lambda *_args, **_kwargs: _runtime_state(),
     )
 
     runtime = parser._build_tui_core_active_thread_runtime(
@@ -111,13 +120,8 @@ def test_tui_disable_unified_exec_reaches_core_session_features(monkeypatch, tmp
     monkeypatch.setattr(parser, "local_http_exec_max_tool_rounds", lambda: 4)
     monkeypatch.setattr(
         parser,
-        "build_default_core_exec_runtime",
-        lambda *_args, **_kwargs: (
-            object(),
-            SimpleNamespace(id="openai"),
-            SimpleNamespace(id="gpt-test", name="gpt-test"),
-            None,
-        ),
+        "build_default_core_exec_runtime_state",
+        lambda *_args, **_kwargs: _runtime_state(),
     )
 
     runtime = parser._build_tui_core_active_thread_runtime(

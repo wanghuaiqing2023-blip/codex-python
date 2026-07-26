@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.live_wrap",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "live_wrap",
+    "source": "codex/codex-rs/tui/src/live_wrap.rs",
+    "anchors": [
+      "Row",
+      "RowBuilder",
+      "display_rows",
+      "drain_commit_ready",
+      "end_line",
+      "new",
+      "push_fragment",
+      "rows",
+      "set_width",
+      "take_prefix_by_width",
+      "width",
+      "flush_current_line"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/live_wrap.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/live_wrap.py"
+    ],
+    "anchors": [
+      "Row",
+      "RowBuilder",
+      "display_rows",
+      "drain_commit_ready",
+      "end_line",
+      "new",
+      "push_fragment",
+      "rows",
+      "set_width",
+      "take_prefix_by_width",
+      "width",
+      "flush_current_line"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

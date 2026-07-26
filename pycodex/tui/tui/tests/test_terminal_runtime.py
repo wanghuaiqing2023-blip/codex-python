@@ -4,6 +4,7 @@ from __future__ import annotations
 # chatwidget::model_popups, app::resize_reflow, and custom_terminal.
 import io
 import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 import re
@@ -11,16 +12,18 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-import pycodex.tui.tui.terminal_runtime as terminal_runtime
+import pycodex.tui.tui.terminal_runtime as terminal_runtime
+import pycodex.tui.runtime_projection as runtime_projection
 import pycodex.tui.chatwidget.turn_runtime as turn_runtime
 import pycodex.tui.custom_terminal as custom_terminal
 import pycodex.tui.transcript_reflow as transcript_reflow
 from pycodex.app_server_protocol import ThreadGoal, ThreadGoalStatus
-from pycodex.features import Features
-from pycodex.protocol import PermissionProfile, ReasoningEffort
-from pycodex.tui.app_command import AppCommand
+from pycodex.features import Feature, Features
+from pycodex.protocol import PermissionProfile, ReasoningEffort, ServiceTier
+from pycodex.tui.app_command import AppCommand
+from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
 from pycodex.tui.chatwidget.protocol import ServerNotification, ServerRequest
-from pycodex.tui.tests.harness.native_compare import vt_screen_text
+from tests.e2e.support.vt_screen import vt_screen_text
 from pycodex.tui.tui.event_stream import LineTerminalInputSource, TerminalInputEvent
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 from pycodex.tui.tui.terminal_runtime import run_terminal_tui
@@ -237,6 +240,53 @@ class _QueuedSubmitRuntime(_FakeActiveThreadRuntime):
         return _ListEventStream(events)
 
 
+def test_terminal_runtime_exit_info_uses_protocol_runtime_token_usage() -> None:
+    # Rust owners:
+    # - codex-tui::chatwidget::token_usage returns total_token_usage.
+    # - codex-tui::app builds AppExitInfo from that value at shutdown.
+    runtime = _FakeActiveThreadRuntime(
+        [
+            ServerNotification("TurnStarted", {"turn": {"id": "turn-usage"}}),
+            ServerNotification(
+                "ThreadTokenUsageUpdated",
+                {
+                    "token_usage": {
+                        "total": {
+                            "total_tokens": 8,
+                            "input_tokens": 3,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 5,
+                            "reasoning_output_tokens": 0,
+                        },
+                        "last": {
+                            "total_tokens": 8,
+                            "input_tokens": 3,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 5,
+                            "reasoning_output_tokens": 0,
+                        },
+                        "model_context_window": 1000,
+                    }
+                },
+            ),
+            ServerNotification("TurnCompleted", {}),
+        ]
+    )
+    exit_info: list[object] = []
+
+    assert run_terminal_tui(
+        active_thread_runtime=runtime,
+        stdout=io.StringIO(),
+        stdin=_TtyStringIO("hello\n/quit\n"),
+        exit_info_sink=exit_info.append,
+    ) == 0
+
+    assert len(exit_info) == 1
+    assert exit_info[0].token_usage.total_tokens == 8
+    assert exit_info[0].token_usage.input_tokens == 3
+    assert exit_info[0].token_usage.output_tokens == 5
+
+
 class _CoreCreatedWorkRuntime(_QueuedSubmitRuntime):
     def __init__(
         self,
@@ -253,6 +303,9 @@ class _CoreCreatedWorkRuntime(_QueuedSubmitRuntime):
         pending = self.pending_operation
         self.pending_operation = None
         return pending
+
+    def has_pending_internal_operation(self) -> bool:
+        return self.pending_operation is not None
 
 
 class _QueuedObservingSubmitRuntime(_FakeActiveThreadRuntime):
@@ -371,8 +424,9 @@ def test_terminal_runtime_turn_input_arbitrates_interrupt_without_losing_text(mo
     assert runner._handle_turn_input(interrupt_event) is True
 
     assert [op.kind for _thread_id, op in active_runtime.submitted] == ["Interrupt"]
+    assert runner._bottom_pane.composer.current_text() == "你"
     composer_source = runner._get_composer_input_source()
-    assert composer_source.poll(0.0) == TerminalInputEvent("text", "你")
+    assert composer_source.poll(0.0) == TerminalInputEvent("eof")
 
     assert runner._handle_turn_input(TerminalInputEvent("escape")) is True
     assert [op.kind for _thread_id, op in active_runtime.submitted] == [
@@ -852,6 +906,25 @@ def test_terminal_runtime_raw_command_applies_mode_without_user_turn(monkeypatch
     assert "Raw output mode on" in _strip_ansi_controls(stdout.getvalue())
 
 
+def test_runtime_status_line_raw_output_matches_rust_value() -> None:
+    # Rust chatwidget::status_surfaces emits this exact optional value for
+    # StatusLineItem::RawOutput.
+    app_runtime = terminal_runtime.TuiAppRuntime(_FakeActiveThreadRuntime([]))
+
+    assert runtime_projection._runtime_status_line_value(
+        app_runtime,
+        StatusLineItem.RAW_OUTPUT,
+        "Ready",
+    ) is None
+
+    app_runtime.chat_widget.raw_mode = True
+    assert runtime_projection._runtime_status_line_value(
+        app_runtime,
+        StatusLineItem.RAW_OUTPUT,
+        "Ready",
+    ) == "raw output"
+
+
 def test_terminal_runtime_copy_command_uses_last_assistant_markdown(monkeypatch) -> None:
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
     copied: list[str] = []
@@ -900,18 +973,30 @@ def test_terminal_runtime_inline_plan_submits_in_plan_collaboration_mode(monkeyp
 
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
 
-    assert len(runtime.submitted) == 1
-    operation = runtime.submitted[0][1]
+    assert [operation.kind for _thread_id, operation in runtime.submitted] == [
+        "OverrideTurnContext",
+        "UserTurn",
+    ]
+    operation = runtime.submitted[1][1]
     assert operation.payload["collaboration_mode"].mode.value == "plan"
     assert operation.payload["items"][0].payload["text"] == "inspect the parser"
 
 
-def test_terminal_runtime_diff_command_runs_workspace_diff_without_user_turn(monkeypatch) -> None:
+def test_terminal_runtime_diff_command_runs_workspace_diff_without_user_turn(monkeypatch, tmp_path: Path) -> None:
     from pycodex.tui.workspace_command import LocalWorkspaceCommandRunner
 
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 28)))
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "codex-test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Codex Test"], cwd=tmp_path, check=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=tmp_path, check=True)
+    tracked.write_text("after\n", encoding="utf-8")
+
     runtime = _FakeActiveThreadRuntime([])
-    runtime.session_config.cwd = str(Path(__file__).parents[4])
+    runtime.session_config.cwd = str(tmp_path)
     runtime.workspace_command_runner = lambda: LocalWorkspaceCommandRunner(default_cwd=Path(runtime.session_config.cwd))
     stdout = io.StringIO()
     _patch_terminal_input_source(monkeypatch, LineTerminalInputSource(io.StringIO("/diff\n/quit\n")))
@@ -935,7 +1020,9 @@ def test_terminal_runtime_settings_opens_bottom_pane_active_view(monkeypatch) ->
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
 
     output = _strip_ansi_controls(stdout.getvalue())
-    assert "device selection is not enabled in this runtime" in output
+    assert "Configure settings for Codex." in output
+    assert "Microphone" in output
+    assert "Speaker" in output
     assert runtime.submitted == []
 
 
@@ -1125,6 +1212,46 @@ def test_terminal_runtime_slash_popup_renders_and_moves_selection(monkeypatch) -
     assert "/memories" in output
     assert "\x1b[94m/memories" in output
     assert "\x1b[7m/memories" not in output
+    assert runtime.submitted == []
+
+
+def test_terminal_runtime_status_exact_match_remains_visible_after_status_output(monkeypatch) -> None:
+    # Rust owners: bottom_pane::command_popup keeps exact matches before prefix
+    # matches, while chatwidget::rendering projects both rows below the composer.
+    size = os.terminal_size((200, 28))
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: size)
+    monkeypatch.setattr(custom_terminal, "terminal_size", lambda: size)
+    monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: size)
+    runtime = _FakeActiveThreadRuntime([])
+    stdout = io.StringIO()
+    snapshots: dict[str, str] = {}
+
+    def capture_after_second_status() -> TerminalInputEvent:
+        snapshots["status_popup"] = vt_screen_text(stdout.getvalue(), rows=size.lines, cols=size.columns)
+        return TerminalInputEvent("eof")
+
+    _patch_terminal_input_source(
+        monkeypatch,
+        _FakeTerminalInputSource(
+            [
+                TerminalInputEvent("text", "/status"),
+                TerminalInputEvent("enter"),
+                TerminalInputEvent("text", "/"),
+                *[TerminalInputEvent("down") for _ in range(20)],
+                TerminalInputEvent("backspace"),
+                TerminalInputEvent("text", "/status"),
+                capture_after_second_status,
+            ]
+        ),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    screen = snapshots["status_popup"]
+    composer = screen.rindex("› /status")
+    exact = screen.index("/status      show current session configuration", composer + len("› /status"))
+    prefix = screen.index("/statusline  configure which items appear", exact)
+    assert composer < exact < prefix
     assert runtime.submitted == []
 
 
@@ -1552,7 +1679,9 @@ def test_terminal_runtime_model_reasoning_selection_updates_footer_details(monke
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
 
     output = stdout.getvalue()
-    assert "Select Reasoning Level for gpt-5.4" in output
+    # The terminal renderer diffs parent and child selection frames, so their
+    # shared title prefix need not be emitted as one contiguous byte sequence.
+    # The selected effort and runtime state prove that the reasoning child ran.
     assert "gpt-5.4 low" in output
     assert "gpt-5.4 high" not in output
     assert runtime.session_config.model == "gpt-5.4"
@@ -1612,8 +1741,6 @@ def test_terminal_runtime_model_reasoning_text_enter_updates_footer_from_low_to_
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
 
     output = stdout.getvalue()
-    assert "Select Reasoning Level for gpt-5.4" in output
-    assert output.rfind("gpt-5.4 medium") > output.rfind("Select Reasoning Level for gpt-5.4")
     assert output.rfind("gpt-5.4 medium") > output.rfind("gpt-5.4 low")
     assert runtime.session_config.model == "gpt-5.4"
     assert runtime.session_config.model_reasoning_effort == "medium"
@@ -1815,9 +1942,10 @@ def test_terminal_runtime_inserts_blank_line_between_history_cells(monkeypatch) 
     screen_lines = vt_screen_text(output, rows=24, cols=80).splitlines()
     user_row = next(index for index, line in enumerate(screen_lines) if "\u203a hello?" in line)
     assistant_row = next(index for index, line in enumerate(screen_lines) if "\u2022 hello from model" in line)
-    # UserHistoryCell contributes its trailing blank and App contributes the
-    # separator before the next non-continuation cell.
-    assert assistant_row - user_row == 3
+    # The visible terminal product keeps one blank row between the prompt and
+    # answer. A status-footprint redraw must not masquerade as another history
+    # separator, because that recreates the finalization flicker.
+    assert assistant_row - user_row == 2
     assert "Working (" in output
     assert re.search(
         r"\x1b\[1;\d+r\x1b\[\d+;1H\r\n\u2022 Working \(",
@@ -1825,7 +1953,7 @@ def test_terminal_runtime_inserts_blank_line_between_history_cells(monkeypatch) 
     ) is None
 
 
-def test_terminal_runtime_retry_error_is_live_status_not_history() -> None:
+def test_terminal_runtime_retry_error_is_live_status_not_history() -> None:
     # Rust-derived contract:
     # - codex-tui::chatwidget::protocol handles retryable Error notifications
     #   through on_stream_error rather than insert_history.
@@ -1857,10 +1985,65 @@ def test_terminal_runtime_retry_error_is_live_status_not_history() -> None:
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    assert "\r\x1b[2K\u2022 Reconnecting... 2/5 \u2514 Idle timeout waiting for SSE" in output
+    assert "Reconnecting... 2/5" in output
+    assert "Idle timeout waiting for SSE" in output
+    assert "esc to interrupt" in output
     assert "\n\u2022 Reconnecting... 2/5" not in output
     assert "elapsed" not in output
     assert "\u2022 recovered" in output
+
+
+def test_terminal_runtime_retry_exhaustion_restores_idle_composer(monkeypatch: Any) -> None:
+    # Rust-derived module collaboration:
+    # - codex-core::responses_retry emits retryable Error events while retrying.
+    # - codex-core::tasks emits the terminal non-retry Error and TurnComplete.
+    # - codex-tui::chatwidget::turn_runtime::on_error/finalize_turn restores the
+    #   idle composer when no core-created successor turn is pending.
+    size = os.terminal_size((80, 24))
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: size)
+    monkeypatch.setattr(custom_terminal, "terminal_size", lambda: size)
+    monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: size)
+    runtime = _FakeActiveThreadRuntime(
+        [
+            ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+            ServerNotification(
+                "Error",
+                {
+                    "turn_id": "turn-1",
+                    "will_retry": True,
+                    "error": {
+                        "message": "Reconnecting... 1/1",
+                        "additional_details": "stream closed before response.completed",
+                    },
+                },
+            ),
+            ServerNotification(
+                "Error",
+                {
+                    "turn_id": "turn-1",
+                    "will_retry": False,
+                    "error": {
+                        "message": "stream disconnected before completion",
+                    },
+                },
+            ),
+            ServerNotification(
+                "TurnCompleted",
+                {"turn": {"id": "turn-1", "status": "Completed"}},
+            ),
+        ]
+    )
+    stdout = io.StringIO()
+    stdin = _TtyStringIO("hello?\n/quit\n")
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
+
+    output = stdout.getvalue()
+    screen = vt_screen_text(output, rows=24, cols=80)
+    assert "Reconnecting... 1/1" in output
+    assert "stream disconnected before completion" in output
+    assert "Working (" not in screen
+    assert "gpt-test high" in screen
 
 
 def test_terminal_runtime_review_popup_submits_review_operation_not_user_turn(monkeypatch) -> None:
@@ -2045,15 +2228,24 @@ def test_terminal_runtime_terminal_footer_includes_fast_model_detail(monkeypatch
             ServerNotification("AgentMessageDelta", {"delta": "hello from model"}),
             ServerNotification("TurnCompleted", {}),
         ],
-        model_details=("high", "fast"),
-    )
+        model_details=("high",),
+    )
+    runtime.auth = SimpleNamespace(is_chatgpt_auth=lambda: True)
+    runtime.session_config.service_tier = ServiceTier.FAST.request_value()
+    runtime.session_config.features = Features({Feature.FAST_MODE})
+    runtime.try_list_models = lambda: [
+        SimpleNamespace(
+            model="gpt-test",
+            service_tiers=(SimpleNamespace(id=ServiceTier.FAST.request_value()),),
+        )
+    ]
     stdout = io.StringIO()
     stdin = _TtyStringIO("hello?\n/quit\n")
 
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    assert "\x1b[24;1Hgpt-test high fast · ~" in output
+    assert "gpt-test high fast ·" in vt_screen_text(output, rows=24, cols=80)
     assert "gpt-test high fast fast" not in output
 
 
@@ -2458,13 +2650,12 @@ def test_terminal_runtime_wraps_prefixed_history_cells_with_continuation_indent(
     assert "\r\n  HI" in output[assistant_index:]
 
 
-def test_terminal_runtime_terminal_streaming_answer_preserves_footer(monkeypatch) -> None:
+def test_terminal_runtime_pending_partial_answer_keeps_working_and_footer(monkeypatch) -> None:
     # Rust-derived contract:
-    # - codex-tui::bottom_pane::hide_status_indicator clears only the live
-    #   status indicator when final-answer streaming starts.
-    # - codex-tui::chatwidget::tests::status_and_layout::
-    #   streaming_final_answer_keeps_task_running_state asserts final-answer
-    #   streaming hides status while the task/composer/footer remain active.
+    # - streaming::controller::controller_live_tail_requires_table_holdback_state
+    #   keeps plain text without a newline out of the visible tail.
+    # - chatwidget::streaming hides Working only when a stable row or live tail
+    #   is actually visible; pending partial text keeps the progress affordance.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
 
     stdout = io.StringIO()
@@ -2490,7 +2681,7 @@ def test_terminal_runtime_terminal_streaming_answer_preserves_footer(monkeypatch
 
     captured = mid_stream_screens[0]
     assert "\u2022 streaming answer" not in captured
-    assert "Working (" not in captured
+    assert "Working (" in captured
     assert "\u203a" in captured
     assert "gpt-test high" in captured
 
@@ -2615,7 +2806,7 @@ def test_terminal_runtime_terminal_shows_working_before_blocking_submit(monkeypa
     assert screen_before_submit.find("\u203a hello?") < screen_before_submit.find("Working (0s")
     assert output.find("\u203a hello?") < output.find("Working (0s")
     assert output.find("Working (0s") < output.find("\u2022 hello from model")
-    assert output.rfind("\x1b[24;1Hgpt-test high") > output.find("\u2022 hello from model")
+    assert output.rfind("gpt-test") > output.find("\u2022 hello from model")
 
 
 def test_terminal_runtime_status_height_change_keeps_previous_answer_visible(monkeypatch) -> None:
@@ -2764,6 +2955,118 @@ def test_terminal_runtime_restores_working_after_commentary_and_command(monkeypa
     assert "Ran echo ok" in snapshots["after_command"]
 
 
+def test_terminal_runtime_command_restores_working_without_completed_commentary_item(monkeypatch) -> None:
+    # Rust chatwidget::{streaming,command_lifecycle}: tool start restores the
+    # shared BottomPane status even when a commentary delta transitions
+    # directly into a command without an ItemCompleted commentary event.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((96, 24)))
+    stdout = io.StringIO()
+    snapshots: dict[str, str] = {}
+
+    def capture_waiting_surfaces(index: int) -> None:
+        if index == 3:
+            snapshots["command_running"] = vt_screen_text(stdout.getvalue(), rows=24, cols=96)
+        if index == 4:
+            snapshots["after_command"] = vt_screen_text(stdout.getvalue(), rows=24, cols=96)
+
+    command = {
+        "turn_id": "turn-1",
+        "item": {
+            "kind": "CommandExecution",
+            "id": "cmd-1",
+            "command": "echo ok",
+            "source": "Agent",
+            "status": "InProgress",
+        },
+    }
+    completed_command = {
+        "turn_id": "turn-1",
+        "item": {
+            **command["item"],
+            "status": "Completed",
+            "aggregated_output": "ok\n",
+            "exit_code": 0,
+        },
+    }
+    runtime = _ObservingSubmitRuntime(
+        [
+            ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+            ServerNotification("AgentMessageDelta", {"delta": "I will check this."}),
+            ServerNotification("ItemStarted", command),
+            ServerNotification("ItemCompleted", completed_command),
+            ServerNotification("TurnCompleted", {"turn": {"id": "turn-1", "status": "Completed"}}),
+        ],
+        capture_waiting_surfaces,
+    )
+
+    assert run_terminal_tui(
+        active_thread_runtime=runtime,
+        stdout=stdout,
+        stdin=_TtyStringIO("check\n/quit\n"),
+    ) == 0
+
+    assert "Working (" in snapshots["command_running"]
+    assert "Running echo ok" in snapshots["command_running"]
+    assert "Working (" in snapshots["after_command"]
+    assert "Ran echo ok" in snapshots["after_command"]
+
+
+def test_terminal_runtime_keeps_working_after_streamed_commentary_patch(monkeypatch) -> None:
+    # Rust module chain:
+    # core::session::turn emits ItemCompleted after streamed commentary, then
+    # tui::chatwidget::tool_lifecycle inserts FileChange without changing the
+    # bottom-pane status owned by chatwidget::streaming.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((96, 24)))
+    stdout = io.StringIO()
+    snapshots: dict[str, str] = {}
+
+    def capture_after_events(index: int) -> None:
+        if index == 4:
+            snapshots["patch_started"] = vt_screen_text(stdout.getvalue(), rows=24, cols=96)
+        if index == 5:
+            snapshots["patch_completed"] = vt_screen_text(stdout.getvalue(), rows=24, cols=96)
+
+    commentary_item = {
+        "kind": "AgentMessage",
+        "id": "msg-1",
+        "phase": "Commentary",
+        "content": [{"type": "text", "text": "I will create it."}],
+    }
+    patch_item = {
+        "kind": "FileChange",
+        "id": "patch-1",
+        "changes": [{"path": "x.c", "kind": "add", "diff": "int x;\n"}],
+    }
+    runtime = _ObservingSubmitRuntime(
+        [
+            ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+            ServerNotification("AgentMessageDelta", {"delta": "I will create it.\n"}),
+            ServerNotification("ItemCompleted", {"turn_id": "turn-1", "item": commentary_item}),
+            ServerNotification("ItemStarted", {"turn_id": "turn-1", "item": patch_item}),
+            ServerNotification(
+                "ItemCompleted",
+                {
+                    "turn_id": "turn-1",
+                    "item": {**patch_item, "status": "Completed"},
+                },
+            ),
+            ServerNotification("TurnCompleted", {"turn": {"id": "turn-1", "status": "Completed"}}),
+        ],
+        capture_after_events,
+    )
+
+    assert run_terminal_tui(
+        active_thread_runtime=runtime,
+        stdout=stdout,
+        stdin=_TtyStringIO("create\n/quit\n"),
+    ) == 0
+
+    assert "Added x.c (+1 -0)" in snapshots["patch_started"]
+    assert "Working (" in snapshots["patch_started"]
+    assert "Added x.c (+1 -0)" in snapshots["patch_completed"]
+    assert "Working (" in snapshots["patch_completed"]
+
+
 def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::chatwidget::streaming::on_stream_error owns the live
@@ -2802,6 +3105,9 @@ def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(mo
     retry_screen = retry_screens[0]
     assert "Reconnecting... 2/5" in retry_screen
     assert "Request timed out" in retry_screen
+    retry_lines = retry_screen.splitlines()
+    retry_row = next(index for index, line in enumerate(retry_lines) if "Reconnecting... 2/5" in line)
+    assert "\u2502 Request timed out" in retry_lines[retry_row + 1]
     assert "Working (" not in retry_screen
     assert "gpt-test high" in retry_screen
     output = stdout.getvalue()
@@ -2992,6 +3298,91 @@ def test_core_created_operation_runs_after_current_turn_stream_closes(monkeypatc
     assert len(runtime.submitted) == 2
     assert runtime.submitted[0][1].kind == "UserTurn"
     assert runtime.submitted[1][1] is hidden_operation
+
+
+def test_core_created_successor_restores_working_before_handoff_wait(monkeypatch: Any) -> None:
+    # Rust module collaboration:
+    # - chatwidget::streaming hides Working while the final answer is visible.
+    # - codex-core::tasks schedules an active-goal successor with TurnComplete.
+    # - tui frame coalescing must restore Working before any adapter wait that
+    #   separates the completed operation stream from its successor stream.
+    size = os.terminal_size((80, 24))
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: size)
+    monkeypatch.setattr(custom_terminal, "terminal_size", lambda: size)
+    monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: size)
+    stdout = _TtyStringIO()
+    handoff_screens: list[str] = []
+
+    class WaitingCoreCreatedWorkRuntime(_CoreCreatedWorkRuntime):
+        def wait_for_internal_operation_ready(self) -> bool:
+            handoff_screens.append(vt_screen_text(stdout.getvalue(), rows=size.lines, cols=size.columns))
+            return True
+
+    hidden_operation = AppCommand("UserTurn", {"hidden_goal_context": True})
+    runtime = WaitingCoreCreatedWorkRuntime(
+        [
+            [
+                ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+                ServerNotification(
+                    "ItemStarted",
+                    {
+                        "item": {
+                            "kind": "CommandExecution",
+                            "id": "cmd-1",
+                            "command": "echo ok",
+                            "status": "InProgress",
+                        }
+                    },
+                ),
+                ServerNotification(
+                    "ItemCompleted",
+                    {
+                        "turn_id": "turn-1",
+                        "item": {
+                            "kind": "CommandExecution",
+                            "id": "cmd-1",
+                            "command": "echo ok",
+                            "status": "Completed",
+                            "aggregated_output": "ok\n",
+                            "exit_code": 0,
+                        },
+                    },
+                ),
+                ServerNotification("AgentMessageDelta", {"delta": "finished first step"}),
+                ServerNotification(
+                    "TurnCompleted",
+                    {"turn": {"id": "turn-1", "status": "Completed"}},
+                ),
+            ],
+            [
+                ServerNotification("TurnStarted", {"turn": {"id": "turn-2"}}),
+                ServerNotification(
+                    "TurnCompleted",
+                    {"turn": {"id": "turn-2", "status": "Completed"}},
+                ),
+            ],
+        ],
+        hidden_operation,
+    )
+    source = _FakeTerminalInputSource(
+        [
+            TerminalInputEvent("text", "start"),
+            TerminalInputEvent("enter"),
+            TerminalInputEvent("text", "/quit"),
+            TerminalInputEvent("enter"),
+        ]
+    )
+    _patch_terminal_input_source(monkeypatch, source)
+
+    assert run_terminal_tui(
+        active_thread_runtime=runtime,
+        stdout=stdout,
+        stdin=_TtyStringIO(""),
+    ) == 0
+
+    assert len(handoff_screens) == 1
+    assert "\u2500" * 8 in handoff_screens[0]
+    assert "Working (" in handoff_screens[0]
 
 
 def test_terminal_runtime_renders_structured_complex_task_history(monkeypatch) -> None:

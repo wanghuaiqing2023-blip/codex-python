@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-app-server-protocol.export",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-protocol",
+    "module": "export",
+    "source": "codex/codex-rs/app-server-protocol/src/export.rs",
+    "anchors": [
+      "GeneratedSchema",
+      "GenerateTsOptions",
+      "generate_json",
+      "generate_ts",
+      "generate_ts_with_options",
+      "generate_types"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_protocol/export.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server_protocol/export.py"
+    ],
+    "anchors": [
+      "GeneratedSchema",
+      "GenerateTsOptions",
+      "generate_json",
+      "generate_ts",
+      "generate_ts_with_options",
+      "generate_types"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

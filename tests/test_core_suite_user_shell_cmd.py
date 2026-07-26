@@ -5,11 +5,8 @@ import sys
 from datetime import timedelta
 from types import SimpleNamespace
 
-from pycodex.core.session.handlers import (
-    USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY,
-    UserShellCommandTask,
-    dispatch_session_op,
-)
+from pycodex.core.session.handlers import dispatch_session_op
+from pycodex.core.tasks.user_shell import UserShellCommandMode, UserShellCommandTask
 from pycodex.core.user_shell_command import (
     env_for_user_shell_command,
     format_exec_output_for_model,
@@ -59,7 +56,7 @@ def test_user_shell_cmd_ls_and_cat_in_temp_dir(tmp_path) -> None:
     assert cat_result.stdout == contents
 
 
-def test_user_shell_cmd_can_be_interrupted() -> None:
+def test_user_shell_cmd_can_be_interrupted(monkeypatch) -> None:
     # Rust: core/tests/suite/user_shell_cmd.rs::user_shell_cmd_can_be_interrupted.
     calls: list[tuple[object, str, object, str]] = []
     cancellation_token = object()
@@ -67,39 +64,65 @@ def test_user_shell_cmd_can_be_interrupted() -> None:
     async def active_turn_context_and_cancellation_token() -> tuple[str, object]:
         return ("active-turn", cancellation_token)
 
-    async def execute_user_shell_command(turn_context: object, command: str, cancellation_token: object, mode: str) -> None:
-        calls.append((turn_context, command, cancellation_token, mode))
+    async def execute_user_shell_command(
+        session: object,
+        turn_context: object,
+        command: str,
+        token: object,
+        mode: UserShellCommandMode,
+    ) -> None:
+        calls.append((turn_context, command, token, mode))
 
     session = SimpleNamespace(
         active_turn_context_and_cancellation_token=active_turn_context_and_cancellation_token,
-        execute_user_shell_command=execute_user_shell_command,
     )
+    monkeypatch.setattr("pycodex.core.session.handlers.execute_user_shell_command", execute_user_shell_command)
 
-    should_exit = asyncio.run(dispatch_session_op(session, "sub-1", Op.run_user_shell_command("sleep 5")))
+    async def exercise() -> bool:
+        result = await dispatch_session_op(session, "sub-1", Op.run_user_shell_command("sleep 5"))
+        await asyncio.sleep(0)
+        return result
+
+    should_exit = asyncio.run(exercise())
 
     assert should_exit is False
-    assert calls == [("active-turn", "sleep 5", cancellation_token, USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY)]
+    assert calls == [
+        ("active-turn", "sleep 5", cancellation_token, UserShellCommandMode.ACTIVE_TURN_AUXILIARY)
+    ]
 
 
-def test_user_shell_command_does_not_replace_active_turn() -> None:
+def test_user_shell_command_does_not_replace_active_turn(monkeypatch) -> None:
     # Rust: core/tests/suite/user_shell_cmd.rs::user_shell_command_does_not_replace_active_turn.
     calls: list[tuple[object, str, object, str]] = []
 
     async def active_turn_context_and_cancellation_token() -> tuple[str, str]:
         return ("active-turn", "cancel-token")
 
-    async def execute_user_shell_command(turn_context: object, command: str, cancellation_token: object, mode: str) -> None:
-        calls.append((turn_context, command, cancellation_token, mode))
+    async def execute_user_shell_command(
+        session: object,
+        turn_context: object,
+        command: str,
+        token: object,
+        mode: UserShellCommandMode,
+    ) -> None:
+        calls.append((turn_context, command, token, mode))
 
     session = SimpleNamespace(
         active_turn_context_and_cancellation_token=active_turn_context_and_cancellation_token,
-        execute_user_shell_command=execute_user_shell_command,
     )
+    monkeypatch.setattr("pycodex.core.session.handlers.execute_user_shell_command", execute_user_shell_command)
 
-    should_exit = asyncio.run(dispatch_session_op(session, "sub-1", Op.run_user_shell_command("printf user-shell")))
+    async def exercise() -> bool:
+        result = await dispatch_session_op(session, "sub-1", Op.run_user_shell_command("printf user-shell"))
+        await asyncio.sleep(0)
+        return result
+
+    should_exit = asyncio.run(exercise())
 
     assert should_exit is False
-    assert calls == [("active-turn", "printf user-shell", "cancel-token", "active_turn_auxiliary")]
+    assert calls == [
+        ("active-turn", "printf user-shell", "cancel-token", UserShellCommandMode.ACTIVE_TURN_AUXILIARY)
+    ]
 
 
 def test_user_shell_command_history_is_persisted_and_shared_with_model() -> None:

@@ -1,4 +1,4 @@
-"""Codex thread wrapper ported from ``core/src/codex_thread.rs``.
+﻿"""Codex thread wrapper ported from ``core/src/codex_thread.rs``.
 
 Rust's ``CodexThread`` is intentionally thin: it wraps a running ``Codex``
 session, delegates most runtime operations to it, and exposes thread-scoped
@@ -374,7 +374,7 @@ class CodexThread:
             recorder = getattr(session, "record_context_updates_and_set_reference_context_item", None)
             if callable(recorder):
                 await _maybe_await(recorder(turn_context))
-        if session.__class__.__name__ == "InMemoryCodexSession":
+        if session.__class__.__name__ == "Session":
             response_items = [_response_input_item_to_response_item(item) for item in items]
             previous_active_turn = getattr(session, "active_turn", None)
             try:
@@ -583,3 +583,4 @@ __all__ = [
     "SessionSettingsUpdate",
     "ThreadConfigSnapshot",
 ]
+

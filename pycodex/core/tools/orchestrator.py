@@ -14,7 +14,7 @@ from pycodex.core.guardian.review import (
 )
 from pycodex.core.network_policy_decision import network_approval_context_from_payload
 from pycodex.core.sandbox_tags import SandboxType, get_platform_sandbox, should_require_platform_sandbox
-from pycodex.core.tools.handlers.utils import session_strict_auto_review
+from pycodex.core.tools.handlers import session_strict_auto_review
 from pycodex.core.tools.network_approval import (
     NetworkApprovalMode,
     begin_network_approval,

@@ -68,7 +68,9 @@ Python tests should record Rust source comments when touched:
 modules are recorded in `TEST_ALIGNMENT.md`, including `src/lib.rs` in
 `LIB_RS_STATUS.md`: the Python package root exports Rust's crate-root
 identifier/path types and maps every public Rust module to a Python sibling
-module, with `permissions.rs` intentionally merged into `models.py`.
+module. `permissions.rs`, `session_id.rs`, `thread_id.rs`, and the inline
+`protocol::conversation_start_prompt_serde` module each have a dedicated
+Python owner.
 
 Focused protocol validation passed after functional module completion:
 `$files = Get-ChildItem tests -Filter 'test_protocol_*.py' | ForEach-Object { $_.FullName }; python -m pytest $files -q`

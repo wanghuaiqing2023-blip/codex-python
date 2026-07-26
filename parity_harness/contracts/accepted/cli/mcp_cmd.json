@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-cli.mcp_cmd",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cli",
+    "module": "bin::codex::mcp_cmd",
+    "source": "codex/codex-rs/cli/src/mcp_cmd.rs",
+    "anchors": [
+      "parse_env_pair",
+      "run",
+      "validate_server_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cli/mcp_cmd.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cli/mcp_cmd.py"
+    ],
+    "anchors": [
+      "parse_env_pair",
+      "run",
+      "validate_server_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_cli_parser.py"
+  ]
+}

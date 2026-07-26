@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.agents_md",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "agents_md",
+    "source": "codex/codex-rs/core/src/agents_md.rs",
+    "anchors": [
+      "AgentsMdManager",
+      "DEFAULT_AGENTS_MD_FILENAME",
+      "HIERARCHICAL_AGENTS_MESSAGE",
+      "LOCAL_AGENTS_MD_FILENAME",
+      "LoadedAgentsMd",
+      "instruction_sources",
+      "load_global_instructions",
+      "user_instructions",
+      "AGENTS_MD_SEPARATOR",
+      "agents_md_paths",
+      "candidate_filenames",
+      "read_agents_md"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/agents_md.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/agents_md.py"
+    ],
+    "anchors": [
+      "AgentsMdManager",
+      "DEFAULT_AGENTS_MD_FILENAME",
+      "HIERARCHICAL_AGENTS_MESSAGE",
+      "LOCAL_AGENTS_MD_FILENAME",
+      "LoadedAgentsMd",
+      "instruction_sources",
+      "load_global_instructions",
+      "user_instructions",
+      "AGENTS_MD_SEPARATOR",
+      "agents_md_paths",
+      "candidate_filenames",
+      "read_agents_md"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

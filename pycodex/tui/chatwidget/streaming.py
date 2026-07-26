@@ -11,6 +11,8 @@ from pathlib import Path
 from time import monotonic
 from typing import Any, Callable, List, Optional, Tuple
 
+from pycodex.protocol import ModeKind
+
 from .._porting import RustTuiModule
 from ..app_event import ConsolidationScrollbackReflow
 from ..history_cell import HistoryRenderMode
@@ -33,11 +35,6 @@ RUST_MODULE = RustTuiModule(
 class MessagePhase(str, Enum):
     Commentary = "commentary"
     FinalAnswer = "final_answer"
-
-
-class ModeKind(str, Enum):
-    Chat = "chat"
-    Plan = "plan"
 
 
 class CommitTickScope(str, Enum):
@@ -111,9 +108,11 @@ class TerminalChatWidgetStreamingRuntime:
     ]
     apply_live_tail: Callable[[tuple[str, ...]], Any]
     render_frame: Callable[[], Any]
+    hide_status_indicator: Callable[[], Any] = lambda: None
     controller: StreamController | None = None
     chunking: AdaptiveChunkingPolicy = field(default_factory=AdaptiveChunkingPolicy)
     _tail_lines: tuple[str, ...] = ()
+    _visible_output: bool = False
 
     @property
     def active(self) -> bool:
@@ -125,9 +124,13 @@ class TerminalChatWidgetStreamingRuntime:
     def has_live_tail(self) -> bool:
         return bool(self.controller and self.controller.has_live_tail())
 
+    def has_visible_output(self) -> bool:
+        return self._visible_output
+
     def reset(self) -> None:
         self.controller = None
         self.chunking.reset()
+        self._visible_output = False
         self._apply_tail(())
 
     def set_width(self, width: int) -> None:
@@ -137,6 +140,7 @@ class TerminalChatWidgetStreamingRuntime:
 
     def handle_delta(self, delta: str) -> None:
         if self.controller is None:
+            self._visible_output = False
             self.controller = StreamController.new(
                 self.width(),
                 self.cwd(),
@@ -175,6 +179,8 @@ class TerminalChatWidgetStreamingRuntime:
             scope,
             monotonic() if now is None else float(now),
         )
+        if output.cells:
+            self._mark_output_visible()
         for cell in output.cells:
             self.insert_stable_cell(cell)
         tail_changed = self._sync_live_tail()
@@ -193,6 +199,8 @@ class TerminalChatWidgetStreamingRuntime:
         final_cell, source = controller.finalize()
         self.controller = None
         self.chunking.reset()
+        if had_live_tail or final_cell is not None:
+            self._mark_output_visible()
         self._apply_tail(())
         reflow = (
             ConsolidationScrollbackReflow.REQUIRED
@@ -220,7 +228,15 @@ class TerminalChatWidgetStreamingRuntime:
             controller.tail_starts_stream(),
         )
         lines = tuple(line_text(line) for line in tail.display_lines(self.width()))
+        if lines:
+            self._mark_output_visible()
         return self._apply_tail(lines)
+
+    def _mark_output_visible(self) -> None:
+        if self._visible_output:
+            return
+        self._visible_output = True
+        self.hide_status_indicator()
 
     def _apply_tail(self, lines: tuple[str, ...]) -> bool:
         normalized = tuple(str(line) for line in lines)
@@ -247,7 +263,7 @@ class StreamingWidgetState:
     task_complete_pending: bool = False
     input_queue_pending_steers: bool = False
     unified_exec_wait_streak: bool = False
-    mode_kind: ModeKind = ModeKind.Chat
+    mode_kind: ModeKind = ModeKind.DEFAULT
     plan_item_active: bool = False
     plan_delta_buffer: str = ""
     saw_plan_item_this_turn: bool = False
@@ -345,7 +361,7 @@ class StreamingWidgetState:
         self.handle_streaming_delta(delta)
 
     def on_plan_delta(self, delta: str) -> None:
-        if self.mode_kind is not ModeKind.Plan:
+        if self.mode_kind is not ModeKind.PLAN:
             return
         if not self.plan_item_active:
             self.plan_item_active = True
@@ -365,7 +381,6 @@ class StreamingWidgetState:
         streamed_plan = self.plan_delta_buffer.strip()
         plan_text = text if text.strip() else streamed_plan
         if plan_text.strip():
-            self.history.append(("agent_markdown", plan_text))
             self.latest_proposed_plan_markdown = plan_text
         should_restore_after_stream = self.plan_stream_controller is not None
         self.plan_delta_buffer = ""
@@ -384,7 +399,7 @@ class StreamingWidgetState:
             self.history.append(finalized_cell)
             if consolidated_source is not None:
                 self.consolidation_events.append(("proposed_plan", consolidated_source))
-        if plan_text:
+        elif plan_text:
             self.history.append(("proposed_plan", plan_text))
         elif consolidated_source is not None:
             self.consolidation_events.append(("proposed_plan", consolidated_source))
@@ -538,7 +553,9 @@ class StreamingWidgetState:
         self.status_indicator_visible = False
 
     def set_status_header(self, header: str) -> None:
-        self.status_state.current_status.header = header
+        # Rust status_controls::set_status_header is a convenience wrapper
+        # around set_status and intentionally clears stale retry details.
+        self.set_status(StatusIndicatorState(header=header))
 
     def set_status(self, status: StatusIndicatorState) -> None:
         self.status_state.current_status = StatusIndicatorState(

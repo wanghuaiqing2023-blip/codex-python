@@ -41,6 +41,8 @@ from pycodex.tui.slash_command import SlashCommand
 from pycodex.tui.app_event import AppEvent, ThreadGoalSetMode
 from pycodex.tui.auto_review_denials import denied_event
 from pycodex.tui.chatwidget.protocol import ChatWidgetProtocolRuntime
+from pycodex.protocol import ModeKind
+from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime, TuiAppRuntime
 
 
 def test_constants_match_rust_user_facing_text() -> None:
@@ -145,6 +147,8 @@ def test_terminal_slash_command_routes_cover_every_registered_command() -> None:
     assert {route.outcome for route in routes.values()} <= {"effect", "view", "shim"}
     assert routes[SlashCommand.DIFF].outcome == "effect"
     assert routes[SlashCommand.SETTINGS].outcome == "view"
+    assert routes[SlashCommand.STATUSLINE].outcome == "view"
+    assert routes[SlashCommand.STATUSLINE].python_owner == "pycodex.tui.chatwidget.status_controls"
     assert routes[SlashCommand.MCP].outcome == "shim"
     for command, route in routes.items():
         assert route.rust_owner
@@ -388,19 +392,41 @@ def test_deferred_extension_command_emits_explicit_terminal_compatibility_messag
     assert messages and "not enabled" in messages[0][0]
 
 
-def test_plan_command_switches_mode_before_optional_inline_submission() -> None:
-    messages: list[str] = []
-    activated: list[bool] = []
+def test_agent_command_routes_through_open_agent_picker_app_event() -> None:
+    # Rust: chatwidget::slash_dispatch sends AppEvent::OpenAgentPicker.
+    events: list[AppEvent] = []
     app_runtime = SimpleNamespace(
         chat_widget=ChatWidgetProtocolRuntime(),
-        activate_plan_mode=lambda: activated.append(True),
-        insert_info_history_message=lambda message, hint=None: messages.append(message),
+        handle_app_event=events.append,
+        insert_info_history_message=lambda *_args: None,
         insert_history_cell=lambda _cell: None,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.AGENT
+    )
+
+    assert result == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.AGENT,
+    )
+    assert events == [AppEvent.open_agent_picker()]
+
+
+def test_plan_command_switches_mode_before_optional_inline_submission() -> None:
+    # Rust tests/chatwidget/plan_mode.rs:
+    # /plan applies the collaboration mask through chatwidget::settings, emits
+    # OverrideTurnContext for the thread, and does not add a success message.
+    app_runtime = TuiAppRuntime(
+        ExecFunctionActiveThreadRuntime(lambda _prompt: "ok"),
+        thread_id="thread-1",
     )
     dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
 
     bare = dispatcher.dispatch(SlashCommand.PLAN)
+    app_runtime.drain_app_events()
     inline = dispatcher.dispatch(SlashCommand.PLAN, "inspect the parser")
+    app_runtime.drain_app_events()
 
     assert bare == TerminalPromptDispatchResult("handled", command=SlashCommand.PLAN)
     assert inline == TerminalPromptDispatchResult(
@@ -408,8 +434,19 @@ def test_plan_command_switches_mode_before_optional_inline_submission() -> None:
         prompt="inspect the parser",
         command=SlashCommand.PLAN,
     )
-    assert activated == [True, True]
-    assert messages == ["Plan mode enabled.", "Plan mode enabled."]
+    assert app_runtime.chat_widget.active_collaboration_mask.mode is ModeKind.PLAN
+    assert [op.kind for op in app_runtime.submitted_ops] == [
+        "OverrideTurnContext",
+        "OverrideTurnContext",
+    ]
+    assert all(
+        op.payload["collaboration_mode"].mode is ModeKind.PLAN
+        for op in app_runtime.submitted_ops
+    )
+    assert all(
+        message != "Plan mode enabled."
+        for message, _hint in app_runtime.chat_widget.info_messages
+    )
 
 
 def _goal_dispatcher(events, history, *, thread_id="thread-1"):

@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.state.additional_context",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "state::additional_context",
+    "source": "codex/codex-rs/core/src/state/additional_context.rs",
+    "anchors": [
+      "AdditionalContextStore",
+      "merge"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/state/additional_context.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/state/additional_context.py"
+    ],
+    "anchors": [
+      "AdditionalContextStore",
+      "merge"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

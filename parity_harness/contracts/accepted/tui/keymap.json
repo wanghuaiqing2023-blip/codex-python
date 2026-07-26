@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.keymap",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "keymap",
+    "source": "codex/codex-rs/tui/src/keymap.rs",
+    "anchors": [
+      "AppKeymap",
+      "ApprovalKeymap",
+      "ChatKeymap",
+      "ComposerKeymap",
+      "EditorKeymap",
+      "ListKeymap",
+      "PagerKeymap",
+      "RuntimeKeymap",
+      "VimNormalKeymap",
+      "VimOperatorKeymap",
+      "VimTextObjectKeymap",
+      "defaults"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/keymap.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/keymap.py"
+    ],
+    "anchors": [
+      "AppKeymap",
+      "ApprovalKeymap",
+      "ChatKeymap",
+      "ComposerKeymap",
+      "EditorKeymap",
+      "ListKeymap",
+      "PagerKeymap",
+      "RuntimeKeymap",
+      "VimNormalKeymap",
+      "VimOperatorKeymap",
+      "VimTextObjectKeymap",
+      "defaults"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -7,3 +7,9 @@ __pycache__/
 tmp_tests_workspace/
 .venv/
 venv/
+/.tmp/
+/%SystemDrive%/
+/add.c
+/hello*.c
+/hello*.exe
+/hello*.obj

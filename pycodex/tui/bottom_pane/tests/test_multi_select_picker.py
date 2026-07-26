@@ -101,6 +101,18 @@ def test_searchable_plain_character_updates_query_instead_of_navigating():
     assert picker.state.selected_idx == 0
 
 
+def test_terminal_space_toggles_selected_item_instead_of_searching():
+    # Rust source: codex-tui::bottom_pane::multi_select_picker handles
+    # KeyCode::Char(' ') as the toggle action before searchable text input.
+    picker = _picker([_item("model"), _item("branch")])
+
+    picker.handle_key_event(" ")
+
+    assert picker.items[0].enabled is True
+    assert picker.search_query == ""
+    assert picker.filtered_indices == [0, 1]
+
+
 def test_toggle_confirm_cancel_and_preview_callbacks():
     previews = []
     confirmed = []
@@ -164,3 +176,36 @@ def test_rust_named_semantic_helpers_cover_internal_tests_and_rendering():
     assert page_and_jump_navigation_use_list_keymap()
     assert desired_height(picker, 80) >= 1
     assert render(picker)["type"] == "MultiSelectPicker"
+
+
+def test_terminal_projection_matches_rust_picker_layout_and_visible_window():
+    # Rust render contract:
+    # codex-tui::bottom_pane::multi_select_picker::Renderable::render owns the
+    # header, two-line search prompt, bounded single-line row viewport, preview,
+    # and key-hint footer.
+    picker = (
+        MultiSelectPicker.builder("Configure", "Choose items.", [])
+        .items(
+            [
+                _item("theme-colors", enabled=True, orderable=False, section=True),
+                *[_item(f"item-{idx}") for idx in range(12)],
+            ]
+        )
+        .enable_ordering()
+        .on_preview(lambda _items: "preview-value")
+        .build()
+    )
+
+    lines = picker.terminal_lines(width=100)
+    texts = [line.text for line in lines]
+
+    assert texts[:5] == ["Configure", "Choose items.", "", "Type to search", "> "]
+    assert len([text for text in texts if "[ ] item-" in text or "[x] theme-colors" in text]) == 7
+    assert "  -----------------------" in texts
+    assert not any("item-7" in text for text in texts)
+    assert next(line for line in lines if "theme-colors" in line.text).selected is True
+    assert texts[-2] == "preview-value"
+    assert texts[-1] == (
+        "Press space to toggle; \u2190/\u2192 to move; "
+        "enter to confirm and close; esc to close"
+    )

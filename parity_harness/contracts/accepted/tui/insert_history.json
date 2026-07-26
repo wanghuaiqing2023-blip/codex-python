@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.insert_history",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "insert_history",
+    "source": "codex/codex-rs/tui/src/insert_history.rs",
+    "anchors": [
+      "HistoryLineWrapPolicy",
+      "InsertHistoryMode",
+      "ResetScrollRegion",
+      "SetScrollRegion",
+      "insert_history_hyperlink_lines_with_mode_and_wrap_policy",
+      "insert_history_lines",
+      "insert_history_lines_with_mode_and_wrap_policy",
+      "insert_history_lines_with_wrap_policy",
+      "leading_whitespace_prefix",
+      "ModifierDiff",
+      "execute_winapi",
+      "is_ansi_code_supported"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/insert_history.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/insert_history.py"
+    ],
+    "anchors": [
+      "HistoryLineWrapPolicy",
+      "InsertHistoryMode",
+      "ResetScrollRegion",
+      "SetScrollRegion",
+      "insert_history_hyperlink_lines_with_mode_and_wrap_policy",
+      "insert_history_lines",
+      "insert_history_lines_with_mode_and_wrap_policy",
+      "insert_history_lines_with_wrap_policy",
+      "leading_whitespace_prefix",
+      "ModifierDiff",
+      "execute_winapi",
+      "is_ansi_code_supported"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

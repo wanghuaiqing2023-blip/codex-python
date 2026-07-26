@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.branch_summary",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "branch_summary",
+    "source": "codex/codex-rs/tui/src/branch_summary.rs",
+    "anchors": [
+      "GitBranchDiffStats",
+      "StatusLineGitSummary",
+      "StatusLinePullRequest",
+      "current_branch_name",
+      "status_line_git_summary",
+      "DefaultBranch",
+      "GhPullRequestApiItem",
+      "GhPullRequestView",
+      "GhRepoParent",
+      "GhRepoView",
+      "branch_diff_stats_to_default_branch",
+      "current_head_sha"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/branch_summary.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/branch_summary.py"
+    ],
+    "anchors": [
+      "GitBranchDiffStats",
+      "StatusLineGitSummary",
+      "StatusLinePullRequest",
+      "current_branch_name",
+      "status_line_git_summary",
+      "DefaultBranch",
+      "GhPullRequestApiItem",
+      "GhPullRequestView",
+      "GhRepoParent",
+      "GhRepoView",
+      "branch_diff_stats_to_default_branch",
+      "current_head_sha"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

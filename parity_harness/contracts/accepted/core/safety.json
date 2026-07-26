@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-core.safety",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "safety",
+    "source": "codex/codex-rs/core/src/safety.rs",
+    "anchors": [
+      "SafetyCheck",
+      "assess_patch_safety",
+      "PATCH_REJECTED_OUTSIDE_PROJECT_REASON",
+      "PATCH_REJECTED_READ_ONLY_REASON",
+      "is_write_patch_constrained_to_writable_paths",
+      "patch_rejection_reason"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/safety.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/safety.py"
+    ],
+    "anchors": [
+      "SafetyCheck",
+      "assess_patch_safety",
+      "PATCH_REJECTED_OUTSIDE_PROJECT_REASON",
+      "PATCH_REJECTED_READ_ONLY_REASON",
+      "is_write_patch_constrained_to_writable_paths",
+      "patch_rejection_reason"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

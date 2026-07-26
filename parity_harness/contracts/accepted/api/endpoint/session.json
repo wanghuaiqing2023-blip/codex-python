@@ -1,0 +1,82 @@
+{
+  "contract_id": "codex-api.endpoint.session",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-api",
+    "module": "endpoint::session",
+    "source": "codex/codex-rs/codex-api/src/endpoint/session.rs",
+    "anchors": [
+      "EndpointSession",
+      "execute",
+      "execute_with",
+      "new",
+      "provider",
+      "stream_with",
+      "with_request_telemetry",
+      "make_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_api/endpoint/session.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/codex_api/endpoint/session.py"
+    ],
+    "anchors": [
+      "EndpointSession",
+      "execute",
+      "execute_with",
+      "new",
+      "provider",
+      "stream_with",
+      "with_request_telemetry",
+      "make_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_auth_rs.py",
+    "tests/test_codex_api_common_rs.py",
+    "tests/test_codex_api_endpoint_compact_rs.py",
+    "tests/test_codex_api_endpoint_images_rs.py",
+    "tests/test_codex_api_endpoint_memories_rs.py",
+    "tests/test_codex_api_endpoint_models_rs.py",
+    "tests/test_codex_api_endpoint_realtime_call_rs.py",
+    "tests/test_codex_api_endpoint_realtime_websocket_methods_rs.py",
+    "tests/test_codex_api_endpoint_realtime_websocket_runtime_rs.py",
+    "tests/test_codex_api_endpoint_responses_websocket_rs.py",
+    "tests/test_codex_api_endpoint_search_rs.py",
+    "tests/test_codex_api_endpoint_session_rs.py",
+    "tests/test_codex_api_error_rs.py",
+    "tests/test_codex_api_files_rs.py",
+    "tests/test_codex_api_images_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_codex_api_provider_rs.py",
+    "tests/test_codex_api_rate_limits_rs.py",
+    "tests/test_codex_api_requests_headers_rs.py",
+    "tests/test_codex_api_requests_responses_rs.py",
+    "tests/test_codex_api_telemetry_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py",
+    "tests/test_vendor_websockets.py"
+  ]
+}

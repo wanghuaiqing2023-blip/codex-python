@@ -1,0 +1,11 @@
+{
+  "scope": "goal-extension",
+  "rust_root": "codex/codex-rs/ext/goal",
+  "python_root": "pycodex/ext/goal",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": ["crate::metrics"],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

@@ -1,0 +1,11 @@
+{
+  "scope": "thread-manager-sample",
+  "rust_root": "codex/codex-rs/thread-manager-sample",
+  "python_root": "pycodex/thread_manager_sample",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

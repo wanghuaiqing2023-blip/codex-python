@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.style",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "style",
+    "source": "codex/codex-rs/tui/src/style.rs",
+    "anchors": [
+      "accent_style",
+      "accent_style_for",
+      "proposed_plan_bg",
+      "proposed_plan_style",
+      "proposed_plan_style_for",
+      "table_separator_style",
+      "user_message_bg",
+      "user_message_style",
+      "user_message_style_for",
+      "LIGHT_BG_ACCENT_RGB",
+      "TABLE_SEPARATOR_FG_ALPHA",
+      "table_separator_style_for"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/style.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/style.py"
+    ],
+    "anchors": [
+      "accent_style",
+      "accent_style_for",
+      "proposed_plan_bg",
+      "proposed_plan_style",
+      "proposed_plan_style_for",
+      "table_separator_style",
+      "user_message_bg",
+      "user_message_style",
+      "user_message_style_for",
+      "LIGHT_BG_ACCENT_RGB",
+      "TABLE_SEPARATOR_FG_ALPHA",
+      "table_separator_style_for"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

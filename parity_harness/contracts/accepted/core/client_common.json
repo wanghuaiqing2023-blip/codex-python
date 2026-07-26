@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-core.client_common",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "client_common",
+    "source": "codex/codex-rs/core/src/client_common.rs",
+    "anchors": [
+      "Prompt",
+      "REVIEW_EXIT_INTERRUPTED_TMPL",
+      "REVIEW_EXIT_SUCCESS_TMPL",
+      "REVIEW_PROMPT",
+      "ResponseEvent",
+      "ResponseStream",
+      "get_formatted_input",
+      "default"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/client_common.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/client_common.py"
+    ],
+    "anchors": [
+      "Prompt",
+      "REVIEW_EXIT_INTERRUPTED_TMPL",
+      "REVIEW_EXIT_SUCCESS_TMPL",
+      "REVIEW_PROMPT",
+      "ResponseEvent",
+      "ResponseStream",
+      "get_formatted_input",
+      "default"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

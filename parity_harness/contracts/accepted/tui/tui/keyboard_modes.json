@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.tui.keyboard_modes",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "tui::keyboard_modes",
+    "source": "codex/codex-rs/tui/src/tui/keyboard_modes.rs",
+    "anchors": [
+      "enable_keyboard_enhancement",
+      "keyboard_enhancement_disabled",
+      "reset_keyboard_reporting_after_exit",
+      "restore_keyboard_enhancement_stack",
+      "running_in_vscode_terminal",
+      "DISABLE_KEYBOARD_ENHANCEMENT_ENV_VAR",
+      "DisableModifyOtherKeys",
+      "EnableModifyOtherKeys",
+      "ResetKeyboardEnhancementFlags",
+      "WINDOWS_TERM_PROGRAM",
+      "execute_winapi",
+      "is_ansi_code_supported"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/tui/keyboard_modes.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/tui/keyboard_modes.py"
+    ],
+    "anchors": [
+      "enable_keyboard_enhancement",
+      "keyboard_enhancement_disabled",
+      "reset_keyboard_reporting_after_exit",
+      "restore_keyboard_enhancement_stack",
+      "running_in_vscode_terminal",
+      "DISABLE_KEYBOARD_ENHANCEMENT_ENV_VAR",
+      "DisableModifyOtherKeys",
+      "EnableModifyOtherKeys",
+      "ResetKeyboardEnhancementFlags",
+      "WINDOWS_TERM_PROGRAM",
+      "execute_winapi",
+      "is_ansi_code_supported"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

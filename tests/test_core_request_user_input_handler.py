@@ -9,12 +9,14 @@ from pycodex.core import (
     ToolPayload,
 )
 from pycodex.core.tools.handlers.request_user_input import (
-    REQUEST_USER_INPUT_TOOL_NAME,
     RequestUserInputHandler,
-    create_request_user_input_tool,
-    normalize_request_user_input_args,
     parse_request_user_input_arguments,
     request_user_input_available_modes,
+)
+from pycodex.core.tools.handlers.request_user_input_spec import (
+    REQUEST_USER_INPUT_TOOL_NAME,
+    create_request_user_input_tool,
+    normalize_request_user_input_args,
     request_user_input_tool_description,
     request_user_input_unavailable_message,
 )

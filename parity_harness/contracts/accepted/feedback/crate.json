@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-feedback.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-feedback",
+    "module": "crate",
+    "source": "codex/codex-rs/feedback/src/lib.rs",
+    "anchors": [
+      "CodexFeedback",
+      "DOCTOR_REPORT_ATTACHMENT_FILENAME",
+      "FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME",
+      "FeedbackAttachment",
+      "FeedbackAttachmentPath",
+      "FeedbackDiagnostic",
+      "FeedbackDiagnostics",
+      "FeedbackMakeWriter",
+      "FeedbackRequestTags",
+      "FeedbackSnapshot",
+      "FeedbackUploadOptions",
+      "FeedbackWriter"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/feedback/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/feedback/__init__.py"
+    ],
+    "anchors": [
+      "CodexFeedback",
+      "DOCTOR_REPORT_ATTACHMENT_FILENAME",
+      "FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME",
+      "FeedbackAttachment",
+      "FeedbackAttachmentPath",
+      "FeedbackDiagnostic",
+      "FeedbackDiagnostics",
+      "FeedbackMakeWriter",
+      "FeedbackRequestTags",
+      "FeedbackSnapshot",
+      "FeedbackUploadOptions",
+      "FeedbackWriter"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

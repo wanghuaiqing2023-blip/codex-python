@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-cli.debug_sandbox.pid_tracker",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cli",
+    "module": "debug_sandbox::pid_tracker",
+    "source": "codex/codex-rs/cli/src/debug_sandbox/pid_tracker.rs",
+    "anchors": [
+      "PidTracker",
+      "list_child_pids",
+      "pid_is_alive",
+      "track_descendants"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cli/debug_sandbox/pid_tracker.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cli/debug_sandbox/pid_tracker.py"
+    ],
+    "anchors": [
+      "PidTracker",
+      "list_child_pids",
+      "pid_is_alive",
+      "track_descendants"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_cli_debug_sandbox.py"
+  ]
+}

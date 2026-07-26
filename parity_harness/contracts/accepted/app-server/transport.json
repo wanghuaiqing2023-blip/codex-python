@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-app-server.transport",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "transport",
+    "source": "codex/codex-rs/app-server/src/transport.rs",
+    "anchors": [
+      "can_disconnect",
+      "filter_outgoing_message_for_connection",
+      "should_skip_notification_for_connection"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/transport.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/transport.py"
+    ],
+    "anchors": [
+      "can_disconnect",
+      "filter_outgoing_message_for_connection",
+      "should_skip_notification_for_connection"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_transport_rs.py"
+  ]
+}

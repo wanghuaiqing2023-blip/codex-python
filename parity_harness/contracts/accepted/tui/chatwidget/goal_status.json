@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-tui.chatwidget.goal_status",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::goal_status",
+    "source": "codex/codex-rs/tui/src/chatwidget/goal_status.rs",
+    "anchors": [
+      "GoalStatusState",
+      "goal_status_indicator_from_app_goal",
+      "indicator",
+      "is_active",
+      "new",
+      "active_goal_usage",
+      "completed_goal_usage",
+      "stopped_goal_budget_usage"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/goal_status.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/goal_status.py"
+    ],
+    "anchors": [
+      "GoalStatusState",
+      "goal_status_indicator_from_app_goal",
+      "indicator",
+      "is_active",
+      "new",
+      "active_goal_usage",
+      "completed_goal_usage",
+      "stopped_goal_budget_usage"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

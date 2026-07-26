@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.exec_cell.model",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "exec_cell::model",
+    "source": "codex/codex-rs/tui/src/exec_cell/model.rs",
+    "anchors": [
+      "CommandOutput",
+      "ExecCall",
+      "ExecCell",
+      "active_start_time",
+      "animations_enabled",
+      "append_output",
+      "complete_call",
+      "is_active",
+      "is_exploring_call",
+      "is_exploring_cell",
+      "is_unified_exec_interaction",
+      "is_user_shell_command"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/exec_cell/model.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/exec_cell/model.py"
+    ],
+    "anchors": [
+      "CommandOutput",
+      "ExecCall",
+      "ExecCell",
+      "active_start_time",
+      "animations_enabled",
+      "append_output",
+      "complete_call",
+      "is_active",
+      "is_exploring_call",
+      "is_exploring_cell",
+      "is_unified_exec_interaction",
+      "is_user_shell_command"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

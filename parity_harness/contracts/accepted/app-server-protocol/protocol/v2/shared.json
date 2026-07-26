@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-app-server-protocol.protocol.v2.shared",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-protocol",
+    "module": "protocol::v2::shared",
+    "source": "codex/codex-rs/app-server-protocol/src/protocol/v2/shared.rs",
+    "anchors": [
+      "ApprovalsReviewer",
+      "AskForApproval",
+      "CodexErrorInfo",
+      "NonSteerableTurnKind",
+      "SandboxMode"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_protocol/shared.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server_protocol/shared.py"
+    ],
+    "anchors": [
+      "ApprovalsReviewer",
+      "AskForApproval",
+      "CodexErrorInfo",
+      "NonSteerableTurnKind",
+      "SandboxMode"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

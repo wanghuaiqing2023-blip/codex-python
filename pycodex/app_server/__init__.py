@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, TextIO
 
 from pycodex.analytics import AppServerRpcTransport
 from pycodex.app_server_protocol import ConfigWarningNotification, TextPosition, TextRange
@@ -2135,6 +2137,9 @@ async def run_main(
     loader_overrides: Any,
     strict_config: bool,
     default_analytics_enabled: bool,
+    *,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
 ) -> AppServerRuntimeResult:
     """Rust ``run_main`` delegates to default transport-option startup."""
 
@@ -2155,6 +2160,8 @@ async def run_main(
         session_source=call.session_source,
         auth=call.auth,
         runtime_options=call.runtime_options,
+        stdin=sys.stdin if stdin is None else stdin,
+        stdout=sys.stdout if stdout is None else stdout,
     )
 
 
@@ -2170,6 +2177,8 @@ async def run_main_with_transport_options(
     runtime_options: AppServerRuntimeOptions | None = None,
     *,
     hooks: AppServerRuntimeHooks | None = None,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
 ) -> AppServerRuntimeResult:
     """Run the crate-root app-server startup/finalization orchestration.
 
@@ -2190,7 +2199,7 @@ async def run_main_with_transport_options(
     )
     codex_home = await _maybe_invoke(
         effects.find_codex_home,
-        default_factory=lambda: _attr_or_key(loader_overrides, "codex_home") or ".codex",
+        default_factory=lambda: _default_codex_home(loader_overrides),
     )
     runtime_paths = await _maybe_invoke(
         effects.build_local_runtime_paths,
@@ -2357,7 +2366,7 @@ async def run_main_with_transport_options(
     auth_manager = await _maybe_invoke(
         effects.create_auth_manager,
         config,
-        default_factory=lambda: SimpleNamespace(config=config),
+        default_factory=lambda: _default_auth_manager(config),
     )
     remote_decision = remote_control_runtime_decision(
         runtime_options=options,
@@ -2402,7 +2411,72 @@ async def run_main_with_transport_options(
     processor_startup = processor_startup_projection()
     processor_spawn = processor_worker_spawn_projection()
     await _maybe_invoke(effects.run_outbound_router, outbound_startup, default_factory=lambda: None)
-    await _maybe_invoke(effects.run_processor, processor_startup, default_factory=lambda: None)
+    if hooks is None and transport_name == "stdio" and stdin is not None and stdout is not None:
+        from pycodex.app_server.analytics_utils import analytics_events_client_from_config
+        from pycodex.app_server.message_processor import (
+            ConnectionSessionState,
+            MessageProcessor,
+            MessageProcessorArgs,
+        )
+        from pycodex.app_server.outgoing_message import OutgoingMessageSender
+        from pycodex.app_server.transport import start_stdio_connection
+        from pycodex.app_server_protocol import (
+            JSONRPCError,
+            JSONRPCNotification,
+            JSONRPCRequest,
+            JSONRPCResponse,
+        )
+
+        if _attr_or_key(config, "analytics_enabled") is None:
+            try:
+                setattr(config, "analytics_enabled", default_analytics_enabled)
+            except (AttributeError, TypeError):
+                pass
+        analytics_events_client = analytics_events_client_from_config(auth_manager, config)
+        outgoing = OutgoingMessageSender.new(analytics_events_client=analytics_events_client)
+        processor = MessageProcessor.new(
+            MessageProcessorArgs(
+                outgoing=outgoing,
+                analytics_events_client=analytics_events_client,
+                arg0_paths=arg0_paths,
+                config=config,
+                config_manager=config_manager,
+                environment_manager=environment_manager,
+                state_db=state_db,
+                config_warnings=tuple(config_warnings),
+                session_source=session_source,
+                auth_manager=auth_manager,
+                installation_id=str(installation_id),
+                rpc_transport=analytics_rpc_transport(transport),
+            )
+        )
+        connection_id = 0
+        session = ConnectionSessionState.new()
+
+        async def process_stdio_message(message: Any) -> None:
+            if isinstance(message, JSONRPCRequest):
+                await processor.process_request(connection_id, message, "stdio", session)
+            elif isinstance(message, JSONRPCNotification):
+                await processor.process_notification(message)
+            elif isinstance(message, JSONRPCResponse):
+                await processor.process_response(message)
+            elif isinstance(message, JSONRPCError):
+                await processor.process_error(message)
+
+        async def close_stdio_connection() -> None:
+            await processor.connection_closed(connection_id, session)
+
+        await start_stdio_connection(
+            process_stdio_message,
+            outgoing.sender,
+            close_stdio_connection,
+            stdin=stdin,
+            stdout=stdout,
+            connection_id=connection_id,
+        )
+        processor.clear_runtime_references()
+    else:
+        await _maybe_invoke(effects.run_processor, processor_startup, default_factory=lambda: None)
 
     finalization = runtime_finalization_projection(
         transport_accept_handle_count=transport_accept_handle_count,
@@ -2600,15 +2674,35 @@ def _default_parse_cli_overrides(cli_config_overrides: Any) -> Any:
 
 def _default_config(codex_home: Any) -> Any:
     return SimpleNamespace(
-        codex_home=codex_home,
-        sqlite_home=f"{codex_home}/state",
+        codex_home=Path(codex_home),
+        sqlite_home=Path(codex_home) / "state",
         chatgpt_base_url="",
+        analytics_enabled=None,
+        enforce_residency=None,
         package_version="0.0.0",
         config_layer_stack=(),
         startup_warnings=(),
         permissions=SimpleNamespace(permission_profile=lambda: None),
         experimental_thread_config_endpoint=None,
         installation_id="local",
+    )
+
+
+def _default_codex_home(loader_overrides: Any) -> Path:
+    configured = _attr_or_key(loader_overrides, "codex_home")
+    path = Path(configured) if configured else Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
+
+
+async def _default_auth_manager(config: Any) -> Any:
+    from pycodex.login.auth.manager import AuthManager
+
+    return await AuthManager.new(
+        Path(_attr_or_key(config, "codex_home")),
+        False,
+        str(_attr_or_key(config, "auth_credentials_store_mode") or "file"),
+        _attr_or_key(config, "chatgpt_base_url"),
     )
 
 

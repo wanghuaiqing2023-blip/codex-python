@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-debug-client.main.commands",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-debug-client",
+    "module": "main::commands",
+    "source": "codex/codex-rs/debug-client/src/commands.rs",
+    "anchors": [
+      "InputAction",
+      "ParseError",
+      "UserCommand",
+      "message",
+      "parse_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/debug_client/commands.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/debug_client/commands.py"
+    ],
+    "anchors": [
+      "InputAction",
+      "ParseError",
+      "UserCommand",
+      "message",
+      "parse_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

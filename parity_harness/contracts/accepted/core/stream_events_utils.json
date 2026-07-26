@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.stream_events_utils",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "stream_events_utils",
+    "source": "codex/codex-rs/core/src/stream_events_utils.rs",
+    "anchors": [
+      "FinalizedTurnItem",
+      "FinalizedTurnItemFacts",
+      "HandleOutputCtx",
+      "OutputItemResult",
+      "finalize_non_tool_response_item",
+      "handle_non_tool_response_item",
+      "handle_output_item_done",
+      "image_generation_artifact_path",
+      "last_assistant_message_from_item",
+      "raw_assistant_output_text_from_item",
+      "record_completed_response_item",
+      "record_completed_response_item_with_finalized_facts"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/stream_events_utils.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/stream_events_utils.py"
+    ],
+    "anchors": [
+      "FinalizedTurnItem",
+      "FinalizedTurnItemFacts",
+      "HandleOutputCtx",
+      "OutputItemResult",
+      "finalize_non_tool_response_item",
+      "handle_non_tool_response_item",
+      "handle_output_item_done",
+      "image_generation_artifact_path",
+      "last_assistant_message_from_item",
+      "raw_assistant_output_text_from_item",
+      "record_completed_response_item",
+      "record_completed_response_item_with_finalized_facts"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

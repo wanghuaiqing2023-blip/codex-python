@@ -5,8 +5,8 @@ import json
 import tempfile
 from pathlib import Path
 
-from pycodex.core.plugins import test_support
 from pycodex.core_plugins import OPENAI_CURATED_MARKETPLACE_NAME
+from tests.support import core_plugins_test_support as test_support
 
 
 def test_write_file_creates_parent_directories() -> None:

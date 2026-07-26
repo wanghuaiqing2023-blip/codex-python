@@ -147,8 +147,8 @@ class AppEvent:
     payload: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def of(cls, kind: str, **payload: Any) -> "AppEvent":
-        return cls(kind, dict(payload))
+    def of(cls, variant: str, **payload: Any) -> "AppEvent":
+        return cls(variant, dict(payload))
 
     @classmethod
     def open_agent_picker(cls) -> "AppEvent":
@@ -197,6 +197,14 @@ class AppEvent:
     @classmethod
     def clear_ui_and_submit_user_message(cls, text: str) -> "AppEvent":
         return cls.of("ClearUiAndSubmitUserMessage", text=text)
+
+    @classmethod
+    def submit_user_message_with_mode(cls, text: str, collaboration_mode: Any) -> "AppEvent":
+        return cls.of(
+            "SubmitUserMessageWithMode",
+            text=text,
+            collaboration_mode=collaboration_mode,
+        )
 
     @classmethod
     def exit(cls, mode: "ExitMode") -> "AppEvent":

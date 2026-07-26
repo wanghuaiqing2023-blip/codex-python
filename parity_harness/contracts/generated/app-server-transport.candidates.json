@@ -1,0 +1,249 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "app-server-transport",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 13,
+    "python_files": 3,
+    "modules_with_candidates": 3,
+    "modules_with_anchors": 3
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate",
+        "source": "codex/codex-rs/app-server-transport/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/__init__.py",
+          "anchor_candidates": [
+            "start_stdio_connection"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::outgoing_message",
+        "source": "codex/codex-rs/app-server-transport/src/outgoing_message.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport",
+        "source": "codex/codex-rs/app-server-transport/src/transport/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/__init__.py",
+          "anchor_candidates": [
+            "start_stdio_connection"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::auth",
+        "source": "codex/codex-rs/app-server-transport/src/transport/auth.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::remote_control",
+        "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::remote_control::client_tracker",
+        "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/client_tracker.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::remote_control::enroll",
+        "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/enroll.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::remote_control::protocol",
+        "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/protocol.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::remote_control::segment",
+        "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/segment.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::remote_control::websocket",
+        "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::stdio",
+        "source": "codex/codex-rs/app-server-transport/src/transport/stdio.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/stdio.py",
+          "anchor_candidates": [
+            "start_stdio_connection"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::unix_socket",
+        "source": "codex/codex-rs/app-server-transport/src/transport/unix_socket.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-transport",
+        "module": "crate::transport::websocket",
+        "source": "codex/codex-rs/app-server-transport/src/transport/websocket.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

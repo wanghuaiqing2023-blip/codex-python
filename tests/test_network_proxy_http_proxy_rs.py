@@ -2,25 +2,17 @@ import asyncio
 import json
 import socket
 
-import pycodex.network_proxy as network_proxy
-from pycodex.network_proxy import (
-    ConfigState,
+import pycodex.network_proxy.http_proxy as http_proxy_module
+import pycodex.network_proxy.runtime as runtime_module
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
+    NetworkMode,
+    NetworkProxyConfig,
+)
+from pycodex.network_proxy.http_proxy import (
     HttpConnectRejected,
     HttpConnectRequest,
     HttpPlainRequest,
-    MitmHookConfig,
-    MitmHookMatchConfig,
-    NetworkDecisionSource,
-    NetworkMode,
-    NetworkPolicyDecision,
-    NetworkProxyConfig,
-    NetworkProxyConstraints,
-    NetworkProxyState,
-    NetworkProtocol,
-    PolicyDecisionDetails,
-    REASON_DENIED,
-    REASON_PROXY_DISABLED,
-    StaticNetworkProxyReloader,
     http_connect_accept,
     http_plain_proxy,
     json_blocked,
@@ -28,6 +20,25 @@ from pycodex.network_proxy import (
     run_http_proxy_with_std_listener,
     validate_absolute_form_host_header,
 )
+from pycodex.network_proxy.mitm_hook import (
+    MitmHookConfig,
+    MitmHookMatchConfig,
+)
+from pycodex.network_proxy.network_policy import (
+    NetworkDecisionSource,
+    NetworkPolicyDecision,
+    NetworkProtocol,
+)
+from pycodex.network_proxy.reasons import (
+    REASON_DENIED,
+    REASON_PROXY_DISABLED,
+)
+from pycodex.network_proxy.responses import PolicyDecisionDetails
+from pycodex.network_proxy.runtime import (
+    ConfigState,
+    NetworkProxyState,
+)
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 async def public_dns_lookup(_host: str, _port: int):
@@ -396,7 +407,8 @@ def test_http_plain_proxy_rejects_unix_socket_when_not_allowlisted_on_supported_
     # Rust module: src/http_proxy.rs
     # Rust test: http_plain_proxy_rejects_unix_socket_when_not_allowlisted
     # Contract: on unix-socket-capable platforms, unallowlisted socket paths are blocked by allowlist policy.
-    monkeypatch.setattr(network_proxy, "_unix_socket_permissions_supported", lambda: True)
+    monkeypatch.setattr(http_proxy_module, "_unix_socket_permissions_supported", lambda: True)
+    monkeypatch.setattr(runtime_module, "_unix_socket_permissions_supported", lambda: True)
     state = network_proxy_state_for_policy(NetworkProxyConfig())
 
     response = asyncio.run(http_plain_proxy(unix_socket_request(), state))
@@ -411,7 +423,7 @@ def test_http_plain_proxy_rejects_unix_socket_when_platform_unsupported(monkeypa
     # Rust module: src/http_proxy.rs
     # Rust test: http_plain_proxy_rejects_unix_socket_when_not_allowlisted
     # Contract: non-macOS platforms reject unix-socket proxying before allowlist inspection with NOT_IMPLEMENTED.
-    monkeypatch.setattr(network_proxy, "_unix_socket_permissions_supported", lambda: False)
+    monkeypatch.setattr(http_proxy_module, "_unix_socket_permissions_supported", lambda: False)
     state = network_proxy_state_for_policy(NetworkProxyConfig())
 
     response = asyncio.run(http_plain_proxy(unix_socket_request(), state))
@@ -426,7 +438,8 @@ def test_http_plain_proxy_attempts_allowed_unix_socket_proxy(monkeypatch, tmp_pa
     # Rust module: src/http_proxy.rs
     # Rust test: http_plain_proxy_attempts_allowed_unix_socket_proxy
     # Contract: supported and allowlisted unix-socket requests pass policy and map failed upstream proxying to BAD_GATEWAY.
-    monkeypatch.setattr(network_proxy, "_unix_socket_permissions_supported", lambda: True)
+    monkeypatch.setattr(http_proxy_module, "_unix_socket_permissions_supported", lambda: True)
+    monkeypatch.setattr(runtime_module, "_unix_socket_permissions_supported", lambda: True)
     socket_path = str(tmp_path / "test.sock")
     config = NetworkProxyConfig()
     config.network.set_allow_unix_sockets([socket_path])

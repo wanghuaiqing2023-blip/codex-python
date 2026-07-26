@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-cloud-tasks.app",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cloud-tasks",
+    "module": "app",
+    "source": "codex/codex-rs/cloud-tasks/src/app.rs",
+    "anchors": [
+      "App",
+      "AppEvent",
+      "ApplyModalState",
+      "AttemptView",
+      "BestOfModalState",
+      "DetailView",
+      "DiffOverlay",
+      "EnvModalState",
+      "EnvironmentRow",
+      "apply_selection_to_fields",
+      "attempt_count",
+      "attempt_display_total"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cloud_tasks/app.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cloud_tasks/app.py"
+    ],
+    "anchors": [
+      "App",
+      "AppEvent",
+      "ApplyModalState",
+      "AttemptView",
+      "BestOfModalState",
+      "DetailView",
+      "DiffOverlay",
+      "EnvModalState",
+      "EnvironmentRow",
+      "apply_selection_to_fields",
+      "attempt_count",
+      "attempt_display_total"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

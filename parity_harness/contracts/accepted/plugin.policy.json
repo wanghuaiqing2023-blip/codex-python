@@ -1,0 +1,11 @@
+{
+  "scope": "plugin",
+  "rust_root": "codex/codex-rs/plugin",
+  "python_root": "pycodex/plugin",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": ["crate::load_outcome", "crate::plugin_id"],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

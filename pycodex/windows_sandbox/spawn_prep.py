@@ -19,6 +19,7 @@ from .cap import load_or_create_cap_sids, workspace_write_cap_sid_for_root
 from .env import apply_no_network_to_env, ensure_non_interactive_pager, inherit_path_env, normalize_null_device_env
 from .path_normalization import canonical_path_key, canonicalize_path
 from .resolved_permissions import ResolvedWindowsSandboxPermissions
+from .sandbox_utils import ensure_codex_home_exists, inject_git_safe_directory
 from .setup import effective_write_roots_for_permissions, sandbox_dir
 from .token import (
     LocalSid,
@@ -96,9 +97,9 @@ def prepare_legacy_spawn_context(
     if options.inherit_path:
         inherit_path_env(env_map)
     if options.add_git_safe_directory:
-        _inject_git_safe_directory(env_map, cwd)
+        inject_git_safe_directory(env_map, cwd)
     home = Path(codex_home)
-    home.mkdir(parents=True, exist_ok=True)
+    ensure_codex_home_exists(home)
     logs = sandbox_dir(home)
     logs.mkdir(parents=True, exist_ok=True)
     current_dir = Path(cwd)
@@ -234,12 +235,6 @@ def _contains(root: str | Path, path: str | Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _inject_git_safe_directory(env_map: MutableMapping[str, str], cwd: str | Path) -> None:
-    env_map["GIT_CONFIG_COUNT"] = "1"
-    env_map["GIT_CONFIG_KEY_0"] = "safe.directory"
-    env_map["GIT_CONFIG_VALUE_0"] = str(Path(cwd))
 
 
 __all__ = [

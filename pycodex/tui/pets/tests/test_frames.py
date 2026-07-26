@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# Rust source: codex/codex-rs/tui/src/pets/frames.rs
+
 from dataclasses import dataclass
 import struct
 import zlib

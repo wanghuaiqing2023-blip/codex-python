@@ -1,87 +1,96 @@
-"""Extension wiring projections for ``codex-app-server/src/extensions.rs``."""
+"""App-server extension wiring aligned with ``codex-app-server::extensions``."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
 from inspect import isawaitable
-from typing import Any, Callable
+from typing import Any
 from weakref import ReferenceType
 
 from pycodex.app_server_protocol import ServerNotification, ThreadGoalUpdatedNotification
 from pycodex.app_server_protocol.thread import ThreadGoal as AppServerThreadGoal
-from pycodex.protocol import ThreadGoalUpdatedEvent
+from pycodex.ext.guardian import install as install_guardian
+from pycodex.ext.memories import install as install_memories
+from pycodex.ext.web_search import install as install_web_search
+from pycodex.extension_api import (
+    AgentSpawner,
+    ExtensionEventSink,
+    ExtensionRegistry,
+    ExtensionRegistryBuilder,
+)
+from pycodex.otel import global_metrics
+from pycodex.protocol import CodexErr, ThreadGoalUpdatedEvent
 
-JsonValue = Any
 
-THREAD_EXTENSION_INSTALL_ORDER = ("guardian", "memories", "web_search")
+_LOG = logging.getLogger(__name__)
 THREAD_MANAGER_DROPPED_MESSAGE = "thread manager dropped"
 
 
-@dataclass(frozen=True)
-class ThreadExtensionsProjection:
-    event_sink: Any
-    auth_manager: Any
-    installed_extensions: tuple[str, ...] = THREAD_EXTENSION_INSTALL_ORDER
-    otel_provider: str = "global"
-
-
-@dataclass(frozen=True)
-class ExtensionEventSinkProjection:
-    action: str
-    notification: ServerNotification | None = None
-    debug_event_id: str | None = None
-    debug_msg: Any = None
-
-
-@dataclass(frozen=True)
-class GuardianAgentSpawnProjection:
-    action: str
-    result: Any = None
-    error: str | None = None
-
-
-def thread_extensions_projection(
-    guardian_agent_spawner: Any,
-    event_sink: Any,
+def thread_extensions(
+    guardian_agent_spawner: AgentSpawner,
+    event_sink: ExtensionEventSink,
     auth_manager: Any,
-) -> ThreadExtensionsProjection:
-    """Record Rust's extension registry builder install order."""
-
-    return ThreadExtensionsProjection(
-        event_sink=event_sink,
-        auth_manager=auth_manager,
-        installed_extensions=THREAD_EXTENSION_INSTALL_ORDER,
-        otel_provider="global",
-    )
+) -> ExtensionRegistry:
+    builder = ExtensionRegistryBuilder.with_event_sink(event_sink)
+    install_guardian(builder, guardian_agent_spawner)
+    install_memories(builder, global_metrics())
+    install_web_search(builder, auth_manager)
+    return builder.build()
 
 
-def app_server_extension_event_sink_projection(event: Any) -> ExtensionEventSinkProjection:
-    """Mirror `AppServerExtensionEventSink::emit` for one event."""
+def app_server_extension_event_sink(outgoing: Any) -> ExtensionEventSink:
+    return _AppServerExtensionEventSink(outgoing)
 
-    event_id = _field(event, "id")
-    msg = _field(event, "msg")
-    msg_type = _event_msg_type(msg)
-    if msg_type == "thread_goal_updated":
-        payload = _event_msg_payload(msg)
-        updated = _coerce_thread_goal_updated_event(payload)
-        notification = ServerNotification(
-            "ThreadGoalUpdated",
-            ThreadGoalUpdatedNotification(
-                thread_id=str(updated.thread_id),
-                turn_id=updated.turn_id,
-                goal=app_server_thread_goal_from_core(updated.goal),
-            ),
+
+class _AppServerExtensionEventSink:
+    def __init__(self, outgoing: Any) -> None:
+        self.outgoing = outgoing
+
+    def emit(self, event: Any) -> None:
+        event_id = _field(event, "id")
+        msg = _field(event, "msg")
+        if _event_msg_type(msg) != "thread_goal_updated":
+            _LOG.debug(
+                "dropping unsupported extension event",
+                extra={"event_id": event_id, "event_msg": msg},
+            )
+            return
+        updated = _coerce_thread_goal_updated_event(_event_msg_payload(msg))
+        self.outgoing.try_send_server_notification(
+            ServerNotification(
+                "ThreadGoalUpdated",
+                ThreadGoalUpdatedNotification(
+                    thread_id=str(updated.thread_id),
+                    turn_id=updated.turn_id,
+                    goal=_app_server_thread_goal_from_core(updated.goal),
+                ),
+            )
         )
-        return ExtensionEventSinkProjection("forward_thread_goal_updated", notification)
-    return ExtensionEventSinkProjection(
-        "drop_unsupported_extension_event",
-        debug_event_id=None if event_id is None else str(event_id),
-        debug_msg=msg,
-    )
 
 
-def app_server_thread_goal_from_core(goal: Any) -> AppServerThreadGoal:
+def guardian_agent_spawner(
+    thread_manager: ReferenceType[Any],
+) -> AgentSpawner:
+    return _GuardianAgentSpawner(thread_manager)
+
+
+class _GuardianAgentSpawner:
+    def __init__(self, thread_manager: ReferenceType[Any]) -> None:
+        self._thread_manager = thread_manager
+
+    async def spawn_subagent(self, forked_from_thread_id: Any, options: Any) -> Any:
+        thread_manager = self._thread_manager()
+        if thread_manager is None:
+            raise CodexErr.unsupported_operation(THREAD_MANAGER_DROPPED_MESSAGE)
+        method = getattr(thread_manager, "spawn_subagent", None)
+        if not callable(method):
+            raise TypeError("spawn_subagent is not callable")
+        result = method(forked_from_thread_id, options)
+        return await result if isawaitable(result) else result
+
+
+def _app_server_thread_goal_from_core(goal: Any) -> AppServerThreadGoal:
     return AppServerThreadGoal(
         thread_id=str(_field(goal, "thread_id")),
         objective=_field(goal, "objective"),
@@ -94,34 +103,16 @@ def app_server_thread_goal_from_core(goal: Any) -> AppServerThreadGoal:
     )
 
 
-async def guardian_agent_spawn_projection(
-    thread_manager_ref: ReferenceType | Callable[[], Any] | Any,
-    forked_from_thread_id: Any,
-    options: Any,
-) -> GuardianAgentSpawnProjection:
-    """Project the Rust weak-upgrade and `spawn_subagent` call boundary."""
-
-    thread_manager = _upgrade_weak(thread_manager_ref)
-    if thread_manager is None:
-        return GuardianAgentSpawnProjection(
-            "unsupported_operation",
-            error=THREAD_MANAGER_DROPPED_MESSAGE,
-        )
-    result = _call(thread_manager, "spawn_subagent", forked_from_thread_id, options)
-    if isawaitable(result):
-        result = await result
-    return GuardianAgentSpawnProjection("spawn_subagent", result=result)
-
-
 def _coerce_thread_goal_updated_event(value: Any) -> ThreadGoalUpdatedEvent:
     if isinstance(value, ThreadGoalUpdatedEvent):
         return value
     if isinstance(value, Mapping):
         return ThreadGoalUpdatedEvent.from_mapping(value)
-    thread_id = _field(value, "thread_id")
-    goal = _field(value, "goal")
-    turn_id = _field(value, "turn_id")
-    return ThreadGoalUpdatedEvent(thread_id=thread_id, goal=goal, turn_id=turn_id)
+    return ThreadGoalUpdatedEvent(
+        thread_id=_field(value, "thread_id"),
+        goal=_field(value, "goal"),
+        turn_id=_field(value, "turn_id"),
+    )
 
 
 def _event_msg_type(msg: Any) -> str:
@@ -132,7 +123,7 @@ def _event_msg_type(msg: Any) -> str:
     raw = getattr(raw, "value", raw)
     if raw is None and isinstance(msg, ThreadGoalUpdatedEvent):
         return "thread_goal_updated"
-    return str(raw or "")
+    return str(raw or "").lower()
 
 
 def _event_msg_payload(msg: Any) -> Any:
@@ -143,30 +134,13 @@ def _event_msg_payload(msg: Any) -> Any:
     return getattr(msg, "payload", msg)
 
 
-def _upgrade_weak(value: ReferenceType | Callable[[], Any] | Any) -> Any:
-    if isinstance(value, ReferenceType):
-        return value()
-    if callable(value):
-        return value()
-    return value
-
-
-def _call(value: Any, name: str, *args: Any) -> Any:
-    attr = _field(value, name)
-    if not callable(attr):
-        raise TypeError(f"{name} is not callable")
-    return attr(*args)
-
-
-def _field(value: Any, name: str) -> Any:
+def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         if name in value:
             return value[name]
         camel = _snake_to_camel(name)
-        if camel in value:
-            return value[camel]
-        return None
-    return getattr(value, name, None)
+        return value.get(camel, default)
+    return getattr(value, name, default)
 
 
 def _snake_to_camel(value: str) -> str:
@@ -175,13 +149,8 @@ def _snake_to_camel(value: str) -> str:
 
 
 __all__ = [
-    "THREAD_EXTENSION_INSTALL_ORDER",
     "THREAD_MANAGER_DROPPED_MESSAGE",
-    "ExtensionEventSinkProjection",
-    "GuardianAgentSpawnProjection",
-    "ThreadExtensionsProjection",
-    "app_server_extension_event_sink_projection",
-    "app_server_thread_goal_from_core",
-    "guardian_agent_spawn_projection",
-    "thread_extensions_projection",
+    "app_server_extension_event_sink",
+    "guardian_agent_spawner",
+    "thread_extensions",
 ]

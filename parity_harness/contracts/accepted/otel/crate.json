@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-otel.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-otel",
+    "module": "crate",
+    "source": "codex/codex-rs/otel/src/lib.rs",
+    "anchors": [
+      "AuthEnvTelemetryMetadata",
+      "OtelExporter",
+      "OtelHttpProtocol",
+      "OtelProvider",
+      "OtelSettings",
+      "OtelTlsConfig",
+      "RuntimeMetricTotals",
+      "RuntimeMetricsSummary",
+      "SessionTelemetry",
+      "SessionTelemetryMetadata",
+      "StatsigMetricsSettings",
+      "TelemetryAuthMode"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/otel/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/otel/__init__.py"
+    ],
+    "anchors": [
+      "AuthEnvTelemetryMetadata",
+      "OtelExporter",
+      "OtelHttpProtocol",
+      "OtelProvider",
+      "OtelSettings",
+      "OtelTlsConfig",
+      "RuntimeMetricTotals",
+      "RuntimeMetricsSummary",
+      "SessionTelemetry",
+      "SessionTelemetryMetadata",
+      "StatsigMetricsSettings",
+      "TelemetryAuthMode"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

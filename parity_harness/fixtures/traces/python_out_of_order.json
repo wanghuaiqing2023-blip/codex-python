@@ -1,0 +1,14 @@
+{
+  "source": "python",
+  "contract_id": "harness-fixture.status",
+  "events": [
+    {"category": "input", "name": "received", "payload": {"value": "ready"}},
+    {"category": "tool.available", "name": "exec_command", "tool": "exec_command", "payload": {"schema": "shell"}},
+    {"category": "context", "name": "assembled", "payload": {"cwd": "D:/python/work/status", "tools": ["exec_command"]}},
+    {"category": "state", "name": "working", "state": "working"},
+    {"category": "outcome.link", "name": "file-created", "outcome_ref": "file:result.txt"},
+    {"category": "state", "name": "idle", "state": "idle"},
+    {"category": "termination", "name": "completed"}
+  ]
+}
+

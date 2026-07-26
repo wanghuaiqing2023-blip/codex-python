@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.settings",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::settings",
+    "source": "codex/codex-rs/tui/src/chatwidget/settings.rs",
+    "anchors": [
+      "active_mode_kind",
+      "collaboration_mode_label",
+      "collaboration_modes_enabled",
+      "current_collaboration_mode",
+      "current_model",
+      "current_model_supports_images",
+      "current_model_supports_personality",
+      "current_plan_type",
+      "current_realtime_audio_device_name",
+      "current_realtime_audio_selection_label",
+      "dismiss_plan_mode_nudge",
+      "effective_collaboration_mode"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/settings.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/settings.py"
+    ],
+    "anchors": [
+      "active_mode_kind",
+      "collaboration_mode_label",
+      "collaboration_modes_enabled",
+      "current_collaboration_mode",
+      "current_model",
+      "current_model_supports_images",
+      "current_model_supports_personality",
+      "current_plan_type",
+      "current_realtime_audio_device_name",
+      "current_realtime_audio_selection_label",
+      "dismiss_plan_mode_nudge",
+      "effective_collaboration_mode"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

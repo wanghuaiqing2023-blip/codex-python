@@ -352,6 +352,11 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
             ),
             schedule_frame=True,
         )
+    if variant == "SubmitUserMessageWithMode":
+        return EventDispatchPlan(
+            action="submit_user_message_with_mode",
+            updates=(("submit_user_message_with_mode", payload),),
+        )
 
     history_actions = {
         "BeginInitialHistoryReplayBuffer": "begin_initial_history_replay_buffer",
@@ -427,6 +432,24 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
             updates=(("persist_model_selection", {"model": model, "effort": effort}),),
             schedule_frame=True,
         )
+    if variant == "StatusLineSetup":
+        items = _payload_value(payload, "items", ())
+        use_theme_colors = bool(_payload_value(payload, "use_theme_colors", False))
+        status_line_setup = {
+            "items": items,
+            "use_theme_colors": use_theme_colors,
+        }
+        return EventDispatchPlan(
+            action="setup_status_line",
+            updates=(("setup_status_line", status_line_setup),),
+            schedule_frame=True,
+        )
+    if variant == "StatusLineSetupCancelled":
+        return EventDispatchPlan(
+            action="cancel_status_line_setup",
+            updates=(("cancel_status_line_setup", None),),
+            schedule_frame=True,
+        )
     if variant == "RefreshRateLimits":
         origin = _payload_value(payload, "origin", payload)
         return EventDispatchPlan(
@@ -457,6 +480,7 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
         "SetThreadGoalStatus": "set_thread_goal_status",
         "ClearThreadGoal": "clear_thread_goal",
         "OpenResumePicker": "open_resume_picker",
+        "OpenAgentPicker": "open_agent_picker",
         "ResumeSessionByIdOrName": "resume_session_by_id_or_name",
         "ForkCurrentSession": "fork_current_session",
         "ConsolidateAgentMessage": "consolidate_agent_message",

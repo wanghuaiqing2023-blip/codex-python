@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.apply_patch",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "apply_patch",
+    "source": "codex/codex-rs/core/src/apply_patch.rs",
+    "anchors": [
+      "ApplyPatchRuntimeInvocation",
+      "InternalApplyPatchInvocation",
+      "apply_patch",
+      "convert_apply_patch_to_protocol"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/apply_patch.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/apply_patch.py"
+    ],
+    "anchors": [
+      "ApplyPatchRuntimeInvocation",
+      "InternalApplyPatchInvocation",
+      "apply_patch",
+      "convert_apply_patch_to_protocol"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

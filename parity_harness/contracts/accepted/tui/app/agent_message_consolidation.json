@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-tui.app.agent_message_consolidation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::agent_message_consolidation",
+    "source": "codex/codex-rs/tui/src/app/agent_message_consolidation.rs",
+    "anchors": [
+      "handle_consolidate_agent_message",
+      "finish_agent_message_consolidation"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/agent_message_consolidation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/agent_message_consolidation.py"
+    ],
+    "anchors": [
+      "handle_consolidate_agent_message",
+      "finish_agent_message_consolidation"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

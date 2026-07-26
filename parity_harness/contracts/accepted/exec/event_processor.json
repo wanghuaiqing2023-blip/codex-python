@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-exec.event_processor",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec",
+    "module": "event_processor",
+    "source": "codex/codex-rs/exec/src/event_processor.rs",
+    "anchors": [
+      "CodexStatus",
+      "handle_last_message",
+      "print_config_summary",
+      "print_final_output",
+      "process_server_notification",
+      "process_warning"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec/event_processor.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec/event_processor.py"
+    ],
+    "anchors": [
+      "CodexStatus",
+      "handle_last_message",
+      "print_config_summary",
+      "print_final_output",
+      "process_server_notification",
+      "process_warning"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

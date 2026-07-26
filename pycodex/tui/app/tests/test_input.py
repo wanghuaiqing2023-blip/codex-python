@@ -14,10 +14,12 @@ from pycodex.tui.app.input import (
     apply_raw_output_mode,
     handle_key_event,
     launch_external_editor,
+    keymap_command_for_event,
     refresh_status_line,
     should_handle_backtrack_esc,
     should_reject_side_backtrack_esc,
 )
+from pycodex.tui.keymap import RuntimeKeymap
 
 
 def test_app_keymap_shortcuts_are_disabled_while_keymap_view_is_active():
@@ -127,6 +129,17 @@ def test_raw_output_refresh_and_key_dispatch_plans():
     clear = asyncio.run(handle_key_event(AppInputState(), KeyEvent("l"), command="clear_terminal"))
     assert clear.action == "clear_terminal_ui"
     assert clear.schedule_frame
+
+
+def test_keymap_command_for_event_uses_runtime_app_bindings() -> None:
+    """Rust app::input resolves global actions from RuntimeKeymap."""
+
+    keymap = RuntimeKeymap.built_in_defaults()
+
+    assert keymap_command_for_event(keymap, KeyEvent("g", modifiers=("control",))) == "open_external_editor"
+    assert keymap_command_for_event(keymap, KeyEvent("l", modifiers=("control",))) == "clear_terminal"
+    assert keymap_command_for_event(keymap, KeyEvent("o", modifiers=("control",))) == "copy"
+    assert keymap_command_for_event(keymap, KeyEvent("t", modifiers=("control",))) == "open_transcript"
 
 
 def test_enter_confirms_primed_backtrack_only_with_selection_and_empty_composer():

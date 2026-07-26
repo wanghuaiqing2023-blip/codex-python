@@ -1,0 +1,54 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "utils-cache",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 1,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-utils-cache",
+        "module": "crate",
+        "source": "codex/codex-rs/utils/cache/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/utils/cache/__init__.py",
+          "anchor_candidates": [
+            "BlockingLruCache",
+            "blocking_lock",
+            "clear",
+            "get",
+            "get_or_insert_with",
+            "get_or_try_insert_with",
+            "insert",
+            "new",
+            "remove",
+            "sha1_digest",
+            "try_with_capacity",
+            "with_mut"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

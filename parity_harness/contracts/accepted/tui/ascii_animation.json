@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.ascii_animation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "ascii_animation",
+    "source": "codex/codex-rs/tui/src/ascii_animation.rs",
+    "anchors": [
+      "AsciiAnimation",
+      "current_frame",
+      "new",
+      "pick_random_variant",
+      "schedule_next_frame",
+      "with_variants",
+      "frames"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/ascii_animation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/ascii_animation.py"
+    ],
+    "anchors": [
+      "AsciiAnimation",
+      "current_frame",
+      "new",
+      "pick_random_variant",
+      "schedule_next_frame",
+      "with_variants",
+      "frames"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

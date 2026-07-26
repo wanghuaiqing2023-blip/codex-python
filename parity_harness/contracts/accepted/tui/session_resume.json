@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-tui.session_resume",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "session_resume",
+    "source": "codex/codex-rs/tui/src/session_resume.rs",
+    "anchors": [
+      "ResolveCwdOutcome",
+      "cwds_differ",
+      "read_session_model",
+      "resolve_cwd_for_resume_or_fork",
+      "resolve_session_thread_id",
+      "RawRecord",
+      "RolloutResumeState",
+      "SessionMetadata",
+      "TurnContextResumeState",
+      "read_rollout_resume_state",
+      "read_session_cwd"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/session_resume.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/session_resume.py"
+    ],
+    "anchors": [
+      "ResolveCwdOutcome",
+      "cwds_differ",
+      "read_session_model",
+      "resolve_cwd_for_resume_or_fork",
+      "resolve_session_thread_id",
+      "RawRecord",
+      "RolloutResumeState",
+      "SessionMetadata",
+      "TurnContextResumeState",
+      "read_rollout_resume_state",
+      "read_session_cwd"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

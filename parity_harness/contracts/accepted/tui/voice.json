@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.voice",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "voice",
+    "source": "codex/codex-rs/tui/src/voice.rs",
+    "anchors": [
+      "RealtimeAudioPlayer",
+      "RecordingMeterState",
+      "VoiceCapture",
+      "clear",
+      "enqueue_frame",
+      "last_peak_arc",
+      "new",
+      "next_text",
+      "start",
+      "start_realtime",
+      "stop",
+      "stopped_flag"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/voice.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/voice.py"
+    ],
+    "anchors": [
+      "RealtimeAudioPlayer",
+      "RecordingMeterState",
+      "VoiceCapture",
+      "clear",
+      "enqueue_frame",
+      "last_peak_arc",
+      "new",
+      "next_text",
+      "start",
+      "start_realtime",
+      "stop",
+      "stopped_flag"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

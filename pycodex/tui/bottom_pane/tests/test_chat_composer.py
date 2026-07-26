@@ -3,6 +3,7 @@ import io
 import pytest
 
 from pycodex.tui.slash_command import SlashCommand
+from pycodex.tui.keymap import KeyBinding, RuntimeKeymap
 
 from pycodex.tui.bottom_pane.chat_composer import (
     FOOTER_SPACING_HEIGHT,
@@ -50,6 +51,38 @@ def test_chat_composer_constants_and_large_input_message_match_rust_copy():
 
 def test_queued_input_action_variants_match_rust():
     assert [action.name for action in QueuedInputAction] == ["Plain", "ParseSlash", "RunShell"]
+
+
+def test_configured_submit_key_dispatches_current_draft() -> None:
+    """Rust ChatComposer::set_keymap replaces the composer submit binding."""
+
+    keymap = RuntimeKeymap.built_in_defaults()
+    keymap.composer.submit = [KeyBinding("F12")]
+    composer = ChatComposer(text="hello")
+    composer.set_keymap(keymap)
+
+    result = composer.handle_terminal_event("key", "f12")
+
+    assert isinstance(result, InputResult)
+    assert result.kind == "Submitted"
+    assert result.text == "hello"
+
+
+def test_running_task_routes_unavailable_popup_command_to_slash_guard() -> None:
+    """Rust chat_composer rejects unavailable popup commands before opening views."""
+
+    composer = ChatComposer(is_task_running=True)
+    composer.set_text_content("/model")
+    shown: list[object] = []
+
+    result = composer.handle_terminal_event(
+        "enter",
+        open_command_view=lambda _command: object(),
+        show_view=shown.append,
+    )
+
+    assert result == InputResult.Command(SlashCommand.MODEL)
+    assert shown == []
 
 
 def test_input_result_variants_preserve_payload_shapes():
@@ -168,6 +201,28 @@ def test_terminal_command_popup_state_syncs_draft_and_hides_for_active_view() ->
     assert state.visible is False
 
 
+def test_terminal_command_popup_reopens_with_fresh_rust_payload_state() -> None:
+    # Rust sync_command_popup drops ActivePopup::Command when the slash draft
+    # closes and constructs a new CommandPopup when slash editing resumes.
+    state = TerminalCommandPopupState.new()
+
+    assert state.sync_draft("/") is True
+    for _ in range(20):
+        state.move_down()
+    assert state.popup.state.scroll_top > 0
+
+    assert state.sync_draft("") is False
+    assert state.popup.state.scroll_top == 0
+    assert state.popup.state.selected_idx is None
+
+    assert state.sync_draft("/status") is True
+    assert state.selected_item().command() == "status"
+    assert [line.text.split()[0] for line in state.terminal_lines(width=120)] == [
+        "/status",
+        "/statusline",
+    ]
+
+
 def test_terminal_command_popup_runner_applies_navigation_completion_and_model_view() -> None:
     # Rust owner: codex-tui::bottom_pane::chat_composer routes popup keys and
     # applies slash-popup outcomes before normal composer input. The terminal
@@ -188,7 +243,7 @@ def test_terminal_command_popup_runner_applies_navigation_completion_and_model_v
             "/model",
             "enter",
             open_command_view=lambda command: params if command == "model" else None,
-            show_selection_view=shown.append,
+            show_view=shown.append,
         )
         == ""
     )
@@ -205,7 +260,7 @@ def test_terminal_command_popup_runner_applies_navigation_completion_and_model_v
             "/clear",
             "enter",
             open_command_view=lambda command: None,
-            show_selection_view=shown.append,
+            show_view=shown.append,
         )
         .command
         is SlashCommand.CLEAR
@@ -1002,7 +1057,7 @@ def test_handle_key_event_prioritizes_history_search_without_popup_sync():
     active = ChatComposer(history_search_active=True, active_popup="command")
     result, handled = active.handle_key_event(KeyEvent.char_event("a"))
     assert result.kind == "None"
-    assert handled is False
+    assert handled is True
     assert active.dispatch_log == ["history_search"]
     assert active.sync_count == 0
 
@@ -1013,6 +1068,29 @@ def test_handle_key_event_prioritizes_history_search_without_popup_sync():
     assert composer.history_search_active is True
     assert composer.dispatch_log == ["begin_history_search"]
     assert composer.sync_count == 0
+
+
+def test_terminal_ctrl_r_searches_configured_persistent_history() -> None:
+    # Rust source: bottom_pane/chat_composer/history_search.rs accepts the
+    # terminal raw Ctrl+R form, searches ChatComposerHistory, and previews the
+    # newest matching persistent entry.
+    entries = ["older prompt", "newest native history prompt"]
+    composer = ChatComposer()
+    composer.configure_history(
+        "thread",
+        7,
+        len(entries),
+        lambda log_id, offset: entries[offset] if log_id == 7 else None,
+    )
+
+    composer.handle_terminal_event("ctrl_r")
+    composer.handle_terminal_event("text", "native")
+
+    assert composer.current_text() == "newest native history prompt"
+    assert composer.history_search_active is True
+    assert composer.history_search_footer_text() == (
+        "reverse-i-search: native  enter accept · esc cancel"
+    )
 
 
 def test_handle_key_event_dispatches_active_popup_then_syncs_popups():

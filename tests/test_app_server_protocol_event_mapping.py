@@ -25,7 +25,7 @@ def test_reasoning_content_delta_with_summary_index_maps_to_summary_text_delta()
 
 def test_reasoning_content_delta_with_content_index_maps_to_raw_text_delta() -> None:
     # Python product-path compatibility:
-    # - pycodex.core.http_transport emits response.reasoning_text.delta as
+    # - pycodex.core.client emits response.reasoning_text.delta as
     #   reasoning_content_delta with content_index.
     # - codex-tui::chatwidget::protocol only displays ReasoningTextDelta when
     #   show_raw_agent_reasoning is enabled, so this must not be projected as

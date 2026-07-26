@@ -1,0 +1,6 @@
+{
+  "contract_id": "codex-goal-extension.runtime", "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "codex-goal-extension", "module": "runtime", "source": "codex/codex-rs/ext/goal/src/runtime.rs", "anchors": ["AccountedGoalProgress", "GoalRuntimeHandle", "PreviousGoalSnapshot", "account_active_goal_progress", "apply_external_goal_clear", "apply_external_goal_set", "is_enabled", "prepare_external_goal_mutation", "restore_after_resume", "set_enabled", "usage_limit_active_goal_for_turn", "account_idle_goal_progress"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "pycodex/ext/goal/runtime.py", "layout": "module-file", "implementation_files": ["pycodex/ext/goal/runtime.py"], "anchors": ["AccountedGoalProgress", "GoalRuntimeHandle", "PreviousGoalSnapshot", "account_active_goal_progress", "apply_external_goal_clear", "apply_external_goal_set", "is_enabled", "prepare_external_goal_mutation", "restore_after_resume", "set_enabled", "usage_limit_active_goal_for_turn", "account_idle_goal_progress"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-plugin.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-plugin",
+    "module": "crate",
+    "source": "codex/codex-rs/plugin/src/lib.rs",
+    "anchors": [
+      "AppConnectorId",
+      "EffectiveSkillRoots",
+      "LoadedPlugin",
+      "PluginCapabilitySummary",
+      "PluginHookSource",
+      "PluginId",
+      "PluginIdError",
+      "PluginLoadOutcome",
+      "PluginTelemetryMetadata",
+      "from_plugin_id",
+      "mention_syntax",
+      "plugin_namespace_for_skill_path"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/plugin/__init__.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/plugin/__init__.py"],
+    "anchors": [
+      "AppConnectorId",
+      "EffectiveSkillRoots",
+      "LoadedPlugin",
+      "PluginCapabilitySummary",
+      "PluginHookSource",
+      "PluginId",
+      "PluginIdError",
+      "PluginLoadOutcome",
+      "PluginTelemetryMetadata",
+      "from_plugin_id",
+      "mention_syntax",
+      "plugin_namespace_for_skill_path"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

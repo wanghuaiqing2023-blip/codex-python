@@ -6,6 +6,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping
 
+from pycodex.app_server_transport import start_stdio_connection
+
 TRANSPORT_PUBLIC_REEXPORTS: tuple[str, ...] = (
     "AppServerTransport",
     "app_server_control_socket_path",
@@ -385,5 +387,6 @@ __all__ = [
     "filter_outgoing_message_for_connection",
     "route_outgoing_envelope_projection",
     "should_skip_notification_for_connection",
+    "start_stdio_connection",
     "transport_reexport_surface_projection",
 ]

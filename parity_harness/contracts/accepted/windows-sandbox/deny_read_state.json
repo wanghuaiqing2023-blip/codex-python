@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-windows-sandbox.deny_read_state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "deny_read_state",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/deny_read_state.rs",
+    "anchors": [
+      "sync_persistent_deny_read_acls",
+      "DENY_READ_ACL_STATE_FILE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/deny_read_state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/deny_read_state.py"
+    ],
+    "anchors": [
+      "sync_persistent_deny_read_acls",
+      "DENY_READ_ACL_STATE_FILE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

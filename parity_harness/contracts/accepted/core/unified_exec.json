@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.unified_exec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "unified_exec",
+    "source": "codex/codex-rs/core/src/unified_exec/mod.rs",
+    "anchors": [
+      "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS",
+      "DEFAULT_MAX_OUTPUT_TOKENS",
+      "ExecCommandRequest",
+      "MAX_UNIFIED_EXEC_PROCESSES",
+      "MAX_YIELD_TIME_MS",
+      "MIN_EMPTY_YIELD_TIME_MS",
+      "MIN_YIELD_TIME_MS",
+      "ProcessStore",
+      "UNIFIED_EXEC_OUTPUT_MAX_BYTES",
+      "UNIFIED_EXEC_OUTPUT_MAX_TOKENS",
+      "UnifiedExecContext",
+      "UnifiedExecError"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/unified_exec/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/unified_exec/__init__.py"
+    ],
+    "anchors": [
+      "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS",
+      "DEFAULT_MAX_OUTPUT_TOKENS",
+      "ExecCommandRequest",
+      "MAX_UNIFIED_EXEC_PROCESSES",
+      "MAX_YIELD_TIME_MS",
+      "MIN_EMPTY_YIELD_TIME_MS",
+      "MIN_YIELD_TIME_MS",
+      "ProcessStore",
+      "UNIFIED_EXEC_OUTPUT_MAX_BYTES",
+      "UNIFIED_EXEC_OUTPUT_MAX_TOKENS",
+      "UnifiedExecContext",
+      "UnifiedExecError"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

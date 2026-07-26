@@ -2,6 +2,8 @@ from pycodex.core.tools.handlers import list_available_plugins_to_install as fac
 from pycodex.core.tools.handlers.request_plugin_install import (
     MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS,
     ListAvailablePluginsToInstallHandler,
+)
+from pycodex.core.tools.handlers.list_available_plugins_to_install_spec import (
     create_list_available_plugins_to_install_tool,
 )
 from pycodex.tools import DiscoverableToolType, RequestPluginInstallEntry
@@ -13,7 +15,7 @@ def test_facade_exports_rust_coordinate_handler_surface():
         MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS
     )
     assert facade.ListAvailablePluginsToInstallHandler is ListAvailablePluginsToInstallHandler
-    assert facade.create_list_available_plugins_to_install_tool is create_list_available_plugins_to_install_tool
+    assert create_list_available_plugins_to_install_tool()["name"] == "list_available_plugins_to_install"
 
 
 def test_facade_handler_preserves_sorting_and_description_truncation():

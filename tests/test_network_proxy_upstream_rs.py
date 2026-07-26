@@ -1,14 +1,18 @@
 import asyncio
 
-from pycodex.network_proxy import (
-    ConfigState,
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
     NetworkProxyConfig,
-    NetworkProxyConstraints,
     NetworkProxyNetworkConfig,
+)
+from pycodex.network_proxy.runtime import (
+    ConfigState,
     NetworkProxyState,
+)
+from pycodex.network_proxy.state import NetworkProxyConstraints
+from pycodex.network_proxy.upstream import (
     ProxyAddress,
     ProxyConfig,
-    StaticNetworkProxyReloader,
     UpstreamClient,
     proxy_for_connect,
     read_proxy_env,

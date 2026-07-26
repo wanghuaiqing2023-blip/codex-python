@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.spec_plan",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::spec_plan",
+    "source": "codex/codex-rs/core/src/tools/spec_plan.rs",
+    "anchors": [
+      "build_tool_router",
+      "search_tool_enabled",
+      "tool_suggest_enabled",
+      "MultiAgentV2NamespaceOverride",
+      "PlannedTools",
+      "add",
+      "add_dispatch_only",
+      "add_dynamic_tools",
+      "add_extension_tools",
+      "add_hosted_spec",
+      "add_mcp_resource_tools",
+      "add_with_exposure"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/spec_plan.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/spec_plan.py"
+    ],
+    "anchors": [
+      "build_tool_router",
+      "search_tool_enabled",
+      "tool_suggest_enabled",
+      "MultiAgentV2NamespaceOverride",
+      "PlannedTools",
+      "add",
+      "add_dispatch_only",
+      "add_dynamic_tools",
+      "add_extension_tools",
+      "add_hosted_spec",
+      "add_mcp_resource_tools",
+      "add_with_exposure"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -8,6 +8,8 @@ from pycodex.core.tools.handlers.mcp_resource import (
     ListResourcesPayload,
     ReadMcpResourceHandler,
     ReadResourceResult,
+)
+from pycodex.core.tools.handlers.mcp_resource_spec import (
     create_list_mcp_resource_templates_tool,
     create_list_mcp_resources_tool,
     create_read_mcp_resource_tool,

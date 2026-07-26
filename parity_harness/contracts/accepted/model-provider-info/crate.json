@@ -1,0 +1,87 @@
+{
+  "contract_id": "codex-model-provider-info.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-model-provider-info",
+    "module": "crate",
+    "source": "codex/codex-rs/model-provider-info/src/lib.rs",
+    "anchors": [
+      "AMAZON_BEDROCK_DEFAULT_BASE_URL",
+      "AMAZON_BEDROCK_GPT_5_4_MODEL_ID",
+      "AMAZON_BEDROCK_PROVIDER_ID",
+      "CHATGPT_CODEX_BASE_URL",
+      "DEFAULT_LMSTUDIO_PORT",
+      "DEFAULT_OLLAMA_PORT",
+      "DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS",
+      "LEGACY_OLLAMA_CHAT_PROVIDER_ID",
+      "LMSTUDIO_OSS_PROVIDER_ID",
+      "ModelProviderAwsAuthInfo",
+      "ModelProviderInfo",
+      "OLLAMA_CHAT_PROVIDER_REMOVED_ERROR"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/model_provider_info/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/model_provider_info/__init__.py"
+    ],
+    "anchors": [
+      "AMAZON_BEDROCK_DEFAULT_BASE_URL",
+      "AMAZON_BEDROCK_GPT_5_4_MODEL_ID",
+      "AMAZON_BEDROCK_PROVIDER_ID",
+      "CHATGPT_CODEX_BASE_URL",
+      "DEFAULT_LMSTUDIO_PORT",
+      "DEFAULT_OLLAMA_PORT",
+      "DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS",
+      "LEGACY_OLLAMA_CHAT_PROVIDER_ID",
+      "LMSTUDIO_OSS_PROVIDER_ID",
+      "ModelProviderAwsAuthInfo",
+      "ModelProviderInfo",
+      "OLLAMA_CHAT_PROVIDER_REMOVED_ERROR"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_config_config_toml.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_exec_local_runtime.py",
+    "tests/test_external_crate_interfaces.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_lmstudio_client_rs.py",
+    "tests/test_login_auth_env_telemetry.py",
+    "tests/test_model_provider_amazon_bedrock.py",
+    "tests/test_model_provider_amazon_bedrock_auth_rs.py",
+    "tests/test_model_provider_amazon_bedrock_catalog_rs.py",
+    "tests/test_model_provider_amazon_bedrock_mantle_rs.py",
+    "tests/test_model_provider_amazon_bedrock_mod_rs.py",
+    "tests/test_model_provider_auth.py",
+    "tests/test_model_provider_auth_rs.py",
+    "tests/test_model_provider_info.py",
+    "tests/test_model_provider_models_endpoint.py",
+    "tests/test_model_provider_models_endpoint_rs.py",
+    "tests/test_model_provider_provider.py",
+    "tests/test_model_provider_provider_rs.py",
+    "tests/test_ollama_client_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

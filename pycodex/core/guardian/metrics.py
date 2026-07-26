@@ -31,7 +31,7 @@ from pycodex.utils.string import sanitize_metric_tag_value
 JsonValue = Any
 
 
-@dataclass(frozen=True)
+@dataclass
 class GuardianReviewAnalyticsResult:
     decision: GuardianReviewDecision
     terminal_status: GuardianReviewTerminalStatus
@@ -44,6 +44,7 @@ class GuardianReviewAnalyticsResult:
     outcome: GuardianAssessmentOutcome | None = None
     guardian_model: str | None = None
     guardian_reasoning_effort: str | None = None
+    guardian_thread_id: str | None = None
     token_usage: TokenUsage | None = None
     time_to_first_token_ms: int | None = None
 
@@ -84,10 +85,38 @@ class GuardianReviewAnalyticsResult:
             raise TypeError("guardian_model must be a string or None")
         if self.guardian_reasoning_effort is not None and not isinstance(self.guardian_reasoning_effort, str):
             raise TypeError("guardian_reasoning_effort must be a string or None")
+        if self.guardian_thread_id is not None and not isinstance(self.guardian_thread_id, str):
+            raise TypeError("guardian_thread_id must be a string or None")
         if self.token_usage is not None and not isinstance(self.token_usage, TokenUsage):
             object.__setattr__(self, "token_usage", TokenUsage.from_mapping(self.token_usage))
         if self.time_to_first_token_ms is not None:
             object.__setattr__(self, "time_to_first_token_ms", _nonnegative_int(self.time_to_first_token_ms, "time_to_first_token_ms"))
+
+    @classmethod
+    def without_session(cls) -> "GuardianReviewAnalyticsResult":
+        return cls(
+            decision=GuardianReviewDecision.DENIED,
+            terminal_status=GuardianReviewTerminalStatus.FAILED_CLOSED,
+        )
+
+    @classmethod
+    def from_session(
+        cls,
+        guardian_thread_id: str,
+        guardian_session_kind: GuardianReviewSessionKind,
+        guardian_model: str,
+        guardian_reasoning_effort: str | None,
+        had_prior_review_context: bool,
+    ) -> "GuardianReviewAnalyticsResult":
+        return cls(
+            decision=GuardianReviewDecision.DENIED,
+            terminal_status=GuardianReviewTerminalStatus.FAILED_CLOSED,
+            guardian_session_kind=guardian_session_kind,
+            had_prior_review_context=had_prior_review_context,
+            guardian_model=guardian_model,
+            guardian_reasoning_effort=guardian_reasoning_effort,
+            guardian_thread_id=guardian_thread_id,
+        )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "GuardianReviewAnalyticsResult":
@@ -103,6 +132,7 @@ class GuardianReviewAnalyticsResult:
             outcome=value.get("outcome"),
             guardian_model=value.get("guardian_model"),
             guardian_reasoning_effort=value.get("guardian_reasoning_effort"),
+            guardian_thread_id=value.get("guardian_thread_id"),
             token_usage=value.get("token_usage"),
             time_to_first_token_ms=value.get("time_to_first_token_ms"),
         )

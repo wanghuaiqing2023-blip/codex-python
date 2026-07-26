@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.scroll_state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::scroll_state",
+    "source": "codex/codex-rs/tui/src/bottom_pane/scroll_state.rs",
+    "anchors": [
+      "ScrollState",
+      "clamp_selection",
+      "ensure_visible",
+      "jump_bottom",
+      "jump_top",
+      "move_down_wrap",
+      "move_up_wrap",
+      "new",
+      "page_down_clamped",
+      "page_up_clamped",
+      "reset",
+      "clear_if_empty"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/scroll_state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/scroll_state.py"
+    ],
+    "anchors": [
+      "ScrollState",
+      "clamp_selection",
+      "ensure_visible",
+      "jump_bottom",
+      "jump_top",
+      "move_down_wrap",
+      "move_up_wrap",
+      "new",
+      "page_down_clamped",
+      "page_up_clamped",
+      "reset",
+      "clear_if_empty"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-core.sandboxing",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "sandboxing",
+    "source": "codex/codex-rs/core/src/sandboxing/mod.rs",
+    "anchors": [
+      "ExecOptions",
+      "ExecRequest",
+      "ExecServerEnvConfig",
+      "SandboxPermissions",
+      "compatibility_sandbox_policy",
+      "execute_env",
+      "execute_exec_request_with_after_spawn",
+      "from_sandbox_exec_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/sandboxing.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/sandboxing.py"
+    ],
+    "anchors": [
+      "ExecOptions",
+      "ExecRequest",
+      "ExecServerEnvConfig",
+      "SandboxPermissions",
+      "compatibility_sandbox_policy",
+      "execute_env",
+      "execute_exec_request_with_after_spawn",
+      "from_sandbox_exec_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

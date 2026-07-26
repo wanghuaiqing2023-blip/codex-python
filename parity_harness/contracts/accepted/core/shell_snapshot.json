@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.shell_snapshot",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "shell_snapshot",
+    "source": "codex/codex-rs/core/src/shell_snapshot.rs",
+    "anchors": [
+      "ShellSnapshot",
+      "cleanup_stale_snapshots",
+      "EXCLUDED_EXPORT_VARS",
+      "SNAPSHOT_DIR",
+      "bash_snapshot_script",
+      "capture_snapshot",
+      "excluded_exports_regex",
+      "powershell_snapshot_script",
+      "remove_snapshot_file",
+      "run_script_with_timeout",
+      "sh_snapshot_script",
+      "snapshot_session_id_from_file_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/shell_snapshot.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/shell_snapshot.py"
+    ],
+    "anchors": [
+      "ShellSnapshot",
+      "cleanup_stale_snapshots",
+      "EXCLUDED_EXPORT_VARS",
+      "SNAPSHOT_DIR",
+      "bash_snapshot_script",
+      "capture_snapshot",
+      "excluded_exports_regex",
+      "powershell_snapshot_script",
+      "remove_snapshot_file",
+      "run_script_with_timeout",
+      "sh_snapshot_script",
+      "snapshot_session_id_from_file_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

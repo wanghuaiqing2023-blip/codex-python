@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.tools.handlers.request_user_input_spec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::request_user_input_spec",
+    "source": "codex/codex-rs/core/src/tools/handlers/request_user_input_spec.rs",
+    "anchors": [
+      "REQUEST_USER_INPUT_TOOL_NAME",
+      "create_request_user_input_tool",
+      "normalize_request_user_input_args",
+      "request_user_input_tool_description",
+      "request_user_input_unavailable_message"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/request_user_input_spec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/request_user_input_spec.py"
+    ],
+    "anchors": [
+      "REQUEST_USER_INPUT_TOOL_NAME",
+      "create_request_user_input_tool",
+      "normalize_request_user_input_args",
+      "request_user_input_tool_description",
+      "request_user_input_unavailable_message"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

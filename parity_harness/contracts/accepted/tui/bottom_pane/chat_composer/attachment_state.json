@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.chat_composer.attachment_state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::chat_composer::attachment_state",
+    "source": "codex/codex-rs/tui/src/bottom_pane/chat_composer/attachment_state.rs",
+    "anchors": [
+      "AttachedImage",
+      "AttachmentState",
+      "attach_image",
+      "clear_remote_image_selection",
+      "clear_remote_image_urls",
+      "handle_remote_image_selection_key",
+      "is_empty",
+      "local_image_paths",
+      "local_images",
+      "prune_local_images_for_submission",
+      "relabel_local_images",
+      "remote_image_lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/chat_composer/attachment_state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/chat_composer/attachment_state.py"
+    ],
+    "anchors": [
+      "AttachedImage",
+      "AttachmentState",
+      "attach_image",
+      "clear_remote_image_selection",
+      "clear_remote_image_urls",
+      "handle_remote_image_selection_key",
+      "is_empty",
+      "local_image_paths",
+      "local_images",
+      "prune_local_images_for_submission",
+      "relabel_local_images",
+      "remote_image_lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

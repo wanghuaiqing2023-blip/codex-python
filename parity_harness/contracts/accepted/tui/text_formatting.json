@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.text_formatting",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "text_formatting",
+    "source": "codex/codex-rs/tui/src/text_formatting.rs",
+    "anchors": [
+      "capitalize_first",
+      "center_truncate_path",
+      "format_and_truncate_tool_result",
+      "format_json_compact",
+      "proper_join",
+      "truncate_text",
+      "Segment"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/text_formatting.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/text_formatting.py"
+    ],
+    "anchors": [
+      "capitalize_first",
+      "center_truncate_path",
+      "format_and_truncate_tool_result",
+      "format_json_compact",
+      "proper_join",
+      "truncate_text",
+      "Segment"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

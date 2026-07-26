@@ -30,6 +30,7 @@ __all__ = [
     "KeyEvent",
     "copy_last_agent_markdown_with",
     "apply_external_edit",
+    "active_view_key_has_priority",
     "arm_quit_shortcut",
     "attach_image",
     "can_launch_external_editor",
@@ -242,8 +243,28 @@ def handle_paste_burst_tick(widget: Any, frame_requester: FrameRequester) -> boo
     return False
 
 
+def active_view_key_has_priority(has_active_view: bool, key_event: Any) -> bool:
+    """Mirror the active-view-first branch in Rust ``ChatWidget`` input routing."""
+
+    if not has_active_view:
+        return False
+    kind = str(getattr(key_event, "kind", "Press")).lower()
+    modifiers = {
+        str(modifier).lower() for modifier in getattr(key_event, "modifiers", ())
+    }
+    code = str(getattr(key_event, "code", "")).lower()
+    char = getattr(key_event, "char", None)
+    key_char = str(char if char is not None else code).lower()
+    is_control_exception = (
+        kind == "press"
+        and "control" in modifiers
+        and key_char in {"c", "r", "u"}
+    )
+    return not is_control_exception
+
+
 def handle_key_event(widget: Any, key_event: KeyEvent, paste_image_fn: Optional[Callable[[], Tuple[str, Any]]] = None) -> None:
-    if _bottom_pane_has_active_view(widget) and not _is_ctrl_char(key_event, "c") and not _is_ctrl_char(key_event, "r") and not _is_ctrl_char(key_event, "u"):
+    if active_view_key_has_priority(_bottom_pane_has_active_view(widget), key_event):
         widget.bottom_pane.handle_key_event(key_event)
         if widget.bottom_pane.no_modal_or_popup_active():
             widget.maybe_send_next_queued_input()

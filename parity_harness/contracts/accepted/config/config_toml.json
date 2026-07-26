@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-config.config_toml",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-config",
+    "module": "config_toml",
+    "source": "codex/codex-rs/config/src/config_toml.rs",
+    "anchors": [
+      "AgentRoleToml",
+      "AgentsToml",
+      "AutoReviewToml",
+      "ConfigLockfileToml",
+      "ConfigToml",
+      "DEFAULT_PROJECT_DOC_MAX_BYTES",
+      "DebugConfigLockToml",
+      "DebugToml",
+      "ForcedChatgptWorkspaceIds",
+      "GhostSnapshotToml",
+      "ProjectConfig",
+      "RealtimeAudioConfig"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/config/config_toml.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/config/config_toml.py"
+    ],
+    "anchors": [
+      "AgentRoleToml",
+      "AgentsToml",
+      "AutoReviewToml",
+      "ConfigLockfileToml",
+      "ConfigToml",
+      "DEFAULT_PROJECT_DOC_MAX_BYTES",
+      "DebugConfigLockToml",
+      "DebugToml",
+      "ForcedChatgptWorkspaceIds",
+      "GhostSnapshotToml",
+      "ProjectConfig",
+      "RealtimeAudioConfig"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

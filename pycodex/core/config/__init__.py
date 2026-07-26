@@ -12,12 +12,6 @@ from pycodex.core.config.permissions import (
     is_builtin_permission_profile_name,
     validate_user_permission_profile_names,
 )
-from pycodex.core.config.schema import (
-    canonicalize,
-    config_schema_json,
-    write_config_schema,
-)
-
 DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS = 200
 DEFAULT_IGNORE_LARGE_UNTRACKED_FILES = 10 * 1024 * 1024
 DEFAULT_MULTI_AGENT_V2_MAX_CONCURRENT_THREADS_PER_SESSION = 4
@@ -323,7 +317,7 @@ def build_network_proxy_spec(
     network_requirements: Any | None,
     permission_profile: Any,
 ) -> Any | None:
-    from pycodex.network_proxy import NetworkProxySpec
+    from .network_proxy_spec import NetworkProxySpec
 
     requirements, source = _sourced_value_and_source(network_requirements)
     has_network_requirements = requirements is not None
@@ -446,9 +440,7 @@ __all__ = [
     "OAuthCredentialsStoreMode",
     "SQLITE_HOME_ENV",
     "ThreadStoreConfig",
-    "canonicalize",
     "build_network_proxy_spec",
-    "config_schema_json",
     "ghost_snapshot_config",
     "guardian_policy_config_from_requirements",
     "merge_managed_permission_profiles",
@@ -462,5 +454,4 @@ __all__ = [
     "resolve_sqlite_home_env",
     "thread_store_config",
     "validate_required_permission_profile_catalog",
-    "write_config_schema",
 ]

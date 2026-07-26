@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app.app_server_requests",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::app_server_requests",
+    "source": "codex/codex-rs/tui/src/app/app_server_requests.rs",
+    "anchors": [
+      "AppServerRequestResolution",
+      "PendingAppServerRequests",
+      "ResolvedAppServerRequest",
+      "UnsupportedAppServerRequest",
+      "clear",
+      "contains_server_request",
+      "note_server_request",
+      "reject_app_server_request",
+      "resolve_notification",
+      "take_resolution",
+      "McpRequestKey",
+      "PendingUserInputRequest"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/app_server_requests.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/app_server_requests.py"
+    ],
+    "anchors": [
+      "AppServerRequestResolution",
+      "PendingAppServerRequests",
+      "ResolvedAppServerRequest",
+      "UnsupportedAppServerRequest",
+      "clear",
+      "contains_server_request",
+      "note_server_request",
+      "reject_app_server_request",
+      "resolve_notification",
+      "take_resolution",
+      "McpRequestKey",
+      "PendingUserInputRequest"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

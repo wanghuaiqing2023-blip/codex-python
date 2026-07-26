@@ -111,6 +111,36 @@ def test_terminal_streaming_runtime_completed_item_without_deltas_uses_same_cons
     ]
 
 
+def test_terminal_streaming_hides_status_only_for_committed_or_live_output() -> None:
+    # Rust streaming::controller keeps plain text without a newline out of the
+    # live tail; chatwidget::streaming therefore leaves Working visible until
+    # a commit tick or live tail actually replaces it. The terminal product
+    # sink coalesces finalization's hide with the following history insertion.
+    hidden: list[str] = []
+    stable = []
+    events: list[str] = []
+    runtime = TerminalChatWidgetStreamingRuntime(
+        width=lambda: 80,
+        cwd=lambda: ".",
+        insert_stable_cell=lambda cell: (stable.append(cell), events.append("insert")),
+        consolidate_agent_message=lambda *_args: events.append("consolidate"),
+        apply_live_tail=lambda _lines: None,
+        render_frame=lambda: events.append("render"),
+        hide_status_indicator=lambda: (hidden.append("hidden"), events.append("hide")),
+    )
+
+    runtime.handle_delta("partial answer")
+
+    assert hidden == []
+    assert runtime.has_visible_output() is False
+
+    runtime.finalize()
+
+    assert hidden == ["hidden"]
+    assert runtime.has_visible_output() is True
+    assert events == ["hide", "insert", "consolidate", "render"]
+
+
 def test_restore_reasoning_status_header_prefers_bold_header_then_working() -> None:
     # Rust parity: ChatWidget::restore_reasoning_status_header.
     state = StreamingWidgetState(reasoning_buffer="text **Plan** more", task_running=True)
@@ -266,11 +296,11 @@ def test_finalize_completed_assistant_message_uses_payload_only_without_controll
 
 
 def test_plan_delta_ignored_outside_plan_mode_and_streams_inside_plan_mode() -> None:
-    chat = StreamingWidgetState(mode_kind=ModeKind.Chat)
+    chat = StreamingWidgetState(mode_kind=ModeKind.DEFAULT)
     chat.on_plan_delta("plan")
     assert chat.plan_stream_controller is None
 
-    state = StreamingWidgetState(mode_kind=ModeKind.Plan, unified_exec_wait_streak=True, active_cell_kind="exec_cell")
+    state = StreamingWidgetState(mode_kind=ModeKind.PLAN, unified_exec_wait_streak=True, active_cell_kind="exec_cell")
     state.on_plan_delta("step one\n")
 
     assert state.plan_item_active is True
@@ -282,7 +312,7 @@ def test_plan_delta_ignored_outside_plan_mode_and_streams_inside_plan_mode() -> 
 
 
 def test_plan_item_completed_records_markdown_and_proposed_plan_or_consolidates_empty_source() -> None:
-    state = StreamingWidgetState(mode_kind=ModeKind.Plan)
+    state = StreamingWidgetState(mode_kind=ModeKind.PLAN)
     state.on_plan_delta("streamed plan")
 
     state.on_plan_item_completed("")
@@ -290,9 +320,22 @@ def test_plan_item_completed_records_markdown_and_proposed_plan_or_consolidates_
     assert state.plan_item_active is False
     assert state.saw_plan_item_this_turn is True
     assert state.latest_proposed_plan_markdown == "streamed plan"
-    assert ("agent_markdown", "streamed plan") in state.history
-    assert ("proposed_plan", "streamed plan") in state.history
+    assert state.history == [("proposed_plan", "streamed plan")]
     assert state.status_state.pending_status_indicator_restore is False
+
+
+def test_plan_item_completion_uses_finalized_stream_cell_instead_of_duplicate_plan_cell() -> None:
+    # Rust: chatwidget::streaming::on_plan_item_completed selects exactly one
+    # finalized-stream or source-backed proposed-plan history path.
+    state = StreamingWidgetState(mode_kind=ModeKind.PLAN)
+    state.on_plan_delta("streamed plan")
+    assert state.plan_stream_controller is not None
+    state.plan_stream_controller.live_tail = False
+
+    state.on_plan_item_completed("streamed plan")
+
+    assert state.history == [("plan_stream", "streamed plan")]
+    assert state.consolidation_events == [("proposed_plan", "streamed plan")]
 
 
 def test_commit_tick_commits_stream_lines_stops_animation_and_refreshes_metrics() -> None:

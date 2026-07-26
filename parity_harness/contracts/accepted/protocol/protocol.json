@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-protocol.protocol",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "protocol",
+    "source": "codex/codex-rs/protocol/src/protocol.rs",
+    "anchors": [
+      "APPS_INSTRUCTIONS_CLOSE_TAG",
+      "APPS_INSTRUCTIONS_OPEN_TAG",
+      "AdditionalContextEntry",
+      "AdditionalContextKind",
+      "AgentMessageContentDeltaEvent",
+      "AgentMessageEvent",
+      "AgentReasoningEvent",
+      "AgentReasoningRawContentEvent",
+      "AgentReasoningSectionBreakEvent",
+      "AgentStatus",
+      "ApplyPatchApprovalRequestEvent",
+      "AskForApproval"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/protocol.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/protocol.py"
+    ],
+    "anchors": [
+      "APPS_INSTRUCTIONS_CLOSE_TAG",
+      "APPS_INSTRUCTIONS_OPEN_TAG",
+      "AdditionalContextEntry",
+      "AdditionalContextKind",
+      "AgentMessageContentDeltaEvent",
+      "AgentMessageEvent",
+      "AgentReasoningEvent",
+      "AgentReasoningRawContentEvent",
+      "AgentReasoningSectionBreakEvent",
+      "AgentStatus",
+      "ApplyPatchApprovalRequestEvent",
+      "AskForApproval"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_protocol.py"
+  ]
+}

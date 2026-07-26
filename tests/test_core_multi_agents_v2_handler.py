@@ -11,9 +11,6 @@ from pycodex.core.tools.handlers.multi_agents_v2 import (
     ListAgentsHandler,
     ListAgentsResult,
     MessageDeliveryMode,
-    ResumeAgentArgs,
-    ResumeAgentHandler,
-    ResumeAgentResult,
     SendMessageArgs,
     SendMessageHandler,
     SpawnAgentArgs,
@@ -237,37 +234,6 @@ class CoreMultiAgentsV2HandlerTests(unittest.TestCase):
         with self.assertRaisesRegex(FunctionCallError, "timeout_ms must be at most 4500"):
             handler.handle(too_high)
 
-    def test_resume_agent_args_parse_thread_id_or_report_model_error(self) -> None:
-        valid_id = "12345678-1234-5678-1234-567812345678"
-        args = ResumeAgentArgs.from_json(f'{{"id":"{valid_id}"}}')
-        self.assertEqual(str(args.thread_id()), valid_id)
-        with self.assertRaisesRegex(FunctionCallError, "invalid agent id not-a-uuid"):
-            ResumeAgentArgs.from_json('{"id":"not-a-uuid"}').thread_id()
-
-    def test_resume_agent_result_serializes_status(self) -> None:
-        self.assertEqual(ResumeAgentResult(AgentStatus.running()).to_mapping(), {"status": "running"})
-        self.assertEqual(ResumeAgentResult({"completed": "done"}).to_mapping(), {"status": {"completed": "done"}})
-
-    def test_resume_agent_handler_uses_namespace_and_callback(self) -> None:
-        valid_id = "12345678-1234-5678-1234-567812345678"
-        invocation = ToolInvocation(
-            call_id="call-resume",
-            tool_name=ToolName.namespaced("multi_agent_v1", "resume_agent"),
-            payload=ToolPayload.function(f'{{"id":"{valid_id}"}}'),
-        )
-        seen = []
-
-        def resume_agent(thread_id):
-            seen.append(str(thread_id))
-            return "running"
-
-        handler = ResumeAgentHandler(resume_agent)
-        result = handler.handle(invocation)
-        self.assertEqual(handler.tool_name(), ToolName.namespaced("multi_agent_v1", "resume_agent"))
-        self.assertEqual(seen, [valid_id])
-        self.assertEqual(result.to_mapping(), {"status": "running"})
-        self.assertIsNotNone(handler.search_info())
-
     def test_list_agents_handler_uses_callback_result(self) -> None:
         invocation = ToolInvocation(
             call_id="call-list",
@@ -465,9 +431,6 @@ class CoreMultiAgentsV2HandlerTests(unittest.TestCase):
         self.assertEqual(FollowupTaskHandler().spec()["name"], "followup_task")
         self.assertEqual(SpawnAgentHandler().spec()["name"], "spawn_agent")
         self.assertEqual(WaitAgentHandler().spec()["name"], "wait_agent")
-        resume_spec = ResumeAgentHandler().spec()
-        self.assertEqual(resume_spec["type"], "namespace")
-        self.assertEqual(resume_spec["tools"][0]["name"], "resume_agent")
         self.assertEqual(successful_empty_message_output().into_text(), "")
 
     def test_list_agents_result_serializes_like_tool_output(self) -> None:

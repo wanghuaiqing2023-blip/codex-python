@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-tui.diff_model",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "diff_model",
+    "source": "codex/codex-rs/tui/src/diff_model.rs",
+    "anchors": [
+      "FileChange"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/diff_model.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/diff_model.py"
+    ],
+    "anchors": [
+      "FileChange"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

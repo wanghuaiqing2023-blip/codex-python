@@ -1,0 +1,11 @@
+{
+  "scope": "model-provider",
+  "rust_root": "codex/codex-rs/model-provider",
+  "python_root": "pycodex/model_provider",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

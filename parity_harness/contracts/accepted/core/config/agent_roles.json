@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-core.config.agent_roles",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "config::agent_roles",
+    "source": "codex/codex-rs/core/src/config/agent_roles.rs",
+    "anchors": [
+      "ResolvedAgentRoleFile",
+      "parse_agent_role_file_contents",
+      "collect_agent_role_files",
+      "discover_agent_roles_in_dir",
+      "merge_missing_role_fields",
+      "normalize_agent_role_description",
+      "normalize_agent_role_nickname_candidates",
+      "push_agent_role_warning",
+      "validate_agent_role_file_developer_instructions",
+      "validate_required_agent_role_description"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/config/agent_roles.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/config/agent_roles.py"
+    ],
+    "anchors": [
+      "ResolvedAgentRoleFile",
+      "parse_agent_role_file_contents",
+      "collect_agent_role_files",
+      "discover_agent_roles_in_dir",
+      "merge_missing_role_fields",
+      "normalize_agent_role_description",
+      "normalize_agent_role_nickname_candidates",
+      "push_agent_role_warning",
+      "validate_agent_role_file_developer_instructions",
+      "validate_required_agent_role_description"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -24,8 +24,12 @@ from threading import Event, Lock, Thread
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
-from pycodex.core.config.edit import ConfigEdit, ConfigEditsBuilder
-from pycodex.core.event_mapping import parse_turn_item
+from pycodex.core.config.edit import (
+    ConfigEdit,
+    ConfigEditsBuilder,
+    status_line_items_edit,
+    status_line_use_colors_edit,
+)
 from pycodex.app_server.bespoke_event_handling import turn_plan_updated_notification
 from pycodex.exec.local_runtime import (
     _local_http_prompt_visible_rollout_items,
@@ -43,7 +47,7 @@ from pycodex.core.tools.sandboxing import ApprovalStore
 from pycodex.exec.run import ExecRunPlan, InitialOperation
 from pycodex.exec.session import ExecSessionConfig
 from pycodex.model_provider.auth import auth_service_from_snapshot
-from pycodex.protocol import ActivePermissionProfile, ApprovalsReviewer, AskForApproval, ExecApprovalRequestEvent, NetworkPolicyAmendment, NetworkPolicyRuleAction, PermissionProfile, ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, ThreadSettingsOverrides, TurnItem, UserInput
+from pycodex.protocol import ActivePermissionProfile, ApprovalsReviewer, AskForApproval, ExecApprovalRequestEvent, NetworkPolicyAmendment, NetworkPolicyRuleAction, PermissionProfile, ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, ThreadSettingsOverrides, TurnItem, UserInput, WindowsSandboxLevel
 from pycodex.protocol.request_permissions import (
     RequestPermissionProfile,
     RequestPermissionsArgs,
@@ -54,14 +58,21 @@ from pycodex.utils.approval_presets import builtin_approval_presets
 from ..app_command import AppCommand
 from ..app_event import AppEvent, RateLimitRefreshOrigin
 from ..app_event_sender import AppEventSender
+from ..app_backtrack import (
+    BacktrackState,
+    handle_backtrack_esc_key_state,
+    open_backtrack_preview_state,
+)
 from ..app_server_session import app_server_rate_limit_snapshots
 from ..chatwidget.input_submission import UserMessage, UserMessageHistoryRecord, submit_user_message_with_history_record
+from ..chatwidget.input_restore import restore_thread_collaboration_state
 from ..chatwidget.protocol import ChatWidgetProtocolRuntime, HistoryProjectionSink, ServerNotification
 from ..chatwidget.protocol_requests import ServerRequest
 from ..chatwidget.replay import ReplayKind as ChatWidgetReplayKind
 from ..chatwidget.replay import replay_thread_turns
 from ..config_update import build_model_selection_edits, write_config_batch
 from ..history_cell.notices import new_error_event, new_info_event
+from ..keymap import RuntimeKeymap
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, rate_limit_snapshot_display_for_limit
 from .agent_navigation import (
     AgentNavigationDirection,
@@ -75,6 +86,8 @@ from .app_server_events import (
 )
 from .app_server_requests import AppServerRequestResolution, PendingAppServerRequests
 from .event_dispatch import EventDispatchPlan, EventDispatchState, dispatch_event_plan
+from . import platform_actions
+from .platform_actions import WindowsSandboxState, WorldWritableScanPlan
 from .thread_routing import (
     ThreadInteractiveRequest,
     ThreadRoutingPlan,
@@ -98,7 +111,6 @@ _THREAD_GOAL_TOKEN_BUDGET_UNCHANGED = object()
 _BOTTOM_PANE_APP_EVENT_KINDS = frozenset(
     {
         "ApproveRecentAutoReviewDenial",
-        "CodexOp",
         "FullScreenApprovalRequest",
         "InsertHistoryCell",
         "OpenUrlInBrowser",
@@ -148,11 +160,33 @@ def _first_runtime_config_source(*candidates: Any) -> Any | None:
         "model_reasoning_effort",
         "reasoning_effort",
         "model_reasoning_summary",
+        "tui_status_line",
+        "tui_status_line_use_colors",
+        "tui_terminal_title",
     }
     for candidate in candidates:
         if candidate is not None and any(hasattr(candidate, name) for name in config_fields):
             return candidate
     return None
+
+
+def _runtime_has_chatgpt_account(runtime: Any) -> bool:
+    for auth in (
+        getattr(runtime, "auth", None),
+        getattr(runtime, "original_auth", None),
+        getattr(runtime, "auth_manager", None),
+    ):
+        if auth is None:
+            continue
+        is_chatgpt = getattr(auth, "is_chatgpt_auth", None)
+        if callable(is_chatgpt):
+            return bool(is_chatgpt())
+        mode = auth.get("auth_mode") if isinstance(auth, Mapping) else getattr(auth, "auth_mode", None)
+        mode = mode() if callable(mode) else mode
+        if mode is not None:
+            normalized = str(getattr(mode, "value", mode)).lower().replace("-", "_")
+            return normalized in {"chatgpt", "chatgptauthtokens", "chatgpt_auth_tokens"}
+    return False
 
 
 def _timing_trace(event: str, **fields: Any) -> None:
@@ -1036,6 +1070,7 @@ class CoreExecActiveThreadRuntime:
     startup_prewarm_enabled: bool = False
     session_header_configured_at_startup: bool = True
     prewarmed_model_session: Any = None
+    models_manager_service: Any = None
     _models_manager: Any = field(default=None, init=False, repr=False)
     _startup_prewarm_ready: Event = field(default_factory=Event, init=False, repr=False)
     _startup_prewarm_lock: Lock = field(default_factory=Lock, init=False, repr=False)
@@ -1056,6 +1091,7 @@ class CoreExecActiveThreadRuntime:
     _startup_app_server_events: Queue[Any] = field(default_factory=Queue, init=False, repr=False)
     _state_runtime: Any = field(default=None, init=False, repr=False)
     _core_session: Any = field(default=None, init=False, repr=False)
+    _resumed_reference_context_item: Any = field(default=None, init=False, repr=False)
     _pending_goal_continuation_op: AppCommand | None = field(default=None, init=False, repr=False)
     _pending_goal_continuation_summary: str | None = field(default=None, init=False, repr=False)
     rollout_path: Path | None = field(default=None, init=False)
@@ -1151,6 +1187,8 @@ class CoreExecActiveThreadRuntime:
         manager = getattr(services, "models_manager", None)
         if manager is not None:
             return manager
+        if self.models_manager_service is not None:
+            return self.models_manager_service
         if self._models_manager is not None:
             return self._models_manager
 
@@ -1376,6 +1414,11 @@ class CoreExecActiveThreadRuntime:
         self._pending_goal_continuation_summary = None
         return summary, operation
 
+    def has_pending_internal_operation(self) -> bool:
+        """Return whether core has already reserved an app-run successor turn."""
+
+        return self._pending_goal_continuation_op is not None
+
     def _ensure_core_session_sync(self, *, thread_id: str | None = None) -> Any:
         if self._core_session is not None:
             return self._core_session
@@ -1390,6 +1433,7 @@ class CoreExecActiveThreadRuntime:
         self._core_session = create_exec_core_session(
             self.session_config,
             self.model_info,
+            model_client=self.model_client,
             provider=self.provider,
             auth_manager=self.auth_manager,
             models_manager=models_manager,
@@ -1397,6 +1441,9 @@ class CoreExecActiveThreadRuntime:
             state_db=state_runtime,
         )
         self._core_session.history = list(self._model_history_snapshot())
+        _run_coro_blocking(
+            self._core_session.set_reference_context_item(self._resumed_reference_context_item)
+        )
         self._core_session.goal_continuation_callback = self._queue_goal_continuation_from_core
         return self._core_session
 
@@ -1466,7 +1513,7 @@ class CoreExecActiveThreadRuntime:
         cwd = Path(getattr(self.session_config, "cwd", None) or Path.cwd())
         return LocalWorkspaceCommandRunner(default_cwd=cwd)
 
-    def list_resume_threads(self) -> tuple[Any, ...]:
+    def list_resume_threads(self, *, include_non_interactive: bool = False) -> tuple[Any, ...]:
         """Return local thread summaries for the terminal `/resume` picker.
 
         Rust ownership is split here: ``codex-tui::resume_picker`` owns the
@@ -1475,40 +1522,63 @@ class CoreExecActiveThreadRuntime:
         that wires those two modules together.
         """
 
-        try:
-            from pycodex.thread_store import LocalThreadStore, LocalThreadStoreConfig
-            from pycodex.thread_store import ListThreadsParams, SortDirection, ThreadSortKey
+        from pycodex.thread_store import LocalThreadStore, LocalThreadStoreConfig
+        from pycodex.thread_store import ListThreadsParams, SortDirection, ThreadSortKey
+        from pycodex.protocol import SessionSource
 
-            codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
-            if codex_home is None:
-                return ()
-            provider_id = (
-                getattr(self.provider, "id", None)
-                or getattr(self.provider, "name", None)
-                or getattr(self.session_config, "default_model_provider_id", None)
-                or getattr(self.session_config, "model_provider", None)
-                or "openai"
-            )
-            store = LocalThreadStore(
-                LocalThreadStoreConfig(
-                    codex_home=Path(codex_home),
-                    sqlite_home=Path(codex_home),
-                    default_model_provider_id=str(provider_id),
-                )
-            )
-            page = _run_coro_blocking(
-                store.list_threads(
-                    ListThreadsParams(
-                        page_size=100,
-                        cursor=None,
-                        sort_key=ThreadSortKey.CREATED_AT,
-                        sort_direction=SortDirection.DESC,
-                    )
-                )
-            )
-        except Exception:
+        codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
+        if codex_home is None:
+            _timing_trace("resume_threads_unavailable", reason="missing_codex_home")
             return ()
-        return tuple(getattr(page, "items", ()) or ())
+        provider_id = (
+            getattr(self.provider, "id", None)
+            or getattr(self.provider, "name", None)
+            or getattr(self.session_config, "default_model_provider_id", None)
+            or getattr(self.session_config, "model_provider", None)
+            or "openai"
+        )
+        store = LocalThreadStore(
+            LocalThreadStoreConfig(
+                codex_home=Path(codex_home),
+                sqlite_home=Path(codex_home),
+                default_model_provider_id=str(provider_id),
+            )
+        )
+        page = _run_coro_blocking(
+            store.list_threads(
+                ListThreadsParams(
+                    page_size=100,
+                    cursor=None,
+                    sort_key=ThreadSortKey.UPDATED_AT,
+                    sort_direction=SortDirection.DESC,
+                    allowed_sources=(
+                        SessionSource.cli(),
+                        SessionSource.vscode(),
+                        *(
+                            (SessionSource.exec(), SessionSource.mcp())
+                            if include_non_interactive
+                            else ()
+                        ),
+                    ),
+                )
+            )
+        )
+        items = tuple(getattr(page, "items", ()) or ())
+        _timing_trace(
+            "resume_threads_listed",
+            codex_home=codex_home,
+            include_non_interactive=include_non_interactive,
+            count=len(items),
+            threads=[
+                {
+                    "thread_id": _field(item, "thread_id", None),
+                    "cwd": _field(item, "cwd", None),
+                    "source": _field(item, "source", None),
+                }
+                for item in items
+            ],
+        )
+        return items
 
     def start_new_thread(self) -> Any:
         """Create and activate a fresh local core thread."""
@@ -1523,17 +1593,27 @@ class CoreExecActiveThreadRuntime:
         """Load one picker target into the active core runtime."""
 
         from pycodex.app_server.request_processors import build_api_turns_from_rollout_items
-        from pycodex.rollout import RolloutRecorder, read_model_history_from_rollout, read_session_meta_line
+        from pycodex.rollout import (
+            RolloutRecorder,
+            read_rollout_reconstruction_from_rollout,
+            read_session_meta_line,
+        )
 
         rollout_path = Path(_field(target, "rollout_path", _field(target, "path", "")))
         if not rollout_path.is_file():
             raise ValueError(f"resume rollout does not exist: {rollout_path}")
         meta = read_session_meta_line(rollout_path).meta
         thread_id = str(_field(target, "thread_id", None) or meta.id)
-        history = read_model_history_from_rollout(rollout_path)
+        reconstruction = read_rollout_reconstruction_from_rollout(rollout_path)
+        history = reconstruction.history
         items, _, _ = RolloutRecorder.load_rollout_items(rollout_path)
         turns = build_api_turns_from_rollout_items(item.to_mapping() for item in items)
-        self._activate_thread_state(thread_id, history=history, rollout_path=rollout_path)
+        self._activate_thread_state(
+            thread_id,
+            history=history,
+            rollout_path=rollout_path,
+            reference_context_item=reconstruction.reference_context_item,
+        )
         return self._started_thread_result(
             thread_id,
             rollout_path=rollout_path,
@@ -1609,6 +1689,7 @@ class CoreExecActiveThreadRuntime:
         *,
         history: Any,
         rollout_path: Path | None,
+        reference_context_item: Any = None,
     ) -> None:
         with self._active_turn_lock:
             if self._active_turn is not None:
@@ -1623,6 +1704,7 @@ class CoreExecActiveThreadRuntime:
         with self._model_history_lock:
             self._model_history_items = list(history)
         self._core_session = None
+        self._resumed_reference_context_item = reference_context_item
         self._pending_goal_continuation_op = None
         self._pending_goal_continuation_summary = None
         self._tool_approvals = ApprovalStore()
@@ -1639,6 +1721,7 @@ class CoreExecActiveThreadRuntime:
         cwd: Any = None,
         thread_name: Any = None,
         forked_from_id: Any = None,
+        collaboration_mode: Any = None,
     ) -> Any:
         session = SimpleNamespace(
             thread_id=thread_id,
@@ -1646,6 +1729,7 @@ class CoreExecActiveThreadRuntime:
             rollout_path=rollout_path,
             thread_name=thread_name,
             forked_from_id=forked_from_id,
+            collaboration_mode=collaboration_mode,
         )
         return SimpleNamespace(
             thread_id=thread_id,
@@ -1744,6 +1828,15 @@ class CoreExecActiveThreadRuntime:
             if active_turn is not None:
                 active_turn.interrupt()
             return _closed_event_stream()
+        if op.kind == "UserInputAnswer":
+            sub_id = str(op.payload.get("id", ""))
+            response = op.payload.get("response")
+            core_session = self._core_session
+            if core_session is not None and sub_id and response is not None:
+                _run_coro_blocking(
+                    core_session.notify_user_input_response(sub_id, response)
+                )
+            return _closed_event_stream()
         if op.kind == "ExecApproval":
             approval_id = str(op.payload.get("id", ""))
             decision = op.payload.get("decision")
@@ -1808,6 +1901,7 @@ class CoreExecActiveThreadRuntime:
         def worker() -> None:
             observed_delta = False
             observed_agent_message = False
+            observed_plan_output = False
             observed_error_message: str | None = None
             observed_terminal_notification: ServerNotification | None = None
             pending_commands: dict[str, dict[str, Any]] = {}
@@ -1815,7 +1909,8 @@ class CoreExecActiveThreadRuntime:
             observed_live_kinds: set[str] = set()
 
             def observe_session_event(event: Any) -> None:
-                nonlocal observed_delta, observed_agent_message, observed_error_message, observed_terminal_notification
+                nonlocal observed_delta, observed_agent_message, observed_plan_output
+                nonlocal observed_error_message, observed_terminal_notification
                 event_type = _field(event, "type")
                 error_message = _session_event_error_message(event)
                 if error_message:
@@ -1834,15 +1929,31 @@ class CoreExecActiveThreadRuntime:
                     items=tuple(
                         {
                             "kind": (
-                                notification.payload.get("item", {}).get("kind")
-                                if isinstance(notification.payload, dict)
-                                and isinstance(notification.payload.get("item"), dict)
+                                _field(notification, "payload", _field(notification, "params", {}))
+                                .get("item", {})
+                                .get("kind")
+                                if isinstance(
+                                    _field(notification, "payload", _field(notification, "params", {})),
+                                    dict,
+                                )
+                                and isinstance(
+                                    _field(notification, "payload", _field(notification, "params", {})).get("item"),
+                                    dict,
+                                )
                                 else None
                             ),
                             "command": (
-                                notification.payload.get("item", {}).get("command")
-                                if isinstance(notification.payload, dict)
-                                and isinstance(notification.payload.get("item"), dict)
+                                _field(notification, "payload", _field(notification, "params", {}))
+                                .get("item", {})
+                                .get("command")
+                                if isinstance(
+                                    _field(notification, "payload", _field(notification, "params", {})),
+                                    dict,
+                                )
+                                and isinstance(
+                                    _field(notification, "payload", _field(notification, "params", {})).get("item"),
+                                    dict,
+                                )
                                 else None
                             ),
                         }
@@ -1852,11 +1963,16 @@ class CoreExecActiveThreadRuntime:
                 for notification in notifications:
                     if notification.kind == "AgentMessageDelta":
                         observed_delta = True
+                    elif notification.kind == "PlanDelta":
+                        observed_plan_output = True
                     elif notification.kind == "ItemCompleted":
                         payload = notification.payload
                         item = payload.get("item", {}) if isinstance(payload, dict) else {}
-                        if isinstance(item, dict) and item.get("kind") == "AgentMessage":
-                            observed_agent_message = True
+                        if isinstance(item, dict):
+                            if item.get("kind") == "AgentMessage":
+                                observed_agent_message = True
+                            elif item.get("kind") == "Plan":
+                                observed_plan_output = True
                     if notification.kind == "TurnCompleted":
                         # The sampling result still has to be converted into
                         # completed tool items. Keep the terminal status, then
@@ -1995,7 +2111,7 @@ class CoreExecActiveThreadRuntime:
                         granted_session_permissions,
                     )
                 self.session_config = previous_session_config
-                emitted_delta = observed_delta or observed_agent_message
+                emitted_output = observed_delta or observed_agent_message or observed_plan_output
                 for event in _server_notifications_from_session_events(
                     result,
                     thread_id=thread_id,
@@ -2006,12 +2122,14 @@ class CoreExecActiveThreadRuntime:
                     if event.kind in observed_live_kinds:
                         continue
                     if event.kind == "AgentMessageDelta":
-                        emitted_delta = True
+                        emitted_output = True
+                    elif event.kind == "PlanDelta":
+                        emitted_output = True
                     elif event.kind == "ItemCompleted":
                         payload = getattr(event, "payload", {})
                         item = payload.get("item", {}) if isinstance(payload, dict) else {}
-                        if isinstance(item, dict) and item.get("kind") == "AgentMessage":
-                            emitted_delta = True
+                        if isinstance(item, dict) and item.get("kind") in {"AgentMessage", "Plan"}:
+                            emitted_output = True
                     active_turn.put(event)
                 completion_notifications = _command_completion_notifications_from_result(
                     result,
@@ -2030,10 +2148,10 @@ class CoreExecActiveThreadRuntime:
                 for notification in completion_notifications:
                     active_turn.put(notification)
                 final_text = final_text_from_local_http_exec_result(result)
-                if final_text and not emitted_delta:
+                if final_text and not emitted_output:
                     active_turn.put(ServerNotification("AgentMessageDelta", {"delta": final_text, "thread_id": thread_id, "turn_id": turn_id}))
-                    emitted_delta = True
-                if observed_error_message and not emitted_delta:
+                    emitted_output = True
+                if observed_error_message and not emitted_output:
                     terminal_notification = _turn_failed_notification(
                         thread_id,
                         turn_id,
@@ -2346,17 +2464,21 @@ class TuiAppRuntime:
     chat_widget: ChatWidgetProtocolRuntime = field(default_factory=ChatWidgetProtocolRuntime)
     routing_state: ThreadRoutingState = field(default_factory=lambda: ThreadRoutingState(active_thread_id="primary", primary_thread_id="primary"))
     agent_navigation: AgentNavigationState = field(default_factory=AgentNavigationState)
+    backtrack_state: BacktrackState = field(default_factory=BacktrackState)
     side_ui_state: SideUiState = field(default_factory=SideUiState)
     submitted_ops: list[AppCommand] = field(default_factory=list)
     routing_plans: list[ThreadRoutingPlan] = field(default_factory=list)
     event_dispatch_plans: list[EventDispatchPlan] = field(default_factory=list)
     app_server_event_plans: list[AppServerEventPlan] = field(default_factory=list)
+    windows_sandbox: WindowsSandboxState = field(default_factory=WindowsSandboxState)
+    world_writable_scan_plans: list[WorldWritableScanPlan] = field(default_factory=list)
     history_cell_sink: Callable[[object], Any] | None = None
     pending_history_cells: list[object] = field(default_factory=list)
     active_view_sink: Callable[[object], Any] | None = None
     pending_active_views: list[object] = field(default_factory=list)
     internal_operation_sink: Callable[[str, AppCommand], Any] | None = None
     pending_internal_operations: list[tuple[str, AppCommand]] = field(default_factory=list)
+    codex_op_sink: Callable[[AppCommand], Any] | None = None
     pending_app_server_requests: PendingAppServerRequests = field(default_factory=PendingAppServerRequests)
     app_server_request_dismiss_sink: Callable[[object], bool] | None = None
     full_screen_approval_sink: Callable[[object], Any] | None = None
@@ -2389,6 +2511,10 @@ class TuiAppRuntime:
             self.routing_state.primary_thread_id = self.thread_id
         self._sync_side_routing_state()
         self.sync_chat_widget_config_from_runtime()
+        self.chat_widget.thread_id = self.thread_id
+        self.chat_widget.app_event_tx = self.app_event_sender
+        self.chat_widget.bind_active_view_sink(self.show_active_view)
+        self.chat_widget.bind_user_message_submission_sink(self.enqueue_user_turn)
         self._initialize_chat_widget_collaboration_state()
         self.sync_message_history_metadata_from_runtime()
         self.chat_widget.info_message_sink = self.insert_info_history_message
@@ -2399,6 +2525,100 @@ class TuiAppRuntime:
                 request_redraw=lambda: None,
             )
         )
+        self._apply_startup_session_request()
+        session_config = getattr(self.active_thread_runtime, "session_config", None)
+        startup_profile = _field(session_config, "permission_profile", None)
+        if isinstance(startup_profile, PermissionProfile):
+            self._maybe_spawn_world_writable_scan(startup_profile)
+
+    def _apply_startup_session_request(self) -> None:
+        """Apply Rust ``SessionSelection`` before entering the terminal loop."""
+
+        action = self.startup_session_action
+        _timing_trace(
+            "startup_session_selection_started",
+            action=action,
+            session_id=self.startup_session_id,
+            last=self.startup_session_last,
+            show_all=self.startup_session_show_all,
+            cwd=self.cwd,
+        )
+        if action not in {"resume", "fork"}:
+            return
+        query = str(self.startup_session_id or "").strip()
+        if query:
+            rows = tuple(
+                self.active_thread_runtime.list_resume_threads(
+                    include_non_interactive=self.startup_session_include_non_interactive
+                )
+            )
+            exact = [
+                row
+                for row in rows
+                if query
+                in {
+                    str(_field(row, "thread_id", "")),
+                    str(_field(row, "thread_name", "") or ""),
+                }
+            ]
+            if len(exact) != 1:
+                prefixes = [
+                    row
+                    for row in rows
+                    if str(_field(row, "thread_id", "")).startswith(query)
+                ]
+                exact = prefixes if len(prefixes) == 1 else exact
+            if len(exact) != 1:
+                raise ValueError(f"no unique session found for {query!r}")
+            target = exact[0]
+        elif self.startup_session_last:
+            rows = tuple(
+                self.active_thread_runtime.list_resume_threads(
+                    include_non_interactive=self.startup_session_include_non_interactive
+                )
+            )
+            if not self.startup_session_show_all:
+                current_cwd = _normalized_session_cwd(self.cwd)
+                rows = tuple(
+                    row
+                    for row in rows
+                    if _normalized_session_cwd(_field(row, "cwd", None)) == current_cwd
+                )
+            if not rows:
+                _timing_trace("startup_session_selection_empty", cwd=self.cwd)
+                return
+            target = rows[0]
+        else:
+            # Rust opens the startup picker for an unqualified resume/fork.
+            from ..resume_picker import SessionPickerAction, TerminalResumePopupController
+
+            picker_action = (
+                SessionPickerAction.RESUME
+                if action == "resume"
+                else SessionPickerAction.FORK
+            )
+            self.show_active_view(
+                TerminalResumePopupController(
+                    self,
+                    action=picker_action,
+                ).open_view()
+            )
+            return
+
+        self.startup_session_selected_action = action
+        self.startup_session_selected_thread_id = str(_field(target, "thread_id", ""))
+        path = _field(target, "rollout_path", _field(target, "path", None))
+        self.startup_session_selected_path = Path(path) if path is not None else None
+        _timing_trace(
+            "startup_session_selected",
+            action=action,
+            thread_id=self.startup_session_selected_thread_id,
+            rollout_path=self.startup_session_selected_path,
+        )
+        if action == "resume":
+            self.resume_session_target(target)
+        else:
+            self.fork_startup_session_target(target)
 
     def bind_history_cell_sink(self, sink: Callable[[object], Any]) -> None:
         """Bind Rust ``AppEvent::InsertHistoryCell`` to the terminal backend."""
@@ -2427,6 +2647,11 @@ class TuiAppRuntime:
         for summary, operation in pending:
             sink(summary, operation)
 
+    def bind_codex_op_sink(self, sink: Callable[[AppCommand], Any]) -> None:
+        """Bind Rust ``AppEvent::CodexOp`` execution to the product turn runner."""
+
+        self.codex_op_sink = sink
+
     def show_active_view(self, view: object) -> Any:
         if self.active_view_sink is None:
             self.pending_active_views.append(view)
@@ -2442,6 +2667,10 @@ class TuiAppRuntime:
     def wait_for_internal_operation_ready(self) -> bool:
         wait = getattr(self.active_thread_runtime, "wait_for_internal_operation_ready", None)
         return True if not callable(wait) else bool(wait())
+
+    def has_pending_internal_operation(self) -> bool:
+        pending = getattr(self.active_thread_runtime, "has_pending_internal_operation", None)
+        return bool(pending()) if callable(pending) else False
 
     def bind_full_screen_approval_sink(self, sink: Callable[[object], Any]) -> None:
         self.full_screen_approval_sink = sink
@@ -2523,6 +2752,9 @@ class TuiAppRuntime:
                 restored_store.push_notification(event.payload)
         self.thread_event_stores[target_thread_id] = restored_store
 
+        if restore_thread_collaboration_state(self.chat_widget, getattr(snapshot, "input_state", None)):
+            self.active_collaboration_mode = self.chat_widget.effective_collaboration_mode()
+
         if turns:
             replay_thread_turns(self.chat_widget, turns, ChatWidgetReplayKind.THREAD_SNAPSHOT)
 
@@ -2546,6 +2778,30 @@ class TuiAppRuntime:
     def insert_info_history_message(self, message: str, hint: str | None = None) -> None:
         self.insert_history_cell(new_info_event(message, hint))
 
+    def handle_backtrack_escape(
+        self,
+        *,
+        composer_is_empty: bool,
+        overlay_open: bool,
+        transcript_cells: list[Any],
+    ) -> str:
+        """Apply Rust ``app::input -> app_backtrack`` Esc routing."""
+
+        plan = handle_backtrack_esc_key_state(
+            self.backtrack_state,
+            composer_is_empty=composer_is_empty,
+            overlay_open=overlay_open,
+            thread_id=self.thread_id,
+            transcript_cells=transcript_cells,
+        )
+        if plan.action != "open_preview":
+            return plan.action
+
+        preview = open_backtrack_preview_state(self.backtrack_state, transcript_cells)
+        if preview.info_message:
+            self.insert_info_history_message(preview.info_message)
+        return preview.action
+
     def insert_error_history_message(self, message: str) -> None:
         self.chat_widget.error_messages.append(str(message))
         self.insert_history_cell(new_error_event(message))
@@ -2560,9 +2816,17 @@ class TuiAppRuntime:
         reasoning visibility instead of local UI defaults.
         """
 
+        runtime_config = getattr(self.active_thread_runtime, "session_config", None)
+        keymap_config = (
+            getattr(runtime_config, "tui_keymap", None)
+            if runtime_config is not None
+            else None
+        )
+        self.runtime_keymap = RuntimeKeymap.from_config(keymap_config or {})
+        self.chat_widget.runtime_keymap = self.runtime_keymap
         source = _first_runtime_config_source(
             self.active_thread_runtime,
-            getattr(self.active_thread_runtime, "session_config", None),
+            runtime_config,
             getattr(self.active_thread_runtime, "config", None),
             getattr(self.active_thread_runtime, "model_client", None),
         )
@@ -2578,10 +2842,19 @@ class TuiAppRuntime:
             getattr(getattr(self.active_thread_runtime, "session_config", None), "cwd", None)
             or self.cwd,
         )
-        runtime_config = getattr(self.active_thread_runtime, "session_config", None)
         features = getattr(runtime_config, "features", None)
         if features is not None:
             setattr(target, "features", features)
+        for name in (
+            "service_tier",
+            "notices",
+            "tui_status_line",
+            "tui_status_line_use_colors",
+            "tui_terminal_title",
+        ):
+            if runtime_config is not None and hasattr(runtime_config, name):
+                setattr(target, name, getattr(runtime_config, name))
+        setattr(target, "tui_keymap", keymap_config)
         for name in (
             "hide_agent_reasoning",
             "show_raw_agent_reasoning",
@@ -2591,6 +2864,29 @@ class TuiAppRuntime:
         ):
             if hasattr(source, name):
                 setattr(target, name, getattr(source, name))
+        model = None
+        for model_source in (self.active_thread_runtime, runtime_config):
+            for name in ("model", "selected_model", "model_slug", "requested_model"):
+                value = getattr(model_source, name, None)
+                value = value() if callable(value) else value
+                if value is not None and str(value).strip():
+                    model = str(value).strip()
+                    break
+            if model is not None:
+                break
+        if model is not None:
+            self.chat_widget.selected_model = model
+            setattr(target, "model", model)
+        models_manager = getattr(self.active_thread_runtime, "models_manager", None)
+        if callable(models_manager):
+            try:
+                self.chat_widget.model_catalog = models_manager()
+            except Exception:
+                self.chat_widget.model_catalog = ()
+        elif callable(getattr(self.active_thread_runtime, "try_list_models", None)):
+            self.chat_widget.model_catalog = self.active_thread_runtime
+        self.chat_widget.has_chatgpt_account = _runtime_has_chatgpt_account(self.active_thread_runtime)
+        self.chat_widget.refresh_effective_service_tier()
 
     def sync_message_history_metadata_from_runtime(self) -> None:
         metadata = None
@@ -2627,9 +2923,9 @@ class TuiAppRuntime:
             int(entry_count or 0),
         )
 
-    def submit_user_turn(self, prompt: str) -> ActiveThreadEventStream:
+    def user_turn_command(self, prompt: str) -> AppCommand:
         collaboration_mode = self._effective_collaboration_mode_for_user_turn()
-        op = app_command_for_prompt(
+        return app_command_for_prompt(
             prompt,
             cwd=self.cwd,
             approval_policy=_runtime_turn_context_value(self, "approval_policy"),
@@ -2639,7 +2935,16 @@ class TuiAppRuntime:
             service_tier=_runtime_turn_context_value(self, "service_tier"),
             collaboration_mode=collaboration_mode,
         )
-        return self.submit_op(op)
+
+    def enqueue_user_turn(self, prompt: str) -> AppCommand:
+        """Queue a user turn through Rust's production ``CodexOpTarget::AppEvent`` path."""
+
+        op = self.user_turn_command(prompt)
+        self.app_event_sender.send(AppEvent.codex_op(op))
+        return op
+
+    def submit_user_turn(self, prompt: str) -> ActiveThreadEventStream:
+        return self.submit_op(self.user_turn_command(prompt))
 
     def _initialize_chat_widget_collaboration_state(self) -> Any:
         """Initialize the product ChatWidget from Rust's default mode mask."""
@@ -2660,6 +2965,9 @@ class TuiAppRuntime:
         setattr(self.chat_widget, "active_collaboration_mask", mask)
         mode = current if mask is None else current.apply_mask(mask)
         self.active_collaboration_mode = mode
+        sync = getattr(self.chat_widget, "_sync_collaboration_mode_state", None)
+        if callable(sync):
+            sync()
         return mode
 
     def _effective_collaboration_mode_for_user_turn(self) -> Any:
@@ -2679,26 +2987,9 @@ class TuiAppRuntime:
         setattr(self.chat_widget, "active_collaboration_mask", mask)
         mode = current if mask is None else current.apply_mask(mask)
         self.active_collaboration_mode = mode
-        return mode
-
-    def activate_plan_mode(self) -> Any:
-        """Select Rust collaboration Plan mode for subsequent user turns."""
-
-        from pycodex.tui.collaboration_modes import plan_mask
-
-        current = getattr(self.chat_widget, "current_collaboration_mode", None)
-        if current is None:
-            self._initialize_chat_widget_collaboration_state()
-            current = self.chat_widget.current_collaboration_mode
-        model = _runtime_model_for_user_turn(self)
-        mask = plan_mask(None)
-        if mask is None:
-            raise RuntimeError("Plan collaboration mode is unavailable")
-        mask = replace(mask, model=model)
-        setattr(self.chat_widget, "active_collaboration_mask", mask)
-        mode = current.with_updates(model=model).apply_mask(mask)
-        self.active_collaboration_mode = mode
-        self.chat_widget.request_redraw()
+        sync = getattr(self.chat_widget, "_sync_collaboration_mode_state", None)
+        if callable(sync):
+            sync()
         return mode
 
     def apply_permission_profile_selection(self, selection: Any) -> None:
@@ -2776,6 +3067,7 @@ class TuiAppRuntime:
                 f"Permissions updated to {_field(selection, 'display_label', profile_id)}",
                 None,
             )
+            self._maybe_spawn_world_writable_scan(permission_profile)
         except Exception:
             for source, old_active_profile, old_permission_profile, old_approval, old_reviewer in snapshot:
                 _set_runtime_field(source, "active_permission_profile", old_active_profile)
@@ -2783,6 +3075,41 @@ class TuiAppRuntime:
                 _set_runtime_field(source, "approval_policy", old_approval)
                 _set_runtime_field(source, "approvals_reviewer", old_reviewer)
             raise
+
+    def _maybe_spawn_world_writable_scan(
+        self,
+        permission_profile: PermissionProfile,
+    ) -> None:
+        if os.name != "nt":
+            return
+        if self.windows_sandbox.skip_world_writable_scan_once:
+            self.windows_sandbox.skip_world_writable_scan_once = False
+            return
+
+        session_config = getattr(self.active_thread_runtime, "session_config", None)
+        level = _field(session_config, "windows_sandbox_level", WindowsSandboxLevel.DISABLED)
+        if not isinstance(level, WindowsSandboxLevel):
+            level = WindowsSandboxLevel.parse(str(level))
+        notices = getattr(getattr(self.chat_widget, "config", None), "notices", None)
+        if (
+            level is WindowsSandboxLevel.DISABLED
+            or permission_profile.type != "managed"
+            or bool(getattr(notices, "hide_world_writable_warning", False))
+        ):
+            return
+
+        cwd = Path(_field(session_config, "cwd", self.cwd))
+        codex_home = _runtime_codex_home(self.active_thread_runtime, session_config)
+        if codex_home is None:
+            return
+        plan = platform_actions.spawn_world_writable_scan(
+            cwd,
+            dict(os.environ),
+            codex_home,
+            permission_profile,
+            self.app_event_sender,
+        )
+        self.world_writable_scan_plans.append(plan)
 
     def persist_keymap_update(
         self,
@@ -2813,6 +3140,67 @@ class TuiAppRuntime:
             getattr(self.chat_widget, "config", None),
         ):
             _set_runtime_field(source, "hide_full_access_warning", True)
+
+    def persist_status_line_setup(
+        self,
+        items: Any,
+        use_theme_colors: bool,
+    ) -> bool:
+        """Persist and apply Rust ``AppEvent::StatusLineSetup`` atomically."""
+
+        item_values = [str(item) for item in (items or ())]
+        config = _config_from_runtime(self.active_thread_runtime)
+        try:
+            if config is not None and _config_has_write_target(config):
+                (
+                    ConfigEditsBuilder.for_config(config)
+                    .with_edits(
+                        [
+                            status_line_items_edit(item_values),
+                            status_line_use_colors_edit(use_theme_colors),
+                        ]
+                    )
+                    .apply_blocking()
+                )
+        except Exception as exc:
+            self.chat_widget.add_error_message(
+                f"Failed to save status line settings: {exc}"
+            )
+            return False
+
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.active_thread_runtime, "config", None),
+        ):
+            _set_runtime_field(source, "tui_status_line", list(item_values))
+            _set_runtime_field(
+                source,
+                "tui_status_line_use_colors",
+                bool(use_theme_colors),
+            )
+        self.chat_widget.setup_status_line(item_values, bool(use_theme_colors))
+        return True
+
+    def persist_world_writable_warning_acknowledged(self) -> None:
+        """Persist Rust's world-writable warning acknowledgement."""
+
+        config = _config_from_runtime(self.active_thread_runtime)
+        if config is not None and _config_has_write_target(config):
+            (
+                ConfigEditsBuilder.for_config(config)
+                .set_hide_world_writable_warning(True)
+                .apply_blocking()
+            )
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.active_thread_runtime, "config", None),
+            getattr(self.chat_widget, "config", None),
+        ):
+            notices = _field(source, "notices", None)
+            if notices is not None:
+                _set_runtime_field(notices, "hide_world_writable_warning", True)
 
     def persist_keymap_clear(
         self,
@@ -2930,7 +3318,18 @@ class TuiAppRuntime:
             self.session_changed_sink()
         if turns:
             self._replay_started_thread_turns(turns)
-        self._initialize_chat_widget_collaboration_state()
+        session = _field(started, "session", None)
+        collaboration_mode = _field(session, "collaboration_mode", None)
+        if collaboration_mode is None:
+            self._initialize_chat_widget_collaboration_state()
+        else:
+            from pycodex.tui.chatwidget.settings import set_effective_collaboration_mode
+
+            set_effective_collaboration_mode(self.chat_widget, collaboration_mode)
+            self.active_collaboration_mode = collaboration_mode
+            sync = getattr(self.chat_widget, "_sync_collaboration_mode_state", None)
+            if callable(sync):
+                sync()
         return installed
 
     def fork_startup_session_target(self, target: Any) -> bool:
@@ -3007,6 +3406,7 @@ class TuiAppRuntime:
             return None
         thread_id_text = str(thread_id)
         self.thread_id = thread_id_text
+        self.chat_widget.thread_id = thread_id_text
         self.routing_state.active_thread_id = thread_id_text
         self.routing_state.primary_thread_id = thread_id_text
         self.startup_session_forked_thread_id = thread_id_text
@@ -3094,6 +3494,14 @@ class TuiAppRuntime:
             model = payload.get("model") if isinstance(payload, Mapping) else None
             effort = payload.get("effort") if isinstance(payload, Mapping) else None
             self.persist_model_selection(model, effort)
+        elif plan.action == "setup_status_line":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self.persist_status_line_setup(
+                _field(payload, "items", ()),
+                bool(_field(payload, "use_theme_colors", False)),
+            )
+        elif plan.action == "cancel_status_line_setup":
+            self.chat_widget.cancel_status_line_setup()
         elif plan.action == "refresh_rate_limits":
             origin = plan.updates[0][1] if plan.updates else None
             self.refresh_rate_limits(origin)
@@ -3108,6 +3516,28 @@ class TuiAppRuntime:
         elif plan.action == "diff_result":
             text = plan.updates[0][1] if plan.updates else ""
             self.chat_widget.on_diff_complete(text)
+        elif plan.action == "open_agent_picker":
+            self.open_agent_picker()
+        elif plan.action == "submit_user_message_with_mode":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self.chat_widget.submit_user_message_with_mode(
+                str(_field(payload, "text", "")),
+                _field(payload, "collaboration_mode", None),
+            )
+        elif plan.action == "clear_ui_and_submit_user_message":
+            payload = plan.updates[-1][1] if plan.updates else {}
+            text = str(_field(payload, "text", ""))
+            self.start_fresh_session()
+            self.enqueue_user_turn(text)
+        elif plan.action == "handle_codex_op":
+            payload = plan.updates[0][1] if plan.updates else {}
+            op = _field(payload, "op", None)
+            if not isinstance(op, AppCommand):
+                raise TypeError("CodexOp payload must contain an AppCommand")
+            if self.codex_op_sink is None:
+                self.submit_op(op)
+            else:
+                self.codex_op_sink(op)
         elif plan.action in {
             "open_thread_goal_menu",
             "open_thread_goal_editor",
@@ -3117,7 +3547,145 @@ class TuiAppRuntime:
         }:
             payload = plan.updates[0][1] if plan.updates else {}
             self._handle_thread_goal_app_event(plan.action, payload)
+        elif plan.action == "handle_open_world_writable_warning_confirmation":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._open_world_writable_warning_confirmation(payload)
+        elif plan.action == "handle_skip_next_world_writable_scan":
+            self.windows_sandbox.skip_world_writable_scan_once = True
+        elif plan.action == "handle_update_world_writable_warning_acknowledged":
+            from ..chatwidget.settings import set_world_writable_warning_acknowledged
+
+            payload = plan.updates[0][1] if plan.updates else {}
+            config = getattr(self.chat_widget, "config", None)
+            if config is not None and getattr(config, "notices", None) is None:
+                setattr(config, "notices", SimpleNamespace())
+            set_world_writable_warning_acknowledged(
+                self.chat_widget,
+                bool(_field(payload, "acknowledged", True)),
+            )
+        elif plan.action == "handle_persist_world_writable_warning_acknowledged":
+            self.persist_world_writable_warning_acknowledged()
         return plan
+
+    def open_agent_picker(self) -> object:
+        """Apply Rust ``app::session_lifecycle::open_agent_picker``."""
+
+        from pycodex.features import Feature
+
+        from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+        from ..chatwidget import multi_agent_enable_prompt_params
+        from .session_lifecycle import open_agent_picker_plan
+
+        features = _runtime_turn_context_value(self, "features", None)
+        enabled = getattr(features, "enabled", None)
+        collab_enabled = True if not callable(enabled) else bool(enabled(Feature.COLLAB))
+        entries = [
+            {
+                "thread_id": thread_id,
+                "agent_nickname": entry.agent_nickname,
+                "agent_role": entry.agent_role,
+                "is_closed": entry.is_closed,
+            }
+            for thread_id, entry in self.agent_navigation.ordered_threads()
+        ]
+        lifecycle = open_agent_picker_plan(
+            entries,
+            active_thread_id=self.routing_state.active_thread_id,
+            primary_thread_id=self.routing_state.primary_thread_id,
+            collab_enabled=collab_enabled,
+        )
+        if lifecycle.action == "open_multi_agent_enable_prompt":
+            return self.show_active_view(multi_agent_enable_prompt_params())
+        if lifecycle.action == "agent_picker_empty":
+            self.chat_widget.add_info_message(lifecycle.messages[0], None)
+            return lifecycle
+        if lifecycle.action == "show_agent_picker":
+            return self.show_active_view(
+                SelectionViewParams(
+                    title="Select an agent",
+                    subtitle=self.agent_navigation.picker_subtitle(),
+                    initial_selected_idx=next(
+                        (
+                            index
+                            for index, item in enumerate(lifecycle.items)
+                            if item.is_current
+                        ),
+                        None,
+                    ),
+                    items=[
+                        SelectionItem(
+                            name=item.name,
+                            description=item.description,
+                            is_current=item.is_current,
+                            is_disabled=item.is_closed,
+                            actions=[AppEvent.select_agent_thread(item.thread_id)],
+                            dismiss_on_select=True,
+                        )
+                        for item in lifecycle.items
+                    ],
+                )
+            )
+        return lifecycle
+
+    def _open_world_writable_warning_confirmation(self, payload: Any) -> None:
+        from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+        from ..chatwidget.windows_sandbox_prompts import (
+            describe_permission_profile,
+            world_writable_warning_confirmation_plan,
+        )
+
+        session_config = getattr(self.active_thread_runtime, "session_config", None)
+        permission_profile = _field(
+            session_config,
+            "permission_profile",
+            PermissionProfile.read_only(),
+        )
+        preset = _field(payload, "preset", None)
+        profile_selection = _field(payload, "profile_selection", None)
+        prompt = world_writable_warning_confirmation_plan(
+            mode_label=describe_permission_profile(permission_profile),
+            sample_paths=list(_field(payload, "sample_paths", []) or []),
+            extra_count=int(_field(payload, "extra_count", 0) or 0),
+            failed_scan=bool(_field(payload, "failed_scan", False)),
+            preset=preset,
+            profile_selection=profile_selection,
+        )
+
+        def event_for(action: str) -> AppEvent:
+            if action == "skip_next_world_writable_scan":
+                return AppEvent("SkipNextWorldWritableScan")
+            if action == "update_world_writable_warning_acknowledged":
+                return AppEvent(
+                    "UpdateWorldWritableWarningAcknowledged",
+                    {"acknowledged": True},
+                )
+            if action == "persist_world_writable_warning_acknowledged":
+                return AppEvent("PersistWorldWritableWarningAcknowledged")
+            if action == "apply_permission_profile_selection":
+                return AppEvent(
+                    "SelectPermissionProfile",
+                    {"selection": profile_selection},
+                )
+            if action == "apply_approval_preset":
+                return AppEvent("ApplyApprovalPreset", {"preset": preset})
+            raise ValueError(f"unknown world-writable warning action: {action}")
+
+        self.show_active_view(
+            SelectionViewParams(
+                header=prompt.header_lines,
+                footer_hint=prompt.footer_hint,
+                title=prompt.title,
+                items=[
+                    SelectionItem(
+                        name=item.name,
+                        description=item.description,
+                        actions=[event_for(action) for action in item.actions],
+                        dismiss_on_select=item.dismiss_on_select,
+                    )
+                    for item in prompt.items
+                ],
+            )
+        )
 
     def _handle_thread_goal_app_event(self, action: str, payload: Any) -> None:
         """Delegate the Rust goal AppEvent family to ``thread_goal_actions``."""
@@ -3198,18 +3766,20 @@ class TuiAppRuntime:
         summary = f"Pursuing goal: {objective}" if objective else "Pursuing goal"
         self.submit_internal_operation(summary, operation)
 
-    def _continue_core_created_work_after_turn(self) -> None:
-        """Submit core-created work after the current thread turn completes."""
+    def _continue_core_created_work_after_turn(self) -> bool:
+        """Submit core-created work and report whether a successor turn was queued."""
 
         take = getattr(self.active_thread_runtime, "take_pending_internal_operation", None)
         if not callable(take):
-            return
+            return False
+        queued = False
         while True:
             pending = take()
             if pending is None:
-                return
+                return queued
             summary, operation = pending
             self.submit_internal_operation(summary, operation)
+            queued = True
 
     def handle_app_server_event(self, event: Any) -> AppServerEventPlan:
         """Apply Rust ``app::app_server_events`` pre-chatwidget routing.
@@ -3676,7 +4246,9 @@ class TuiAppRuntime:
             return plan
         return self.select_agent_thread(target_thread_id)
 
-    def handle_notification(self, notification: ServerNotification) -> None:
+    def handle_notification(self, notification: ServerNotification) -> bool:
+        """Handle a notification and report an immediately queued successor turn."""
+
         notification_thread_id = _notification_thread_id(notification)
         if notification.kind == "ServerRequestResolved":
             for store in self.thread_event_stores.values():
@@ -3702,10 +4274,11 @@ class TuiAppRuntime:
                 self.mark_agent_picker_thread_closed(plan.thread_id or "")
                 if plan.info_message:
                     self.chat_widget.add_info_message(plan.info_message, None)
-                return
+                return False
         self.chat_widget.handle(notification)
         if notification.kind == "TurnCompleted":
-            self._continue_core_created_work_after_turn()
+            return self._continue_core_created_work_after_turn()
+        return False
 
     def handle_server_request(self, request: ServerRequest) -> None:
         plan = plan_app_server_event(
@@ -4336,8 +4909,8 @@ def _server_notifications_from_session_events(
     turn_id: str,
     pending_commands: dict[str, dict[str, Any]] | None = None,
     completed_commands: set[str] | None = None,
-) -> tuple[ServerNotification, ...]:
-    notifications: list[ServerNotification] = []
+) -> tuple[ServerNotification | ServerRequest, ...]:
+    notifications: list[ServerNotification | ServerRequest] = []
     for event in tuple(getattr(result, "session_events", ()) or ()):
         notifications.extend(
             _server_notifications_from_session_event(
@@ -4358,21 +4931,67 @@ def _server_notifications_from_session_event(
     turn_id: str,
     pending_commands: dict[str, dict[str, Any]] | None = None,
     completed_commands: set[str] | None = None,
-) -> tuple[ServerNotification, ...]:
+) -> tuple[ServerNotification | ServerRequest, ...]:
     event_type = _field(event, "type")
     payload = _field(event, "payload", event)
+    if event_type == "request_user_input":
+        call_id = str(_field(payload, "call_id", ""))
+        request_turn_id = str(_field(payload, "turn_id", turn_id))
+        questions = tuple(_field(payload, "questions", ()) or ())
+        return (
+            ServerRequest(
+                "ToolRequestUserInput",
+                id=call_id,
+                request_id=call_id,
+                params={
+                    "thread_id": thread_id,
+                    "turn_id": request_turn_id,
+                    "item_id": call_id,
+                    "questions": [
+                        question.to_mapping()
+                        if callable(getattr(question, "to_mapping", None))
+                        else question
+                        for question in questions
+                    ],
+                },
+            ),
+        )
     if event_type == "agent_message_content_delta":
-        delta = getattr(payload, "delta", None)
+        delta = _field(payload, "delta", None)
         if isinstance(delta, str) and delta:
-            return (ServerNotification("AgentMessageDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)
+            return (
+                ServerNotification(
+                    "AgentMessageDelta",
+                    {
+                        "delta": delta,
+                        "item_id": _field(payload, "item_id", None),
+                        "thread_id": _thread_id_value(_field(payload, "thread_id", thread_id)),
+                        "turn_id": _field(payload, "turn_id", turn_id),
+                    },
+                ),
+            )
+    if event_type == "plan_delta":
+        delta = _field(payload, "delta", None)
+        if isinstance(delta, str) and delta:
+            return (
+                ServerNotification(
+                    "PlanDelta",
+                    {
+                        "delta": delta,
+                        "item_id": _field(payload, "item_id", None),
+                        "thread_id": _thread_id_value(_field(payload, "thread_id", thread_id)),
+                        "turn_id": _field(payload, "turn_id", turn_id),
+                    },
+                ),
+            )
     if event_type == "reasoning_summary_delta":
-        delta = getattr(payload, "delta", None)
+        delta = _field(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("ReasoningSummaryTextDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)
     if event_type in {"reasoning_summary_part_added", "agent_reasoning_section_break"}:
         return (ServerNotification("ReasoningSummaryPartAdded", {"thread_id": thread_id, "turn_id": turn_id}),)
     if event_type in {"reasoning_content_delta", "reasoning_raw_content_delta"}:
-        delta = getattr(payload, "delta", None)
+        delta = _field(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("ReasoningTextDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)
     if event_type == "response_created":
@@ -4479,26 +5098,18 @@ def _server_notifications_from_session_event(
         )
     if event_type == "response_output_item_done":
         item = _field(payload, "item")
-        # Rust app-server does not turn the model's function_call response item
-        # into a CommandExecution lifecycle event. Core tool events own the
-        # canonical started/completed pair; projecting here creates two active
-        # cells for the same call id and leaves the first one stuck Running.
-        if _command_execution_item_from_response_item(item, status="InProgress") is not None:
-            return ()
-        turn_item = _turn_item_from_response_item(item)
-        chat_item = _chatwidget_item_from_turn_item(turn_item)
-        if chat_item is not None:
-            return (
-                ServerNotification(
-                    "ItemCompleted",
-                    {
-                        "thread_id": thread_id,
-                        "turn_id": turn_id,
-                        "completed_at_ms": int(time.time() * 1000),
-                        "item": chat_item,
-                    },
-                ),
-            )
+        to_mapping = getattr(item, "to_mapping", None)
+        raw_item = to_mapping() if callable(to_mapping) else item
+        return (
+            ServerNotification(
+                "RawResponseItemCompleted",
+                {
+                    "thread_id": _thread_id_value(_field(payload, "thread_id", thread_id)),
+                    "turn_id": _field(payload, "turn_id", turn_id),
+                    "item": raw_item,
+                },
+            ),
+        )
     return ()
 
 
@@ -4562,29 +5173,6 @@ def _chatwidget_item_from_turn_item(item: Any) -> dict[str, Any] | None:
         result["kind"] = raw_type
         return result
     return None
-
-
-def _turn_item_from_response_item(item: Any) -> TurnItem | None:
-    if item is None:
-        return None
-    response_item: ResponseItem | None
-    if isinstance(item, ResponseItem):
-        response_item = item
-    elif isinstance(item, Mapping):
-        try:
-            response_item = ResponseItem.from_mapping(item)
-        except (KeyError, TypeError, ValueError):
-            return None
-    else:
-        to_mapping = getattr(item, "to_mapping", None)
-        if callable(to_mapping):
-            try:
-                response_item = ResponseItem.from_mapping(to_mapping())
-            except (KeyError, TypeError, ValueError):
-                return None
-        else:
-            response_item = None
-    return parse_turn_item(response_item) if response_item is not None else None
 
 
 def _chatwidget_command_execution_item(value: Any) -> dict[str, Any]:
@@ -4685,52 +5273,6 @@ def _command_completion_notifications_from_result(
     return tuple(notifications)
 
 
-def _command_execution_item_from_response_item(item: Any, *, status: str) -> dict[str, Any] | None:
-    item_type = _field(item, "type")
-    name = _field(item, "name")
-    if item_type not in {"function_call", "local_shell_call"}:
-        return None
-    if item_type == "function_call" and name not in {"exec_command", "local_shell", "shell"}:
-        return None
-    call_id = _field(item, "call_id") or _field(item, "id")
-    if not isinstance(call_id, str) or not call_id:
-        return None
-    command, cwd = _command_and_cwd_from_tool_item(item)
-    if not command:
-        return None
-    return {
-        "kind": "CommandExecution",
-        "id": call_id,
-        "command": command,
-        "cwd": cwd,
-        "process_id": None,
-        "source": "Agent",
-        "status": status,
-        "command_actions": [{"type": "unknown", "cmd": command}],
-        "aggregated_output": None,
-        "exit_code": None,
-        "duration_ms": None,
-    }
-
-
-def _command_and_cwd_from_tool_item(item: Any) -> tuple[str, str | None]:
-    if _field(item, "type") == "local_shell_call":
-        action = _field(item, "action")
-        command = _field(action, "command")
-        return (str(command), _field(action, "workdir")) if command is not None else ("", None)
-    arguments = _field(item, "arguments")
-    if isinstance(arguments, str):
-        try:
-            arguments = json.loads(arguments)
-        except json.JSONDecodeError:
-            return arguments, None
-    if isinstance(arguments, Mapping):
-        command = arguments.get("cmd", arguments.get("command"))
-        cwd = arguments.get("workdir", arguments.get("cwd"))
-        return (str(command), str(cwd) if cwd is not None else None) if command is not None else ("", None)
-    return "", None
-
-
 def _tool_output_text(item: Any) -> str | None:
     output = _field(item, "output")
     if output is None:
@@ -4807,6 +5349,12 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _normalized_session_cwd(value: Any) -> str:
+    if value is None:
+        return ""
+    return os.path.normcase(str(Path(value).resolve(strict=False)))
 
 
 def _request_thread_id(request: Any) -> str | None:

@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-utils-path.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-path",
+    "module": "crate",
+    "source": "codex/codex-rs/utils/path-utils/src/lib.rs",
+    "anchors": [
+      "SymlinkWritePaths",
+      "is_wsl",
+      "normalize_for_native_workdir",
+      "normalize_for_path_comparison",
+      "paths_match_after_normalization",
+      "resolve_symlink_write_paths",
+      "write_atomically",
+      "normalize_for_native_workdir_with_flag",
+      "normalize_for_wsl",
+      "normalize_for_wsl_with_flag"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/path_utils/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/path_utils/__init__.py"
+    ],
+    "anchors": [
+      "SymlinkWritePaths",
+      "is_wsl",
+      "normalize_for_native_workdir",
+      "normalize_for_path_comparison",
+      "paths_match_after_normalization",
+      "resolve_symlink_write_paths",
+      "write_atomically",
+      "normalize_for_native_workdir_with_flag",
+      "normalize_for_wsl",
+      "normalize_for_wsl_with_flag"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

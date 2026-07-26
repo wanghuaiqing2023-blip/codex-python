@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-sandboxing.bwrap",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-sandboxing",
+    "module": "bwrap",
+    "source": "codex/codex-rs/sandboxing/src/bwrap.rs",
+    "anchors": [
+      "WSL1_BWRAP_WARNING",
+      "find_system_bwrap_in_path",
+      "is_wsl1",
+      "system_bwrap_warning",
+      "MISSING_BWRAP_WARNING",
+      "SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES",
+      "SYSTEM_BWRAP_PROGRAM",
+      "USER_NAMESPACE_FAILURES",
+      "USER_NAMESPACE_WARNING",
+      "find_system_bwrap_in_search_paths",
+      "is_user_namespace_failure",
+      "proc_version_indicates_wsl1"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/sandboxing/bwrap.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/sandboxing/bwrap.py"
+    ],
+    "anchors": [
+      "WSL1_BWRAP_WARNING",
+      "find_system_bwrap_in_path",
+      "is_wsl1",
+      "system_bwrap_warning",
+      "MISSING_BWRAP_WARNING",
+      "SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES",
+      "SYSTEM_BWRAP_PROGRAM",
+      "USER_NAMESPACE_FAILURES",
+      "USER_NAMESPACE_WARNING",
+      "find_system_bwrap_in_search_paths",
+      "is_user_namespace_failure",
+      "proc_version_indicates_wsl1"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -987,10 +987,44 @@ class CoreRolloutTests(unittest.TestCase):
 
         self.assertIsNotNone(default_path)
         assert default_path is not None
-        self.assertTrue(default_path.name.startswith("rollout-2025-01-02T03-04-05Z-"))
+        expected_timestamp = (
+            datetime.fromisoformat(default_meta.timestamp.replace("Z", "+00:00"))
+            .astimezone()
+            .strftime("%Y-%m-%dT%H-%M-%S")
+        )
+        self.assertTrue(default_path.name.startswith(f"rollout-{expected_timestamp}-"))
         self.assertEqual(count_session_rollout_files(root), 1)
         self.assertIsNone(ephemeral_path)
         self.assertEqual(read_session_meta_line(default_path).meta.id, default_id)
+
+    def test_materialized_fractional_timestamp_is_visible_to_thread_listing(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        meta = SessionMeta(
+            id=thread_id,
+            timestamp="2025-01-02T03:04:05.123456Z",
+            cwd=".",
+            originator="codex_exec",
+            cli_version="test-version",
+            source="cli",
+            model_provider="openai",
+        )
+
+        path = materialize_session_rollout(root, meta)
+
+        assert path is not None
+        append_response_item_to_rollout(
+            path,
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "resume this rollout"}],
+            },
+            timestamp=meta.timestamp,
+        )
+        self.assertNotIn(".123456", path.name)
+        self.assertIsNotNone(parse_timestamp_uuid_from_filename(path.name))
+        self.assertEqual(len(get_threads(root, 10, allowed_sources=("cli",)).items), 1)
 
     def test_find_session_rollout_containing_response_marker_matches_resume_suite_scan(self):
         root = workspace_tempdir()

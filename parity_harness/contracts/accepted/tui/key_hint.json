@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.key_hint",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "key_hint",
+    "source": "codex/codex-rs/tui/src/key_hint.rs",
+    "anchors": [
+      "KeyBinding",
+      "KeyBindingListExt",
+      "display_label",
+      "from_event",
+      "has_ctrl_or_alt",
+      "is_altgr",
+      "is_plain_text_key_event",
+      "is_press",
+      "normalize_key_parts",
+      "ALT_PREFIX",
+      "CTRL_PREFIX",
+      "SHIFT_PREFIX"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/key_hint.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/key_hint.py"
+    ],
+    "anchors": [
+      "KeyBinding",
+      "KeyBindingListExt",
+      "display_label",
+      "from_event",
+      "has_ctrl_or_alt",
+      "is_altgr",
+      "is_plain_text_key_event",
+      "is_press",
+      "normalize_key_parts",
+      "ALT_PREFIX",
+      "CTRL_PREFIX",
+      "SHIFT_PREFIX"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

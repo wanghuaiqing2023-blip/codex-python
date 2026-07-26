@@ -1,0 +1,151 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "agent-graph-store",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 5,
+    "python_files": 5,
+    "modules_with_candidates": 5,
+    "modules_with_anchors": 5
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-agent-graph-store",
+        "module": "crate",
+        "source": "codex/codex-rs/agent-graph-store/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/agent_graph_store/__init__.py",
+          "anchor_candidates": [
+            "AgentGraphStore",
+            "AgentGraphStoreError",
+            "AgentGraphStoreResult",
+            "LocalAgentGraphStore",
+            "ThreadSpawnEdgeStatus"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-agent-graph-store",
+        "module": "error",
+        "source": "codex/codex-rs/agent-graph-store/src/error.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/agent_graph_store/error.py",
+          "anchor_candidates": [
+            "AgentGraphStoreError",
+            "AgentGraphStoreResult"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-agent-graph-store",
+        "module": "local",
+        "source": "codex/codex-rs/agent-graph-store/src/local.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/agent_graph_store/local.py",
+          "anchor_candidates": [
+            "LocalAgentGraphStore",
+            "new",
+            "internal_error",
+            "list_thread_spawn_children",
+            "list_thread_spawn_descendants",
+            "set_thread_spawn_edge_status",
+            "to_state_status",
+            "upsert_thread_spawn_edge"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-agent-graph-store",
+        "module": "store",
+        "source": "codex/codex-rs/agent-graph-store/src/store.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/agent_graph_store/store.py",
+          "anchor_candidates": [
+            "AgentGraphStore",
+            "list_thread_spawn_children",
+            "list_thread_spawn_descendants",
+            "set_thread_spawn_edge_status",
+            "upsert_thread_spawn_edge"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-agent-graph-store",
+        "module": "types",
+        "source": "codex/codex-rs/agent-graph-store/src/types.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/agent_graph_store/types.py",
+          "anchor_candidates": [
+            "ThreadSpawnEdgeStatus"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

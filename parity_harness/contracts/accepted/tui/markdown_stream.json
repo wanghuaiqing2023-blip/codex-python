@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.markdown_stream",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "markdown_stream",
+    "source": "codex/codex-rs/tui/src/markdown_stream.rs",
+    "anchors": [
+      "MarkdownStreamCollector",
+      "clear",
+      "commit_complete_source",
+      "finalize_and_drain_source",
+      "new",
+      "push_delta",
+      "set_width"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/markdown_stream.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/markdown_stream.py"
+    ],
+    "anchors": [
+      "MarkdownStreamCollector",
+      "clear",
+      "commit_complete_source",
+      "finalize_and_drain_source",
+      "new",
+      "push_delta",
+      "set_width"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

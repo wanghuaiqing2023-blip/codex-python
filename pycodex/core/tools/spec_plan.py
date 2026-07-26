@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from pycodex.features import Feature
-from pycodex.core.config.agent_roles import build_spawn_agent_tool_description
+from pycodex.core.agent.role import spawn_tool_spec
 
 from pycodex.core.tools.code_mode import (
     CodeModeExecuteHandler,
@@ -83,7 +83,8 @@ from pycodex.core.tools.router import ToolRouter
 from pycodex.core.tools.tool_search_entry import default_namespace_description
 from pycodex.core.tools.handlers.tool_search import TOOL_SEARCH_TOOL_NAME, ToolSearchHandler
 from pycodex.core.tools.handlers.unified_exec import ExecCommandHandler, ExecCommandHandlerOptions, WriteStdinHandler
-from pycodex.core.tools.handlers.view_image import ViewImageHandler, ViewImageToolOptions
+from pycodex.core.tools.handlers.view_image import ViewImageHandler
+from pycodex.core.tools.handlers.view_image_spec import ViewImageToolOptions
 from pycodex.protocol import (
     ConfigShellToolType,
     ModeKind,
@@ -453,7 +454,7 @@ def add_apply_patch_tool(
     multi_environment: bool = False,
 ) -> None:
     if has_environment and apply_patch_tool_type is not None:
-        from pycodex.apply_patch import ApplyPatchHandler
+        from pycodex.core.tools.handlers.apply_patch import ApplyPatchHandler
 
         planned_tools.add(ApplyPatchHandler.new(multi_environment))
 
@@ -1148,7 +1149,7 @@ def _agent_jobs_worker_tools_enabled(turn_context: Any, features: Any) -> bool:
 def _agent_type_description(turn_context: Any) -> str:
     config = getattr(turn_context, "config", None)
     roles = getattr(config, "agent_roles", None)
-    return build_spawn_agent_tool_description(roles if isinstance(roles, Mapping) else {})
+    return spawn_tool_spec.build(roles if isinstance(roles, Mapping) else {})
 
 
 def _snake_to_pascal(value: str) -> str:

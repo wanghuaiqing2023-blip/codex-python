@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app.pending_interactive_replay",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::pending_interactive_replay",
+    "source": "codex/codex-rs/tui/src/app/pending_interactive_replay.rs",
+    "anchors": [
+      "PendingInteractiveReplayState",
+      "has_pending_thread_approvals",
+      "has_pending_thread_user_input",
+      "note_evicted_server_request",
+      "note_outbound_op",
+      "note_server_notification",
+      "note_server_request",
+      "op_can_change_state",
+      "should_replay_snapshot_request",
+      "ElicitationRequestKey",
+      "PendingInteractiveRequest",
+      "clear"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/pending_interactive_replay.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/pending_interactive_replay.py"
+    ],
+    "anchors": [
+      "PendingInteractiveReplayState",
+      "has_pending_thread_approvals",
+      "has_pending_thread_user_input",
+      "note_evicted_server_request",
+      "note_outbound_op",
+      "note_server_notification",
+      "note_server_request",
+      "op_can_change_state",
+      "should_replay_snapshot_request",
+      "ElicitationRequestKey",
+      "PendingInteractiveRequest",
+      "clear"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

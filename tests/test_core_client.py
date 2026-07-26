@@ -81,6 +81,7 @@ from pycodex.protocol import (
     AgentMessageItem,
     ContentItem,
     FunctionCallOutputPayload,
+    MessagePhase,
     ReasoningEffort,
     ReasoningSummary,
     ResponseItem,
@@ -1278,10 +1279,10 @@ def test_sampling_request_runtime_hook_adapter_emits_done_only_assistant_item_co
     assert emitted[-1]["item"]["content"][0]["text"] == "done-only answer"
 
 
-def test_sampling_request_runtime_hook_adapter_does_not_duplicate_streamed_assistant_done():
-    # Rust source: codex-core/src/session/turn.rs flushes an active streamed
-    # assistant item before handling OutputItemDone; Python should not expose a
-    # second visible assistant answer when deltas already rendered this item.
+def test_sampling_request_runtime_hook_adapter_completes_streamed_assistant_lifecycle():
+    # Rust source: codex-core/src/session/turn.rs flushes streamed text and then
+    # handle_output_item_done emits ItemCompleted for the same assistant item.
+    # The TUI consolidates the lifecycle event without duplicating visible text.
     state = SamplingRuntimeEventApplicationState(
         assistant_text_deltas=(
             {
@@ -1296,6 +1297,7 @@ def test_sampling_request_runtime_hook_adapter_does_not_duplicate_streamed_assis
         "assistant",
         (ContentItem.output_text("already streamed"),),
         id="msg-streamed",
+        phase=MessagePhase.COMMENTARY,
     )
     plan = SamplingStreamEventApplyPlan(
         event_type="response.output_item.done",
@@ -1310,7 +1312,45 @@ def test_sampling_request_runtime_hook_adapter_does_not_duplicate_streamed_assis
     result = adapter.apply_event_plan({"type": "apply_event_plan", "plan": plan})
 
     emitted = result["state"]["emitted_stream_events"]
-    assert all(event.get("type") != "item_completed" for event in emitted)
+    completed = [event for event in emitted if event.get("type") == "item_completed"]
+    assert len(completed) == 1
+    assert completed[0]["item"]["id"] == "msg-streamed"
+    assert completed[0]["item"]["phase"] == "commentary"
+
+
+def test_sampling_request_runtime_hook_adapter_completes_reasoning_lifecycle():
+    # Rust source: codex-core/src/stream_events_utils.rs
+    # Contract: handle_output_item_done parses Reasoning and emits
+    # ItemCompleted so the TUI can finalize its hidden reasoning summary.
+    state = SamplingRuntimeEventApplicationState()
+    adapter = SamplingRequestRuntimeHookAdapter(event_application_state=state)
+    reasoning_item = ResponseItem.reasoning(
+        id="reasoning-1",
+        summary=("hidden reasoning summary",),
+    )
+    plan = SamplingStreamEventApplyPlan(
+        event_type="response.output_item.done",
+        output_item_done_apply_plan=SamplingOutputItemDoneApplyPlan(
+            transition_plan=SamplingOutputItemDoneTransitionPlan(
+                thread_id="thread-1",
+                turn_id="turn-1",
+            ),
+            completed_item=reasoning_item,
+        ),
+    )
+
+    result = adapter.apply_event_plan({"type": "apply_event_plan", "plan": plan})
+
+    completed = [
+        event
+        for event in result["state"]["emitted_stream_events"]
+        if event.get("type") == "item_completed"
+    ]
+    assert len(completed) == 1
+    assert completed[0]["thread_id"] == "thread-1"
+    assert completed[0]["turn_id"] == "turn-1"
+    assert completed[0]["item"]["type"] == "Reasoning"
+    assert completed[0]["item"]["summary_text"] == ["hidden reasoning summary"]
 
 
 def test_plan_mode_uses_contributed_turn_item_for_last_agent_message():

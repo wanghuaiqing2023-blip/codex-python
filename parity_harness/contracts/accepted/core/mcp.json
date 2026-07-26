@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-core.mcp",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "mcp",
+    "source": "codex/codex-rs/core/src/mcp.rs",
+    "anchors": [
+      "McpManager",
+      "configured_servers",
+      "effective_servers",
+      "tool_plugin_provenance"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/mcp.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/mcp.py"
+    ],
+    "anchors": [
+      "McpManager",
+      "configured_servers",
+      "effective_servers",
+      "tool_plugin_provenance"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -417,7 +417,10 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
             turn=SimpleNamespace(environments=(SimpleNamespace(environment_id="local", cwd=root),)),
         )
 
-        with patch("pycodex.core.tools.handlers.unified_exec._maybe_emit_implicit_skill_invocation", side_effect=fake_emit):
+        with patch(
+            "pycodex.core.tools.handlers.unified_exec.exec_command._maybe_emit_implicit_skill_invocation",
+            side_effect=fake_emit,
+        ):
             asyncio.run(ExecCommandHandler().handle(invocation))
 
         self.assertEqual(order, [f"skill:scripts/run.py:{root.name}", "exec"])

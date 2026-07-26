@@ -1,0 +1,53 @@
+{
+  "contract_id": "codex-tui.app",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app",
+    "source": "codex/codex-rs/tui/src/app.rs",
+    "anchors": [
+      "App",
+      "AppExitInfo",
+      "AppRunControl",
+      "ExitReason",
+      "chatwidget_init_for_forked_or_resumed_thread",
+      "fatal",
+      "handle_tui_event",
+      "run",
+      "show_shutdown_feedback",
+      "ActiveTurnSteerRace",
+      "AutoReviewMode",
+      "COMMIT_ANIMATION_TICK"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/app/__init__.py",
+      "pycodex/tui/app/runtime.py"
+    ],
+    "anchors": [
+      "App",
+      "AppExitInfo",
+      "AppRunControl",
+      "ExitReason",
+      "chatwidget_init_for_forked_or_resumed_thread",
+      "fatal",
+      "handle_tui_event",
+      "run",
+      "show_shutdown_feedback",
+      "ActiveTurnSteerRace",
+      "AutoReviewMode",
+      "COMMIT_ANIMATION_TICK"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

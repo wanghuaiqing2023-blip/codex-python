@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.handlers.view_image",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::view_image",
+    "source": "codex/codex-rs/core/src/tools/handlers/view_image.rs",
+    "anchors": [
+      "ViewImageHandler",
+      "ViewImageOutput",
+      "VIEW_IMAGE_UNSUPPORTED_MESSAGE",
+      "ViewImageArgs",
+      "code_mode_result",
+      "handle",
+      "log_preview",
+      "spec",
+      "success_for_logging",
+      "supports_parallel_tool_calls",
+      "to_response_item",
+      "tool_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/view_image.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/view_image.py"
+    ],
+    "anchors": [
+      "ViewImageHandler",
+      "ViewImageOutput",
+      "VIEW_IMAGE_UNSUPPORTED_MESSAGE",
+      "ViewImageArgs",
+      "code_mode_result",
+      "handle",
+      "log_preview",
+      "spec",
+      "success_for_logging",
+      "supports_parallel_tool_calls",
+      "to_response_item",
+      "tool_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

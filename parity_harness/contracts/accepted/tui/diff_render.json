@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.diff_render",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "diff_render",
+    "source": "codex/codex-rs/tui/src/diff_render.rs",
+    "anchors": [
+      "DiffLineType",
+      "DiffRenderStyleContext",
+      "DiffSummary",
+      "calculate_add_remove_from_diff",
+      "create_diff_summary",
+      "current_diff_render_style_context",
+      "display_path_for",
+      "line_number_width",
+      "new",
+      "push_wrapped_diff_line_with_style_context",
+      "push_wrapped_diff_line_with_syntax_and_style_context",
+      "DARK_256_ADD_LINE_BG_IDX"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/diff_render.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/diff_render.py"
+    ],
+    "anchors": [
+      "DiffLineType",
+      "DiffRenderStyleContext",
+      "DiffSummary",
+      "calculate_add_remove_from_diff",
+      "create_diff_summary",
+      "current_diff_render_style_context",
+      "display_path_for",
+      "line_number_width",
+      "new",
+      "push_wrapped_diff_line_with_style_context",
+      "push_wrapped_diff_line_with_syntax_and_style_context",
+      "DARK_256_ADD_LINE_BG_IDX"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

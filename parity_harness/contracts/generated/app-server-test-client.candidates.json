@@ -1,0 +1,77 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "app-server-test-client",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 2,
+    "python_files": 2,
+    "modules_with_candidates": 2,
+    "modules_with_anchors": 2
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-app-server-test-client",
+        "module": "crate",
+        "source": "codex/codex-rs/app-server-test-client/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_test_client/__init__.py",
+          "anchor_candidates": [
+            "run",
+            "send_message_v2",
+            "BackgroundAppServer",
+            "CodexClient",
+            "CommandApprovalBehavior",
+            "DEFAULT_ANALYTICS_ENABLED",
+            "Endpoint",
+            "NOTIFICATIONS_TO_OPT_OUT",
+            "OTEL_SERVICE_NAME",
+            "TRACE_DISABLED_MESSAGE",
+            "TestClientTracing",
+            "approve_file_change_request"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-app-server-test-client",
+        "module": "main",
+        "source": "codex/codex-rs/app-server-test-client/src/main.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_test_client/__main__.py",
+          "anchor_candidates": [
+            "main"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

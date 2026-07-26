@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.model_migration",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "model_migration",
+    "source": "codex/codex-rs/tui/src/model_migration.rs",
+    "anchors": [
+      "ModelMigrationCopy",
+      "ModelMigrationOutcome",
+      "migration_copy_for_models",
+      "run_model_migration_prompt",
+      "AltScreenGuard",
+      "MigrationMenuOption",
+      "ModelMigrationScreen",
+      "accept",
+      "all",
+      "confirm_selection",
+      "drop",
+      "enter"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/model_migration.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/model_migration.py"
+    ],
+    "anchors": [
+      "ModelMigrationCopy",
+      "ModelMigrationOutcome",
+      "migration_copy_for_models",
+      "run_model_migration_prompt",
+      "AltScreenGuard",
+      "MigrationMenuOption",
+      "ModelMigrationScreen",
+      "accept",
+      "all",
+      "confirm_selection",
+      "drop",
+      "enter"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

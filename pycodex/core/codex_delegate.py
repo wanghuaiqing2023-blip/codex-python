@@ -31,7 +31,7 @@ from pycodex.core.mcp_tool_call import (
     MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX,
     is_mcp_tool_approval_question_id,
 )
-from pycodex.core.tools.handlers.utils import normalize_request_permissions_response
+from pycodex.core.tools.handlers import normalize_request_permissions_response
 from pycodex.protocol import (
     Event,
     EventMsg,

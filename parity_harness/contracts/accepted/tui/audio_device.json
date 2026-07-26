@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.audio_device",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "audio_device",
+    "source": "codex/codex-rs/tui/src/audio_device.rs",
+    "anchors": [
+      "list_realtime_audio_device_names",
+      "preferred_input_config",
+      "select_configured_input_device_and_config",
+      "select_configured_output_device_and_config",
+      "PREFERRED_INPUT_CHANNELS",
+      "PREFERRED_INPUT_SAMPLE_RATE",
+      "configured_name",
+      "default_config",
+      "default_device",
+      "devices",
+      "find_device_by_name",
+      "missing_device_error"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/audio_device.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/audio_device.py"
+    ],
+    "anchors": [
+      "list_realtime_audio_device_names",
+      "preferred_input_config",
+      "select_configured_input_device_and_config",
+      "select_configured_output_device_and_config",
+      "PREFERRED_INPUT_CHANNELS",
+      "PREFERRED_INPUT_SAMPLE_RATE",
+      "configured_name",
+      "default_config",
+      "default_device",
+      "devices",
+      "find_device_by_name",
+      "missing_device_error"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

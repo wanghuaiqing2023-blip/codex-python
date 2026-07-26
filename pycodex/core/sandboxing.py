@@ -497,22 +497,26 @@ async def _run_windows_sandbox_exec_request(
             else None
         )
         if use_elevated:
-            from pycodex.windows_sandbox.elevated import run_elevated_capture
+            from pycodex.windows_sandbox.elevated_impl import (
+                ElevatedSandboxProfileCaptureRequest,
+                run_windows_sandbox_capture_for_permission_profile,
+            )
 
             capture = await asyncio.to_thread(
-                run_elevated_capture,
-                permission_profile,
-                exec_request.windows_sandbox_policy_cwd,
-                find_codex_home(),
-                exec_request.command,
-                exec_request.cwd,
-                env,
-                timeout_ms,
-                use_private_desktop=exec_request.windows_sandbox_private_desktop,
-                proxy_enforced=proxy_enforced,
-                additional_deny_read_paths=deny_read,
-                additional_deny_write_paths=deny_write,
-                is_cancelled=cancellation,
+                run_windows_sandbox_capture_for_permission_profile,
+                ElevatedSandboxProfileCaptureRequest(
+                    permission_profile,
+                    exec_request.windows_sandbox_policy_cwd,
+                    find_codex_home(),
+                    tuple(exec_request.command),
+                    exec_request.cwd,
+                    env,
+                    timeout_ms,
+                    exec_request.windows_sandbox_private_desktop,
+                    proxy_enforced,
+                    deny_read_paths_override=tuple(deny_read),
+                    deny_write_paths_override=tuple(deny_write),
+                ),
             )
         else:
             capture = await asyncio.to_thread(

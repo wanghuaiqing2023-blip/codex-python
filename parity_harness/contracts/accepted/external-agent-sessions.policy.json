@@ -1,0 +1,16 @@
+{
+  "scope": "external-agent-sessions",
+  "rust_root": "codex/codex-rs/external-agent-sessions",
+  "python_root": "pycodex/external_agent_sessions",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::detect",
+    "crate::export",
+    "crate::ledger",
+    "crate::records"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

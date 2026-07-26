@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.hooks_browser_view",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::hooks_browser_view",
+    "source": "codex/codex-rs/tui/src/bottom_pane/hooks_browser_view.rs",
+    "anchors": [
+      "HooksBrowserView",
+      "from_entry",
+      "COUNT_COLUMN_WIDTH",
+      "EVENT_COLUMN_WIDTH",
+      "EventRow",
+      "HooksBrowserPage",
+      "MAX_COMMAND_DETAIL_LINES",
+      "close",
+      "config_source_label",
+      "desired_height",
+      "detail_line",
+      "detail_lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/hooks_browser_view.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/hooks_browser_view.py"
+    ],
+    "anchors": [
+      "HooksBrowserView",
+      "from_entry",
+      "COUNT_COLUMN_WIDTH",
+      "EVENT_COLUMN_WIDTH",
+      "EventRow",
+      "HooksBrowserPage",
+      "MAX_COMMAND_DETAIL_LINES",
+      "close",
+      "config_source_label",
+      "desired_height",
+      "detail_line",
+      "detail_lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

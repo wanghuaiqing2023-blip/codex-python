@@ -1,0 +1,13 @@
+{
+  "scope": "client",
+  "rust_root": "codex/codex-rs/codex-client",
+  "python_root": "pycodex/codex_client",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "bin::custom_ca_probe"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

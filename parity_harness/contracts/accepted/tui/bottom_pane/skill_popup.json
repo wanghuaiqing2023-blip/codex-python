@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.skill_popup",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::skill_popup",
+    "source": "codex/codex-rs/tui/src/bottom_pane/skill_popup.rs",
+    "anchors": [
+      "MentionItem",
+      "SkillPopup",
+      "calculate_required_height",
+      "move_down",
+      "move_up",
+      "new",
+      "selected_mention",
+      "set_mentions",
+      "set_query",
+      "MENTION_NAME_TRUNCATE_LEN",
+      "clamp_selection",
+      "filtered"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/skill_popup.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/skill_popup.py"
+    ],
+    "anchors": [
+      "MentionItem",
+      "SkillPopup",
+      "calculate_required_height",
+      "move_down",
+      "move_up",
+      "new",
+      "selected_mention",
+      "set_mentions",
+      "set_query",
+      "MENTION_NAME_TRUNCATE_LEN",
+      "clamp_selection",
+      "filtered"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

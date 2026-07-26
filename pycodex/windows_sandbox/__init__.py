@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+import os
 
 from .acl import (
     WRITE_ALLOW_MASK,
@@ -28,9 +26,11 @@ from .cap import (
     writable_root_cap_sid_for_path,
 )
 from .desktop import LaunchDesktop, WindowsSandboxDesktopError
+from .deny_read_resolver import resolve_windows_deny_read_paths
 from .path_normalization import canonicalize_path
+from .winutil import quote_windows_arg, to_wide
+from .workspace_acl import is_command_cwd_root
 from .process import (
-    ConptyInstance,
     NativeProcessPopen,
     PipeSpawnHandles,
     ProcessCaptureResult,
@@ -38,10 +38,11 @@ from .process import (
     StdinMode,
     WindowsSandboxProcessError,
     create_process_as_user_capture,
-    create_process_as_user_conpty_popen,
     create_process_as_user_popen,
     make_env_block,
 )
+from . import conpty, proc_thread_attr
+from .conpty import ConptyInstance, spawn_conpty_process_as_user
 from .resolved_permissions import (
     ResolvedWindowsSandboxPermissions,
     WindowsSandboxPermissionError,
@@ -61,8 +62,17 @@ from .setup import (
     sandbox_users_path,
     setup_marker_path,
 )
-from .setup_error import SetupErrorCode, SetupErrorReport, SetupFailure
-from .elevated import ElevatedSandboxProfileCaptureRequest, run_elevated_capture
+from .setup_error import (
+    SetupErrorCode,
+    SetupErrorReport,
+    SetupFailure,
+    sanitize_setup_metric_tag_value,
+)
+from .wfp_setup import install_wfp_filters
+from .elevated_impl import (
+    ElevatedSandboxProfileCaptureRequest,
+    run_windows_sandbox_capture_for_permission_profile as run_windows_sandbox_capture_for_permission_profile_elevated,
+)
 from .logging import (
     current_log_file_path,
     current_log_file_path_for_codex_home,
@@ -95,185 +105,28 @@ from .token import (
     is_token_restricted,
     logon_user,
 )
+from .unified_exec import (
+    spawn_windows_sandbox_session_elevated_for_permission_profile,
+    spawn_windows_sandbox_session_legacy,
+)
 
+from . import stub, windows_impl
 
-@dataclass(frozen=True)
-class CaptureResult:
-    exit_code: int
-    stdout: bytes = b""
-    stderr: bytes = b""
-    timed_out: bool = False
-    cancelled: bool = False
-
-
-def run_windows_sandbox_capture(
-    permission_profile: Any,
-    permission_profile_cwd: str | Path,
-    codex_home: str | Path,
-    command: list[str] | tuple[str, ...],
-    cwd: str | Path,
-    env_map: dict[str, str],
-    timeout_ms: int | None,
-    use_private_desktop: bool,
-    *,
-    is_cancelled: Any = None,
-) -> CaptureResult:
-    return run_windows_sandbox_capture_with_filesystem_overrides(
-        permission_profile,
-        permission_profile_cwd,
-        codex_home,
-        command,
-        cwd,
-        env_map,
-        timeout_ms,
-        (),
-        (),
-        use_private_desktop,
-        is_cancelled=is_cancelled,
+if os.name == "nt":
+    from . import audit
+    from .audit import apply_world_writable_scan_and_denies_for_permissions
+    from .windows_impl import (
+        CaptureResult,
+        run_windows_sandbox_capture,
+        run_windows_sandbox_capture_with_filesystem_overrides,
+        run_windows_sandbox_legacy_preflight,
     )
-
-
-def run_windows_sandbox_capture_with_filesystem_overrides(
-    permission_profile: Any,
-    permission_profile_cwd: str | Path,
-    codex_home: str | Path,
-    command: list[str] | tuple[str, ...],
-    cwd: str | Path,
-    env_map: dict[str, str],
-    timeout_ms: int | None,
-    additional_deny_read_paths: list[str | Path] | tuple[str | Path, ...],
-    additional_deny_write_paths: list[str | Path] | tuple[str | Path, ...],
-    use_private_desktop: bool,
-    *,
-    is_cancelled: Any = None,
-) -> CaptureResult:
-    if additional_deny_read_paths:
-        raise WindowsSandboxSpawnPrepError(
-            "deny-read overrides require the elevated Windows sandbox backend"
-        )
-    prepared_env = dict(env_map)
-    context = prepare_legacy_spawn_context(
-        permission_profile,
-        permission_profile_cwd,
-        codex_home,
-        cwd,
-        prepared_env,
-        command,
+else:
+    from .stub import (
+        CaptureResult,
+        run_windows_sandbox_capture,
+        run_windows_sandbox_legacy_preflight,
     )
-    if not context.permissions.has_full_disk_read_access():
-        raise WindowsSandboxSpawnPrepError(
-            "Restricted read-only access requires the elevated Windows sandbox backend"
-        )
-    with prepare_legacy_session_security(context, codex_home, prepared_env) as security:
-        apply_legacy_session_acl_rules(
-            context,
-            codex_home,
-            prepared_env,
-            security,
-            additional_deny_write_paths=additional_deny_write_paths,
-        )
-        result = create_process_as_user_capture(
-            security.token,
-            command,
-            cwd,
-            prepared_env,
-            timeout_ms,
-            use_private_desktop=use_private_desktop,
-            is_cancelled=is_cancelled,
-        )
-    return CaptureResult(
-        result.exit_code,
-        result.stdout,
-        result.stderr,
-        result.timed_out,
-        result.cancelled,
-    )
-
-
-def run_windows_sandbox_legacy_preflight(
-    permission_profile: Any,
-    permission_profile_cwd: str | Path,
-    codex_home: str | Path,
-    cwd: str | Path,
-    env_map: dict[str, str],
-) -> None:
-    permissions = ResolvedWindowsSandboxPermissions.try_from_permission_profile_for_cwd(
-        permission_profile,
-        permission_profile_cwd,
-    )
-    if not permissions.uses_write_capabilities_for_cwd(cwd, env_map):
-        return
-    logs = sandbox_dir(codex_home)
-    logs.mkdir(parents=True, exist_ok=True)
-    context = SpawnContext(permissions, Path(cwd), logs, True)
-    with prepare_legacy_session_security(context, codex_home, env_map) as security:
-        apply_legacy_session_acl_rules(context, codex_home, env_map, security)
-
-
-def spawn_windows_sandbox_popen(
-    permission_profile: Any,
-    permission_profile_cwd: str | Path,
-    codex_home: str | Path,
-    command: list[str] | tuple[str, ...],
-    cwd: str | Path,
-    env_map: dict[str, str],
-    *,
-    stdin_open: bool,
-    tty: bool = False,
-    merge_stderr: bool = True,
-    use_private_desktop: bool,
-    additional_deny_read_paths: tuple[str | Path, ...] = (),
-    additional_deny_write_paths: tuple[str | Path, ...] = (),
-) -> NativeProcessPopen:
-    if additional_deny_read_paths:
-        raise WindowsSandboxSpawnPrepError("deny-read overrides require the elevated Windows sandbox backend")
-    prepared_env = dict(env_map)
-    context = prepare_legacy_spawn_context(
-        permission_profile, permission_profile_cwd, codex_home, cwd, prepared_env, command
-    )
-    if not context.permissions.has_full_disk_read_access():
-        raise WindowsSandboxSpawnPrepError("Restricted read-only access requires the elevated Windows sandbox backend")
-    with prepare_legacy_session_security(context, codex_home, prepared_env) as security:
-        apply_legacy_session_acl_rules(
-            context,
-            codex_home,
-            prepared_env,
-            security,
-            additional_deny_write_paths=additional_deny_write_paths,
-        )
-        return create_process_as_user_popen(
-            security.token,
-            command,
-            cwd,
-            prepared_env,
-            stdin_open=stdin_open,
-            tty=tty,
-            merge_stderr=merge_stderr,
-            use_private_desktop=use_private_desktop,
-        )
-
-
-def resolve_windows_deny_read_paths(file_system_sandbox_policy: Any, cwd: str | Path) -> list[Path]:
-    if hasattr(file_system_sandbox_policy, "get_unreadable_roots_with_cwd"):
-        return [Path(path) for path in file_system_sandbox_policy.get_unreadable_roots_with_cwd(Path(cwd))]
-    return []
-
-
-def quote_windows_arg(arg: str) -> str:
-    if not arg or any(ch.isspace() or ch == '"' for ch in arg):
-        return '"' + arg.replace('"', '\\"') + '"'
-    return arg
-
-
-def to_wide(value: str) -> list[int]:
-    return [*value.encode("utf-16-le"), 0, 0]
-
-
-def sanitize_setup_metric_tag_value(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"_", "-", "."} else "_" for ch in value)
-
-
-is_command_cwd_root = lambda command_cwd, root: Path(command_cwd) == Path(root)
 
 
 __all__ = [
@@ -316,7 +169,6 @@ __all__ = [
     "create_readonly_token_with_caps_from",
     "create_readonly_token_with_caps_and_user_from",
     "create_process_as_user_capture",
-    "create_process_as_user_conpty_popen",
     "create_process_as_user_popen",
     "create_workspace_write_token_with_caps_from",
     "create_workspace_write_token_with_caps_and_user_from",
@@ -328,15 +180,17 @@ __all__ = [
     "get_current_token_for_restriction",
     "get_logon_sid_bytes",
     "is_token_restricted",
+    "install_wfp_filters",
     "load_or_create_cap_sids",
     "logon_user",
     "legacy_session_capability_roots",
     "make_env_block",
     "run_windows_sandbox_capture",
-    "run_elevated_capture",
-    "run_windows_sandbox_capture_with_filesystem_overrides",
+    "run_windows_sandbox_capture_for_permission_profile_elevated",
     "run_windows_sandbox_legacy_preflight",
-    "spawn_windows_sandbox_popen",
+    "spawn_windows_sandbox_session_elevated_for_permission_profile",
+    "spawn_windows_sandbox_session_legacy",
+    "spawn_conpty_process_as_user",
     "revoke_ace",
     "prepare_legacy_session_security",
     "prepare_legacy_spawn_context",
@@ -345,6 +199,7 @@ __all__ = [
     "sandbox_dir",
     "sandbox_secrets_dir",
     "sandbox_users_path",
+    "sanitize_setup_metric_tag_value",
     "setup_marker_path",
     "token_mode_for_permission_profile",
     "workspace_cap_sid_for_cwd",
@@ -355,3 +210,11 @@ __all__ = [
     "writable_root_cap_sid_for_path",
     "WRITE_ALLOW_MASK",
 ]
+
+if os.name == "nt":
+    __all__.extend(
+        (
+            "apply_world_writable_scan_and_denies_for_permissions",
+            "run_windows_sandbox_capture_with_filesystem_overrides",
+        )
+    )

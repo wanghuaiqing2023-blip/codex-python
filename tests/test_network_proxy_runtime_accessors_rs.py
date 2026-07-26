@@ -2,15 +2,17 @@ import asyncio
 
 import pytest
 
-import pycodex.network_proxy as network_proxy
-from pycodex.network_proxy import (
-    ConfigState,
+import pycodex.network_proxy.runtime as runtime_module
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
     NetworkMode,
     NetworkProxyConfig,
-    NetworkProxyConstraints,
-    NetworkProxyState,
-    StaticNetworkProxyReloader,
 )
+from pycodex.network_proxy.runtime import (
+    ConfigState,
+    NetworkProxyState,
+)
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def state_for_config(
@@ -32,7 +34,7 @@ def test_unix_socket_allowlist_is_rejected_when_platform_not_supported(tmp_path,
     config.network.set_allow_unix_sockets([str(socket_path)])
     config.network.dangerously_allow_all_unix_sockets = True
     state = state_for_config(config)
-    monkeypatch.setattr(network_proxy, "_unix_socket_permissions_supported", lambda: False)
+    monkeypatch.setattr(runtime_module, "_unix_socket_permissions_supported", lambda: False)
 
     assert not asyncio.run(state.is_unix_socket_allowed(str(socket_path)))
 
@@ -48,7 +50,7 @@ def test_unix_socket_allowlist_is_respected_when_supported(tmp_path, monkeypatch
     config = NetworkProxyConfig()
     config.network.set_allow_unix_sockets([str(socket_path)])
     state = state_for_config(config)
-    monkeypatch.setattr(network_proxy, "_unix_socket_permissions_supported", lambda: True)
+    monkeypatch.setattr(runtime_module, "_unix_socket_permissions_supported", lambda: True)
 
     assert asyncio.run(state.is_unix_socket_allowed(str(socket_path)))
     assert not asyncio.run(state.is_unix_socket_allowed(str(other_path)))
@@ -70,7 +72,7 @@ def test_unix_socket_allowlist_resolves_symlinks_when_supported(tmp_path, monkey
     config = NetworkProxyConfig()
     config.network.set_allow_unix_sockets([str(real)])
     state = state_for_config(config)
-    monkeypatch.setattr(network_proxy, "_unix_socket_permissions_supported", lambda: True)
+    monkeypatch.setattr(runtime_module, "_unix_socket_permissions_supported", lambda: True)
 
     assert asyncio.run(state.is_unix_socket_allowed(str(link)))
 
@@ -84,7 +86,7 @@ def test_unix_socket_allow_all_flag_bypasses_allowlist_when_supported(tmp_path, 
     config = NetworkProxyConfig()
     config.network.dangerously_allow_all_unix_sockets = True
     state = state_for_config(config)
-    monkeypatch.setattr(network_proxy, "_unix_socket_permissions_supported", lambda: True)
+    monkeypatch.setattr(runtime_module, "_unix_socket_permissions_supported", lambda: True)
 
     assert asyncio.run(state.is_unix_socket_allowed(str(tmp_path / "any.sock")))
     assert not asyncio.run(state.is_unix_socket_allowed("relative.sock"))

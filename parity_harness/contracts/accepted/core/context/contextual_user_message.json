@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.context.contextual_user_message",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::contextual_user_message",
+    "source": "codex/codex-rs/core/src/context/contextual_user_message.rs",
+    "anchors": [
+      "CONTEXTUAL_USER_FRAGMENTS",
+      "is_standard_contextual_user_text"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/contextual_user_message.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/contextual_user_message.py"
+    ],
+    "anchors": [
+      "CONTEXTUAL_USER_FRAGMENTS",
+      "is_standard_contextual_user_text"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

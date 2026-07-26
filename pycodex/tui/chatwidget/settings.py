@@ -12,7 +12,12 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Iterable, Optional, Set, Union
 
+from pycodex.protocol import CollaborationMode, CollaborationModeMask, ModeKind, ReasoningEffort, Settings
+from pycodex.protocol.config_types import _UNSET as _PROTOCOL_UNSET
+
 from .._porting import RustTuiModule
+from ..app_command import AppCommand
+from ..app_event import AppEvent
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -53,6 +58,7 @@ __all__ = [
     "set_approval_policy",
     "set_approvals_reviewer",
     "set_collaboration_mask",
+    "set_collaboration_mask_from_user_action",
     "set_feature_enabled",
     "set_full_access_warning_acknowledged",
     "set_permission_network",
@@ -74,7 +80,7 @@ __all__ = [
 
 
 DEFAULT_MODEL_DISPLAY_NAME = "Default"
-_UNSET = object()
+_UNSET = _PROTOCOL_UNSET
 
 
 class Feature(str, Enum):
@@ -87,45 +93,7 @@ class Feature(str, Enum):
     PREVENT_IDLE_SLEEP = "PreventIdleSleep"
 
 
-class ModeKind(str, Enum):
-    DEFAULT = "Default"
-    PLAN = "Plan"
-    PAIR_PROGRAMMING = "PairProgramming"
-    EXECUTE = "Execute"
-
-    def display_name(self) -> str:
-        return {
-            ModeKind.DEFAULT: "Default",
-            ModeKind.PLAN: "Plan",
-            ModeKind.PAIR_PROGRAMMING: "Pair Programming",
-            ModeKind.EXECUTE: "Execute",
-        }[self]
-
-    def is_tui_visible(self) -> bool:
-        return self is ModeKind.PLAN
-
-
-class ReasoningEffortConfig(str, Enum):
-    NONE = "None"
-    MINIMAL = "Minimal"
-    LOW = "Low"
-    MEDIUM = "Medium"
-    HIGH = "High"
-    XHIGH = "XHigh"
-    MAX = "Max"
-    ULTRA = "Ultra"
-
-    def label(self) -> str:
-        return {
-            ReasoningEffortConfig.MINIMAL: "minimal",
-            ReasoningEffortConfig.LOW: "low",
-            ReasoningEffortConfig.MEDIUM: "medium",
-            ReasoningEffortConfig.HIGH: "high",
-            ReasoningEffortConfig.XHIGH: "xhigh",
-            ReasoningEffortConfig.MAX: "max",
-            ReasoningEffortConfig.ULTRA: "ultra",
-            ReasoningEffortConfig.NONE: "default",
-        }[self]
+ReasoningEffortConfig = ReasoningEffort
 
 
 class RealtimeAudioDeviceKind(str, Enum):
@@ -183,66 +151,6 @@ class SettingsConfig:
     service_tier: Optional[Any] = None
     windows_sandbox_mode: Optional[Any] = None
     network: Optional[Any] = None
-
-
-@dataclass(frozen=True)
-class CollaborationMode:
-    mode: ModeKind = ModeKind.DEFAULT
-    model_value: str = ""
-    reasoning_effort_value: Optional[ReasoningEffortConfig] = None
-    developer_instructions: Optional[str] = None
-
-    def model(self) -> str:
-        return self.model_value
-
-    def reasoning_effort(self) -> Optional[ReasoningEffortConfig]:
-        return self.reasoning_effort_value
-
-    def with_updates(
-        self,
-        model: Optional[str] = None,
-        reasoning_effort: Union[Optional[ReasoningEffortConfig], object] = _UNSET,
-        developer_instructions: Union[Optional[str], object] = _UNSET,
-    ) -> "CollaborationMode":
-        return replace(
-            self,
-            model_value=self.model_value if model is None else model,
-            reasoning_effort_value=(
-                self.reasoning_effort_value
-                if reasoning_effort is _UNSET
-                else reasoning_effort
-            ),
-            developer_instructions=(
-                self.developer_instructions
-                if developer_instructions is _UNSET
-                else developer_instructions
-            ),
-        )
-
-    def apply_mask(self, mask: "CollaborationModeMask") -> "CollaborationMode":
-        return CollaborationMode(
-            mode=mask.mode or self.mode,
-            model_value=self.model_value if mask.model is None else mask.model,
-            reasoning_effort_value=(
-                self.reasoning_effort_value
-                if mask.reasoning_effort is _UNSET
-                else mask.reasoning_effort
-            ),
-            developer_instructions=(
-                self.developer_instructions
-                if mask.developer_instructions is _UNSET
-                else mask.developer_instructions
-            ),
-        )
-
-
-@dataclass
-class CollaborationModeMask:
-    name: str
-    mode: Optional[ModeKind] = None
-    model: Optional[str] = None
-    reasoning_effort: Union[Optional[ReasoningEffortConfig], object] = _UNSET
-    developer_instructions: Union[Optional[str], object] = _UNSET
 
 
 class SettingsWidget:
@@ -414,17 +322,17 @@ def set_plan_mode_reasoning_effort(widget: Any, effort: Optional[ReasoningEffort
     widget.config.plan_mode_reasoning_effort = effort
     mask = getattr(widget, "active_collaboration_mask", None)
     if collaboration_modes_enabled(widget) and mask is not None and mask.mode is ModeKind.PLAN:
-        mask.reasoning_effort = effort
+        widget.active_collaboration_mask = replace(mask, reasoning_effort=effort)
     refresh_model_dependent_surfaces(widget)
 
 
 def set_reasoning_effort(widget: Any, effort: Optional[ReasoningEffortConfig]) -> None:
     widget.current_collaboration_mode = widget.current_collaboration_mode.with_updates(
-        reasoning_effort=effort
+        effort=effort
     )
     mask = getattr(widget, "active_collaboration_mask", None)
     if collaboration_modes_enabled(widget) and mask is not None and mask.mode is not ModeKind.PLAN:
-        mask.reasoning_effort = effort
+        widget.active_collaboration_mask = replace(mask, reasoning_effort=effort)
     refresh_model_dependent_surfaces(widget)
 
 
@@ -457,7 +365,7 @@ def set_model(widget: Any, model: str) -> None:
     widget.current_collaboration_mode = widget.current_collaboration_mode.with_updates(model=model)
     mask = getattr(widget, "active_collaboration_mask", None)
     if collaboration_modes_enabled(widget) and mask is not None:
-        mask.model = model
+        widget.active_collaboration_mask = replace(mask, model=model)
     _call_optional(widget, "refresh_effective_service_tier")
     refresh_model_dependent_surfaces(widget)
 
@@ -545,7 +453,7 @@ def set_collaboration_mask(widget: Any, mask: CollaborationModeMask) -> None:
     previous_effort = effective_reasoning_effort(widget)
 
     if mask.mode is ModeKind.PLAN and widget.config.plan_mode_reasoning_effort is not None:
-        mask.reasoning_effort = widget.config.plan_mode_reasoning_effort
+        mask = replace(mask, reasoning_effort=widget.config.plan_mode_reasoning_effort)
     if mask.mode is ModeKind.PLAN:
         getattr(widget, "dismissed_plan_mode_nudge_scopes", set()).add(plan_mode_nudge_scope(widget))
 
@@ -574,20 +482,21 @@ def set_collaboration_mask_from_user_action(widget: Any, mask: CollaborationMode
 
 
 def set_effective_collaboration_mode(widget: Any, mode: CollaborationMode) -> None:
-    settings = mode
     if mode.mode is ModeKind.DEFAULT:
         widget.current_collaboration_mode = CollaborationMode(
             mode=ModeKind.DEFAULT,
-            model_value=settings.model(),
-            reasoning_effort_value=settings.reasoning_effort(),
-            developer_instructions=settings.developer_instructions,
+            settings=Settings(
+                model=mode.model(),
+                reasoning_effort=mode.reasoning_effort(),
+                developer_instructions=mode.settings.developer_instructions,
+            ),
         )
     widget.active_collaboration_mask = CollaborationModeMask(
         name=mode.mode.display_name(),
         mode=mode.mode,
         model=mode.model(),
         reasoning_effort=mode.reasoning_effort(),
-        developer_instructions=mode.developer_instructions,
+        developer_instructions=mode.settings.developer_instructions,
     )
     _call_optional(widget, "update_collaboration_mode_indicator")
     refresh_plan_mode_nudge(widget)
@@ -700,7 +609,7 @@ def apply_thread_settings(widget: Any, settings: Any) -> None:
             if model is not None or effort is not None:
                 collaboration_mode = collaboration_mode.with_updates(
                     model=model,
-                    reasoning_effort=effort if effort is not None else _UNSET,
+                    effort=effort if effort is not None else _UNSET,
                 )
             set_effective_collaboration_mode(widget, collaboration_mode)
     _call_optional(widget, "refresh_effective_service_tier")
@@ -761,19 +670,28 @@ def submit_collaboration_mode_settings_update(widget: Any) -> None:
     thread_id = getattr(widget, "thread_id", None)
     if thread_id is None:
         return
-    _call_optional(
-        widget,
-        "app_event_tx.send",
-        {
-            "kind": "SubmitThreadOp",
-            "thread_id": thread_id,
-            "collaboration_mode": effective_collaboration_mode(widget),
-        },
+    event = AppEvent.submit_thread_op(
+        thread_id,
+        AppCommand.override_turn_context(
+            collaboration_mode=effective_collaboration_mode(widget),
+        ),
     )
+    _send_app_event(widget, event)
 
 
 def _reasoning_label(effort: Optional[ReasoningEffortConfig]) -> str:
-    return "default" if effort is None else effort.label()
+    return "default" if effort is None or effort is ReasoningEffort.NONE else effort.value
+
+
+def _send_app_event(widget: Any, event: AppEvent) -> None:
+    sender = getattr(widget, "app_event_tx", None)
+    send = getattr(sender, "send", None)
+    if callable(send):
+        send(event)
+    elif callable(sender):
+        sender(event)
+    elif hasattr(sender, "append"):
+        sender.append(event)
 
 
 def _feature(feature: Union[Feature, str]) -> Feature:

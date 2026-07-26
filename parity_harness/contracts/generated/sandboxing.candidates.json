@@ -1,0 +1,213 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "sandboxing",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 6,
+    "python_files": 6,
+    "modules_with_candidates": 6,
+    "modules_with_anchors": 6
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-sandboxing",
+        "module": "crate",
+        "source": "codex/codex-rs/sandboxing/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/sandboxing/__init__.py",
+          "anchor_candidates": [
+            "SandboxCommand",
+            "SandboxExecRequest",
+            "SandboxManager",
+            "SandboxTransformError",
+            "SandboxTransformRequest",
+            "SandboxType",
+            "SandboxablePreference",
+            "compatibility_sandbox_policy_for_permission_profile",
+            "find_system_bwrap_in_path",
+            "get_platform_sandbox",
+            "system_bwrap_warning"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-sandboxing",
+        "module": "bwrap",
+        "source": "codex/codex-rs/sandboxing/src/bwrap.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/sandboxing/bwrap.py",
+          "anchor_candidates": [
+            "WSL1_BWRAP_WARNING",
+            "find_system_bwrap_in_path",
+            "is_wsl1",
+            "system_bwrap_warning",
+            "MISSING_BWRAP_WARNING",
+            "SYSTEM_BWRAP_PROBE_STDERR_LIMIT_BYTES",
+            "SYSTEM_BWRAP_PROGRAM",
+            "USER_NAMESPACE_FAILURES",
+            "USER_NAMESPACE_WARNING",
+            "find_system_bwrap_in_search_paths",
+            "is_user_namespace_failure",
+            "proc_version_indicates_wsl1"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-sandboxing",
+        "module": "landlock",
+        "source": "codex/codex-rs/sandboxing/src/landlock.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/sandboxing/landlock.py",
+          "anchor_candidates": [
+            "CODEX_LINUX_SANDBOX_ARG0",
+            "allow_network_for_proxy",
+            "create_linux_sandbox_command_args_for_permission_profile",
+            "create_linux_sandbox_command_args"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-sandboxing",
+        "module": "manager",
+        "source": "codex/codex-rs/sandboxing/src/manager.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/sandboxing/manager.py",
+          "anchor_candidates": [
+            "SandboxCommand",
+            "SandboxExecRequest",
+            "SandboxManager",
+            "SandboxTransformError",
+            "SandboxTransformRequest",
+            "SandboxType",
+            "SandboxablePreference",
+            "compatibility_sandbox_policy_for_permission_profile",
+            "get_platform_sandbox",
+            "new",
+            "select_initial",
+            "transform"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-sandboxing",
+        "module": "policy_transforms",
+        "source": "codex/codex-rs/sandboxing/src/policy_transforms.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/sandboxing/policy_transforms.py",
+          "anchor_candidates": [
+            "effective_file_system_sandbox_policy",
+            "effective_network_sandbox_policy",
+            "effective_permission_profile",
+            "intersect_permission_profiles",
+            "merge_permission_profiles",
+            "normalize_additional_permissions",
+            "should_require_platform_sandbox",
+            "effective_glob_scan_depth",
+            "merge_file_system_policy_with_additional_permissions",
+            "merge_glob_scan_max_depth"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-sandboxing",
+        "module": "seatbelt",
+        "source": "codex/codex-rs/sandboxing/src/seatbelt.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/sandboxing/seatbelt.py",
+          "anchor_candidates": [
+            "CreateSeatbeltCommandArgsParams",
+            "MACOS_PATH_TO_SEATBELT_EXECUTABLE",
+            "create_seatbelt_command_args",
+            "MACOS_RESTRICTED_READ_ONLY_PLATFORM_DEFAULTS",
+            "MACOS_SEATBELT_BASE_POLICY",
+            "MACOS_SEATBELT_NETWORK_POLICY",
+            "ProxyPolicyInputs",
+            "SeatbeltAccessRoot",
+            "UnixDomainSocketPolicy",
+            "UnixSocketPathParam",
+            "build_seatbelt_access_policy",
+            "build_seatbelt_unreadable_glob_policy"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

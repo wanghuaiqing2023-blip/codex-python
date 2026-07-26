@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-protocol.mcp",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "mcp",
+    "source": "codex/codex-rs/protocol/src/mcp.rs",
+    "anchors": [
+      "CallToolResult",
+      "RequestId",
+      "Resource",
+      "ResourceContent",
+      "ResourceTemplate",
+      "Tool",
+      "from_mcp_value"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/mcp.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/mcp.py"
+    ],
+    "anchors": [
+      "CallToolResult",
+      "RequestId",
+      "Resource",
+      "ResourceContent",
+      "ResourceTemplate",
+      "Tool",
+      "from_mcp_value"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_mcp_dynamic_tools.py"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-cli.plugin_cmd",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cli",
+    "module": "bin::codex::plugin_cmd",
+    "source": "codex/codex-rs/cli/src/plugin_cmd.rs",
+    "anchors": [
+      "parse_plugin_selection",
+      "run_plugin_add",
+      "run_plugin_list",
+      "run_plugin_remove"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cli/plugin_cmd.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cli/plugin_cmd.py"
+    ],
+    "anchors": [
+      "parse_plugin_selection",
+      "run_plugin_add",
+      "run_plugin_list",
+      "run_plugin_remove"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_cli_parser.py"
+  ]
+}

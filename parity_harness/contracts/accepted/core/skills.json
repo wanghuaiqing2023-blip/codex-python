@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.skills",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "skills",
+    "source": "codex/codex-rs/core/src/skills.rs",
+    "anchors": [
+      "SkillError",
+      "SkillInjections",
+      "SkillLoadOutcome",
+      "SkillMetadata",
+      "SkillPolicy",
+      "SkillRenderReport",
+      "SkillRenderSideEffects",
+      "SkillsLoadInput",
+      "build_available_skills",
+      "build_skill_injections",
+      "build_skill_name_counts",
+      "collect_explicit_skill_mentions"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/skills.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/skills.py"
+    ],
+    "anchors": [
+      "SkillError",
+      "SkillInjections",
+      "SkillLoadOutcome",
+      "SkillMetadata",
+      "SkillPolicy",
+      "SkillRenderReport",
+      "SkillRenderSideEffects",
+      "SkillsLoadInput",
+      "build_available_skills",
+      "build_skill_injections",
+      "build_skill_name_counts",
+      "collect_explicit_skill_mentions"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

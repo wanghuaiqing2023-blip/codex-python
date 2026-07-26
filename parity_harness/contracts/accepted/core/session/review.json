@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.session.review",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "session::review",
+    "source": "codex/codex-rs/core/src/session/review.rs",
+    "anchors": [
+      "spawn_review_thread"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/session/review.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/session/review.py"
+    ],
+    "anchors": [
+      "spawn_review_thread"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

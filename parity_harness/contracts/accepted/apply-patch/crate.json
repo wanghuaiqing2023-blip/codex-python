@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-apply-patch.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-apply-patch",
+    "module": "crate",
+    "source": "codex/codex-rs/apply-patch/src/lib.rs",
+    "anchors": [
+      "APPLY_PATCH_TOOL_INSTRUCTIONS",
+      "ApplyPatchAction",
+      "ApplyPatchArgs",
+      "ApplyPatchError",
+      "ApplyPatchFileChange",
+      "ApplyPatchFileUpdate",
+      "CODEX_CORE_APPLY_PATCH_ARG1",
+      "Hunk",
+      "MaybeApplyPatchVerified",
+      "StreamingPatchParser",
+      "UpdateFileChunk",
+      "changes"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/apply_patch/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/apply_patch/__init__.py"
+    ],
+    "anchors": [
+      "APPLY_PATCH_TOOL_INSTRUCTIONS",
+      "ApplyPatchAction",
+      "ApplyPatchArgs",
+      "ApplyPatchError",
+      "ApplyPatchFileChange",
+      "ApplyPatchFileUpdate",
+      "CODEX_CORE_APPLY_PATCH_ARG1",
+      "Hunk",
+      "MaybeApplyPatchVerified",
+      "StreamingPatchParser",
+      "UpdateFileChunk",
+      "changes"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

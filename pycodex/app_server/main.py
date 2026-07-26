@@ -5,12 +5,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TextIO
 
 from pycodex.config import CliConfigOverrides, LoaderOverrides
 from pycodex.protocol import SessionSource
 
-from . import AppServerRuntimeOptions, PluginStartupTasks, RunMainWithTransportOptionsCall
+from . import (
+    AppServerRuntimeOptions,
+    AppServerRuntimeResult,
+    PluginStartupTasks,
+    RunMainWithTransportOptionsCall,
+    run_main_with_transport_options,
+)
 
 
 MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH"
@@ -88,6 +94,32 @@ def main_runtime_call_projection(
     )
 
 
+async def run(
+    arg0_paths: Any,
+    args: AppServerArgsProjection | None = None,
+    *,
+    stdin: TextIO,
+    stdout: TextIO,
+    environ: Mapping[str, str] | None = None,
+) -> AppServerRuntimeResult:
+    """Execute the Rust ``main.rs`` handoff into the crate-root runtime."""
+
+    call = main_runtime_call_projection(arg0_paths, args, environ=environ)
+    return await run_main_with_transport_options(
+        arg0_paths=call.arg0_paths,
+        cli_config_overrides=call.cli_config_overrides,
+        loader_overrides=call.loader_overrides,
+        strict_config=call.strict_config,
+        default_analytics_enabled=call.default_analytics_enabled,
+        transport=call.transport,
+        session_source=call.session_source,
+        auth=call.auth,
+        runtime_options=call.runtime_options,
+        stdin=stdin,
+        stdout=stdout,
+    )
+
+
 def _transport_from_listen_projection(listen: str) -> str:
     if listen == DEFAULT_LISTEN_URL:
         return "stdio"
@@ -120,4 +152,5 @@ __all__ = [
     "loader_overrides_from_debug_env",
     "main_runtime_call_projection",
     "managed_config_path_from_debug_env",
+    "run",
 ]

@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-core.mcp_tool_approval_templates",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "mcp_tool_approval_templates",
+    "source": "codex/codex-rs/core/src/mcp_tool_approval_templates.rs",
+    "anchors": [
+      "RenderedMcpToolApprovalParam",
+      "RenderedMcpToolApprovalTemplate",
+      "render_mcp_tool_approval_template",
+      "CONNECTOR_NAME_TEMPLATE_VAR",
+      "CONSEQUENTIAL_TOOL_MESSAGE_TEMPLATES_SCHEMA_VERSION",
+      "ConsequentialToolMessageTemplate",
+      "ConsequentialToolTemplateParam",
+      "load_consequential_tool_message_templates",
+      "render_mcp_tool_approval_template_from_templates",
+      "render_question_template",
+      "render_tool_params"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/mcp_tool_approval_templates.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/mcp_tool_approval_templates.py"
+    ],
+    "anchors": [
+      "RenderedMcpToolApprovalParam",
+      "RenderedMcpToolApprovalTemplate",
+      "render_mcp_tool_approval_template",
+      "CONNECTOR_NAME_TEMPLATE_VAR",
+      "CONSEQUENTIAL_TOOL_MESSAGE_TEMPLATES_SCHEMA_VERSION",
+      "ConsequentialToolMessageTemplate",
+      "ConsequentialToolTemplateParam",
+      "load_consequential_tool_message_templates",
+      "render_mcp_tool_approval_template_from_templates",
+      "render_question_template",
+      "render_tool_params"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

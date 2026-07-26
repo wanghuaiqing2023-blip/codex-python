@@ -1,0 +1,1045 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "api",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 35,
+    "python_files": 37,
+    "modules_with_candidates": 35,
+    "modules_with_anchors": 35
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "crate",
+        "source": "codex/codex-rs/codex-api/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/__init__.py",
+          "anchor_candidates": [
+            "AllowedCaller",
+            "ApiError",
+            "ApproximateLocation",
+            "AuthError",
+            "AuthHeaderTelemetry",
+            "AuthProvider",
+            "ClickOperation",
+            "CompactClient",
+            "CompactionInput",
+            "Compression",
+            "FinanceAssetType",
+            "FinanceOperation"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "api_bridge",
+        "source": "codex/codex-rs/codex-api/src/api_bridge.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/api_bridge.py",
+          "anchor_candidates": [
+            "map_api_error",
+            "ACTIVE_LIMIT_HEADER",
+            "CF_RAY_HEADER",
+            "CYBER_POLICY_ERROR_CODE",
+            "CYBER_POLICY_FALLBACK_MESSAGE",
+            "OAI_REQUEST_ID_HEADER",
+            "REQUEST_ID_HEADER",
+            "X_ERROR_JSON_HEADER",
+            "X_OPENAI_AUTHORIZATION_ERROR_HEADER"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "auth",
+        "source": "codex/codex-rs/codex-api/src/auth.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/auth.py",
+          "anchor_candidates": [
+            "AuthError",
+            "AuthHeaderTelemetry",
+            "AuthProvider",
+            "SharedAuthProvider",
+            "auth_header_telemetry",
+            "add_auth_headers",
+            "apply_auth",
+            "to_auth_headers"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "common",
+        "source": "codex/codex-rs/codex-api/src/common.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/common.py",
+          "anchor_candidates": [
+            "CompactionInput",
+            "MemorySummarizeInput",
+            "MemorySummarizeOutput",
+            "OpenAiVerbosity",
+            "RawMemory",
+            "RawMemoryMetadata",
+            "Reasoning",
+            "ResponseCreateWsRequest",
+            "ResponseEvent",
+            "ResponseProcessedWsRequest",
+            "ResponseStream",
+            "ResponsesApiRequest"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint",
+        "source": "codex/codex-rs/codex-api/src/endpoint/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/__init__.py",
+          "anchor_candidates": [
+            "CompactClient",
+            "ImagesClient",
+            "MemoriesClient",
+            "ModelsClient",
+            "RealtimeCallClient",
+            "RealtimeCallResponse",
+            "RealtimeEventParser",
+            "RealtimeOutputModality",
+            "RealtimeSessionConfig",
+            "RealtimeSessionMode",
+            "RealtimeWebsocketClient",
+            "RealtimeWebsocketConnection"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::compact",
+        "source": "codex/codex-rs/codex-api/src/endpoint/compact.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/compact.py",
+          "anchor_candidates": [
+            "CompactClient",
+            "compact",
+            "compact_input",
+            "with_telemetry",
+            "path"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::images",
+        "source": "codex/codex-rs/codex-api/src/endpoint/images.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/images.py",
+          "anchor_candidates": [
+            "ImagesClient",
+            "edit",
+            "generate",
+            "with_telemetry"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::memories",
+        "source": "codex/codex-rs/codex-api/src/endpoint/memories.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/memories.py",
+          "anchor_candidates": [
+            "MemoriesClient",
+            "summarize",
+            "summarize_input",
+            "with_telemetry",
+            "path"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::models",
+        "source": "codex/codex-rs/codex-api/src/endpoint/models.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/models.py",
+          "anchor_candidates": [
+            "ModelsClient",
+            "list_models",
+            "with_telemetry",
+            "append_client_version_query",
+            "path"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_call",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_call.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_call.py",
+          "anchor_candidates": [
+            "RealtimeCallClient",
+            "RealtimeCallResponse",
+            "create",
+            "create_with_headers",
+            "create_with_session",
+            "create_with_session_and_headers",
+            "with_telemetry",
+            "MULTIPART_BOUNDARY",
+            "MULTIPART_CONTENT_TYPE",
+            "path",
+            "uses_backend_request_shape"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/__init__.py",
+          "anchor_candidates": [
+            "RealtimeEventParser",
+            "RealtimeOutputModality",
+            "RealtimeSessionConfig",
+            "RealtimeSessionMode",
+            "RealtimeWebsocketClient",
+            "RealtimeWebsocketConnection",
+            "RealtimeWebsocketEvents",
+            "RealtimeWebsocketWriter",
+            "session_update_session_json"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::methods",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/methods.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/methods.py",
+          "anchor_candidates": [
+            "RealtimeWebsocketClient",
+            "RealtimeWebsocketConnection",
+            "RealtimeWebsocketEvents",
+            "RealtimeWebsocketWriter",
+            "close",
+            "connect",
+            "connect_webrtc_sideband",
+            "events",
+            "new",
+            "next_event",
+            "send_audio_frame",
+            "send_conversation_function_call_output"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::methods_common",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_common.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/methods_common.py",
+          "anchor_candidates": [
+            "REALTIME_AUDIO_SAMPLE_RATE",
+            "conversation_function_call_output_message",
+            "conversation_item_create_message",
+            "normalized_session_mode",
+            "session_update_session",
+            "session_update_session_json",
+            "websocket_intent",
+            "AGENT_FINAL_MESSAGE_PREFIX"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::methods_v1",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_v1.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/methods_v1.py",
+          "anchor_candidates": [
+            "conversation_handoff_append_message",
+            "conversation_item_create_message",
+            "session_update_session",
+            "websocket_intent"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::methods_v2",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/methods_v2.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/methods_v2.py",
+          "anchor_candidates": [
+            "conversation_function_call_output_message",
+            "conversation_item_create_message",
+            "session_update_session",
+            "websocket_intent",
+            "REALTIME_V2_BACKGROUND_AGENT_TOOL_DESCRIPTION",
+            "REALTIME_V2_BACKGROUND_AGENT_TOOL_NAME",
+            "REALTIME_V2_INPUT_TRANSCRIPTION_MODEL",
+            "REALTIME_V2_OUTPUT_MODALITY_AUDIO",
+            "REALTIME_V2_OUTPUT_MODALITY_TEXT",
+            "REALTIME_V2_SILENCE_TOOL_DESCRIPTION",
+            "REALTIME_V2_SILENCE_TOOL_NAME",
+            "REALTIME_V2_TOOL_CHOICE"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::protocol",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/protocol.py",
+          "anchor_candidates": [
+            "RealtimeAudioFrame",
+            "RealtimeEvent",
+            "RealtimeEventParser",
+            "RealtimeOutputModality",
+            "RealtimeSessionConfig",
+            "RealtimeSessionMode",
+            "RealtimeTranscriptEntry",
+            "RealtimeVoice",
+            "parse_realtime_event"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::protocol_common",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol_common.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/protocol_common.py",
+          "anchor_candidates": [
+            "parse_error_event",
+            "parse_realtime_payload",
+            "parse_session_updated_event",
+            "parse_transcript_delta_event",
+            "parse_transcript_done_event"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::protocol_v1",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol_v1.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/protocol_v1.py",
+          "anchor_candidates": [
+            "parse_realtime_event_v1"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::realtime_websocket::protocol_v2",
+        "source": "codex/codex-rs/codex-api/src/endpoint/realtime_websocket/protocol_v2.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/realtime_websocket/protocol_v2.py",
+          "anchor_candidates": [
+            "parse_realtime_event_v2",
+            "BACKGROUND_AGENT_TOOL_NAME",
+            "DEFAULT_AUDIO_CHANNELS",
+            "DEFAULT_AUDIO_SAMPLE_RATE",
+            "SILENCE_TOOL_NAME",
+            "TOOL_ARGUMENT_KEYS"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::responses",
+        "source": "codex/codex-rs/codex-api/src/endpoint/responses.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/responses.py",
+          "anchor_candidates": [
+            "ResponsesClient",
+            "ResponsesOptions",
+            "new",
+            "stream",
+            "stream_request",
+            "with_telemetry",
+            "path"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::responses_websocket",
+        "source": "codex/codex-rs/codex-api/src/endpoint/responses_websocket.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/responses_websocket.py",
+          "anchor_candidates": [
+            "ResponsesWebsocketClient",
+            "ResponsesWebsocketClose",
+            "ResponsesWebsocketConnection",
+            "ResponsesWebsocketProbe",
+            "connect",
+            "is_closed",
+            "new",
+            "probe_handshake",
+            "send_response_processed",
+            "stream_request",
+            "OPENAI_MODEL_HEADER",
+            "WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::search",
+        "source": "codex/codex-rs/codex-api/src/endpoint/search.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/search.py",
+          "anchor_candidates": [
+            "SearchClient",
+            "search",
+            "with_telemetry",
+            "path"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "endpoint::session",
+        "source": "codex/codex-rs/codex-api/src/endpoint/session.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/endpoint/session.py",
+          "anchor_candidates": [
+            "EndpointSession",
+            "execute",
+            "execute_with",
+            "new",
+            "provider",
+            "stream_with",
+            "with_request_telemetry",
+            "make_request"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "error",
+        "source": "codex/codex-rs/codex-api/src/error.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/error.py",
+          "anchor_candidates": [
+            "ApiError"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "files",
+        "source": "codex/codex-rs/codex-api/src/files.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/files.py",
+          "anchor_candidates": [
+            "OPENAI_FILE_UPLOAD_LIMIT_BYTES",
+            "OPENAI_FILE_URI_PREFIX",
+            "OpenAiFileError",
+            "UploadedOpenAiFile",
+            "openai_file_uri",
+            "upload_local_file",
+            "OPENAI_FILE_FINALIZE_RETRY_DELAY",
+            "OPENAI_FILE_FINALIZE_TIMEOUT",
+            "OPENAI_FILE_REQUEST_TIMEOUT",
+            "OPENAI_FILE_USE_CASE"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "images",
+        "source": "codex/codex-rs/codex-api/src/images.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/images.py",
+          "anchor_candidates": [
+            "ImageBackground",
+            "ImageData",
+            "ImageEditRequest",
+            "ImageGenerationRequest",
+            "ImageQuality",
+            "ImageResponse",
+            "ImageUrl"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "provider",
+        "source": "codex/codex-rs/codex-api/src/provider.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/provider.py",
+          "anchor_candidates": [
+            "Provider",
+            "RetryConfig",
+            "build_request",
+            "is_azure_responses_endpoint",
+            "is_azure_responses_provider",
+            "to_policy",
+            "url_for_path",
+            "websocket_url_for_path"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "rate_limits",
+        "source": "codex/codex-rs/codex-api/src/rate_limits.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/rate_limits.py",
+          "anchor_candidates": [
+            "RateLimitError",
+            "parse_all_rate_limits",
+            "parse_default_rate_limit",
+            "parse_promo_message",
+            "parse_rate_limit_event",
+            "parse_rate_limit_for_limit",
+            "parse_rate_limit_reached_type"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "requests",
+        "source": "codex/codex-rs/codex-api/src/requests/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/requests/__init__.py",
+          "anchor_candidates": [
+            "Compression",
+            "attach_item_ids"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "requests::headers",
+        "source": "codex/codex-rs/codex-api/src/requests/headers.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/requests/headers.py",
+          "anchor_candidates": [
+            "build_session_headers",
+            "insert_header",
+            "subagent_header"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "requests::responses",
+        "source": "codex/codex-rs/codex-api/src/requests/responses.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/requests/responses.py",
+          "anchor_candidates": [
+            "Compression",
+            "attach_item_ids"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "search",
+        "source": "codex/codex-rs/codex-api/src/search.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/search.py",
+          "anchor_candidates": [
+            "AllowedCaller",
+            "ApproximateLocation",
+            "ClickOperation",
+            "FinanceAssetType",
+            "FinanceOperation",
+            "FindOperation",
+            "LocationType",
+            "OpenOperation",
+            "ScreenshotOperation",
+            "SearchCommands",
+            "SearchContextSize",
+            "SearchFilters"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "sse",
+        "source": "codex/codex-rs/codex-api/src/sse/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/sse/__init__.py",
+          "anchor_candidates": [
+            "ResponsesStreamEvent",
+            "process_responses_event",
+            "spawn_response_stream"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "sse::responses",
+        "source": "codex/codex-rs/codex-api/src/sse/responses.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/sse/responses.py",
+          "anchor_candidates": [
+            "ResponsesEventError",
+            "ResponsesStreamEvent",
+            "into_api_error",
+            "kind",
+            "model_verifications",
+            "process_responses_event",
+            "process_sse",
+            "response_model",
+            "spawn_response_stream",
+            "OPENAI_MODEL_HEADER",
+            "REQUEST_ID_HEADER",
+            "TRUSTED_ACCESS_FOR_CYBER_VERIFICATION"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-api",
+        "module": "telemetry",
+        "source": "codex/codex-rs/codex-api/src/telemetry.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_api/telemetry.py",
+          "anchor_candidates": [
+            "SseTelemetry",
+            "WebsocketTelemetry",
+            "run_with_request_telemetry",
+            "http_status",
+            "on_sse_poll",
+            "on_ws_event",
+            "on_ws_request",
+            "status"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

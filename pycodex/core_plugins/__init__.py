@@ -7,10 +7,9 @@ from enum import Enum
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from pycodex.core.context import PluginCapabilitySummary
+from pycodex.plugin import PluginCapabilitySummary
 
 
 OPENAI_CURATED_MARKETPLACE_NAME = "openai-curated"
@@ -254,7 +253,6 @@ class LoadedPlugin:
     def capability_summary(self) -> "PluginCapabilitySummary | None":
         if not self.is_active():
             return None
-        from pycodex.core.context import PluginCapabilitySummary
         description = _prompt_safe_description(self.manifest_description)
         mcp_names = tuple(sorted(str(name) for name in self.mcp_servers))
         if not self.has_enabled_skills and not mcp_names and not self.apps:

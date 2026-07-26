@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-state.model.agent_job",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "model::agent_job",
+    "source": "codex/codex-rs/state/src/model/agent_job.rs",
+    "anchors": [
+      "AgentJob",
+      "AgentJobCreateParams",
+      "AgentJobItem",
+      "AgentJobItemCreateParams",
+      "AgentJobItemRow",
+      "AgentJobItemStatus",
+      "AgentJobProgress",
+      "AgentJobRow",
+      "AgentJobStatus",
+      "is_final",
+      "parse",
+      "epoch_seconds_to_datetime"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/model/agent_job.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/model/agent_job.py"
+    ],
+    "anchors": [
+      "AgentJob",
+      "AgentJobCreateParams",
+      "AgentJobItem",
+      "AgentJobItemCreateParams",
+      "AgentJobItemRow",
+      "AgentJobItemStatus",
+      "AgentJobProgress",
+      "AgentJobRow",
+      "AgentJobStatus",
+      "is_final",
+      "parse",
+      "epoch_seconds_to_datetime"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

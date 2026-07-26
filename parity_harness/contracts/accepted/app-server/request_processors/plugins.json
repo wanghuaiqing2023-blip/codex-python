@@ -1,0 +1,73 @@
+{
+  "contract_id": "codex-app-server.request_processors.plugins",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "request_processors::plugins",
+    "source": "codex/codex-rs/app-server/src/request_processors/plugins.rs",
+    "anchors": [
+      "PluginRequestProcessor",
+      "effective_plugins_changed_callback",
+      "new",
+      "plugin_install",
+      "plugin_installed",
+      "plugin_list",
+      "plugin_read",
+      "plugin_share_checkout",
+      "plugin_share_delete",
+      "plugin_share_list",
+      "plugin_share_save",
+      "plugin_share_update_targets"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/request_processors_plugins.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/request_processors_plugins.py"
+    ],
+    "anchors": [
+      "PluginRequestProcessor",
+      "effective_plugins_changed_callback",
+      "new",
+      "plugin_install",
+      "plugin_installed",
+      "plugin_list",
+      "plugin_read",
+      "plugin_share_checkout",
+      "plugin_share_delete",
+      "plugin_share_list",
+      "plugin_share_save",
+      "plugin_share_update_targets"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_config_mod_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_app_server_lib_rs.py",
+    "tests/test_app_server_main_rs.py",
+    "tests/test_app_server_request_processors_plugins_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

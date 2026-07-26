@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.npm_registry",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "npm_registry",
+    "source": "codex/codex-rs/tui/src/npm_registry.rs",
+    "anchors": [
+      "NpmPackageInfo",
+      "PACKAGE_URL",
+      "ensure_version_ready",
+      "NpmPackageDist",
+      "NpmPackageVersionInfo",
+      "version_info_with_dist"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/npm_registry.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/npm_registry.py"
+    ],
+    "anchors": [
+      "NpmPackageInfo",
+      "PACKAGE_URL",
+      "ensure_version_ready",
+      "NpmPackageDist",
+      "NpmPackageVersionInfo",
+      "version_info_with_dist"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

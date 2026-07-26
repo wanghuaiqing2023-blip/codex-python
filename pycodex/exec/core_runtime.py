@@ -46,6 +46,23 @@ class CoreExecResumeTarget:
     rollout_path: Path
 
 
+@dataclass(frozen=True)
+class CoreExecRuntimeState:
+    """Resolved core runtime services shared by Session and its clients.
+
+    Rust keeps one models manager on ``ThreadManagerState`` and passes that
+    same service into ``Session``.  Keeping it in this startup result prevents
+    TUI clients from rebuilding an uninitialized catalog after model metadata
+    has already been resolved.
+    """
+
+    model_client: Any
+    provider: Any
+    model_info: Any
+    resolved_auth: Any
+    models_manager: Any
+
+
 def build_default_core_exec_runtime(
     config: Any,
     *,
@@ -57,6 +74,30 @@ def build_default_core_exec_runtime(
     models_manager: Any = None,
 ) -> tuple[Any, Any, Any, Any]:
     """Build core transport and resolve model metadata through models-manager."""
+
+    state = build_default_core_exec_runtime_state(
+        config,
+        auth=auth,
+        env=env,
+        config_toml=config_toml,
+        codex_home=codex_home,
+        client_version=client_version,
+        models_manager=models_manager,
+    )
+    return state.model_client, state.provider, state.model_info, state.resolved_auth
+
+
+def build_default_core_exec_runtime_state(
+    config: Any,
+    *,
+    auth: Any = None,
+    env: Any = None,
+    config_toml: Any = None,
+    codex_home: str | Path | None = None,
+    client_version: str | None = None,
+    models_manager: Any = None,
+) -> CoreExecRuntimeState:
+    """Build the shared services used by a core runtime and its TUI client."""
 
     try:
         model_client, provider, _fallback_model_info, resolved_auth = _build_default_local_http_exec_runtime(
@@ -79,7 +120,13 @@ def build_default_core_exec_runtime(
         client_version=client_version,
     )
     model_info = _resolve_core_model_info(manager, config)
-    return model_client, provider, model_info, resolved_auth
+    return CoreExecRuntimeState(
+        model_client=model_client,
+        provider=provider,
+        model_info=model_info,
+        resolved_auth=resolved_auth,
+        models_manager=manager,
+    )
 
 
 def _build_core_models_manager(
@@ -453,7 +500,9 @@ def emit_core_exec_result(
 __all__ = [
     "align_core_exec_resume_model_client",
     "build_default_core_exec_runtime",
+    "build_default_core_exec_runtime_state",
     "CoreExecResumeTarget",
+    "CoreExecRuntimeState",
     "core_exec_config_summary",
     "core_exec_enabled",
     "core_exec_initial_messages_from_rollout",

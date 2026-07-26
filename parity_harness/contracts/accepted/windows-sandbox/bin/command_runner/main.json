@@ -1,0 +1,33 @@
+{
+  "contract_id": "codex-windows-sandbox.bin.codex-command-runner",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "bin::codex-command-runner",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/bin/command_runner/main.rs",
+    "anchors": [
+      "main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/bin/command_runner/__main__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/bin/command_runner/__main__.py"
+    ],
+    "anchors": [
+      "main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_command_runner.py",
+    "tests/test_windows_sandbox_runner_transport.py"
+  ]
+}

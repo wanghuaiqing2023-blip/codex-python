@@ -13,11 +13,9 @@ from __future__ import annotations
 from .request_plugin_install import (
     MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS,
     ListAvailablePluginsToInstallHandler,
-    create_list_available_plugins_to_install_tool,
 )
 
 __all__ = [
     "MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS",
     "ListAvailablePluginsToInstallHandler",
-    "create_list_available_plugins_to_install_tool",
 ]

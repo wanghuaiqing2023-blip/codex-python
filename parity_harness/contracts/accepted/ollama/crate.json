@@ -1,0 +1,70 @@
+{
+  "contract_id": "codex-ollama.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-ollama",
+    "module": "crate",
+    "source": "codex/codex-rs/ollama/src/lib.rs",
+    "anchors": [
+      "CliProgressReporter",
+      "DEFAULT_OSS_MODEL",
+      "OllamaClient",
+      "PullEvent",
+      "PullProgressReporter",
+      "TuiProgressReporter",
+      "ensure_oss_ready",
+      "ensure_responses_supported",
+      "min_responses_version",
+      "supports_responses"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ollama/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/ollama/__init__.py"
+    ],
+    "anchors": [
+      "CliProgressReporter",
+      "DEFAULT_OSS_MODEL",
+      "OllamaClient",
+      "PullEvent",
+      "PullProgressReporter",
+      "TuiProgressReporter",
+      "ensure_oss_ready",
+      "ensure_responses_supported",
+      "min_responses_version",
+      "supports_responses"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_ollama_client_rs.py",
+    "tests/test_ollama_lib_rs.py",
+    "tests/test_ollama_parser_rs.py",
+    "tests/test_ollama_pull_rs.py",
+    "tests/test_ollama_url_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

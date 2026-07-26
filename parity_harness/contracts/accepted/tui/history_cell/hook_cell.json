@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.history_cell.hook_cell",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "history_cell::hook_cell",
+    "source": "codex/codex-rs/tui/src/history_cell/hook_cell.rs",
+    "anchors": [
+      "HookCell",
+      "add_completed_run",
+      "advance_time",
+      "complete_run",
+      "has_visible_running_run",
+      "is_active",
+      "is_empty",
+      "new_active_hook_cell",
+      "new_completed_hook_cell",
+      "next_timer_deadline",
+      "should_flush",
+      "should_render"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/history_cell/hook_cell.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/history_cell/hook_cell.py"
+    ],
+    "anchors": [
+      "HookCell",
+      "add_completed_run",
+      "advance_time",
+      "complete_run",
+      "has_visible_running_run",
+      "is_active",
+      "is_empty",
+      "new_active_hook_cell",
+      "new_completed_hook_cell",
+      "next_timer_deadline",
+      "should_flush",
+      "should_render"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

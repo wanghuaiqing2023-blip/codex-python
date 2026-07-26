@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from pycodex.core.sandbox_tags import should_require_platform_sandbox
-from pycodex.core.tools.handlers.utils import (
+from pycodex.core.tools.handlers import (
     intersect_permission_profiles,
     merge_permission_profiles,
 )

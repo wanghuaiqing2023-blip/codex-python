@@ -7,7 +7,7 @@ from pycodex.core import (
     X_CODEX_TURN_STATE_HEADER,
     build_responses_headers,
 )
-from pycodex.core.http_transport import _record_turn_state_from_headers
+from pycodex.core.client import _record_turn_state_from_headers
 
 
 def _turn_metadata(turn_id: str) -> str:

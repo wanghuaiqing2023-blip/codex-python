@@ -9,6 +9,7 @@ from pycodex.tui.chatwidget.interaction import (
     FrameRequester,
     KeyBinding,
     KeyEvent,
+    active_view_key_has_priority,
     apply_external_edit,
     arm_quit_shortcut,
     attach_image,
@@ -327,6 +328,24 @@ def test_handle_key_event_routes_active_view_then_maybe_drains_queue() -> None:
 
     assert ("handle_key_event", KeyEvent("char", "x")) in widget.bottom_pane.events
     assert ("maybe_send_next_queued_input",) in widget.events
+
+
+def test_active_view_key_priority_matches_rust_control_exceptions() -> None:
+    assert active_view_key_has_priority(True, KeyEvent("esc"))
+    assert active_view_key_has_priority(True, KeyEvent("char", "x"))
+    assert not active_view_key_has_priority(
+        True,
+        KeyEvent("char", "c", ("control",)),
+    )
+    assert not active_view_key_has_priority(
+        True,
+        KeyEvent("char", "r", ("control",)),
+    )
+    assert not active_view_key_has_priority(
+        True,
+        KeyEvent("char", "u", ("control",)),
+    )
+    assert not active_view_key_has_priority(False, KeyEvent("esc"))
 
 
 def test_handle_key_event_copy_paste_queued_edit_interrupt_and_nudge_paths() -> None:

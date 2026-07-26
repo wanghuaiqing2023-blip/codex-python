@@ -7,7 +7,9 @@ from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .._porting import RustTuiModule
+from .bottom_pane_view import BottomPaneViewDefaults
 from .multi_select_picker import MultiSelectItem, MultiSelectPicker
+from .selection_popup_common import TerminalPopupLine
 from .status_surface_preview import StatusSurfacePreviewData, StatusSurfacePreviewItem
 
 RUST_MODULE = RustTuiModule(
@@ -137,7 +139,7 @@ _ALIASES.update({
 
 
 @dataclass
-class StatusLineSetupView:
+class StatusLineSetupView(BottomPaneViewDefaults):
     picker: MultiSelectPicker
 
     @classmethod
@@ -219,21 +221,13 @@ class StatusLineSetupView:
         return "Handled"
 
     def desired_height(self, width: int) -> int:
-        rows = self.picker.build_rows()
-        preview_height = 1 if self.picker.preview_line is not None else 0
-        subtitle_height = 1 if self.picker.subtitle else 0
-        return 2 + subtitle_height + self.picker.rows_height(rows) + preview_height
+        return self.picker.desired_height(width)
 
     def render_lines(self, width: int = 80) -> str:
-        lines = [self.picker.title]
-        if self.picker.subtitle:
-            lines.append(self.picker.subtitle)
-        if self.picker.preview_line is not None:
-            lines.append(line_text(self.picker.preview_line) or "")
-        for row in self.picker.build_rows().rows:
-            desc = f" - {row.description}" if row.description else ""
-            lines.append(f"{row.name}{desc}"[:width])
-        return "\n".join(lines)
+        return "\n".join(line.text for line in self.picker.terminal_lines(width=width))
+
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        return self.picker.terminal_lines(width=width)
 
 
 def parse_status_line_item(value: Any) -> StatusLineItem:

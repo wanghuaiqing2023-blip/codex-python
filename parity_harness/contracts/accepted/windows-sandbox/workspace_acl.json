@@ -1,0 +1,37 @@
+{
+  "contract_id": "codex-windows-sandbox.workspace-acl",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "workspace_acl",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/workspace_acl.rs",
+    "anchors": [
+      "is_command_cwd_root",
+      "protect_workspace_agents_dir",
+      "protect_workspace_codex_dir"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/workspace_acl.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/workspace_acl.py"
+    ],
+    "anchors": [
+      "is_command_cwd_root",
+      "protect_workspace_agents_dir",
+      "protect_workspace_codex_dir"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_setup_helper.py",
+    "tests/test_windows_sandbox_utility_modules.py"
+  ]
+}

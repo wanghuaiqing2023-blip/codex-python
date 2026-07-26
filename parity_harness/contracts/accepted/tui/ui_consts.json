@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-tui.ui_consts",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "ui_consts",
+    "source": "codex/codex-rs/tui/src/ui_consts.rs",
+    "anchors": [
+      "FOOTER_INDENT_COLS",
+      "LIVE_PREFIX_COLS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/ui_consts.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/ui_consts.py"
+    ],
+    "anchors": [
+      "FOOTER_INDENT_COLS",
+      "LIVE_PREFIX_COLS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

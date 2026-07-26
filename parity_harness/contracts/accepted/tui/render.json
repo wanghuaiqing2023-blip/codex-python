@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.render",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "render",
+    "source": "codex/codex-rs/tui/src/render/mod.rs",
+    "anchors": [
+      "Insets",
+      "RectExt",
+      "tlbr",
+      "vh",
+      "inset"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/render/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/render/__init__.py"
+    ],
+    "anchors": [
+      "Insets",
+      "RectExt",
+      "tlbr",
+      "vh",
+      "inset"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

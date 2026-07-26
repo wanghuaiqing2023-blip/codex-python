@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-core.compact_remote",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "compact_remote",
+    "source": "codex/codex-rs/core/src/compact_remote.rs",
+    "anchors": [
+      "CompactRequestLogData",
+      "build_compact_request_log_data",
+      "log_remote_compact_failure",
+      "process_compacted_history",
+      "run_inline_remote_auto_compact_task",
+      "run_remote_compact_task",
+      "should_keep_compacted_history_item",
+      "trim_function_call_history_to_fit_context_window",
+      "run_remote_compact_task_inner",
+      "run_remote_compact_task_inner_impl"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/compact_remote.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/compact_remote.py"
+    ],
+    "anchors": [
+      "CompactRequestLogData",
+      "build_compact_request_log_data",
+      "log_remote_compact_failure",
+      "process_compacted_history",
+      "run_inline_remote_auto_compact_task",
+      "run_remote_compact_task",
+      "should_keep_compacted_history_item",
+      "trim_function_call_history_to_fit_context_window",
+      "run_remote_compact_task_inner",
+      "run_remote_compact_task_inner_impl"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

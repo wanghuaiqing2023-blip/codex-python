@@ -12,6 +12,7 @@ from pycodex.tui.pager_overlay import (
     transcript_overlay,
 )
 from pycodex.tui.line_truncation import Line
+from pycodex.tui.keymap import RuntimeKeymap
 from pycodex.tui.terminal_hyperlinks import HyperlinkLine
 
 
@@ -194,6 +195,27 @@ def test_transcript_overlay_home_then_page_down_lands_on_intermediate_page() -> 
     assert next_page[-1] < 69
 
 
+def test_transcript_overlay_uses_remapped_jump_top_before_default_page_down() -> None:
+    """Rust PagerView::handle_key_event dispatches every action through PagerKeymap."""
+
+    keymap = RuntimeKeymap.from_config({"pager": {"jump_top": "g"}}).pager
+    overlay = TranscriptOverlay.new(
+        [TextRenderable([f"line-{index:02}"]) for index in range(70)],
+        keymap=keymap,
+    )
+    area = Rect(0, 0, 40, 15)
+    overlay.render_frame(area)
+    assert overlay.view.scroll_percent() == 100
+
+    assert overlay.handle_input("text", "g", area)
+    overlay.render_frame(area)
+    assert overlay.view.scroll_offset == 0
+
+    assert overlay.handle_input("ctrl_f", "", area)
+    overlay.render_frame(area)
+    assert 0 < overlay.view.scroll_percent() < 100
+
+
 def test_static_overlay_wraps_long_lines() -> None:
     """Rust codex-tui::pager_overlay::tests::static_overlay_wraps_long_lines."""
 
@@ -247,6 +269,18 @@ def test_transcript_overlay_ctrl_t_closes_and_navigation_scrolls() -> None:
     assert overlay.view.scroll_offset == max(0, before - 1)
     assert overlay.handle_input("ctrl_t", "", area)
     assert overlay.is_done()
+
+
+def test_transcript_overlay_renders_rust_key_hint_labels() -> None:
+    """Rust pager_overlay::render_hints renders semantic arrow/key labels."""
+
+    overlay = transcript_overlay([TextRenderable(["line"])])
+    rendered = "\n".join(overlay.render_frame(Rect(0, 0, 72, 12)))
+
+    assert "↑/↓ to scroll" in rendered
+    assert "pgup/pgdn to page" in rendered
+    assert "home/end to jump" in rendered
+    assert "q to quit" in rendered
 
 
 def test_transcript_overlay_normalizes_windows_and_ansi_navigation_payloads() -> None:

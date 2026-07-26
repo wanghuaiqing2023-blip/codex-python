@@ -34,7 +34,7 @@ from pycodex.protocol import (
     UserInput,
 )
 
-from test_core_turn_runtime import Session
+from test_core_turn_runtime import TurnSessionStub as Session
 
 
 def _tool_names(body: dict) -> list[str]:

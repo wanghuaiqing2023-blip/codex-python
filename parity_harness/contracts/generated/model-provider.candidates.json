@@ -1,0 +1,300 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "model-provider",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 9,
+    "python_files": 9,
+    "modules_with_candidates": 9,
+    "modules_with_anchors": 9
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "crate",
+        "source": "codex/codex-rs/model-provider/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/__init__.py",
+          "anchor_candidates": [
+            "BearerAuthProvider",
+            "CoreAuthProvider",
+            "ModelProvider",
+            "ProviderAccount",
+            "ProviderAccountError",
+            "ProviderAccountResult",
+            "ProviderAccountState",
+            "ProviderCapabilities",
+            "SharedModelProvider",
+            "auth_provider_from_auth",
+            "create_model_provider",
+            "unauthenticated_auth_provider"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "amazon_bedrock",
+        "source": "codex/codex-rs/model-provider/src/amazon_bedrock/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/amazon_bedrock/__init__.py",
+          "anchor_candidates": [
+            "AmazonBedrockModelProvider",
+            "new",
+            "static_model_catalog",
+            "account_state",
+            "api_auth",
+            "api_provider",
+            "approval_review_preferred_model",
+            "auth",
+            "auth_manager",
+            "capabilities",
+            "info",
+            "models_manager"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "amazon_bedrock::auth",
+        "source": "codex/codex-rs/model-provider/src/amazon_bedrock/auth.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/amazon_bedrock/auth.py",
+          "anchor_candidates": [
+            "BedrockAuthMethod",
+            "resolve_auth_method",
+            "resolve_provider_auth",
+            "AWS_BEARER_TOKEN_BEDROCK_ENV_VAR",
+            "BedrockMantleSigV4AuthProvider",
+            "add_auth_headers",
+            "apply_auth",
+            "aws_auth_error_to_auth_error",
+            "aws_auth_error_to_codex_error",
+            "bearer_token_from_env",
+            "bearer_token_region_from_config",
+            "new"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "amazon_bedrock::catalog",
+        "source": "codex/codex-rs/model-provider/src/amazon_bedrock/catalog.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/amazon_bedrock/catalog.py",
+          "anchor_candidates": [
+            "static_model_catalog",
+            "GPT_5_4_CONTEXT_WINDOW",
+            "GPT_5_4_MAX_CONTEXT_WINDOW",
+            "GPT_OSS_CONTEXT_WINDOW",
+            "bedrock_oss_model",
+            "gpt_5_4_cmb_bedrock_model",
+            "gpt_5_4_cmb_reasoning_levels",
+            "reasoning_effort_preset"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "amazon_bedrock::mantle",
+        "source": "codex/codex-rs/model-provider/src/amazon_bedrock/mantle.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/amazon_bedrock/mantle.py",
+          "anchor_candidates": [
+            "aws_auth_config",
+            "base_url",
+            "region_from_config",
+            "runtime_base_url",
+            "BEDROCK_MANTLE_SERVICE_NAME",
+            "BEDROCK_MANTLE_SUPPORTED_REGIONS",
+            "resolve_region"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "auth",
+        "source": "codex/codex-rs/model-provider/src/auth.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/auth.py",
+          "anchor_candidates": [
+            "auth_manager_for_provider",
+            "auth_provider_from_auth",
+            "resolve_provider_auth",
+            "unauthenticated_auth_provider",
+            "AgentIdentityAuthProvider",
+            "UnauthenticatedAuthProvider",
+            "add_auth_headers",
+            "bearer_auth_for_provider"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "bearer_auth_provider",
+        "source": "codex/codex-rs/model-provider/src/bearer_auth_provider.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/bearer_auth_provider.py",
+          "anchor_candidates": [
+            "BearerAuthProvider",
+            "for_test",
+            "new",
+            "add_auth_headers"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "models_endpoint",
+        "source": "codex/codex-rs/model-provider/src/models_endpoint.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/models_endpoint.py",
+          "anchor_candidates": [
+            "OpenAiModelsEndpoint",
+            "MODELS_ENDPOINT",
+            "MODELS_REFRESH_TIMEOUT",
+            "auth",
+            "has_command_auth",
+            "list_models",
+            "uses_codex_backend"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-model-provider",
+        "module": "provider",
+        "source": "codex/codex-rs/model-provider/src/provider.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/model_provider/provider.py",
+          "anchor_candidates": [
+            "DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL",
+            "ModelProvider",
+            "ProviderAccountError",
+            "ProviderAccountResult",
+            "ProviderAccountState",
+            "ProviderCapabilities",
+            "SharedModelProvider",
+            "create_model_provider",
+            "ConfiguredModelProvider",
+            "account_state",
+            "api_auth",
+            "api_provider"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

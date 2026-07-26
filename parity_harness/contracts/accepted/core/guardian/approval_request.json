@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-core.guardian.approval_request",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "guardian::approval_request",
+    "source": "codex/codex-rs/core/src/guardian/approval_request.rs",
+    "anchors": [
+      "FormattedGuardianAction",
+      "GuardianApprovalRequest",
+      "GuardianMcpAnnotations",
+      "GuardianNetworkAccessTrigger",
+      "format_guardian_action_pretty",
+      "guardian_approval_request_to_json",
+      "guardian_assessment_action",
+      "guardian_request_target_item_id",
+      "guardian_request_turn_id",
+      "guardian_reviewed_action"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/guardian/approval_request.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/guardian/approval_request.py"
+    ],
+    "anchors": [
+      "FormattedGuardianAction",
+      "GuardianApprovalRequest",
+      "GuardianMcpAnnotations",
+      "GuardianNetworkAccessTrigger",
+      "format_guardian_action_pretty",
+      "guardian_approval_request_to_json",
+      "guardian_assessment_action",
+      "guardian_request_target_item_id",
+      "guardian_request_turn_id",
+      "guardian_reviewed_action"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

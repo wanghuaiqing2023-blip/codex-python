@@ -718,6 +718,7 @@ class TerminalBottomPaneRenderContextProtocol(Protocol):
     popup_height: int
     active_tail_height: int
     composer_height: int
+    footer_height: int
 
 
 class TerminalBottomPaneRenderContextProviderProtocol(Protocol):
@@ -737,8 +738,10 @@ class TerminalBottomPaneViewportRenderPass:
     viewport_area: Rect
     clear_popup_height: int = 0
     clear_live_status_active: bool = False
+    clear_live_status_height: int = 0
     clear_active_tail_height: int = 0
     clear_composer_height: int = 1
+    clear_footer_height: int = 1
 
 
 @dataclass
@@ -759,6 +762,7 @@ class TerminalBottomPaneViewportCycleRunner:
             popup_height=int(context.popup_height),
             active_tail_height=int(context.active_tail_height),
             composer_height=int(context.composer_height),
+            footer_height=int(getattr(context, "footer_height", 1)),
         )
 
     def history_bottom_row(
@@ -892,8 +896,10 @@ class TerminalBottomPaneViewportCycleRunner:
                     viewport_area=viewport_area,
                     clear_popup_height=self.footprint.popup_height,
                     clear_live_status_active=self.footprint.live_status_active,
+                    clear_live_status_height=self.footprint.live_status_height,
                     clear_active_tail_height=self.footprint.active_tail_height,
                     clear_composer_height=self.footprint.composer_height,
+                    clear_footer_height=self.footprint.footer_height,
                 )
                 return bool(render(render_pass, context))
 

@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-tui.bin.md-events",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bin::md-events",
+    "source": "codex/codex-rs/tui/src/bin/md-events.rs",
+    "anchors": [
+      "main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bin/md-events.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bin/md-events.py"
+    ],
+    "anchors": [
+      "main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

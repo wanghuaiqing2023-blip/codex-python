@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-network-proxy.network_policy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "network_policy",
+    "source": "codex/codex-rs/network-proxy/src/network_policy.rs",
+    "anchors": [
+      "BlockDecisionAuditEventArgs",
+      "NetworkDecision",
+      "NetworkDecisionSource",
+      "NetworkPolicyDecision",
+      "NetworkPolicyRequest",
+      "NetworkPolicyRequestArgs",
+      "NetworkProtocol",
+      "ask",
+      "ask_with_source",
+      "deny",
+      "deny_with_source",
+      "emit_allow_decision_audit_event"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/network_policy.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/network_policy.py"
+    ],
+    "anchors": [
+      "BlockDecisionAuditEventArgs",
+      "NetworkDecision",
+      "NetworkDecisionSource",
+      "NetworkPolicyDecision",
+      "NetworkPolicyRequest",
+      "NetworkPolicyRequestArgs",
+      "NetworkProtocol",
+      "ask",
+      "ask_with_source",
+      "deny",
+      "deny_with_source",
+      "emit_allow_decision_audit_event"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

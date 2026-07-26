@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.slash_dispatch",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::slash_dispatch",
+    "source": "codex/codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+    "anchors": [
+      "dispatch_command",
+      "GOAL_USAGE",
+      "GOAL_USAGE_HINT",
+      "PreparedSlashCommandArgs",
+      "RAW_USAGE",
+      "SIDE_SLASH_COMMAND_UNAVAILABLE_HINT",
+      "SIDE_STARTING_CONTEXT_LABEL",
+      "SlashCommandDispatchSource",
+      "apply_plan_slash_command",
+      "ensure_side_command_allowed_outside_review",
+      "ensure_slash_command_allowed_in_side_conversation",
+      "prepared_inline_user_message"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/slash_dispatch.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/slash_dispatch.py"
+    ],
+    "anchors": [
+      "dispatch_command",
+      "GOAL_USAGE",
+      "GOAL_USAGE_HINT",
+      "PreparedSlashCommandArgs",
+      "RAW_USAGE",
+      "SIDE_SLASH_COMMAND_UNAVAILABLE_HINT",
+      "SIDE_STARTING_CONTEXT_LABEL",
+      "SlashCommandDispatchSource",
+      "apply_plan_slash_command",
+      "ensure_side_command_allowed_outside_review",
+      "ensure_slash_command_allowed_in_side_conversation",
+      "prepared_inline_user_message"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

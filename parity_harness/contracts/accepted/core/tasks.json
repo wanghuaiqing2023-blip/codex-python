@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tasks",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tasks",
+    "source": "codex/codex-rs/core/src/tasks/mod.rs",
+    "anchors": [
+      "CompactTask",
+      "InterruptedTurnHistoryMarker",
+      "RegularTask",
+      "ReviewTask",
+      "SessionTaskContext",
+      "abort_all_tasks",
+      "abort_turn_if_active",
+      "auth_manager",
+      "clone_session",
+      "emit_compact_metric",
+      "from_config",
+      "interrupted_turn_history_marker"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tasks/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tasks/__init__.py"
+    ],
+    "anchors": [
+      "CompactTask",
+      "InterruptedTurnHistoryMarker",
+      "RegularTask",
+      "ReviewTask",
+      "SessionTaskContext",
+      "abort_all_tasks",
+      "abort_turn_if_active",
+      "auth_manager",
+      "clone_session",
+      "emit_compact_metric",
+      "from_config",
+      "interrupted_turn_history_marker"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-windows-sandbox.bin.codex-windows-sandbox-setup.win.read-acl-mutex",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "bin::codex-windows-sandbox-setup::win::read_acl_mutex",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/bin/setup_main/win/read_acl_mutex.rs",
+    "anchors": [
+      "READ_ACL_MUTEX_NAME",
+      "ReadAclMutexGuard",
+      "acquire_read_acl_mutex",
+      "read_acl_mutex_exists"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/bin/setup_main/win/read_acl_mutex.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/bin/setup_main/win/read_acl_mutex.py"
+    ],
+    "anchors": [
+      "READ_ACL_MUTEX_NAME",
+      "ReadAclMutexGuard",
+      "acquire_read_acl_mutex",
+      "read_acl_mutex_exists"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_setup_binary_modules.py",
+    "tests/test_windows_sandbox_setup_helper.py"
+  ]
+}

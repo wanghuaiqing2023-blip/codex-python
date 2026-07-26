@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-core.tools.handlers.multi_agents",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::multi_agents",
+    "source": "codex/codex-rs/core/src/tools/handlers/multi_agents.rs",
+    "anchors": [
+      "CloseAgentHandler",
+      "ResumeAgentHandler",
+      "SendInputHandler",
+      "SpawnAgentHandler",
+      "WaitAgentHandler",
+      "parse_agent_id_target",
+      "parse_agent_id_targets",
+      "MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION",
+      "MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME",
+      "multi_agent_tool_search_info"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/multi_agents/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/multi_agents/__init__.py"
+    ],
+    "anchors": [
+      "CloseAgentHandler",
+      "ResumeAgentHandler",
+      "SendInputHandler",
+      "SpawnAgentHandler",
+      "WaitAgentHandler",
+      "parse_agent_id_target",
+      "parse_agent_id_targets",
+      "MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION",
+      "MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME",
+      "multi_agent_tool_search_info"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

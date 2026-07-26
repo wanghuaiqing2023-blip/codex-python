@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.context_manager.history",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context_manager::history",
+    "source": "codex/codex-rs/core/src/context_manager/history.rs",
+    "anchors": [
+      "ContextManager",
+      "TotalTokenUsageBreakdown",
+      "drop_last_n_user_turns",
+      "estimate_response_item_model_visible_bytes",
+      "estimate_token_count_with_base_instructions",
+      "for_prompt",
+      "get_total_token_usage",
+      "get_total_token_usage_breakdown",
+      "history_version",
+      "into_raw_items",
+      "is_codex_generated_item",
+      "is_user_turn_boundary"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context_manager/history.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context_manager/history.py"
+    ],
+    "anchors": [
+      "ContextManager",
+      "TotalTokenUsageBreakdown",
+      "drop_last_n_user_turns",
+      "estimate_response_item_model_visible_bytes",
+      "estimate_token_count_with_base_instructions",
+      "for_prompt",
+      "get_total_token_usage",
+      "get_total_token_usage_breakdown",
+      "history_version",
+      "into_raw_items",
+      "is_codex_generated_item",
+      "is_user_turn_boundary"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

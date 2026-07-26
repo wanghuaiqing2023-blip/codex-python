@@ -1,0 +1,6 @@
+{
+  "contract_id": "codex-goal-extension.accounting", "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "codex-goal-extension", "module": "accounting", "source": "codex/codex-rs/ext/goal/src/accounting.rs", "anchors": ["BudgetLimitedGoalDisposition", "GoalAccountingState", "GoalProgressSnapshot", "IdleGoalProgressSnapshot", "RecordedTokenDelta", "clear_current_turn_goal", "current_turn_id", "finish_turn", "goal_token_delta_for_usage", "idle_progress_snapshot", "mark_budget_limit_reported_if_new", "mark_current_turn_goal_active"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "pycodex/ext/goal/accounting.py", "layout": "module-file", "implementation_files": ["pycodex/ext/goal/accounting.py"], "anchors": ["BudgetLimitedGoalDisposition", "GoalAccountingState", "GoalProgressSnapshot", "IdleGoalProgressSnapshot", "RecordedTokenDelta", "clear_current_turn_goal", "current_turn_id", "finish_turn", "goal_token_delta_for_usage", "idle_progress_snapshot", "mark_budget_limit_reported_if_new", "mark_current_turn_goal_active"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

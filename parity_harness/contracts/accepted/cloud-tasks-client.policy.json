@@ -1,0 +1,13 @@
+{
+  "scope": "cloud-tasks-client",
+  "rust_root": "codex/codex-rs/cloud-tasks-client",
+  "python_root": "pycodex/cloud_tasks_client",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::http::api"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

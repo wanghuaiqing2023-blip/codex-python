@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from pycodex.connectors.metadata import connector_name_slug
-from pycodex.core.context import PluginCapabilitySummary
-from pycodex.utils.plugins.mention_syntax import (
+from pycodex.plugin import PluginCapabilitySummary
+from pycodex.core.mention_syntax import (
     PLUGIN_TEXT_MENTION_SIGIL,
     TOOL_MENTION_SIGIL,
 )

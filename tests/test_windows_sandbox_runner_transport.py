@@ -19,30 +19,248 @@ from pycodex.protocol import (
     NetworkSandboxPolicy,
     PermissionProfile,
 )
-from pycodex.windows_sandbox.elevated import run_elevated_capture, spawn_elevated_popen
+from pycodex.windows_sandbox.elevated_impl import (
+    ElevatedSandboxProfileCaptureRequest,
+    run_windows_sandbox_capture_for_permission_profile,
+)
 from pycodex.windows_sandbox.identity import sandbox_setup_is_complete
-from pycodex.windows_sandbox.runner_transport import RunnerBackedPopen, read_frame, write_frame
+from pycodex.windows_sandbox.elevated.ipc_framed import read_frame, write_frame
+from pycodex.windows_sandbox.elevated.runner_client import RunnerTransport
+from pycodex.windows_sandbox.elevated.runner_pipe import connect_pipe, pipe_pair
+from pycodex.windows_sandbox.unified_exec.backends.windows_common import RunnerBackedPopen
+from pycodex.windows_sandbox.unified_exec import (
+    spawn_windows_sandbox_session_elevated_for_permission_profile,
+)
+
+
+def capture_permission_profile(
+    permission_profile,
+    permission_profile_cwd,
+    codex_home,
+    command,
+    cwd,
+    env_map,
+    timeout_ms,
+    *,
+    use_private_desktop,
+    proxy_enforced,
+    additional_deny_read_paths=(),
+    additional_deny_write_paths=(),
+):
+    return run_windows_sandbox_capture_for_permission_profile(
+        ElevatedSandboxProfileCaptureRequest(
+            permission_profile,
+            Path(permission_profile_cwd),
+            Path(codex_home),
+            tuple(command),
+            Path(cwd),
+            env_map,
+            timeout_ms,
+            use_private_desktop,
+            proxy_enforced,
+            deny_read_paths_override=tuple(
+                Path(path) for path in additional_deny_read_paths
+            ),
+            deny_write_paths_override=tuple(
+                Path(path) for path in additional_deny_write_paths
+            ),
+        )
+    )
+
+
+def spawn_permission_profile_session(
+    permission_profile,
+    permission_profile_cwd,
+    codex_home,
+    command,
+    cwd,
+    env_map,
+    *,
+    stdin_open,
+    tty,
+    merge_stderr=True,
+    use_private_desktop,
+    proxy_enforced,
+    additional_deny_read_paths=(),
+    additional_deny_write_paths=(),
+):
+    return spawn_windows_sandbox_session_elevated_for_permission_profile(
+        permission_profile,
+        permission_profile_cwd,
+        codex_home,
+        command,
+        cwd,
+        env_map,
+        None,
+        None,
+        False,
+        None,
+        additional_deny_read_paths,
+        additional_deny_write_paths,
+        tty,
+        stdin_open,
+        use_private_desktop,
+    )
 
 
 def test_runner_frames_round_trip_binary_safe_json() -> None:
-    # Rust owners: windows-sandbox-rs::ipc_framed and elevated::runner_client.
+    # Rust source: elevated::ipc_framed::tests::framed_round_trip.
+    from pycodex.windows_sandbox.elevated.ipc_framed import (
+        FramedMessage,
+        IPC_PROTOCOL_VERSION,
+        Message,
+        OutputPayload,
+        OutputStream,
+        decode_bytes,
+        encode_bytes,
+    )
+
     stream = io.BytesIO()
-    write_frame(stream, {"type": "output", "data": "5L2g5aW9"})
+    message = FramedMessage(
+        IPC_PROTOCOL_VERSION,
+        Message.output(OutputPayload(encode_bytes("你好".encode()), OutputStream.STDOUT)),
+    )
+    write_frame(stream, message)
     stream.seek(0)
 
-    assert read_frame(stream) == {"type": "output", "data": "5L2g5aW9"}
+    decoded = read_frame(stream)
+    assert decoded is not None
+    assert decoded.version == IPC_PROTOCOL_VERSION
+    assert decoded.message.type == "output"
+    assert isinstance(decoded.message.payload, OutputPayload)
+    assert decoded.message.payload.stream is OutputStream.STDOUT
+    assert decode_bytes(decoded.message.payload.data_b64) == "你好".encode()
+
+
+def test_spawn_request_frame_serializes_rust_schema(tmp_path: Path) -> None:
+    # Rust source: elevated::ipc_framed::tests::spawn_request_serializes_permission_profile.
+    from pycodex.windows_sandbox.elevated.ipc_framed import (
+        FramedMessage,
+        IPC_PROTOCOL_VERSION,
+        Message,
+        SpawnReady,
+        SpawnRequest,
+        read_frame,
+        write_frame,
+    )
+
+    request = SpawnRequest(
+        command=("cmd.exe", "/c", "ver"),
+        cwd=tmp_path,
+        env={},
+        permission_profile=PermissionProfile.read_only(),
+        permission_profile_cwd=tmp_path,
+        codex_home=tmp_path / "sandbox",
+        real_codex_home=tmp_path / "home",
+        cap_sids=("S-1-15-3-1024-1",),
+        timeout_ms=1000,
+        tty=False,
+        stdin_open=False,
+        use_private_desktop=False,
+    )
+    stream = io.BytesIO()
+    write_frame(
+        stream,
+        FramedMessage(IPC_PROTOCOL_VERSION, Message.spawn_request(request)),
+    )
+    raw = stream.getvalue()
+    payload_length = int.from_bytes(raw[:4], "little")
+    encoded = __import__("json").loads(raw[4 : 4 + payload_length])
+    assert encoded["version"] == 2
+    assert encoded["type"] == "spawn_request"
+    assert encoded["payload"]["permission_profile"]["type"] == "managed"
+    assert "policy_json_or_preset" not in encoded["payload"]
+    assert "sandbox_policy_cwd" not in encoded["payload"]
+
+    stream.seek(0)
+    decoded = read_frame(stream)
+    assert decoded is not None
+    assert isinstance(decoded.message.payload, SpawnRequest)
+    assert decoded.message.payload.permission_profile == PermissionProfile.read_only()
+    assert decoded.message.payload.permission_profile_cwd == tmp_path
 
 
 def test_runner_backed_popen_resize_uses_shared_ipc_frame(monkeypatch) -> None:
     # Rust owner: elevated::ipc_framed::Message::Resize.
-    sent: list[dict[str, object]] = []
+    from pycodex.windows_sandbox.elevated.ipc_framed import FramedMessage, ResizePayload
+
+    sent: list[FramedMessage] = []
     process = object.__new__(RunnerBackedPopen)
     process._tty = True
-    monkeypatch.setattr(process, "_send", lambda message: sent.append(dict(message)))
+    monkeypatch.setattr(process, "_send", sent.append)
 
     process.resize(120, 42)
 
-    assert sent == [{"type": "resize", "cols": 120, "rows": 42}]
+    assert len(sent) == 1
+    assert sent[0].version == 2
+    assert sent[0].message.type == "resize"
+    assert sent[0].message.payload == ResizePayload(rows=42, cols=120)
+
+
+def test_runner_pipe_pair_uses_rust_name_shape() -> None:
+    # Rust source: elevated::runner_pipe::pipe_pair.
+    pipe_in, pipe_out = pipe_pair()
+
+    assert pipe_in.startswith(r"\\.\pipe\codex-runner-")
+    assert pipe_in.endswith("-in")
+    assert pipe_out == pipe_in.removesuffix("-in") + "-out"
+
+
+def test_runner_pipe_rejects_unexpected_client_pid(monkeypatch) -> None:
+    # Rust source: elevated::runner_pipe::connect_pipe.
+    import pycodex.windows_sandbox.elevated.runner_pipe as runner_pipe
+
+    monkeypatch.setattr(runner_pipe, "_connect_named_pipe", lambda _handle: None)
+    monkeypatch.setattr(runner_pipe, "_named_pipe_client_pid", lambda _handle: 17)
+
+    with pytest.raises(PermissionError, match="17.*42"):
+        connect_pipe(object(), 42)
+
+
+def test_runner_transport_sends_request_and_accepts_spawn_ready(tmp_path: Path) -> None:
+    # Rust source: elevated::runner_client::RunnerTransport.
+    from pycodex.windows_sandbox.elevated.ipc_framed import (
+        FramedMessage,
+        IPC_PROTOCOL_VERSION,
+        Message,
+        SpawnReady,
+        SpawnRequest,
+    )
+
+    request = SpawnRequest(
+        command=("cmd.exe", "/c", "ver"),
+        cwd=tmp_path,
+        env={},
+        permission_profile=PermissionProfile.read_only(),
+        permission_profile_cwd=tmp_path,
+        codex_home=tmp_path / "sandbox",
+        real_codex_home=tmp_path / "home",
+        cap_sids=("S-1-15-3-1024-1",),
+        timeout_ms=None,
+        tty=False,
+        stdin_open=False,
+        use_private_desktop=False,
+    )
+    writer = io.BytesIO()
+    ready = io.BytesIO()
+    write_frame(
+        ready,
+        FramedMessage(
+            IPC_PROTOCOL_VERSION,
+            Message.spawn_ready(SpawnReady(process_id=123)),
+        ),
+    )
+    ready.seek(0)
+    transport = RunnerTransport(writer, ready)
+
+    transport.send_spawn_request(request)
+    transport.read_spawn_ready()
+
+    writer.seek(0)
+    frame = read_frame(writer)
+    assert frame is not None
+    assert frame.message.type == "spawn_request"
+    assert frame.message.payload == request
 
 
 def _native_elevated_enabled() -> bool:
@@ -79,7 +297,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
         deny_read: tuple[Path, ...] = (),
         deny_write: tuple[Path, ...] = (),
     ):
-        return run_elevated_capture(
+        return capture_permission_profile(
             profile,
             workspace,
             home,
@@ -111,7 +329,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
         assert allowed.read_text() == "ok"
 
         powershell_allowed = workspace / "powershell-allowed.txt"
-        result = run_elevated_capture(
+        result = capture_permission_profile(
             PermissionProfile.workspace_write(), workspace, home,
             (
                 "powershell.exe",
@@ -132,7 +350,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
         assert not denied_external.exists()
 
         cmd_denied_external = external / "cmd-denied.txt"
-        result = run_elevated_capture(
+        result = capture_permission_profile(
             PermissionProfile.workspace_write(), workspace, home,
             ("cmd.exe", "/d", "/c", f"echo bad>\"{cmd_denied_external}\""),
             workspace, env, 15_000, use_private_desktop=True, proxy_enforced=False,
@@ -253,7 +471,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
             home,
             (extra_read_root,),
         )
-        result = run_elevated_capture(
+        result = capture_permission_profile(
             explicit_read_profile,
             workspace,
             home,
@@ -266,7 +484,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
         )
         assert result.exit_code == 0 and b"EXTRA_READ_OK" in result.stdout
         extra_read_denied = extra_read_root / "write-denied.txt"
-        result = run_elevated_capture(
+        result = capture_permission_profile(
             explicit_read_profile,
             workspace,
             home,
@@ -289,7 +507,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
             )
             assert result.exit_code != 0 and not (external / "junction-denied.txt").exists()
 
-        result = run_elevated_capture(
+        result = capture_permission_profile(
             PermissionProfile.read_only(), workspace, home,
             ("cmd.exe", "/c", "echo OUT & echo ERR 1>&2"), workspace, env, 15_000,
             use_private_desktop=True, proxy_enforced=False,
@@ -309,7 +527,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
         assert result.timed_out and result.exit_code == 192
 
         cancel_started = time.monotonic()
-        result = run_elevated_capture(
+        result = capture_permission_profile(
             PermissionProfile.read_only(), workspace, home,
             (str(python), "-c", "import time;time.sleep(30)"), workspace, env, 15_000,
             use_private_desktop=True, proxy_enforced=False,
@@ -325,7 +543,7 @@ def test_native_elevated_runner_enforces_filesystem_stderr_timeout_and_tty() -> 
         time.sleep(1.2)
         assert not descendant_marker.exists()
 
-        process = spawn_elevated_popen(
+        process = spawn_permission_profile_session(
             PermissionProfile.read_only(), workspace, home,
             (
                 str(python),

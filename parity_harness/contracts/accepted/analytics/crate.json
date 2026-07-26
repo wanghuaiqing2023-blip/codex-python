@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-analytics.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-analytics",
+    "module": "crate",
+    "source": "codex/codex-rs/analytics/src/lib.rs",
+    "anchors": [
+      "AcceptedLineFingerprint",
+      "AnalyticsEventsClient",
+      "AnalyticsJsonRpcError",
+      "AppInvocation",
+      "AppServerRpcTransport",
+      "CodexCompactionEvent",
+      "CodexTurnSteerEvent",
+      "CompactionImplementation",
+      "CompactionPhase",
+      "CompactionReason",
+      "CompactionStatus",
+      "CompactionStrategy"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/analytics/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/analytics/__init__.py"
+    ],
+    "anchors": [
+      "AcceptedLineFingerprint",
+      "AnalyticsEventsClient",
+      "AnalyticsJsonRpcError",
+      "AppInvocation",
+      "AppServerRpcTransport",
+      "CodexCompactionEvent",
+      "CodexTurnSteerEvent",
+      "CompactionImplementation",
+      "CompactionPhase",
+      "CompactionReason",
+      "CompactionStatus",
+      "CompactionStrategy"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

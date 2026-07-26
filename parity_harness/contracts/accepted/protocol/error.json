@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-protocol.error",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "error",
+    "source": "codex/codex-rs/protocol/src/error.rs",
+    "anchors": [
+      "CodexErr",
+      "ConnectionFailedError",
+      "EnvVarError",
+      "ResponseStreamFailed",
+      "RetryLimitReachedError",
+      "SandboxErr",
+      "UnexpectedResponseError",
+      "UsageLimitReachedError",
+      "get_error_message_ui",
+      "http_status_code_value",
+      "is_retryable",
+      "to_codex_protocol_error"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/error.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/error.py"
+    ],
+    "anchors": [
+      "CodexErr",
+      "ConnectionFailedError",
+      "EnvVarError",
+      "ResponseStreamFailed",
+      "RetryLimitReachedError",
+      "SandboxErr",
+      "UnexpectedResponseError",
+      "UsageLimitReachedError",
+      "get_error_message_ui",
+      "http_status_code_value",
+      "is_retryable",
+      "to_codex_protocol_error"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_error.py"
+  ]
+}

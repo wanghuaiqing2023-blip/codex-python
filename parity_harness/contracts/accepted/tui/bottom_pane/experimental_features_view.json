@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.experimental_features_view",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::experimental_features_view",
+    "source": "codex/codex-rs/tui/src/bottom_pane/experimental_features_view.rs",
+    "anchors": [
+      "ExperimentalFeatureItem",
+      "ExperimentalFeaturesView",
+      "new",
+      "build_rows",
+      "desired_height",
+      "experimental_popup_hint_line",
+      "handle_key_event",
+      "initialize_selection",
+      "is_complete",
+      "jump_bottom",
+      "jump_top",
+      "move_down"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/experimental_features_view.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/experimental_features_view.py"
+    ],
+    "anchors": [
+      "ExperimentalFeatureItem",
+      "ExperimentalFeaturesView",
+      "new",
+      "build_rows",
+      "desired_height",
+      "experimental_popup_hint_line",
+      "handle_key_event",
+      "initialize_selection",
+      "is_complete",
+      "jump_bottom",
+      "jump_top",
+      "move_down"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

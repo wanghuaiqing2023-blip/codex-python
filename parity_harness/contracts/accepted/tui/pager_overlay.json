@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.pager_overlay",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "pager_overlay",
+    "source": "codex/codex-rs/tui/src/pager_overlay.rs",
+    "anchors": [
+      "Overlay",
+      "StaticOverlay",
+      "TranscriptOverlay",
+      "consolidate_cells",
+      "insert_cell",
+      "is_done",
+      "is_scrolled_to_bottom",
+      "new",
+      "new_static_with_lines",
+      "new_static_with_renderables",
+      "new_transcript",
+      "render"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/pager_overlay.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/pager_overlay.py"
+    ],
+    "anchors": [
+      "Overlay",
+      "StaticOverlay",
+      "TranscriptOverlay",
+      "consolidate_cells",
+      "insert_cell",
+      "is_done",
+      "is_scrolled_to_bottom",
+      "new",
+      "new_static_with_lines",
+      "new_static_with_renderables",
+      "new_transcript",
+      "render"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

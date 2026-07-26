@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-core.tools.handlers.goal",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::goal",
+    "source": "codex/codex-rs/core/src/tools/handlers/goal.rs",
+    "anchors": [
+      "CreateGoalHandler",
+      "GetGoalHandler",
+      "UpdateGoalHandler",
+      "CreateGoalArgs",
+      "GoalToolResponse",
+      "UpdateGoalArgs",
+      "completion_budget_report",
+      "goal_response",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/goal/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/goal/__init__.py"
+    ],
+    "anchors": [
+      "CreateGoalHandler",
+      "GetGoalHandler",
+      "UpdateGoalHandler",
+      "CreateGoalArgs",
+      "GoalToolResponse",
+      "UpdateGoalArgs",
+      "completion_budget_report",
+      "goal_response",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

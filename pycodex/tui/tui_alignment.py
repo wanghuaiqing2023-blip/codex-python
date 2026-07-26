@@ -56,6 +56,8 @@ class TuiModuleOwner:
     implementation_files: tuple[str, ...]
     python_tests: tuple[str, ...]
     role: str = "direct"
+    ownership: str = "exclusive"
+    python_layout: str = "module-file"
     notes: str = ""
     rust_commit: str = RUST_CODEX_BASELINE_COMMIT
 
@@ -889,18 +891,15 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         notes="Composes TextArea and TextAreaState as the Rust draft owner.",
     ),
     TuiModuleOwner(
-        python_owner="pycodex/tui/bottom_pane/textarea",
+        python_owner="pycodex/tui/bottom_pane/textarea/__init__.py",
         rust_module="codex-tui::bottom_pane::textarea",
         rust_source="codex/codex-rs/tui/src/bottom_pane/textarea.rs",
-        implementation_files=(
-            "pycodex/tui/bottom_pane/textarea/__init__.py",
-            "pycodex/tui/bottom_pane/textarea/vim.py",
+        implementation_files=("pycodex/tui/bottom_pane/textarea/__init__.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_textarea_mod.py",),
+        notes=(
+            "Owns editable-text, cursor, atomic-element, wrapping, and viewport "
+            "coordinates; textarea::vim retains its separate child-module owner."
         ),
-        python_tests=(
-            "pycodex/tui/bottom_pane/tests/test_textarea_mod.py",
-            "pycodex/tui/bottom_pane/tests/test_textarea_vim.py",
-        ),
-        notes="Sole editable-text, cursor, atomic-element, wrapping, and viewport-coordinate owner.",
     ),
     TuiModuleOwner(
         python_owner="pycodex/tui/bottom_pane/chat_composer_history.py",
@@ -924,14 +923,22 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         python_tests=("tests/test_tui_app_event_sender.py",),
     ),
     TuiModuleOwner(
-        python_owner="pycodex/tui/app/runtime.py",
+        python_owner="pycodex/tui/app/__init__.py",
         rust_module="codex-tui::app",
         rust_source="codex/codex-rs/tui/src/app.rs",
-        implementation_files=("pycodex/tui/app/runtime.py",),
-        python_tests=("pycodex/tui/app/tests/test_runtime.py",),
+        implementation_files=(
+            "pycodex/tui/app/__init__.py",
+            "pycodex/tui/app/runtime.py",
+        ),
+        python_tests=(
+            "pycodex/tui/app/tests/test_app_root.py",
+            "pycodex/tui/app/tests/test_runtime.py",
+        ),
+        python_layout="module-package",
         notes=(
-            "Owns app event receive/dispatch ordering. Product adapters call "
-            "the app-loop step instead of draining the channel themselves."
+            "One Rust app.rs module is implemented by the bounded Python app "
+            "package root plus its runtime composition. Child app modules keep "
+            "their own Rust module contracts."
         ),
     ),
     TuiModuleOwner(
@@ -1031,10 +1038,11 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         ),
     ),
     TuiModuleOwner(
-        python_owner="pycodex/tui/ratatui_bridge",
+        python_owner="pycodex/tui/ratatui_bridge/__init__.py",
         rust_module="codex-tui::custom_terminal",
         rust_source="codex/codex-rs/tui/src/custom_terminal.rs",
         implementation_files=(
+            "pycodex/tui/ratatui_bridge/__init__.py",
             "pycodex/tui/ratatui_bridge/backend.py",
             "pycodex/tui/ratatui_bridge/buffer.py",
             "pycodex/tui/ratatui_bridge/crossterm.py",
@@ -1047,6 +1055,7 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         ),
         python_tests=("pycodex/tui/ratatui_bridge/tests/test_ratatui_bridge.py",),
         role="ratatui-core-adapter",
+        python_layout="module-package",
         notes=(
             "Minimal ratatui-like primitives used by Python custom_terminal and "
             "bottom-pane frame rendering. This owner supplies backend/frame "
@@ -1096,19 +1105,15 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         notes="Owns active ExecCell grouping, output updates, and final insertion.",
     ),
     TuiModuleOwner(
-        python_owner="pycodex/tui/exec_cell",
+        python_owner="pycodex/tui/exec_cell/__init__.py",
         rust_module="codex-tui::exec_cell",
         rust_source="codex/codex-rs/tui/src/exec_cell/mod.rs",
-        implementation_files=(
-            "pycodex/tui/exec_cell/__init__.py",
-            "pycodex/tui/exec_cell/model.py",
-            "pycodex/tui/exec_cell/render.py",
+        implementation_files=("pycodex/tui/exec_cell/__init__.py",),
+        python_tests=("pycodex/tui/exec_cell/tests/test_mod.py",),
+        notes=(
+            "Owns the exec_cell module facade; model and render retain their "
+            "separate Rust child-module owners."
         ),
-        python_tests=(
-            "pycodex/tui/exec_cell/tests/test_model.py",
-            "pycodex/tui/exec_cell/tests/test_render.py",
-        ),
-        notes="Owns canonical command history-cell model and rendering.",
     ),
     TuiModuleOwner(
         python_owner="pycodex/tui/diff_render.py",
@@ -1282,10 +1287,11 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         python_tests=("pycodex/tui/bottom_pane/tests/test_app_link_view.py",),
     ),
     TuiModuleOwner(
-        python_owner="pycodex/tui/bottom_pane",
+        python_owner="pycodex/tui/bottom_pane/__init__.py",
         rust_module="codex-tui::bottom_pane",
         rust_source="codex/codex-rs/tui/src/bottom_pane/mod.rs",
         implementation_files=(
+            "pycodex/tui/bottom_pane/__init__.py",
             "pycodex/tui/bottom_pane/bottom_pane_view.py",
             "pycodex/tui/bottom_pane/chat_composer/__init__.py",
             "pycodex/tui/bottom_pane/chat_composer/attachment_state.py",
@@ -1314,6 +1320,8 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
             "pycodex/tui/bottom_pane/tests/test_terminal_projection.py",
             "pycodex/tui/bottom_pane/tests/test_view_stack.py",
         ),
+        ownership="aggregate",
+        python_layout="module-package",
         notes=(
             "Package-level owner for the bottom_pane Rust module. Individual "
             "Python files may still have narrower file-level entries, but all "
@@ -1323,10 +1331,11 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         ),
     ),
     TuiModuleOwner(
-        python_owner="pycodex/tui/chatwidget",
+        python_owner="pycodex/tui/chatwidget/__init__.py",
         rust_module="codex-tui::chatwidget",
         rust_source="codex/codex-rs/tui/src/chatwidget.rs",
         implementation_files=(
+            "pycodex/tui/chatwidget/__init__.py",
             "pycodex/tui/chatwidget/model_popups.py",
             "pycodex/tui/chatwidget/permission_popups.py",
             "pycodex/tui/chatwidget/permissions_menu.py",
@@ -1341,6 +1350,8 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
             "pycodex/tui/chatwidget/tests/test_slash_dispatch.py",
             "pycodex/tui/chatwidget/tests/test_status_surfaces.py",
         ),
+        ownership="aggregate",
+        python_layout="module-package",
         notes=(
             "Package-level owner for chatwidget behavior used by the terminal "
             "product path, including model/reasoning view creation and status "
@@ -1382,6 +1393,25 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
             "callbacks, session-header history text, and runtime-bound "
             "session-header writer callback packaging for the terminal path."
         ),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/pets/frames.py",
+        rust_module="codex-tui::pets::frames",
+        rust_source="codex/codex-rs/tui/src/pets/frames.rs",
+        implementation_files=("pycodex/tui/pets/frames.py",),
+        python_tests=("pycodex/tui/pets/tests/test_frames.py",),
+        notes=(
+            "Explicit owner avoids confusing pets::frames with the unrelated "
+            "crate-level frames module during conventional path discovery."
+        ),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bin/md-events.py",
+        rust_module="codex-tui::bin::md-events",
+        rust_source="codex/codex-rs/tui/src/bin/md-events.rs",
+        implementation_files=("pycodex/tui/bin/md-events.py",),
+        python_tests=("pycodex/tui/bin/tests/test_md_events.py",),
+        notes="The hyphenated diagnostic binary is loaded through importlib in tests.",
     ),
 )
 

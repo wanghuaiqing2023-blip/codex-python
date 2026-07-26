@@ -1,0 +1,9 @@
+{
+  "scenario_id": "config-restart",
+  "action": "persist-config-restart",
+  "claim": "model saved",
+  "path": "config.json",
+  "key": "model",
+  "value": "gpt-test",
+  "states": {"restart": "completed"}
+}

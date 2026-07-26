@@ -1,0 +1,11 @@
+{
+  "scope": "utils-fuzzy-match",
+  "rust_root": "codex/codex-rs/utils/fuzzy-match",
+  "python_root": "pycodex/utils/fuzzy_match",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

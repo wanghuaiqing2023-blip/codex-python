@@ -1,0 +1,17 @@
+{
+  "scope": "analytics",
+  "rust_root": "codex/codex-rs/analytics",
+  "python_root": "pycodex/analytics",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::accepted_lines",
+    "crate::client",
+    "crate::events",
+    "crate::facts",
+    "crate::reducer"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

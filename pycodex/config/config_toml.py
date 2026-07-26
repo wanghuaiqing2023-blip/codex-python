@@ -23,7 +23,8 @@ from pycodex.protocol import (
     Verbosity,
 )
 from pycodex.protocol.config_types import Personality, TrustLevel, WebSearchMode, WebSearchToolConfig, WindowsSandboxLevel
-from pycodex.protocol.models import NetworkSandboxPolicy, PermissionProfile
+from pycodex.protocol.models import PermissionProfile
+from pycodex.protocol.permissions import NetworkSandboxPolicy
 from pycodex.model_provider_info import (
     AMAZON_BEDROCK_PROVIDER_ID,
     LEGACY_OLLAMA_CHAT_PROVIDER_ID,

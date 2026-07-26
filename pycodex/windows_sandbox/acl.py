@@ -175,8 +175,10 @@ def path_mask_allows(
     path: str | Path,
     sids: Iterable[LocalSid | int],
     mask: int,
+    *,
+    require_all_bits: bool = True,
 ) -> bool:
-    """Return whether one listed principal already has the complete mask."""
+    """Return whether one listed principal has all or any requested mask bits."""
 
     _require_windows()
     target = Path(path)
@@ -199,7 +201,13 @@ def path_mask_allows(
         raise WindowsSandboxAclError(result, f"GetNamedSecurityInfoW failed: {result}")
     try:
         return any(
-            _dacl_has_ace(current_dacl, _sid_pointer(sid), ACCESS_ALLOWED_ACE_TYPE, mask, require_all_bits=True)
+            _dacl_has_ace(
+                current_dacl,
+                _sid_pointer(sid),
+                ACCESS_ALLOWED_ACE_TYPE,
+                mask,
+                require_all_bits=require_all_bits,
+            )
             for sid in sids
         )
     finally:

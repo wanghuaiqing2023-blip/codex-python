@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-tui.bottom_pane.mentions_v2.filter",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::mentions_v2::filter",
+    "source": "codex/codex-rs/tui/src/bottom_pane/mentions_v2/filter.rs",
+    "anchors": [
+      "filtered_candidates",
+      "best_tool_match",
+      "compare_within_rank",
+      "file_match_to_row",
+      "sort_rows"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/mentions_v2/filter.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/mentions_v2/filter.py"
+    ],
+    "anchors": [
+      "filtered_candidates",
+      "best_tool_match",
+      "compare_within_rank",
+      "file_match_to_row",
+      "sort_rows"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

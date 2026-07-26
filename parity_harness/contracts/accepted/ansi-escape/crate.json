@@ -1,0 +1,53 @@
+{
+  "contract_id": "codex-ansi-escape.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-ansi-escape",
+    "module": "crate",
+    "source": "codex/codex-rs/ansi-escape/src/lib.rs",
+    "anchors": [
+      "ansi_escape",
+      "ansi_escape_line",
+      "expand_tabs"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ansi_escape/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/ansi_escape/__init__.py"
+    ],
+    "anchors": [
+      "ansi_escape",
+      "ansi_escape_line",
+      "expand_tabs"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_ansi_escape_lib_rs.py",
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_rust_integration_suite.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

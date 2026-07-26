@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-core.tools.tool_dispatch_trace",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::tool_dispatch_trace",
+    "source": "codex/codex-rs/core/src/tools/tool_dispatch_trace.rs",
+    "anchors": [
+      "ToolDispatchTrace",
+      "record_completed",
+      "record_failed",
+      "start",
+      "tool_dispatch_invocation",
+      "tool_dispatch_payload",
+      "tool_dispatch_result"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/tool_dispatch_trace.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/tool_dispatch_trace.py"
+    ],
+    "anchors": [
+      "ToolDispatchTrace",
+      "record_completed",
+      "record_failed",
+      "start",
+      "tool_dispatch_invocation",
+      "tool_dispatch_payload",
+      "tool_dispatch_result"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1275,6 +1275,68 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             ),
         )
 
+    def test_sampling_output_text_delta_parses_plan_markup_once_across_dispatch_and_apply(self) -> None:
+        # Rust codex-core/session/turn.rs parses each streamed delta once before
+        # routing normal text and proposed-plan segments to separate events.
+        parsers = AssistantMessageStreamParsers(plan_mode=True)
+        active = TurnItem.agent_message(
+            AgentMessageItem(id="msg-1", content=(AgentMessageContent.text_content(""),))
+        )
+
+        text_delta_plan = sampling_output_text_delta_plan(
+            active,
+            "<proposed_plan>\n# Create 9.txt\n",
+            active_item_is_streaming_to_client=True,
+            plan_mode=True,
+            assistant_message_stream_parsers=parsers,
+        )
+        applied = sampling_output_text_delta_apply_plan(
+            text_delta_plan,
+            plan_mode=True,
+            assistant_message_stream_parsers=parsers,
+            plan_item_id="turn-1-plan",
+        )
+
+        self.assertEqual(
+            applied.streamed_assistant_text_plan.plan_segments_plan.actions,
+            (
+                SamplingPlanSegmentAction("start_plan_item", "turn-1-plan"),
+                SamplingPlanSegmentAction("plan_delta", "turn-1-plan", "# Create 9.txt\n"),
+            ),
+        )
+        self.assertEqual(parsers.finish_item("msg-1")["plan_segments"], (("proposed_plan_end", ""),))
+
+    def test_sampling_output_item_added_applies_seeded_plan_markup_without_reparsing(self) -> None:
+        parsers = AssistantMessageStreamParsers(plan_mode=True)
+        added = sampling_output_item_added_plan(
+            assistant_output_text("<proposed_plan>\n- one\n</proposed_plan>"),
+            plan_mode=True,
+            assistant_message_stream_parsers=parsers,
+        )
+
+        applied = sampling_output_item_added_apply_plan(
+            added,
+            plan_mode=True,
+            assistant_message_stream_parsers=parsers,
+            plan_item_id="turn-1-plan",
+        )
+
+        self.assertEqual(
+            applied.seeded_streamed_assistant_text_plan.plan_segments_plan.actions,
+            (
+                SamplingPlanSegmentAction("start_plan_item", "turn-1-plan"),
+                SamplingPlanSegmentAction("plan_delta", "turn-1-plan", "- one\n"),
+            ),
+        )
+        self.assertEqual(
+            parsers.finish_item("msg-1"),
+            {
+                "visible_text": "",
+                "citations": (),
+                "plan_segments": (("proposed_plan_end", ""),),
+            },
+        )
+
     def test_sampling_output_text_delta_apply_plan_emits_raw_non_agent_delta(self) -> None:
         text_delta_plan = SamplingOutputTextDeltaPlan(
             item_id="rs-1",
@@ -2384,17 +2446,11 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            state.emitted_stream_events,
-            (
-                {
-                    "type": "agent_message_content_delta",
-                    "thread_id": "thread-1",
-                    "turn_id": "turn-1",
-                    "item_id": "msg-1",
-                    "delta": "tail",
-                },
-            ),
+            tuple(event["type"] for event in state.emitted_stream_events),
+            ("agent_message_content_delta", "item_completed"),
         )
+        self.assertEqual(state.emitted_stream_events[0]["delta"], "tail")
+        self.assertEqual(state.emitted_stream_events[1]["item"]["id"], "msg-1")
 
     def test_sampling_event_state_emits_completed_flush_all_deltas(self) -> None:
         completed = SamplingCompletedEventApplyPlan(

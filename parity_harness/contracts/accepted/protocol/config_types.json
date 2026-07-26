@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-protocol.config_types",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "config_types",
+    "source": "codex/codex-rs/protocol/src/config_types.rs",
+    "anchors": [
+      "AltScreenMode",
+      "ApprovalsReviewer",
+      "AutoCompactTokenLimitScope",
+      "CollaborationMode",
+      "CollaborationModeMask",
+      "ForcedLoginMethod",
+      "ModeKind",
+      "ModelProviderAuthInfo",
+      "Personality",
+      "ProfileV2Name",
+      "ProfileV2NameParseError",
+      "ReasoningSummary"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/config_types.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/config_types.py"
+    ],
+    "anchors": [
+      "AltScreenMode",
+      "ApprovalsReviewer",
+      "AutoCompactTokenLimitScope",
+      "CollaborationMode",
+      "CollaborationModeMask",
+      "ForcedLoginMethod",
+      "ModeKind",
+      "ModelProviderAuthInfo",
+      "Personality",
+      "ProfileV2Name",
+      "ProfileV2NameParseError",
+      "ReasoningSummary"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_config_types.py"
+  ]
+}

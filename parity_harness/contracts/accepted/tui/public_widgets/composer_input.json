@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.public_widgets.composer_input",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "public_widgets::composer_input",
+    "source": "codex/codex-rs/tui/src/public_widgets/composer_input.rs",
+    "anchors": [
+      "ComposerAction",
+      "ComposerInput",
+      "clear",
+      "clear_hint_items",
+      "cursor_pos",
+      "desired_height",
+      "flush_paste_burst_if_due",
+      "handle_paste",
+      "input",
+      "is_empty",
+      "is_in_paste_burst",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/public_widgets/composer_input.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/public_widgets/composer_input.py"
+    ],
+    "anchors": [
+      "ComposerAction",
+      "ComposerInput",
+      "clear",
+      "clear_hint_items",
+      "cursor_pos",
+      "desired_height",
+      "flush_paste_burst_if_due",
+      "handle_paste",
+      "input",
+      "is_empty",
+      "is_in_paste_burst",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

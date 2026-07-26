@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.registry",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::registry",
+    "source": "codex/codex-rs/core/src/tools/registry.rs",
+    "anchors": [
+      "AnyToolResult",
+      "CoreToolRuntime",
+      "PostToolUsePayload",
+      "PreToolUsePayload",
+      "ToolExposure",
+      "ToolRegistry",
+      "create_diff_consumer",
+      "dispatch_any",
+      "dispatch_any_with_terminal_outcome",
+      "from_tools",
+      "into_response",
+      "override_tool_exposure"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/registry.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/registry.py"
+    ],
+    "anchors": [
+      "AnyToolResult",
+      "CoreToolRuntime",
+      "PostToolUsePayload",
+      "PreToolUsePayload",
+      "ToolExposure",
+      "ToolRegistry",
+      "create_diff_consumer",
+      "dispatch_any",
+      "dispatch_any_with_terminal_outcome",
+      "from_tools",
+      "into_response",
+      "override_tool_exposure"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

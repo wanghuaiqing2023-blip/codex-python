@@ -1,0 +1,262 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "execpolicy-legacy",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 14,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "bin::codex-execpolicy-legacy",
+        "source": "codex/codex-rs/execpolicy-legacy/src/main.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "crate",
+        "source": "codex/codex-rs/execpolicy-legacy/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy_legacy/__init__.py",
+          "anchor_candidates": [
+            "ArgMatcher",
+            "ArgType",
+            "Error",
+            "ExecCall",
+            "ExecvChecker",
+            "Forbidden",
+            "MatchedArg",
+            "MatchedExec",
+            "MatchedFlag",
+            "MatchedOpt",
+            "NegativeExamplePassedCheck",
+            "Opt"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "arg_matcher",
+        "source": "codex/codex-rs/execpolicy-legacy/src/arg_matcher.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "arg_resolver",
+        "source": "codex/codex-rs/execpolicy-legacy/src/arg_resolver.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "arg_type",
+        "source": "codex/codex-rs/execpolicy-legacy/src/arg_type.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "error",
+        "source": "codex/codex-rs/execpolicy-legacy/src/error.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "exec_call",
+        "source": "codex/codex-rs/execpolicy-legacy/src/exec_call.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "execv_checker",
+        "source": "codex/codex-rs/execpolicy-legacy/src/execv_checker.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "opt",
+        "source": "codex/codex-rs/execpolicy-legacy/src/opt.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "policy",
+        "source": "codex/codex-rs/execpolicy-legacy/src/policy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "policy_parser",
+        "source": "codex/codex-rs/execpolicy-legacy/src/policy_parser.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "program",
+        "source": "codex/codex-rs/execpolicy-legacy/src/program.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "sed_command",
+        "source": "codex/codex-rs/execpolicy-legacy/src/sed_command.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-execpolicy-legacy",
+        "module": "valid_exec",
+        "source": "codex/codex-rs/execpolicy-legacy/src/valid_exec.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,73 @@
+{
+  "contract_id": "codex-login.device_code_auth",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-login",
+    "module": "device_code_auth",
+    "source": "codex/codex-rs/login/src/device_code_auth.rs",
+    "anchors": [
+      "DeviceCode",
+      "complete_device_code_login",
+      "request_device_code",
+      "run_device_code_login",
+      "ANSI_BLUE",
+      "ANSI_GRAY",
+      "ANSI_RESET",
+      "CodeSuccessResp",
+      "UserCodeResp",
+      "deserialize_interval",
+      "poll_for_token",
+      "print_device_code_prompt"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/login/device_code_auth.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/login/device_code_auth.py"
+    ],
+    "anchors": [
+      "DeviceCode",
+      "complete_device_code_login",
+      "request_device_code",
+      "run_device_code_login",
+      "ANSI_BLUE",
+      "ANSI_GRAY",
+      "ANSI_RESET",
+      "CodeSuccessResp",
+      "UserCodeResp",
+      "deserialize_interval",
+      "poll_for_token",
+      "print_device_code_prompt"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_login_auth_error.py",
+    "tests/test_login_default_client.py",
+    "tests/test_login_device_code_auth.py",
+    "tests/test_login_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

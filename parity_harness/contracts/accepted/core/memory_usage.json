@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.memory_usage",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "memory_usage",
+    "source": "codex/codex-rs/core/src/memory_usage.rs",
+    "anchors": [
+      "emit_metric_for_tool_read",
+      "shell_command_for_invocation"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/memory_usage.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/memory_usage.py"
+    ],
+    "anchors": [
+      "emit_metric_for_tool_read",
+      "shell_command_for_invocation"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

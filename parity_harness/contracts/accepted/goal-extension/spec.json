@@ -1,0 +1,6 @@
+{
+  "contract_id": "codex-goal-extension.spec", "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "codex-goal-extension", "module": "spec", "source": "codex/codex-rs/ext/goal/src/spec.rs", "anchors": ["CREATE_GOAL_TOOL_NAME", "GET_GOAL_TOOL_NAME", "UPDATE_GOAL_TOOL_NAME", "create_create_goal_tool", "create_get_goal_tool", "create_update_goal_tool"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "pycodex/ext/goal/spec.py", "layout": "module-file", "implementation_files": ["pycodex/ext/goal/spec.py"], "anchors": ["CREATE_GOAL_TOOL_NAME", "GET_GOAL_TOOL_NAME", "UPDATE_GOAL_TOOL_NAME", "create_create_goal_tool", "create_get_goal_tool", "create_update_goal_tool"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

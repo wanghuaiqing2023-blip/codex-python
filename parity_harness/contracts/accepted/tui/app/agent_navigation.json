@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app.agent_navigation",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::agent_navigation",
+    "source": "codex/codex-rs/tui/src/app/agent_navigation.rs",
+    "anchors": [
+      "AgentNavigationDirection",
+      "AgentNavigationState",
+      "active_agent_label",
+      "adjacent_thread_id",
+      "clear",
+      "get",
+      "has_non_primary_thread",
+      "is_empty",
+      "mark_closed",
+      "ordered_thread_ids",
+      "ordered_threads",
+      "picker_subtitle"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/agent_navigation.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/agent_navigation.py"
+    ],
+    "anchors": [
+      "AgentNavigationDirection",
+      "AgentNavigationState",
+      "active_agent_label",
+      "adjacent_thread_id",
+      "clear",
+      "get",
+      "has_non_primary_thread",
+      "is_empty",
+      "mark_closed",
+      "ordered_thread_ids",
+      "ordered_threads",
+      "picker_subtitle"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

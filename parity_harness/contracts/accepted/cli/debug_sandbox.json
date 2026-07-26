@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-cli.debug_sandbox",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cli",
+    "module": "debug_sandbox",
+    "source": "codex/codex-rs/cli/src/debug_sandbox.rs",
+    "anchors": [
+      "ManagedRequirementsMode",
+      "cli_overrides_use_legacy_sandbox_mode",
+      "config_uses_permission_profiles",
+      "for_profile_invocation"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cli/debug_sandbox/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cli/debug_sandbox/__init__.py"
+    ],
+    "anchors": [
+      "ManagedRequirementsMode",
+      "cli_overrides_use_legacy_sandbox_mode",
+      "config_uses_permission_profiles",
+      "for_profile_invocation"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

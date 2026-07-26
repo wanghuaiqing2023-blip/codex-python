@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.agent.role",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "agent::role",
+    "source": "codex/codex-rs/core/src/agent/role.rs",
+    "anchors": [
+      "DEFAULT_ROLE_NAME",
+      "apply_role_to_config",
+      "resolve_role_config",
+      "AGENT_TYPE_UNAVAILABLE_ERROR",
+      "load_role_layer_toml"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/agent/role/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/agent/role/__init__.py"
+    ],
+    "anchors": [
+      "DEFAULT_ROLE_NAME",
+      "apply_role_to_config",
+      "resolve_role_config",
+      "AGENT_TYPE_UNAVAILABLE_ERROR",
+      "load_role_layer_toml"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

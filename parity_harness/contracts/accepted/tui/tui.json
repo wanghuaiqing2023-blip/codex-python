@@ -1,0 +1,53 @@
+{
+  "contract_id": "codex-tui.tui",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "tui",
+    "source": "codex/codex-rs/tui/src/tui.rs",
+    "anchors": [
+      "InitializedTerminal",
+      "RestoreMode",
+      "TARGET_FRAME_INTERVAL",
+      "Terminal",
+      "Tui",
+      "TuiEvent",
+      "clear_ambient_pet_image",
+      "clear_pending_history_lines",
+      "draw",
+      "draw_ambient_pet_image",
+      "draw_pet_picker_preview_image",
+      "draw_with_resize_reflow"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/tui/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/tui/__init__.py",
+      "pycodex/tui/tui/terminal_runtime.py"
+    ],
+    "anchors": [
+      "InitializedTerminal",
+      "RestoreMode",
+      "TARGET_FRAME_INTERVAL",
+      "Terminal",
+      "Tui",
+      "TuiEvent",
+      "clear_ambient_pet_image",
+      "clear_pending_history_lines",
+      "draw",
+      "draw_ambient_pet_image",
+      "draw_pet_picker_preview_image",
+      "draw_with_resize_reflow"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

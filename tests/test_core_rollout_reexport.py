@@ -2,6 +2,7 @@ import unittest
 
 import pycodex.rollout as rollout_impl
 from pycodex.core import rollout
+from pycodex.core import thread_rollout_truncation
 from pycodex.protocol import SessionSource
 
 
@@ -40,8 +41,25 @@ class CoreRolloutReexportTests(unittest.TestCase):
         self.assertEqual(rollout.EventPersistenceMode.LIMITED.value, "limited")
         self.assertEqual(rollout.EventPersistenceMode.EXTENDED.value, "extended")
         self.assertTrue(callable(rollout.map_session_init_error))
-        self.assertTrue(callable(rollout.truncate_rollout_to_last_n_fork_turns))
-        self.assertTrue(callable(rollout.truncate_rollout_before_nth_user_message_from_start))
+        self.assertTrue(callable(rollout.truncation.truncate_rollout_to_last_n_fork_turns))
+        self.assertTrue(
+            callable(rollout.truncation.truncate_rollout_before_nth_user_message_from_start)
+        )
+
+    def test_inline_modules_preserve_their_rust_reexport_owners(self) -> None:
+        # Rust: codex-rs/core/src/rollout.rs::{list,truncation}.
+        self.assertIs(
+            rollout.list.find_thread_path_by_id_str,
+            rollout_impl.find_thread_path_by_id_str,
+        )
+        self.assertIs(
+            rollout.truncation.truncate_rollout_to_last_n_fork_turns,
+            thread_rollout_truncation.truncate_rollout_to_last_n_fork_turns,
+        )
+        self.assertIs(
+            rollout.truncation.truncate_rollout_before_nth_user_message_from_start,
+            thread_rollout_truncation.truncate_rollout_before_nth_user_message_from_start,
+        )
 
 
 if __name__ == "__main__":

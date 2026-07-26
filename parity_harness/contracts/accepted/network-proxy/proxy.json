@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-network-proxy.proxy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "proxy",
+    "source": "codex/codex-rs/network-proxy/src/proxy.rs",
+    "anchors": [
+      "ALLOW_LOCAL_BINDING_ENV_KEY",
+      "ALL_PROXY_ENV_KEYS",
+      "CODEX_PROXY_GIT_SSH_COMMAND_MARKER",
+      "DEFAULT_NO_PROXY_VALUE",
+      "NO_PROXY_ENV_KEYS",
+      "NetworkProxy",
+      "NetworkProxyBuilder",
+      "NetworkProxyHandle",
+      "PROXY_ACTIVE_ENV_KEY",
+      "PROXY_ENV_KEYS",
+      "PROXY_GIT_SSH_COMMAND_ENV_KEY",
+      "PROXY_URL_ENV_KEYS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/proxy.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/proxy.py"
+    ],
+    "anchors": [
+      "ALLOW_LOCAL_BINDING_ENV_KEY",
+      "ALL_PROXY_ENV_KEYS",
+      "CODEX_PROXY_GIT_SSH_COMMAND_MARKER",
+      "DEFAULT_NO_PROXY_VALUE",
+      "NO_PROXY_ENV_KEYS",
+      "NetworkProxy",
+      "NetworkProxyBuilder",
+      "NetworkProxyHandle",
+      "PROXY_ACTIVE_ENV_KEY",
+      "PROXY_ENV_KEYS",
+      "PROXY_GIT_SSH_COMMAND_ENV_KEY",
+      "PROXY_URL_ENV_KEYS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -36,7 +36,7 @@ from pycodex.utils.output_truncation import (
 from pycodex.utils.string import (
     take_bytes_at_char_boundary,
 )
-from pycodex.tools.original_image_detail import sanitize_original_image_detail
+from pycodex.core.original_image_detail import sanitize_original_image_detail
 
 JsonValue = Any
 

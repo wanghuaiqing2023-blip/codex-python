@@ -1,0 +1,86 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "feedback",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 2,
+    "python_files": 2,
+    "modules_with_candidates": 2,
+    "modules_with_anchors": 2
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-feedback",
+        "module": "crate",
+        "source": "codex/codex-rs/feedback/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/feedback/__init__.py",
+          "anchor_candidates": [
+            "CodexFeedback",
+            "DOCTOR_REPORT_ATTACHMENT_FILENAME",
+            "FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME",
+            "FeedbackAttachment",
+            "FeedbackAttachmentPath",
+            "FeedbackDiagnostic",
+            "FeedbackDiagnostics",
+            "FeedbackMakeWriter",
+            "FeedbackRequestTags",
+            "FeedbackSnapshot",
+            "FeedbackUploadOptions",
+            "FeedbackWriter"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-feedback",
+        "module": "feedback_diagnostics",
+        "source": "codex/codex-rs/feedback/src/feedback_diagnostics.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/feedback/feedback_diagnostics.py",
+          "anchor_candidates": [
+            "FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME",
+            "FeedbackDiagnostic",
+            "FeedbackDiagnostics",
+            "attachment_text",
+            "collect_from_env",
+            "diagnostics",
+            "is_empty",
+            "new",
+            "PROXY_ENV_VARS",
+            "collect_from_pairs"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

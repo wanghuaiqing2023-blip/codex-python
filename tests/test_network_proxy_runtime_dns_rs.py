@@ -1,15 +1,15 @@
 import asyncio
 
-from pycodex.network_proxy import (
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import NetworkProxyConfig
+from pycodex.network_proxy.runtime import (
     ConfigState,
     HostBlockDecision,
     HostBlockReason,
-    NetworkProxyConfig,
-    NetworkProxyConstraints,
     NetworkProxyState,
-    StaticNetworkProxyReloader,
     host_resolves_to_non_public_ip,
 )
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def state_with_dns_lookup(lookup) -> NetworkProxyState:

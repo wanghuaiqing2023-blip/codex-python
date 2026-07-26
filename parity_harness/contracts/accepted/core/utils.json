@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.utils",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "utils",
+    "source": "codex/codex-rs/core/src/utils/mod.rs",
+    "anchors": [
+      "module:path_utils"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/utils/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/utils/__init__.py"
+    ],
+    "anchors": [
+      "module:path_utils"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

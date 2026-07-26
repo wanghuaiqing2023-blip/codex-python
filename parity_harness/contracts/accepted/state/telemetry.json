@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-state.telemetry",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "telemetry",
+    "source": "codex/codex-rs/state/src/telemetry.rs",
+    "anchors": [
+      "DbKind",
+      "DbTelemetry",
+      "DbTelemetryHandle",
+      "install_process_db_telemetry",
+      "record_backfill_gate",
+      "record_fallback",
+      "record_init_result",
+      "DbOutcomeTags",
+      "as_str",
+      "classify_error",
+      "classify_sqlite_code",
+      "counter"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/telemetry.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/telemetry.py"
+    ],
+    "anchors": [
+      "DbKind",
+      "DbTelemetry",
+      "DbTelemetryHandle",
+      "install_process_db_telemetry",
+      "record_backfill_gate",
+      "record_fallback",
+      "record_init_result",
+      "DbOutcomeTags",
+      "as_str",
+      "classify_error",
+      "classify_sqlite_code",
+      "counter"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

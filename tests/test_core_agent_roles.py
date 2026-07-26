@@ -4,30 +4,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pycodex.core import (
-    AWAITER_TOML,
-    DEFAULT_ROLE_NAME,
-    EXPLORER_TOML,
+from pycodex.app_server_protocol.config import ConfigLayerSource
+from pycodex.config.state import ConfigLayerEntry
+from pycodex.core.config.agent_roles import (
     AgentRoleConfig,
     AgentRoleError,
-    build_spawn_agent_tool_description,
-    built_in_agent_role_config_file_contents,
-    built_in_agent_role_configs,
     collect_agent_role_files,
     discover_agent_roles_in_dir,
-    format_agent_nickname,
     load_agent_roles_from_config,
     load_agent_roles_from_layers,
-    locked_settings_note_for_role,
     merge_missing_role_fields,
     normalize_agent_role_description,
     normalize_agent_role_nickname_candidates,
     parse_agent_role_file_contents,
-    resolve_role_config,
     validate_agent_role_file_developer_instructions,
     validate_required_agent_role_description,
 )
-from pycodex.network_proxy import ConfigLayerEntry, ConfigLayerSource
 
 
 class AgentRolesTests(unittest.TestCase):
@@ -246,83 +238,6 @@ model = "gpt-5"
 
         with self.assertRaisesRegex(TypeError, "nickname_candidates must contain only strings"):
             AgentRoleConfig(nickname_candidates=("Ada", 1))  # type: ignore[arg-type]
-
-    def test_built_in_roles_and_config_contents(self) -> None:
-        roles = built_in_agent_role_configs()
-
-        self.assertEqual(list(roles), ["default", "explorer", "worker"])
-        self.assertEqual(roles[DEFAULT_ROLE_NAME].description, "Default agent.")
-        self.assertEqual(built_in_agent_role_config_file_contents("explorer.toml"), EXPLORER_TOML)
-        self.assertEqual(built_in_agent_role_config_file_contents("awaiter.toml"), AWAITER_TOML)
-        self.assertIsNone(built_in_agent_role_config_file_contents("missing.toml"))
-
-    def test_resolve_role_config_prefers_user_defined_role(self) -> None:
-        user_role = AgentRoleConfig(description="User override")
-
-        self.assertEqual(resolve_role_config({"explorer": user_role}, "explorer"), user_role)
-        self.assertEqual(resolve_role_config({}, "default"), built_in_agent_role_configs()["default"])
-        self.assertIsNone(resolve_role_config({}, "missing"))
-
-    def test_build_spawn_agent_tool_description_deduplicates_and_orders_roles(self) -> None:
-        spec = build_spawn_agent_tool_description(
-            {
-                "explorer": AgentRoleConfig(description="user override"),
-                "researcher": AgentRoleConfig(),
-            }
-        )
-
-        self.assertIn("Optional type name for the new agent. If omitted, `default` is used.", spec)
-        self.assertIn("researcher: no description", spec)
-        self.assertIn("explorer: {\nuser override\n}", spec)
-        self.assertIn("default: {\nDefault agent.\n}", spec)
-        self.assertNotIn("Explorers are fast and authoritative.", spec)
-        self.assertLess(spec.index("explorer: {\nuser override\n}"), spec.index("default: {\nDefault agent.\n}"))
-
-    def test_build_spawn_agent_tool_description_rejects_bad_role_map(self) -> None:
-        with self.assertRaisesRegex(TypeError, "agent role names must be strings"):
-            build_spawn_agent_tool_description({1: AgentRoleConfig()})  # type: ignore[dict-item]
-
-        with self.assertRaisesRegex(TypeError, "agent role declarations must be AgentRoleConfig values"):
-            build_spawn_agent_tool_description({"bad": object()})  # type: ignore[dict-item]
-
-    def test_locked_settings_note_for_role_marks_model_reasoning_and_service_tier(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            role_path = Path(tmpdir) / "researcher.toml"
-            role_path.write_text(
-                'developer_instructions = "Research carefully"\n'
-                'model = "gpt-5"\n'
-                'model_reasoning_effort = "high"\n'
-                'service_tier = "priority"\n',
-                encoding="utf-8",
-            )
-
-            note = locked_settings_note_for_role(AgentRoleConfig(description="Research", config_file=role_path))
-
-        self.assertIn("model is set to `gpt-5`", note)
-        self.assertIn("reasoning effort is set to `high`", note)
-        self.assertIn("service tier is set to `priority`", note)
-
-    def test_locked_settings_note_for_role_marks_reasoning_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            role_path = Path(tmpdir) / "reviewer.toml"
-            role_path.write_text(
-                'developer_instructions = "Review carefully"\nmodel_reasoning_effort = "medium"\n',
-                encoding="utf-8",
-            )
-
-            note = locked_settings_note_for_role(AgentRoleConfig(description="Review", config_file=role_path))
-
-        self.assertIn("reasoning effort is set to `medium` and cannot be changed", note)
-
-    def test_format_agent_nickname_adds_ordinal_suffixes(self) -> None:
-        self.assertEqual(format_agent_nickname("Ada", 0), "Ada")
-        self.assertEqual(format_agent_nickname("Ada", 1), "Ada the 2nd")
-        self.assertEqual(format_agent_nickname("Ada", 2), "Ada the 3rd")
-        self.assertEqual(format_agent_nickname("Ada", 10), "Ada the 11th")
-        self.assertEqual(format_agent_nickname("Ada", 20), "Ada the 21st")
-        with self.assertRaisesRegex(TypeError, "nickname_reset_count must be an integer"):
-            format_agent_nickname("Ada", "1")  # type: ignore[arg-type]
-
 
 if __name__ == "__main__":
     unittest.main()

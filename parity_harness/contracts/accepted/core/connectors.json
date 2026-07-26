@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.connectors",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "connectors",
+    "source": "codex/codex-rs/core/src/connectors.rs",
+    "anchors": [
+      "AppInfo",
+      "AppToolPolicy",
+      "accessible_connectors_from_mcp_tools",
+      "app_tool_policy",
+      "codex_app_tool_is_enabled",
+      "with_app_enabled_state",
+      "with_app_plugin_sources",
+      "app_is_enabled",
+      "app_tool_policy_from_apps_config",
+      "apply_requirements_apps_constraints",
+      "default",
+      "managed_app_tool_approval"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/connectors.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/connectors.py"
+    ],
+    "anchors": [
+      "AppInfo",
+      "AppToolPolicy",
+      "accessible_connectors_from_mcp_tools",
+      "app_tool_policy",
+      "codex_app_tool_is_enabled",
+      "with_app_enabled_state",
+      "with_app_plugin_sources",
+      "app_is_enabled",
+      "app_tool_policy_from_apps_config",
+      "apply_requirements_apps_constraints",
+      "default",
+      "managed_app_tool_approval"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.terminal_palette",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "terminal_palette",
+    "source": "codex/codex-rs/tui/src/terminal_palette.rs",
+    "anchors": [
+      "DefaultColors",
+      "StdoutColorLevel",
+      "XTERM_COLORS",
+      "best_color",
+      "default_bg",
+      "default_colors",
+      "default_fg",
+      "indexed_color",
+      "requery_default_colors",
+      "rgb_color",
+      "set_default_colors_from_startup_probe",
+      "stdout_color_level"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/terminal_palette.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/terminal_palette.py"
+    ],
+    "anchors": [
+      "DefaultColors",
+      "StdoutColorLevel",
+      "XTERM_COLORS",
+      "best_color",
+      "default_bg",
+      "default_colors",
+      "default_fg",
+      "indexed_color",
+      "requery_default_colors",
+      "rgb_color",
+      "set_default_colors_from_startup_probe",
+      "stdout_color_level"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

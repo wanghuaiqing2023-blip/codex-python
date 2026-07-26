@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.guardian.prompt",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "guardian::prompt",
+    "source": "codex/codex-rs/core/src/guardian/prompt.rs",
+    "anchors": [
+      "GuardianPromptItems",
+      "GuardianPromptMode",
+      "GuardianTranscriptCursor",
+      "GuardianTranscriptEntry",
+      "GuardianTranscriptEntryKind",
+      "build_guardian_prompt_items",
+      "collect_guardian_transcript_entries",
+      "guardian_output_schema",
+      "guardian_policy_prompt",
+      "guardian_policy_prompt_with_config",
+      "guardian_truncate_text",
+      "parse_guardian_assessment"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/guardian/prompt.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/guardian/prompt.py"
+    ],
+    "anchors": [
+      "GuardianPromptItems",
+      "GuardianPromptMode",
+      "GuardianTranscriptCursor",
+      "GuardianTranscriptEntry",
+      "GuardianTranscriptEntryKind",
+      "build_guardian_prompt_items",
+      "collect_guardian_transcript_entries",
+      "guardian_output_schema",
+      "guardian_policy_prompt",
+      "guardian_policy_prompt_with_config",
+      "guardian_truncate_text",
+      "parse_guardian_assessment"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

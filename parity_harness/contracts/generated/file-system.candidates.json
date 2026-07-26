@@ -1,0 +1,54 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "file-system",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 1,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-file-system",
+        "module": "crate",
+        "source": "codex/codex-rs/file-system/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/file_system/__init__.py",
+          "anchor_candidates": [
+            "CopyOptions",
+            "CreateDirectoryOptions",
+            "ExecutorFileSystem",
+            "FileMetadata",
+            "FileSystemSandboxContext",
+            "ReadDirectoryEntry",
+            "RemoveOptions",
+            "drop_cwd_if_unused",
+            "from_legacy_sandbox_policy",
+            "from_permission_profile",
+            "from_permission_profile_with_cwd",
+            "has_cwd_dependent_permissions"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

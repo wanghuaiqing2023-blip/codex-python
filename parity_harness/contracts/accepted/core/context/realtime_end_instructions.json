@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.context.realtime_end_instructions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::realtime_end_instructions",
+    "source": "codex/codex-rs/core/src/context/realtime_end_instructions.rs",
+    "anchors": [
+      "REALTIME_END_INSTRUCTIONS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/realtime_end_instructions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/realtime_end_instructions.py"
+    ],
+    "anchors": [
+      "REALTIME_END_INSTRUCTIONS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

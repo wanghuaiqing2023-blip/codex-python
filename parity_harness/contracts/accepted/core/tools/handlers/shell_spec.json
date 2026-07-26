@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.handlers.shell_spec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::shell_spec",
+    "source": "codex/codex-rs/core/src/tools/handlers/shell_spec.rs",
+    "anchors": [
+      "CommandToolOptions",
+      "create_exec_command_tool_with_environment_id",
+      "create_request_permissions_tool",
+      "create_shell_command_tool",
+      "create_write_stdin_tool",
+      "request_permissions_tool_description",
+      "create_approval_parameters",
+      "file_system_permissions_schema",
+      "network_permissions_schema",
+      "permission_profile_schema",
+      "unified_exec_output_schema",
+      "windows_shell_guidance"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/shell_spec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/shell_spec.py"
+    ],
+    "anchors": [
+      "CommandToolOptions",
+      "create_exec_command_tool_with_environment_id",
+      "create_request_permissions_tool",
+      "create_shell_command_tool",
+      "create_write_stdin_tool",
+      "request_permissions_tool_description",
+      "create_approval_parameters",
+      "file_system_permissions_schema",
+      "network_permissions_schema",
+      "permission_profile_schema",
+      "unified_exec_output_schema",
+      "windows_shell_guidance"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

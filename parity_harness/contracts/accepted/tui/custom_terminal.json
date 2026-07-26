@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.custom_terminal",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "custom_terminal",
+    "source": "codex/codex-rs/tui/src/custom_terminal.rs",
+    "anchors": [
+      "clear",
+      "clear_after_position",
+      "clear_scrollback_and_visible_screen_ansi",
+      "flush",
+      "hide_cursor",
+      "invalidate_viewport",
+      "resize",
+      "show_cursor",
+      "display_width"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/custom_terminal.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/custom_terminal.py"
+    ],
+    "anchors": [
+      "clear",
+      "clear_after_position",
+      "clear_scrollback_and_visible_screen_ansi",
+      "flush",
+      "hide_cursor",
+      "invalidate_viewport",
+      "resize",
+      "show_cursor",
+      "display_width"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 from pycodex.codex_client import TransportError
 from pycodex.vendor import import_vendored
@@ -23,6 +25,7 @@ from ..error import ApiError
 
 
 DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE = 128 << 20
+_FIRST_ADDRESS_CONNECT_TIMEOUT_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -89,18 +92,32 @@ def connect_vendored_websocket(
     client = import_vendored("websockets.sync.client")
     exceptions = import_vendored("websockets.exceptions")
     connect = connect_impl or client.connect
+    connected_socket = None
+    connect_timeout = timeout
+    if connect_impl is None:
+        parsed = urlsplit(url)
+        if parsed.hostname is None:
+            raise ApiError.transport_error(TransportError.network("websocket URL has no host"))
+        port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+        try:
+            connected_socket, connect_timeout = _connect_tcp_socket(parsed.hostname, port, timeout)
+        except OSError as err:
+            _timing_trace("vendored_websocket_tcp_connect_error", url=_redact_url(url), error=str(err))
+            raise ApiError.transport_error(TransportError.network(str(err))) from err
     try:
         _timing_trace("vendored_websocket_connect_start", url=_redact_url(url), timeout=timeout)
-        connection = connect(
-            url,
-            additional_headers=list(headers.items()),
-            ssl_context=ssl_context,
-            open_timeout=timeout,
-            close_timeout=timeout,
-            max_size=max_message_size,
-            compression="deflate",
-            user_agent_header=None,
-        )
+        connect_kwargs = {
+            "additional_headers": list(headers.items()),
+            "ssl_context": ssl_context,
+            "open_timeout": connect_timeout,
+            "close_timeout": timeout,
+            "max_size": max_message_size,
+            "compression": "deflate",
+            "user_agent_header": None,
+        }
+        if connected_socket is not None:
+            connect_kwargs["sock"] = connected_socket
+        connection = connect(url, **connect_kwargs)
     except exceptions.InvalidStatus as err:
         response = err.response
         _timing_trace(
@@ -134,6 +151,47 @@ def connect_vendored_websocket(
     response_headers = _headers_to_dict(getattr(response, "headers", {}))
     _timing_trace("vendored_websocket_connect_done", url=_redact_url(url), status=status)
     return VendoredResponsesWebsocketStream(connection), status, response_headers
+
+
+def _connect_tcp_socket(host: str, port: int, timeout: float | None) -> tuple[socket.socket, float | None]:
+    started_at = time.monotonic()
+    deadline = None if timeout is None else started_at + max(float(timeout), 0.0)
+    addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not addresses:
+        raise OSError(f"no addresses found for {host}")
+
+    last_error: OSError | None = None
+    for index, (family, socktype, proto, _canonname, address) in enumerate(addresses):
+        remaining = _remaining_timeout(deadline)
+        if remaining is not None and remaining <= 0:
+            break
+        attempt_timeout = remaining
+        if index < len(addresses) - 1:
+            attempt_timeout = min(
+                _FIRST_ADDRESS_CONNECT_TIMEOUT_SECONDS,
+                remaining if remaining is not None else _FIRST_ADDRESS_CONNECT_TIMEOUT_SECONDS,
+            )
+        candidate = socket.socket(family, socktype, proto)
+        try:
+            candidate.settimeout(attempt_timeout)
+            _timing_trace("vendored_websocket_tcp_attempt", family=family, timeout=attempt_timeout)
+            candidate.connect(address)
+            remaining = _remaining_timeout(deadline)
+            _timing_trace("vendored_websocket_tcp_connected", family=family, remaining=remaining)
+            return candidate, remaining
+        except OSError as err:
+            last_error = err
+            candidate.close()
+
+    if last_error is not None:
+        raise last_error
+    raise TimeoutError(f"timed out connecting to {host}:{port}")
+
+
+def _remaining_timeout(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    return max(deadline - time.monotonic(), 0.0)
 
 
 def _timing_trace(event: str, **fields: Any) -> None:

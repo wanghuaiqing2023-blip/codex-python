@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.onboarding.keys",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "onboarding::keys",
+    "source": "codex/codex-rs/tui/src/onboarding/keys.rs",
+    "anchors": [
+      "CANCEL",
+      "CONFIRM",
+      "MOVE_DOWN",
+      "MOVE_UP",
+      "QUIT",
+      "SELECT_FIRST",
+      "SELECT_SECOND",
+      "SELECT_THIRD",
+      "TOGGLE_ANIMATION"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/onboarding/keys.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/onboarding/keys.py"
+    ],
+    "anchors": [
+      "CANCEL",
+      "CONFIRM",
+      "MOVE_DOWN",
+      "MOVE_UP",
+      "QUIT",
+      "SELECT_FIRST",
+      "SELECT_SECOND",
+      "SELECT_THIRD",
+      "TOGGLE_ANIMATION"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

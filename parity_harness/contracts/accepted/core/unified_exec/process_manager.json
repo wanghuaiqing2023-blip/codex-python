@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.unified_exec.process_manager",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "unified_exec::process_manager",
+    "source": "codex/codex-rs/core/src/unified_exec/process_manager.rs",
+    "anchors": [
+      "allocate_process_id",
+      "exec_command",
+      "release_process_id",
+      "set_deterministic_process_ids_for_tests",
+      "terminate_all_processes",
+      "write_stdin",
+      "NETWORK_ACCESS_DENIED_MESSAGE",
+      "UNIFIED_EXEC_ENV",
+      "apply_unified_exec_env",
+      "env_overlay_for_exec_server",
+      "exec_server_env_for_request",
+      "exec_server_params_for_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/unified_exec/process_manager.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/unified_exec/process_manager.py"
+    ],
+    "anchors": [
+      "allocate_process_id",
+      "exec_command",
+      "release_process_id",
+      "set_deterministic_process_ids_for_tests",
+      "terminate_all_processes",
+      "write_stdin",
+      "NETWORK_ACCESS_DENIED_MESSAGE",
+      "UNIFIED_EXEC_ENV",
+      "apply_unified_exec_env",
+      "env_overlay_for_exec_server",
+      "exec_server_env_for_request",
+      "exec_server_params_for_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

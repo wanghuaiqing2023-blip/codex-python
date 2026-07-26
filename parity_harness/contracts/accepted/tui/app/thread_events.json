@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app.thread_events",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::thread_events",
+    "source": "codex/codex-rs/tui/src/app/thread_events.rs",
+    "anchors": [
+      "FeedbackThreadEvent",
+      "ThreadBufferedEvent",
+      "ThreadEventChannel",
+      "ThreadEventSnapshot",
+      "ThreadEventStore",
+      "active_turn_id",
+      "apply_thread_rollback",
+      "clear_active_turn_id",
+      "event_survives_session_refresh",
+      "file_change_changes",
+      "has_pending_thread_approvals",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/thread_events.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/thread_events.py"
+    ],
+    "anchors": [
+      "FeedbackThreadEvent",
+      "ThreadBufferedEvent",
+      "ThreadEventChannel",
+      "ThreadEventSnapshot",
+      "ThreadEventStore",
+      "active_turn_id",
+      "apply_thread_rollback",
+      "clear_active_turn_id",
+      "event_survives_session_refresh",
+      "file_change_changes",
+      "has_pending_thread_approvals",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

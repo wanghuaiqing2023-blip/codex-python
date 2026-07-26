@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-memories-read.citations",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-read",
+    "module": "citations",
+    "source": "codex/codex-rs/memories/read/src/citations.rs",
+    "anchors": [
+      "parse_memory_citation",
+      "thread_ids_from_memory_citation"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/read/citations.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/read/citations.py"
+    ],
+    "anchors": [
+      "parse_memory_citation",
+      "thread_ids_from_memory_citation"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

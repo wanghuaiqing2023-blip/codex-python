@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.bin.config_schema",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "bin::codex-write-config-schema",
+    "source": "codex/codex-rs/core/src/bin/config_schema.rs",
+    "anchors": [
+      "main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/bin/config_schema.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/bin/config_schema.py"
+    ],
+    "anchors": [
+      "main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

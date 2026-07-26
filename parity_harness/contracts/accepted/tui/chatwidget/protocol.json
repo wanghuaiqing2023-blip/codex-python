@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-tui.chatwidget.protocol",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::protocol",
+    "source": "codex/codex-rs/tui/src/chatwidget/protocol.rs",
+    "anchors": [
+      "handle_server_notification",
+      "handle_turn_completed_notification",
+      "handle_item_completed_notification",
+      "handle_item_started_notification"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/protocol.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/protocol.py"
+    ],
+    "anchors": [
+      "handle_server_notification",
+      "handle_turn_completed_notification",
+      "handle_item_completed_notification",
+      "handle_item_started_notification"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

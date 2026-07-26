@@ -55,6 +55,16 @@ def test_filter_prefix_exact_and_presentation_order():
     assert "compact" not in _names(popup)
 
 
+def test_status_exact_match_precedes_statusline_prefix_match():
+    # Rust command_popup::filtered partitions exact matches before prefixes.
+    popup = CommandPopup.new(CommandPopupFlags(), [])
+
+    popup.on_composer_text_change("/status")
+
+    assert _names(popup) == ["status", "statusline"]
+    assert popup.selected_item() == CommandItem.builtin(SlashCommand.STATUS)
+
+
 def test_alias_commands_hidden_only_for_empty_filter():
     popup = CommandPopup.new(CommandPopupFlags(), [])
 

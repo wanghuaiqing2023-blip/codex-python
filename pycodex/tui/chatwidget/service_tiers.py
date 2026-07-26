@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Tuple
 
+from pycodex.protocol import ServiceTier
+
 from .._porting import RustTuiModule
 from ..bottom_pane.slash_commands import ServiceTierCommand
 from ..config_update import SERVICE_TIER_DEFAULT_REQUEST_VALUE
@@ -86,10 +88,11 @@ class ChatWidgetServiceTierState:
         return resolve_service_tier_update_for_core(self.config, self.current_model(), self._models_or_default())
 
     def should_show_fast_status(self, model: str, service_tier: Optional[str]) -> bool:
-        return (
-            service_tier == ServiceTierPresetFast.request_value()
-            and self.model_supports_service_tier(model, service_tier)
-            and self.has_chatgpt_account
+        return should_show_fast_status(
+            model,
+            service_tier,
+            self._models_or_default(),
+            has_chatgpt_account=self.has_chatgpt_account,
         )
 
     def fast_mode_enabled(self) -> bool:
@@ -147,10 +150,7 @@ class ChatWidgetServiceTierState:
         self.events.append(ServiceTierSelectionEvent.persist_selection(service_tier))
 
     def model_supports_service_tier(self, model: str, service_tier: str) -> bool:
-        for preset in self._models_or_default():
-            if _preset_model(preset) == model:
-                return preset_supports_service_tier(preset, service_tier)
-        return False
+        return model_supports_service_tier(self._models_or_default(), model, service_tier)
 
     def current_model_fast_service_tier(self) -> Optional[ServiceTierCommand]:
         for tier in self.current_model_service_tier_commands():
@@ -175,15 +175,6 @@ class ChatWidgetServiceTierState:
         return tuple(_list_models(self.models))
 
 
-@dataclass(frozen=True)
-class ServiceTierPresetFast:
-    """Tiny equivalent of Rust ``ServiceTier::Fast.request_value()``."""
-
-    @staticmethod
-    def request_value() -> str:
-        return SPEED_TIER_FAST
-
-
 def _list_models(models: Any) -> Iterable[Any]:
     try_list_models = getattr(models, "try_list_models", None)
     if callable(try_list_models):
@@ -197,7 +188,20 @@ def _list_models(models: Any) -> Iterable[Any]:
             return tuple(list_models())
         except Exception:
             return ()
+    catalog_models = getattr(models, "models", None)
+    if catalog_models is not None:
+        return catalog_models
+    try:
+        iter(models)
+    except TypeError:
+        return ()
     return models or ()
+
+
+def available_models(models: Any) -> Tuple[Any, ...]:
+    """Read the current Rust-shaped ``ModelCatalog`` snapshot."""
+
+    return tuple(_list_models(models))
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -208,6 +212,29 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
 
 def _preset_model(preset: Any) -> str:
     return str(_get(preset, "model", ""))
+
+
+def model_supports_service_tier(models: Any, model: str, service_tier: str) -> bool:
+    for preset in _list_models(models):
+        if _preset_model(preset) == model:
+            return preset_supports_service_tier(preset, service_tier)
+    return False
+
+
+def should_show_fast_status(
+    model: str,
+    service_tier: Optional[str],
+    models: Any,
+    *,
+    has_chatgpt_account: bool,
+) -> bool:
+    """Mirror Rust ``ChatWidget::should_show_fast_status``."""
+
+    return (
+        service_tier == ServiceTier.FAST.request_value()
+        and model_supports_service_tier(models, model, service_tier)
+        and has_chatgpt_account
+    )
 
 
 def fast_mode_config(enabled: bool, service_tier: Optional[str] = None) -> Config:
@@ -226,7 +253,9 @@ __all__ = [
     "SERVICE_TIER_DEFAULT_REQUEST_VALUE",
     "ServiceTierCommand",
     "ServiceTierPreset",
-    "ServiceTierPresetFast",
     "ServiceTierSelectionEvent",
+    "available_models",
     "fast_mode_config",
+    "model_supports_service_tier",
+    "should_show_fast_status",
 ]

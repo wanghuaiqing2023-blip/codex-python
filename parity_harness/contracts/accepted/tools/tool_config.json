@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tools.tool_config",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tools",
+    "module": "tool_config",
+    "source": "codex/codex-rs/tools/src/tool_config.rs",
+    "anchors": [
+      "ShellCommandBackendConfig",
+      "ToolEnvironmentMode",
+      "ToolUserShellType",
+      "UnifiedExecShellMode",
+      "ZshForkConfig",
+      "from_count",
+      "has_environment",
+      "request_user_input_available_modes",
+      "shell_command_backend_for_features",
+      "shell_type_for_model_and_features"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tools/tool_config.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tools/tool_config.py"
+    ],
+    "anchors": [
+      "ShellCommandBackendConfig",
+      "ToolEnvironmentMode",
+      "ToolUserShellType",
+      "UnifiedExecShellMode",
+      "ZshForkConfig",
+      "from_count",
+      "has_environment",
+      "request_user_input_available_modes",
+      "shell_command_backend_for_features",
+      "shell_type_for_model_and_features"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

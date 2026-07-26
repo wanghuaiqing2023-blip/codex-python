@@ -501,24 +501,21 @@ Rust local tests:
 
 Python parity tests:
 
-- `test_thread_extensions_projection_records_rust_install_order`
-- `test_app_server_thread_goal_from_core_preserves_goal_fields`
-- `test_app_server_event_sink_forwards_thread_goal_updates`
+- `test_thread_extensions_returns_real_registry_with_rust_install_order`
+- `test_app_server_event_sink_forwards_thread_goal_updates_to_outgoing_queue`
 - `test_app_server_event_sink_drops_unsupported_extension_events`
-- `test_guardian_agent_spawn_projection_calls_spawn_subagent_when_manager_alive`
-- `test_guardian_agent_spawn_projection_reports_dropped_thread_manager`
+- `test_guardian_agent_spawner_delegates_to_live_thread_manager`
+- `test_guardian_agent_spawner_maps_failed_weak_upgrade_to_codex_error`
 
 Coverage notes:
 
-- Covers Rust's local extension registry install order, event sink forwarding
-  and drop branches, thread-goal conversion, and guardian weak-manager
-  upgrade/delegation boundary through deterministic projections.
-- Real extension registry building/install hooks, AuthManager/OpenTelemetry
-  integration, and concrete async subagent spawning remain runtime integration
-  boundaries.
-- Focused validation passed on 2026-06-19 with
-  `tests/test_app_server_extensions_rs.py` (6 passed) plus `py_compile` for the
-  Python module and parity test.
+- Covers Rust's extension registry install order with the real registry
+  builder, event sink forwarding and drop branches, thread-goal conversion,
+  and guardian weak-manager upgrade/delegation boundary.
+- Guardian, memories, and web-search internals remain owned by their sibling
+  crates; this module verifies their installation boundary.
+- Focused validation passed on 2026-07-23 with
+  `tests/test_app_server_extensions_rs.py` (5 passed).
 
 ## src/connection_rpc_gate.rs
 

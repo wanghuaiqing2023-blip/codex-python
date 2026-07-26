@@ -47,17 +47,18 @@ class AgentControlPureHelpersTests(unittest.TestCase):
 
     def test_agent_nickname_candidates_uses_role_candidates_or_default_list(self) -> None:
         # Rust source: codex-rs/core/src/agent/control.rs::agent_nickname_candidates.
-        roles = {"worker": AgentRoleConfig(nickname_candidates=(" Ada ", "Grace"))}
-
-        self.assertEqual(agent_nickname_candidates(roles, "worker"), [" Ada ", "Grace"])
-        self.assertEqual(agent_nickname_candidates(roles, "missing")[:3], ["Euclid", "Archimedes", "Ptolemy"])
-
         class ConfigLike:
+            agent_roles = {"worker": AgentRoleConfig(nickname_candidates=(" Ada ", "Grace"))}
+
+        self.assertEqual(agent_nickname_candidates(ConfigLike(), "worker"), [" Ada ", "Grace"])
+        self.assertEqual(agent_nickname_candidates(ConfigLike(), "missing")[:3], ["Euclid", "Archimedes", "Ptolemy"])
+
+        class DefaultConfigLike:
             agent_roles = {"default": AgentRoleConfig(nickname_candidates=("Rooty",))}
 
-        self.assertEqual(agent_nickname_candidates(ConfigLike(), None), ["Rooty"])
+        self.assertEqual(agent_nickname_candidates(DefaultConfigLike(), None), ["Rooty"])
 
-        with self.assertRaisesRegex(TypeError, "config_or_roles must be a mapping"):
+        with self.assertRaisesRegex(TypeError, "config must expose agent_roles"):
             agent_nickname_candidates(object())
 
     def test_keep_forked_rollout_item_keeps_system_developer_user_messages(self) -> None:

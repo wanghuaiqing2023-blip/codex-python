@@ -15,7 +15,7 @@ import pytest
 from pycodex.core.client import ModelClient
 from pycodex.core.session.turn.runtime import run_user_turn_sampling_from_session
 from pycodex.protocol import ContentItem, ResponseItem, UserInput
-from tests.test_core_turn_runtime import PendingInputQueue, Router, Session
+from tests.test_core_turn_runtime import PendingInputQueue, Router, TurnSessionStub as Session
 
 
 class _State:

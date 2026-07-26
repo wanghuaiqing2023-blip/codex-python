@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.rate_limits",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::rate_limits",
+    "source": "codex/codex-rs/tui/src/chatwidget/rate_limits.rs",
+    "anchors": [
+      "NUDGE_MODEL_SLUG",
+      "RATE_LIMIT_SWITCH_PROMPT_THRESHOLD",
+      "RateLimitErrorKind",
+      "RateLimitSwitchPromptState",
+      "RateLimitWarningState",
+      "app_server_rate_limit_error_kind",
+      "fallback_limit_label",
+      "get_limits_duration",
+      "is_app_server_cyber_policy_error",
+      "limit_label_for_window",
+      "take_warnings",
+      "MINUTES_PER_5_HOURS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/rate_limits.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/rate_limits.py"
+    ],
+    "anchors": [
+      "NUDGE_MODEL_SLUG",
+      "RATE_LIMIT_SWITCH_PROMPT_THRESHOLD",
+      "RateLimitErrorKind",
+      "RateLimitSwitchPromptState",
+      "RateLimitWarningState",
+      "app_server_rate_limit_error_kind",
+      "fallback_limit_label",
+      "get_limits_duration",
+      "is_app_server_cyber_policy_error",
+      "limit_label_for_window",
+      "take_warnings",
+      "MINUTES_PER_5_HOURS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -14,8 +14,18 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, List, Optional, Set, Tuple
 
+from pycodex.protocol import ModeKind
+
 from .._porting import RustTuiModule
+from ..collaboration_modes import default_mode_mask
+from ..token_usage import TokenUsageInfo
 from .mcp_startup import MCP_STARTUP_MULTI_HEADER_PREFIX, MCP_STARTUP_SINGLE_HEADER_PREFIX
+from .plan_implementation import PLAN_IMPLEMENTATION_TITLE, selection_view_params
+from .rate_limits import (
+    RateLimitErrorKind,
+    app_server_rate_limit_error_kind,
+    is_app_server_cyber_policy_error,
+)
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -24,7 +34,6 @@ RUST_MODULE = RustTuiModule(
     status="complete",
 )
 
-PLAN_IMPLEMENTATION_TITLE = "Ready to implement?"
 TRUSTED_ACCESS_FOR_CYBER_VERIFICATION_WARNING = (
     "Trusted access for cyber is enabled. Review generated commands carefully."
 )
@@ -38,12 +47,6 @@ class TerminalTitleStatusKind(str, Enum):
 class TurnAbortReason(str, Enum):
     BUDGET_LIMITED = "budget_limited"
     OTHER = "other"
-
-
-class RateLimitErrorKind(str, Enum):
-    SERVER_OVERLOADED = "server_overloaded"
-    USAGE_LIMIT = "usage_limit"
-    GENERIC = "generic"
 
 
 class RateLimitReachedType(str, Enum):
@@ -60,11 +63,6 @@ class StepStatus(str, Enum):
     IN_PROGRESS = "in_progress"
 
 
-class ModeKind(str, Enum):
-    PLAN = "plan"
-    CHAT = "chat"
-
-
 @dataclass(frozen=True)
 class PlanItem:
     status: StepStatus
@@ -75,13 +73,6 @@ class PlanItem:
 class UpdatePlanArgs:
     plan: List[PlanItem]
     explanation: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class TokenUsageInfo:
-    total_token_limit: Optional[int] = None
-    total_tokens: Optional[int] = None
-    used_percent: Optional[int] = None
 
 
 @dataclass
@@ -142,6 +133,7 @@ class BottomPane:
     interrupt_hint_visible: bool = False
     modal_or_popup_active: bool = False
     selection_views: List[Any] = field(default_factory=list)
+    selection_view_sink: Optional[Callable[[Any], Any]] = None
 
     def set_task_running(self, value: bool) -> None:
         self.task_running = bool(value)
@@ -157,6 +149,8 @@ class BottomPane:
 
     def show_selection_view(self, params: Any) -> None:
         self.selection_views.append(params)
+        if self.selection_view_sink is not None:
+            self.selection_view_sink(params)
 
 
 @dataclass
@@ -250,7 +244,8 @@ class SemanticTurnRuntime:
     plan_prompt_checks: int = 0
     workspace_owner_nudges: List[str] = field(default_factory=list)
     collaboration_modes: bool = True
-    mode_kind: ModeKind = ModeKind.CHAT
+    mode_kind: ModeKind = ModeKind.DEFAULT
+    model_catalog: Any = None
     rate_limit_switch_prompt_pending: bool = False
     codex_rate_limit_reached_type: Optional[RateLimitReachedType] = None
     current_goal_active: bool = False
@@ -486,11 +481,11 @@ class SemanticTurnRuntime:
         self.open_plan_implementation_prompt()
 
     def open_plan_implementation_prompt(self) -> None:
-        params = {
-            "title": PLAN_IMPLEMENTATION_TITLE,
-            "latest_plan": self.transcript.latest_proposed_plan_markdown,
-            "context_usage_label": self.plan_implementation_context_usage_label(),
-        }
+        params = selection_view_params(
+            default_mode_mask(self.model_catalog),
+            self.transcript.latest_proposed_plan_markdown,
+            self.plan_implementation_context_usage_label(),
+        )
         self.bottom_pane.show_selection_view(params)
         self.notify({"kind": "plan_mode_prompt", "title": PLAN_IMPLEMENTATION_TITLE})
 
@@ -522,15 +517,16 @@ class SemanticTurnRuntime:
         return self.mode_kind
 
     def context_remaining_percent(self, info: TokenUsageInfo) -> Optional[int]:
-        if info.used_percent is not None:
-            return 100 - info.used_percent
-        if info.total_token_limit and info.total_tokens is not None:
-            remaining = max(info.total_token_limit - info.total_tokens, 0)
-            return int((remaining * 100) / info.total_token_limit)
-        return None
+        if info.model_context_window is None:
+            return None
+        return info.last_token_usage.percent_of_context_window_remaining(
+            info.model_context_window
+        )
 
-    def context_used_tokens(self, info: TokenUsageInfo, _has_percent: bool) -> Optional[int]:
-        return info.total_tokens
+    def context_used_tokens(self, info: TokenUsageInfo, has_percent: bool) -> Optional[int]:
+        if has_percent:
+            return None
+        return info.total_token_usage.tokens_in_context_window()
 
     def status_header_is_mcp_startup_owned(self) -> bool:
         return bool(
@@ -798,27 +794,6 @@ def visible_assistant_markdown(message: Optional[str]) -> str:
 def agent_turn_preview(message: str) -> Optional[str]:
     text = str(message).strip()
     return text or None
-
-
-def is_app_server_cyber_policy_error(info: Optional[Any]) -> bool:
-    if info is None:
-        return False
-    if isinstance(info, dict):
-        return bool(info.get("cyber_policy"))
-    return bool(getattr(info, "cyber_policy", False))
-
-
-def app_server_rate_limit_error_kind(info: Optional[Any]) -> Optional[RateLimitErrorKind]:
-    if info is None:
-        return None
-    value = info.get("rate_limit_kind") if isinstance(info, dict) else getattr(info, "rate_limit_kind", None)
-    if value in (RateLimitErrorKind.SERVER_OVERLOADED, "server_overloaded"):
-        return RateLimitErrorKind.SERVER_OVERLOADED
-    if value in (RateLimitErrorKind.USAGE_LIMIT, "usage_limit"):
-        return RateLimitErrorKind.USAGE_LIMIT
-    if value in (RateLimitErrorKind.GENERIC, "generic"):
-        return RateLimitErrorKind.GENERIC
-    return None
 
 
 __all__ = [

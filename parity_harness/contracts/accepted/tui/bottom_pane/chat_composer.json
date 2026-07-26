@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.bottom_pane.chat_composer",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::chat_composer",
+    "source": "codex/codex-rs/tui/src/bottom_pane/chat_composer.rs",
+    "anchors": [
+      "ChatComposer",
+      "ChatComposerConfig",
+      "ComposerDraftSnapshot",
+      "InputResult",
+      "QueuedInputAction",
+      "current_text",
+      "current_text_with_pending",
+      "cursor_pos",
+      "expand_pending_pastes",
+      "flush_paste_burst_if_due",
+      "handle_key_event",
+      "handle_paste"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/chat_composer/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/chat_composer/__init__.py"
+    ],
+    "anchors": [
+      "ChatComposer",
+      "ChatComposerConfig",
+      "ComposerDraftSnapshot",
+      "InputResult",
+      "QueuedInputAction",
+      "current_text",
+      "current_text_with_pending",
+      "cursor_pos",
+      "expand_pending_pastes",
+      "flush_paste_burst_if_due",
+      "handle_key_event",
+      "handle_paste"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

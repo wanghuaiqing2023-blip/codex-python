@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-tui.chatwidget.keymap_picker",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::keymap_picker",
+    "source": "codex/codex-rs/tui/src/chatwidget/keymap_picker.rs",
+    "anchors": [
+      "apply_keymap_update",
+      "open_keymap_action_menu",
+      "open_keymap_capture",
+      "open_keymap_debug",
+      "open_keymap_picker",
+      "open_keymap_replace_binding_menu",
+      "return_to_keymap_picker",
+      "keymap_action_filter"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/keymap_picker.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/keymap_picker.py"
+    ],
+    "anchors": [
+      "apply_keymap_update",
+      "open_keymap_action_menu",
+      "open_keymap_capture",
+      "open_keymap_debug",
+      "open_keymap_picker",
+      "open_keymap_replace_binding_menu",
+      "return_to_keymap_picker",
+      "keymap_action_filter"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

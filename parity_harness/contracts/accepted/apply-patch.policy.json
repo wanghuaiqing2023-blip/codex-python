@@ -1,0 +1,18 @@
+{
+  "scope": "apply-patch",
+  "rust_root": "codex/codex-rs/apply-patch",
+  "python_root": "pycodex/apply_patch",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::invocation",
+    "crate::parser",
+    "crate::seek_sequence",
+    "crate::standalone_executable",
+    "crate::streaming_parser",
+    "bin::apply_patch"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

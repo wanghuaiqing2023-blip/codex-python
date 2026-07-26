@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-app-server.analytics_utils",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "analytics_utils",
+    "source": "codex/codex-rs/app-server/src/analytics_utils.rs",
+    "anchors": [
+      "analytics_events_client_from_config"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/analytics_utils.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/analytics_utils.py"
+    ],
+    "anchors": [
+      "analytics_events_client_from_config"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_analytics_utils_rs.py"
+  ]
+}

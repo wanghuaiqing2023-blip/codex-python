@@ -5,14 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from pycodex.network_proxy import (
+from pycodex.network_proxy.config import (
+    NetworkMode,
+    NetworkProxyConfig,
+)
+from pycodex.network_proxy.mitm_hook import (
     HookEvaluation,
     InjectedHeaderConfig,
     MitmHookActionsConfig,
     MitmHookConfig,
     MitmHookMatchConfig,
-    NetworkMode,
-    NetworkProxyConfig,
     compile_mitm_hooks,
     compile_mitm_hooks_with_resolvers,
     evaluate_mitm_hooks,

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-protocol.dynamic_tools",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "dynamic_tools",
+    "source": "codex/codex-rs/protocol/src/dynamic_tools.rs",
+    "anchors": [
+      "DynamicToolCallOutputContentItem",
+      "DynamicToolCallRequest",
+      "DynamicToolResponse",
+      "DynamicToolSpec"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/dynamic_tools.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/dynamic_tools.py"
+    ],
+    "anchors": [
+      "DynamicToolCallOutputContentItem",
+      "DynamicToolCallRequest",
+      "DynamicToolResponse",
+      "DynamicToolSpec"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_mcp_dynamic_tools.py"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "contract_id": "codex-cli.doctor.updates",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs", "crate": "codex-cli",
+    "module": "bin::codex::doctor::updates",
+    "source": "codex/codex-rs/cli/src/doctor/updates.rs",
+    "anchors": ["VersionInfo", "fetch_latest_version", "updates_check"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cli/doctor/updates.py", "layout": "module-file",
+    "implementation_files": ["pycodex/cli/doctor/updates.py"],
+    "anchors": ["VersionInfo", "fetch_latest_version", "updates_check"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_cli_doctor_updates.py"]
+}

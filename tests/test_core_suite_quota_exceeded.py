@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.core.http_transport import _codex_err_from_responses_payload
+from pycodex.core.client import _codex_err_from_responses_payload
 from pycodex.core.session.turn.runtime import _send_terminal_error_event
 from pycodex.protocol import CodexErr
 

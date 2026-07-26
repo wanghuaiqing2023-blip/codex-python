@@ -11,6 +11,7 @@ from pycodex.protocol import (
     SessionSource,
     ThreadId,
     ThreadMemoryMode,
+    ThreadSource,
     UserMessageEvent,
 )
 from pycodex.thread_store import (
@@ -23,7 +24,6 @@ from pycodex.thread_store import (
     ThreadEventPersistenceMode,
     ThreadMetadataPatch,
     ThreadPersistenceMetadata,
-    ThreadSource,
 )
 
 

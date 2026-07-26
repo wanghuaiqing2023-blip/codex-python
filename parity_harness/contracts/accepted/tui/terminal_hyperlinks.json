@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.terminal_hyperlinks",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "terminal_hyperlinks",
+    "source": "codex/codex-rs/tui/src/terminal_hyperlinks.rs",
+    "anchors": [
+      "HyperlinkLine",
+      "TerminalHyperlink",
+      "adaptive_wrap_hyperlink_lines",
+      "annotate_web_urls",
+      "annotate_web_urls_in_line",
+      "decorate_spans",
+      "mark_buffer_hyperlinks",
+      "mark_underlined_hyperlink",
+      "mark_url_hyperlink",
+      "new",
+      "osc8_hyperlink",
+      "plain_hyperlink_lines"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/terminal_hyperlinks.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/terminal_hyperlinks.py"
+    ],
+    "anchors": [
+      "HyperlinkLine",
+      "TerminalHyperlink",
+      "adaptive_wrap_hyperlink_lines",
+      "annotate_web_urls",
+      "annotate_web_urls_in_line",
+      "decorate_spans",
+      "mark_buffer_hyperlinks",
+      "mark_underlined_hyperlink",
+      "mark_url_hyperlink",
+      "new",
+      "osc8_hyperlink",
+      "plain_hyperlink_lines"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

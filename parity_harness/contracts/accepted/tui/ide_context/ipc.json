@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.ide_context.ipc",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "ide_context::ipc",
+    "source": "codex/codex-rs/tui/src/ide_context/ipc.rs",
+    "anchors": [
+      "IdeContextError",
+      "fetch_ide_context",
+      "prompt_skip_hint",
+      "user_facing_hint",
+      "IDE_CONTEXT_REQUEST_TIMEOUT",
+      "IDE_DID_NOT_PROVIDE_CONTEXT_HINT",
+      "IdeContextStream",
+      "KEEP_TRYING_HINT",
+      "MAX_IPC_FRAME_BYTES",
+      "OPEN_IDE_HINT",
+      "TUI_SOURCE_CLIENT_ID",
+      "UnixDeadlineStream"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/ide_context/ipc.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/ide_context/ipc.py"
+    ],
+    "anchors": [
+      "IdeContextError",
+      "fetch_ide_context",
+      "prompt_skip_hint",
+      "user_facing_hint",
+      "IDE_CONTEXT_REQUEST_TIMEOUT",
+      "IDE_DID_NOT_PROVIDE_CONTEXT_HINT",
+      "IdeContextStream",
+      "KEEP_TRYING_HINT",
+      "MAX_IPC_FRAME_BYTES",
+      "OPEN_IDE_HINT",
+      "TUI_SOURCE_CLIENT_ID",
+      "UnixDeadlineStream"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

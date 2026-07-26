@@ -1,0 +1,11 @@
+{
+  "scope": "arg0",
+  "rust_root": "codex/codex-rs/arg0",
+  "python_root": "pycodex/arg0",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

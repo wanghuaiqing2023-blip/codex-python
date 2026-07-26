@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-tui.auto_review_denials",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "auto_review_denials",
+    "source": "codex/codex-rs/tui/src/auto_review_denials.rs",
+    "anchors": [
+      "RecentAutoReviewDenials",
+      "action_summary",
+      "entries",
+      "is_empty",
+      "push",
+      "take",
+      "MAX_RECENT_DENIALS"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/auto_review_denials.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/auto_review_denials.py"
+    ],
+    "anchors": [
+      "RecentAutoReviewDenials",
+      "action_summary",
+      "entries",
+      "is_empty",
+      "push",
+      "take",
+      "MAX_RECENT_DENIALS"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

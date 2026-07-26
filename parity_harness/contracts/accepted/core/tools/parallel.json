@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-core.tools.parallel",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::parallel",
+    "source": "codex/codex-rs/core/src/tools/parallel.rs",
+    "anchors": [
+      "ToolCallRuntime",
+      "create_diff_consumer",
+      "handle_tool_call",
+      "handle_tool_call_with_source",
+      "abort_message",
+      "failure_response"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/parallel.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/parallel.py"
+    ],
+    "anchors": [
+      "ToolCallRuntime",
+      "create_diff_consumer",
+      "handle_tool_call",
+      "handle_tool_call_with_source",
+      "abort_message",
+      "failure_response"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

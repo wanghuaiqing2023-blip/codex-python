@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-core.config.edit.document_helpers",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "config::edit::document_helpers",
+    "source": "codex/codex-rs/core/src/config/edit.rs",
+    "anchors": [
+      "ensure_table_for_read",
+      "ensure_table_for_write",
+      "merge_inline_table",
+      "new_implicit_table",
+      "parse_tool_suggest_disabled_tool",
+      "parse_tool_suggest_disabled_tool_table",
+      "serialize_mcp_server",
+      "serialize_mcp_server_inline",
+      "tool_suggest_disabled_tools_value"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/config/edit/document_helpers.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/config/edit/document_helpers.py"
+    ],
+    "anchors": [
+      "ensure_table_for_read",
+      "ensure_table_for_write",
+      "merge_inline_table",
+      "new_implicit_table",
+      "parse_tool_suggest_disabled_tool",
+      "parse_tool_suggest_disabled_tool_table",
+      "serialize_mcp_server",
+      "serialize_mcp_server_inline",
+      "tool_suggest_disabled_tools_value"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

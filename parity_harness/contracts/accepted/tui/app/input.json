@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-tui.app.input",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::input",
+    "source": "codex/codex-rs/tui/src/app/input.rs",
+    "anchors": [
+      "apply_raw_output_mode",
+      "handle_key_event",
+      "launch_external_editor",
+      "refresh_status_line",
+      "reject_side_backtrack_esc",
+      "request_external_editor_launch",
+      "reset_external_editor_state",
+      "should_handle_backtrack_esc",
+      "should_reject_side_backtrack_esc",
+      "SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE",
+      "app_keymap_shortcuts_available"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/input.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/input.py"
+    ],
+    "anchors": [
+      "apply_raw_output_mode",
+      "handle_key_event",
+      "launch_external_editor",
+      "refresh_status_line",
+      "reject_side_backtrack_esc",
+      "request_external_editor_launch",
+      "reset_external_editor_state",
+      "should_handle_backtrack_esc",
+      "should_reject_side_backtrack_esc",
+      "SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE",
+      "app_keymap_shortcuts_available"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

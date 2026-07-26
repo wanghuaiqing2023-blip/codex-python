@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-tui.chatwidget.input_submission",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::input_submission",
+    "source": "codex/codex-rs/tui/src/chatwidget/input_submission.rs",
+    "anchors": [
+      "restore_blocked_image_submission",
+      "submit_queued_shell_prompt",
+      "submit_user_message",
+      "submit_user_message_with_history_record",
+      "submit_user_message_with_shell_escape_policy",
+      "user_message_from_submission",
+      "submit_shell_command",
+      "submit_shell_command_with_history",
+      "submit_user_message_with_history_and_shell_escape_policy"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/input_submission.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/input_submission.py"
+    ],
+    "anchors": [
+      "restore_blocked_image_submission",
+      "submit_queued_shell_prompt",
+      "submit_user_message",
+      "submit_user_message_with_history_record",
+      "submit_user_message_with_shell_escape_policy",
+      "user_message_from_submission",
+      "submit_shell_command",
+      "submit_shell_command_with_history",
+      "submit_user_message_with_history_and_shell_escape_policy"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

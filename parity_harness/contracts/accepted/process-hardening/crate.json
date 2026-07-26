@@ -1,0 +1,70 @@
+{
+  "contract_id": "codex-process-hardening.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-process-hardening",
+    "module": "crate",
+    "source": "codex/codex-rs/process-hardening/src/lib.rs",
+    "anchors": [
+      "disable_process_dumping",
+      "pre_main_hardening",
+      "pre_main_hardening_bsd",
+      "pre_main_hardening_linux",
+      "pre_main_hardening_macos",
+      "pre_main_hardening_windows",
+      "PRCTL_FAILED_EXIT_CODE",
+      "PTRACE_DENY_ATTACH_FAILED_EXIT_CODE",
+      "SET_RLIMIT_CORE_FAILED_EXIT_CODE",
+      "env_keys_with_prefix",
+      "remove_env_vars_with_prefix",
+      "set_core_file_size_limit_to_zero"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/process_hardening/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/process_hardening/__init__.py"
+    ],
+    "anchors": [
+      "disable_process_dumping",
+      "pre_main_hardening",
+      "pre_main_hardening_bsd",
+      "pre_main_hardening_linux",
+      "pre_main_hardening_macos",
+      "pre_main_hardening_windows",
+      "PRCTL_FAILED_EXIT_CODE",
+      "PTRACE_DENY_ATTACH_FAILED_EXIT_CODE",
+      "SET_RLIMIT_CORE_FAILED_EXIT_CODE",
+      "env_keys_with_prefix",
+      "remove_env_vars_with_prefix",
+      "set_core_file_size_limit_to_zero"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_process_hardening_lib_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

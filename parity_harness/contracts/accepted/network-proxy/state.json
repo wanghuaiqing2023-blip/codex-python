@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-network-proxy.state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "state",
+    "source": "codex/codex-rs/network-proxy/src/state.rs",
+    "anchors": [
+      "NetworkProxyConstraintError",
+      "NetworkProxyConstraints",
+      "build_config_state",
+      "validate_policy_against_constraints"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/state.py"
+    ],
+    "anchors": [
+      "NetworkProxyConstraintError",
+      "NetworkProxyConstraints",
+      "build_config_state",
+      "validate_policy_against_constraints"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

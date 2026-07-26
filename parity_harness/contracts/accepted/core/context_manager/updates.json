@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.context_manager.updates",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context_manager::updates",
+    "source": "codex/codex-rs/core/src/context_manager/updates.rs",
+    "anchors": [
+      "build_contextual_user_message",
+      "build_developer_update_item",
+      "build_initial_realtime_item",
+      "build_model_instructions_update_item",
+      "build_realtime_update_item",
+      "build_settings_update_items",
+      "personality_message_for",
+      "build_collaboration_mode_update_item",
+      "build_environment_update_item",
+      "build_permissions_update_item",
+      "build_personality_update_item",
+      "build_text_message"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context_manager/updates.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context_manager/updates.py"
+    ],
+    "anchors": [
+      "build_contextual_user_message",
+      "build_developer_update_item",
+      "build_initial_realtime_item",
+      "build_model_instructions_update_item",
+      "build_realtime_update_item",
+      "build_settings_update_items",
+      "personality_message_for",
+      "build_collaboration_mode_update_item",
+      "build_environment_update_item",
+      "build_permissions_update_item",
+      "build_personality_update_item",
+      "build_text_message"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

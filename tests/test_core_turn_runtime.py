@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 from pathlib import Path
 import shlex
@@ -13,7 +13,7 @@ from pycodex.core.codex_thread import SETTINGS_UNSET, SessionSettingsUpdate
 from pycodex.core.compact_remote import IMAGE_CONTENT_OMITTED_PLACEHOLDER
 from pycodex.features import Feature
 from pycodex.core.hook_runtime import HookRuntimeOutcome
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.core.shell import default_user_shell
 import pycodex.core.session.turn.runtime as turn_runtime
 from pycodex.core.session.turn.sampler import sample_with_model_client_session
@@ -26,7 +26,7 @@ from pycodex.core.session.turn.runtime import (
 from pycodex.core.turn_timing import TurnTimingState
 from pycodex.core.tools.context import FunctionToolOutput
 from pycodex.core.tools.handlers.shell import ShellCommandHandler
-from pycodex.apply_patch import ApplyPatchHandler
+from pycodex.core.tools.handlers.apply_patch import ApplyPatchHandler
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.core.tools.registry import ToolRegistry
 from pycodex.core.tools.router import ToolRouter
@@ -286,7 +286,7 @@ def shell_join_for_test(args: list[str]) -> str:
     return shlex.join(args)
 
 
-class Session:
+class TurnSessionStub:
     def __init__(self) -> None:
         self.turn_metadata_state = TurnMetadataState()
         self.turn_context = SimpleNamespace(
@@ -443,15 +443,15 @@ class Session:
         self.retry_sleeps.append(seconds)
 
 
-def non_lifecycle_events(session: Session) -> tuple[EventMsg, ...]:
+def non_lifecycle_events(session: TurnSessionStub) -> tuple[EventMsg, ...]:
     return tuple(event for event in session.emitted_events if event.type not in {"task_started", "task_complete"})
 
 
-def events_of_type(session: Session, event_type: str) -> tuple[EventMsg, ...]:
+def events_of_type(session: TurnSessionStub, event_type: str) -> tuple[EventMsg, ...]:
     return tuple(event for event in session.emitted_events if event.type == event_type)
 
 
-def goal_runtime_events_of_type(session: Session, event_type: str) -> tuple[object, ...]:
+def goal_runtime_events_of_type(session: TurnSessionStub, event_type: str) -> tuple[object, ...]:
     return tuple(event for event in session.goal_runtime_events if event.get("type") == event_type)
 
 
@@ -459,7 +459,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_turn_start_dispatches_extension_lifecycle_with_token_baseline(self) -> None:
         # Rust: core/src/tasks/mod.rs::Session::start_task and task_complete
         # dispatch core GoalRuntimeEvent values around extension lifecycle.
-        session = Session()
+        session = TurnSessionStub()
         session.total_token_usage_value = TokenUsage(input_tokens=100, output_tokens=20, total_tokens=120)
         client = ModelClient(
             session_id="session",
@@ -497,7 +497,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_build_user_turn_responses_request_records_turn_and_builds_request(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -527,7 +527,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.request["input"][1].content[0].text, "hello")
 
     async def test_build_user_turn_request_normalizes_history_call_outputs_for_prompt(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         function_call = ResponseItem.function_call("tool", "{}", "call-1")
         orphan_output = ResponseItem.from_mapping(
             {
@@ -567,7 +567,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(orphan_output, input_items)
 
     async def test_build_user_turn_request_strips_unsupported_images_for_prompt(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         image_message = ResponseItem.message(
             "user",
             (
@@ -606,7 +606,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history[-2], image_message)
 
     async def test_build_user_turn_request_uses_turn_config_reasoning_and_service_tier_defaults(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.config = SimpleNamespace(
             model_reasoning_effort="high",
             model_reasoning_summary="concise",
@@ -635,7 +635,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.request["service_tier"], "priority")
 
     async def test_build_user_turn_request_applies_thread_settings_before_turn_creation(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -667,7 +667,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.request["service_tier"], "priority")
 
     async def test_build_user_input_op_request_applies_op_thread_settings(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -704,7 +704,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.request["text"]["format"]["schema"], {"type": "object"})
 
     async def test_build_user_input_op_request_clears_previous_final_output_json_schema(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.final_output_json_schema = {"type": "object"}
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -729,7 +729,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(plan.request["text"])
 
     async def test_build_user_input_op_request_records_responsesapi_client_metadata(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -757,7 +757,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_build_user_input_op_request_records_additional_context_before_user_input(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -790,7 +790,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<external_a_note>untrusted context</external_a_note>", plan.request["input"][1].content[0].text)
 
     async def test_build_user_input_op_request_truncates_large_additional_context_values(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -858,7 +858,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_build_user_input_op_request_rejects_unknown_additional_context_kind(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -882,7 +882,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_build_user_input_op_request_rejects_non_string_additional_context_value(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -906,7 +906,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
     async def test_build_user_input_op_request_applies_turn_environments_before_turn_creation(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -930,7 +930,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.turn_context.environments, environments)
 
     async def test_build_user_turn_request_uses_default_environment_tool_router(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.environments = (
             TurnEnvironmentSelection("local", "C:/work/project"),
             TurnEnvironmentSelection("remote", "C:/work/remote"),
@@ -968,7 +968,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(specs_by_name["view_image"]["parameters"]["properties"]["detail"]["enum"], ["high", "original"])
 
     async def test_build_user_input_op_request_does_not_make_turn_environments_sticky(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -998,7 +998,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(session.turn_context.environments)
 
     async def test_build_user_input_op_request_records_only_changed_additional_context(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -1050,7 +1050,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded[1][0].content[0].text, "<app>context v2</app>")
 
     async def test_additional_context_removes_one_value_while_adding_another(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -1142,7 +1142,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_additional_context_empty_map_clears_store_then_readds_values(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -1204,7 +1204,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item.role == "user" and item.content[0].text == "restored" for item in restored_plan.request["input"]))
 
     async def test_build_user_input_op_request_clears_additional_context_when_absent(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -1274,7 +1274,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(additional_context_batches), 2)
 
     async def test_build_user_turn_request_uses_turn_context_model_info(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.model_info = SimpleNamespace(
             slug="gpt-collab",
             input_modalities=("text",),
@@ -1303,7 +1303,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.request["model"], "gpt-collab")
 
     async def test_run_user_turn_sampling_records_sampler_response_items(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -1347,7 +1347,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             support_verbosity=False,
             service_tier_for_request=lambda tier: tier,
         )
-        session = InMemoryCodexSession(cwd="C:/work", model_info=model_info)
+        session = Session(cwd="C:/work", model_info=model_info)
         client = ModelClient(
             session_id="session",
             thread_id="00000000-0000-0000-0000-000000000010",
@@ -1389,7 +1389,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # - codex-core/src/tasks/mod.rs::abort_all_tasks emits EventMsg::TurnAborted.
         # - codex-rs/core/tests/suite/abort_tasks.rs::interrupt_long_running_tool_emits_turn_aborted
         #   waits for active work, submits Op::Interrupt, and expects TurnAborted soon after.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-cancel"
         token = AsyncCancellationToken()
         started = asyncio.Event()
@@ -1435,7 +1435,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item.content[0].text == "late completion" for item in session.history if item.content))
 
     async def test_run_user_turn_sampling_user_prompt_submit_hook_blocks_input(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -1474,7 +1474,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(item.role == "user" for item in session.history))
 
     async def test_run_user_turn_sampling_user_prompt_submit_hook_records_context_after_input(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -1511,7 +1511,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.content[0].text for item in seen_inputs[0][:3]], ["context", "hello", "hook context"])
 
     async def test_run_user_turn_sampling_user_prompt_submit_hook_keyword_only_prompt_blocks_input(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -1547,7 +1547,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history[-1].content[0].text, "blocked by policy")
 
     async def test_run_user_turn_sampling_user_prompt_submit_hook_keyword_only_full_signature(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -1588,7 +1588,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.content[0].text for item in session.history[:3]], ["context", "hello", "hook context"])
 
     async def test_run_user_turn_sampling_emits_turn_lifecycle_events(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.turn_context.trace_id = "trace-1"
         session.turn_context.started_at = 10
@@ -1635,7 +1635,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.session_events, tuple(session.emitted_events))
 
     async def test_run_user_turn_sampling_records_ttft_from_stream_events(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.turn_context.turn_timing_state = TurnTimingState()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
@@ -1681,7 +1681,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed.time_to_first_token_ms, session.turn_context.time_to_first_token_ms)
 
     async def test_run_user_turn_sampling_records_ttfm_for_agent_message(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.turn_context.turn_timing_state = TurnTimingState()
         session.turn_context.session_telemetry = Telemetry()
@@ -1723,7 +1723,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tags, ())
 
     async def test_run_user_turn_sampling_after_agent_abort_emits_error_and_clears_last_message(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -1770,7 +1770,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(session.emitted_events[2].payload.last_agent_message)
 
     async def test_run_user_turn_sampling_after_agent_abort_emits_error_and_clears_last_message_keyword_only(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -1817,7 +1817,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(session.emitted_events[2].payload.last_agent_message)
 
     async def test_run_user_turn_sampling_returns_streamed_last_agent_message(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(
             session_id="session",
@@ -1859,7 +1859,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.last_agent_message, "streamed final")
 
     async def test_run_user_turn_sampling_mailbox_preemption_follows_up_after_commentary(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.input_queue = PendingMailboxQueue(True)
         client = ModelClient(
@@ -1914,7 +1914,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.last_agent_message, "done")
 
     async def test_run_user_turn_sampling_stop_hook_continuation_prompts_followup(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -1965,7 +1965,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history[-1].content[0].text, "final")
 
     async def test_run_user_turn_sampling_stop_hook_block_without_prompt_warns_and_finishes(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -2005,7 +2005,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_user_turn_sampling_stop_hook_continuation_prompts_followup_with_keyword_only_signature(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -2060,7 +2060,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history[-1].content[0].text, "final")
 
     async def test_run_user_turn_sampling_forwards_skill_injection_warnings_as_events(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -2095,7 +2095,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Detected deprecated skill metadata format.", warnings)
 
     async def test_run_user_turn_sampling_forwards_multiple_skill_injection_warnings_in_order(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -2134,7 +2134,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(warnings, warning_messages)
 
     async def test_run_user_turn_sampling_tracks_explicit_app_and_plugin_mentions_for_analytics(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-123"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.config = SimpleNamespace(apps_enabled=True)
@@ -2205,7 +2205,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(analytics.plugin_used[0][1], plugin_payload)
 
     async def test_run_user_turn_sampling_tracks_prefixed_app_mentions_with_normalization(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-456"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.config = SimpleNamespace(apps_enabled=True)
@@ -2264,7 +2264,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app_mentions[0].connector_id, "weather")
 
     async def test_run_user_turn_sampling_tracks_turn_resolved_config_for_analytics(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-789"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.sub_id = "turn-analytics"
@@ -2368,7 +2368,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_turn_resolved_config_consumes_session_next_turn_is_first(self) -> None:
         """Rust source contract: ``session::turn`` consumes ``SessionState::take_next_turn_is_first``."""
 
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
         turn_context = await session.new_default_turn()
         user_input = (UserInput.text_input("hello"),)
 
@@ -2391,7 +2391,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(second_payload["is_first_turn"])
 
     async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_thread_attr_snapshot(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-790"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.sub_id = "turn-analytics-thread"
@@ -2456,7 +2456,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["permission_profile"], "cfg-perm-profile")
 
     async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_thread_callable_snapshot(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-791"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.sub_id = "turn-analytics-thread-callable"
@@ -2521,7 +2521,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["permission_profile"], "cfg-callable-profile")
 
     async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_turn_context_permission_profile(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-792"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.sub_id = "turn-analytics-turn-profile"
@@ -2593,7 +2593,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["sandbox_network_access"])
 
     async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_turn_context_network_sandbox_policy(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-793"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.sub_id = "turn-analytics-turn-network-policy"
@@ -2660,7 +2660,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["sandbox_network_access"])
 
     async def test_run_user_turn_sampling_does_not_track_plugins_without_telemetry_metadata(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.conversation_id = "thread-123"
         session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
         session.turn_context.config = SimpleNamespace(apps_enabled=True)
@@ -2717,7 +2717,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(analytics.plugin_used), 0)
 
     async def test_run_user_turn_sampling_projects_sampler_stream_events(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -2831,7 +2831,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.session_events, tuple(session.emitted_events))
 
     async def test_run_user_turn_sampling_projects_reasoning_stream_events_with_protocol_ids(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -2911,7 +2911,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.session_events, tuple(session.emitted_events))
 
     async def test_run_user_turn_sampling_applies_stream_completed_usage_to_session(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
         session.unified_diff = "diff --git a/file b/file"
@@ -2972,7 +2972,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # The terminal transport can report live events as emitted while its
         # completed event is only retained on the returned stream. Usage must
         # still be recorded before any tool dispatch.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-live-usage"
         client = ModelClient(
             session_id="session",
@@ -3027,7 +3027,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.token_count_turn_contexts, [session.turn_context])
 
     async def test_run_user_turn_sampling_applies_raw_response_completed_usage_to_session(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
@@ -3088,7 +3088,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(result.stream_runtime_state_summary["token_usage_to_record"])
 
     async def test_run_user_turn_sampling_applies_stream_metadata_to_session(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3133,7 +3133,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_user_turn_sampling_applies_stream_server_model_and_verification_metadata(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3187,7 +3187,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_user_turn_sampling_prefers_stream_metadata_order_over_raw_metadata(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3232,7 +3232,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_user_turn_sampling_turn_aborted_after_stream_tail_returns_partial_result(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
         session.unified_diff = "diff --git a/file b/file"
         session.turn_context.cancellation_token = CancellationToken(cancelled=True)
@@ -3284,7 +3284,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded_token_usage[0][1].total_tokens, 7)
 
     async def test_run_user_turn_sampling_turn_aborted_before_sampling_result_returns_interrupted(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -3315,7 +3315,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.emitted_events[-1].payload.reason.value, "interrupted")
 
     async def test_run_user_turn_sampling_turn_aborted_during_followup_returns_accumulated_interrupted(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -3357,7 +3357,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.emitted_events[-1].payload.reason.value, "interrupted")
 
     async def test_run_user_turn_sampling_emits_assistant_text_stream_deltas(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3424,7 +3424,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # codex-core/src/session/turn.rs handles ResponseEvent::OutputTextDelta
         # by immediately sending EventMsg::AgentMessageContentDelta through
         # sess.send_event while the stream is still being consumed.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3435,13 +3435,24 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             service_tier_for_request=lambda tier: tier,
         )
         observed_order = []
-        pending_assistant = ResponseItem.message("assistant", (), id="msg-1")
-        assistant = ResponseItem.message("assistant", (ContentItem.output_text("live"),), id="msg-1")
+        pending_assistant = ResponseItem.message(
+            "assistant",
+            (),
+            id="msg-1",
+            phase=MessagePhase.COMMENTARY,
+        )
+        assistant = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("live"),),
+            id="msg-1",
+            phase=MessagePhase.COMMENTARY,
+        )
 
         async def sampler(request):
             await request.stream_event_observer({"type": "output_item_added", "item": pending_assistant})
             await request.stream_event_observer({"type": "output_text_delta", "delta": "live"})
             observed_order.append(("during_sampler", tuple(event.type for event in session.emitted_events)))
+            await request.stream_event_observer({"type": "output_item_done", "item": assistant})
             return SimpleNamespace(
                 response_items=(assistant,),
                 stream_events=(
@@ -3472,6 +3483,9 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             tuple(record["visible_text_delta"] for record in result.stream_runtime_state_summary["assistant_text_deltas"]),
             ("live",),
         )
+        completed = events_of_type(session, "item_completed")
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].payload.item.item.phase, MessagePhase.COMMENTARY)
 
     async def test_run_user_turn_sampling_live_observer_emits_done_only_assistant_item(self) -> None:
         # Rust source/test contract:
@@ -3483,7 +3497,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         #   proves the non-tool completion contract.
         # A stream that only has output_item.done, with no output_text.delta,
         # must still produce a visible completed assistant item for TUI clients.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="123e4567-e89b-12d3-a456-426614174000", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3534,7 +3548,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # timing event while streaming. Contract: Python's TUI-facing session
         # lane gets an early non-transcript event so complex turns visibly move
         # out of "waiting for model" before text deltas arrive.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3580,7 +3594,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # lifecycle activity before the final assistant answer. The TUI app
         # consumes this as CommandExecution progress so tool-heavy turns do not
         # look idle while waiting for the first assistant text delta.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3627,7 +3641,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items[0].content[0].text, "done")
 
     async def test_run_user_turn_sampling_parses_streamed_citations_across_boundaries(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3675,7 +3689,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stream_runtime_state_summary["assistant_text_deltas"][0]["citations"], ("doc",))
 
     async def test_run_user_turn_sampling_routes_plan_mode_segments_to_plan_events(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.turn_context.collaboration_mode = SimpleNamespace(mode="plan")
         client = ModelClient(
@@ -3730,7 +3744,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.stream_runtime_state_summary["plan_item_completed"])
 
     async def test_run_user_turn_sampling_completes_plan_mode_item_without_plan_deltas(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.turn_context.collaboration_mode = SimpleNamespace(mode="plan")
         thread_id = "019e7f56-8d12-7a72-bc3a-50921c618fe7"
@@ -3777,7 +3791,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.stream_runtime_state_summary["plan_item_completed"])
 
     async def test_run_user_turn_sampling_keeps_inline_proposed_plan_as_agent_text(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.turn_context.collaboration_mode = SimpleNamespace(mode="plan")
         client = ModelClient(
@@ -3831,7 +3845,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.stream_runtime_state_summary["plan_item_completed"])
 
     async def test_run_user_turn_sampling_emits_non_agent_output_text_deltas(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3888,7 +3902,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_marks_context_window_full_on_terminal_error(self) -> None:
         """Rust source contract: ``session::turn::run_sampling_request`` records full context window."""
 
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -3921,7 +3935,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_records_usage_limit_rate_limits_on_terminal_error(self) -> None:
         """Rust source contract: ``session::turn::run_sampling_request`` records usage-limit rate limits."""
 
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -3959,7 +3973,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_goal_runtime_usage_limit_errors_are_best_effort(self) -> None:
         """Rust ``core::goals`` usage-limit updates are best-effort side effects."""
 
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -3999,7 +4013,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_retries_retryable_stream_error(self) -> None:
         """Rust source contract: retryable stream errors notify, sleep, and retry below max retries."""
 
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(
             is_azure_responses_endpoint=lambda: False,
@@ -4031,6 +4045,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(len(attempts), 2)
+        self.assertIs(attempts[0], attempts[1])
         self.assertEqual(result.last_agent_message, "retry ok")
         self.assertEqual(result.response_items[0].content[0].text, "retry ok")
         self.assertEqual(len(session.stream_errors), 1)
@@ -4038,12 +4053,22 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(session.stream_errors[0][0], session.turn_context)
         self.assertEqual(str(session.stream_errors[0][2]), "stream disconnected before completion: dropped SSE")
         self.assertEqual(session.retry_sleeps, [0.0])
+        self.assertEqual(len(session.recorded), 2)
+        self.assertEqual(
+            sum(
+                1
+                for batch in session.recorded
+                for item in batch
+                if item.type == "message" and item.role == "user"
+            ),
+            1,
+        )
         self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
 
     async def test_run_user_turn_sampling_falls_back_to_http_after_retry_limit(self) -> None:
         """Rust source contract: after max retries, successful fallback emits warning and retries."""
 
-        session = Session()
+        session = TurnSessionStub()
 
         class FallbackModelClient:
             def __init__(self) -> None:
@@ -4102,10 +4127,260 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("Falling back from WebSockets to HTTPS transport.", warnings[0].payload.message)
 
+    async def test_run_user_turn_sampling_recovers_after_multiple_stream_retries(self) -> None:
+        """Rust responses_retry reports each visible retry and preserves one request/turn."""
+
+        session = TurnSessionStub()
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
+        provider = SimpleNamespace(
+            is_azure_responses_endpoint=lambda: False,
+            info=lambda: SimpleNamespace(stream_max_retries=lambda: 2),
+        )
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        attempts = []
+
+        async def sampler(request):
+            attempts.append(request)
+            if len(attempts) <= 2:
+                raise CodexErr.stream(f"disconnect {len(attempts)}", retry_after=0)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("recovered"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.last_agent_message, "recovered")
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(all(request is attempts[0] for request in attempts))
+        self.assertEqual(
+            [message for _turn, message, _error in session.stream_errors],
+            ["Reconnecting... 1/2", "Reconnecting... 2/2"],
+        )
+        self.assertEqual(session.retry_sleeps, [0.0, 0.0])
+        self.assertEqual(
+            sum(
+                item.type == "message" and item.role == "user"
+                for batch in session.recorded
+                for item in batch
+            ),
+            1,
+        )
+
+    async def test_run_user_turn_sampling_retry_dispatches_recovered_tool_call_once(self) -> None:
+        """Rust session turn retries sampling, not completed tool orchestration."""
+
+        session = TurnSessionStub()
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000010",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(
+            is_azure_responses_endpoint=lambda: False,
+            info=lambda: SimpleNamespace(stream_max_retries=lambda: 1),
+        )
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        handler = EchoHandler()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([handler]), ())
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                raise CodexErr.stream("disconnect before completed response", retry_after=0)
+            if len(seen_requests) == 2:
+                return [ResponseItem.function_call("echo", "{}", "call-recovered")]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done once"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(len(seen_requests), 3)
+        self.assertIs(seen_requests[0], seen_requests[1])
+        self.assertIsNot(seen_requests[1], seen_requests[2])
+        self.assertEqual(len(handler.invocations), 1)
+        self.assertEqual(result.last_agent_message, "done once")
+        self.assertEqual(
+            sum(
+                item.type == "message" and item.role == "user"
+                for batch in session.recorded
+                for item in batch
+            ),
+            1,
+        )
+        self.assertEqual(
+            sum(
+                item.type == "function_call_output" and item.call_id == "call-recovered"
+                for batch in session.recorded
+                for item in batch
+            ),
+            1,
+        )
+
+    async def test_run_user_turn_sampling_exhausts_stream_retries_once(self) -> None:
+        """Rust responses_retry returns the final error after the configured boundary."""
+
+        session = TurnSessionStub()
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
+        provider = SimpleNamespace(
+            is_azure_responses_endpoint=lambda: False,
+            info=lambda: SimpleNamespace(stream_max_retries=lambda: 1),
+        )
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        attempts = []
+
+        async def sampler(request):
+            attempts.append(request)
+            raise CodexErr.stream("still disconnected", retry_after=0)
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(len(attempts), 2)
+        self.assertIs(attempts[0], attempts[1])
+        self.assertEqual([message for _turn, message, _error in session.stream_errors], ["Reconnecting... 1/1"])
+        self.assertEqual(session.retry_sleeps, [0.0])
+        self.assertEqual(
+            tuple(event.type for event in session.emitted_events),
+            ("task_started", "error", "task_complete"),
+        )
+
+    async def test_run_user_turn_sampling_does_not_retry_non_retryable_error(self) -> None:
+        session = TurnSessionStub()
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
+        provider = SimpleNamespace(
+            is_azure_responses_endpoint=lambda: False,
+            info=lambda: SimpleNamespace(stream_max_retries=lambda: 5),
+        )
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        attempts = []
+
+        async def sampler(request):
+            attempts.append(request)
+            raise CodexErr.simple("bad_request")
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(attempts), 1)
+        self.assertEqual(session.stream_errors, [])
+        self.assertEqual(session.retry_sleeps, [])
+
+    async def test_run_user_turn_sampling_cancels_retry_backoff_without_orphan_task(self) -> None:
+        """Rust abort_all_tasks interrupts retry sleep as part of the active turn task."""
+
+        session = TurnSessionStub()
+        session.turn_context.turn_id = "turn-retry-cancel"
+        token = AsyncCancellationToken()
+        sleep_started = asyncio.Event()
+        sleep_cancelled = asyncio.Event()
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
+        provider = SimpleNamespace(
+            is_azure_responses_endpoint=lambda: False,
+            info=lambda: SimpleNamespace(stream_max_retries=lambda: 3),
+        )
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        attempts = []
+
+        async def sampler(request):
+            attempts.append(request)
+            raise CodexErr.stream("temporary disconnect", retry_after=30)
+
+        async def retry_sleep(_seconds):
+            sleep_started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                sleep_cancelled.set()
+                raise
+
+        session.sleep_for_sampling_retry = retry_sleep
+        task = asyncio.create_task(
+            run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("hello"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+                cancellation_token=token,
+            )
+        )
+
+        await asyncio.wait_for(sleep_started.wait(), timeout=1)
+        token.cancel()
+        result = await asyncio.wait_for(task, timeout=1)
+
+        self.assertEqual(result.turn_status, "interrupted")
+        self.assertEqual(len(attempts), 1)
+        self.assertTrue(sleep_cancelled.is_set())
+        self.assertEqual(
+            [message for _turn, message, _error in session.stream_errors],
+            ["Reconnecting... 1/3"],
+        )
+        self.assertEqual(
+            tuple(event.type for event in session.emitted_events),
+            ("task_started", "turn_aborted"),
+        )
+
     async def test_run_user_turn_sampling_fallback_switch_failure_surfaces_stream_error_without_warning(self) -> None:
         """Rust source contract: fallback branch requires `try_switch_fallback_transport` to succeed."""
 
-        session = Session()
+        session = TurnSessionStub()
 
         class FailedFallbackModelClient:
             def __init__(self) -> None:
@@ -4158,7 +4433,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "error", "task_complete"))
 
     async def test_run_user_turn_sampling_dispatches_and_records_tool_outputs(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -4210,7 +4485,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # completed_goal_accounts_current_turn_tokens_before_tool_response.
         # The update_goal output must be sent to a subsequent model request,
         # even if the tool-call response also contained assistant text.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-goal"
         client = ModelClient(
             session_id="session",
@@ -4299,7 +4574,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         #   is the closest long-running tool contract but is Unix-only here.
         # - codex-rs/core/tests/suite/user_shell_cmd.rs::user_shell_cmd_can_be_interrupted
         #   is the Windows-runnable native equivalent.
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-tool-cancel"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -4351,7 +4626,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_default_session_exec_command_uses_unified_exec_manager(self) -> None:
         cwd = Path.cwd()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd=cwd,
             environments=(TurnEnvironmentSelection("local", str(cwd)),),
             features=FeatureSet(Feature.SHELL_TOOL, Feature.UNIFIED_EXEC),
@@ -4435,7 +4710,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # The legacy shell_command returns FunctionToolOutput to the model, but
         # still emits the same typed CommandExecution lifecycle consumed by TUI.
         cwd = Path.cwd()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd=cwd,
             environments=(TurnEnvironmentSelection("local", str(cwd)),),
             features=FeatureSet(Feature.SHELL_TOOL),
@@ -4512,7 +4787,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # consumed by codex-tui::history_cell::patches.
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
-            session = InMemoryCodexSession(
+            session = Session(
                 cwd=cwd,
                 environments=(TurnEnvironmentSelection("local", str(cwd)),),
             )
@@ -4563,7 +4838,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_default_session_exec_command_then_write_stdin(self) -> None:
         cwd = Path.cwd()
-        session = InMemoryCodexSession(
+        session = Session(
             cwd=cwd,
             environments=(TurnEnvironmentSelection("local", str(cwd)),),
             features=FeatureSet(Feature.SHELL_TOOL, Feature.UNIFIED_EXEC),
@@ -4635,7 +4910,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(terminal_events[0].payload.call_id, "call-exec-live")
 
     async def test_run_user_turn_sampling_dispatches_parallel_tool_calls_concurrently_and_groups_outputs(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -4691,7 +4966,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_user_turn_sampling_runs_pre_sampling_auto_compact_before_recording_input(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5035,7 +5310,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(compact_reasons, ["model_downshift"])
 
     async def test_run_user_turn_sampling_pre_sampling_auto_compact_error_completes_before_input_recording(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5080,7 +5355,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.request_plans, ())
 
     async def test_run_user_turn_sampling_runs_mid_turn_auto_compact_before_followup(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5132,7 +5407,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_run_user_turn_sampling_mid_turn_auto_compact_usage_limit_completes_without_error_event(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5181,7 +5456,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_mid_turn_auto_compact_model_followup_defers_pending_input_until_continuation_finishes(self) -> None:
         """Rust source contract: after mid-turn compact, model follow-up resumes before pending input."""
 
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -5273,7 +5548,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.last_agent_message, "pending handled")
 
     async def test_run_user_turn_sampling_maps_fatal_tool_error_to_codex_err(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5303,7 +5578,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history[-1].type, "function_call")
 
     async def test_run_user_turn_sampling_responds_to_bad_tool_search_arguments(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5352,7 +5627,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_search_outputs[0].tools, ())
 
     async def test_run_user_turn_sampling_records_stream_bad_tool_search_arguments(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -5407,7 +5682,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_search_outputs[0].tools, ())
 
     async def test_run_user_turn_sampling_can_limit_tool_followups(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5439,7 +5714,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.tool_response_items[0].type, "function_call_output")
 
     async def test_run_user_turn_sampling_default_followups_continue_until_final_answer(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -5475,7 +5750,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.request_plans), 11)
 
     async def test_run_user_turn_sampling_dispatches_stream_only_tool_call(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -5529,7 +5804,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(result.tool_response_items[0], followup_input)
 
     async def test_run_user_turn_sampling_replaces_invalid_tool_output_image_and_retries(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         tool_output = ResponseItem(
             type="function_call_output",
             call_id="call-image",
@@ -5585,7 +5860,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items[-1].content[0].text, "recovered")
 
     async def test_run_user_turn_sampling_invalid_user_image_emits_bad_request_and_completes(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.history.append(
             ResponseItem.message(
                 "user",
@@ -5624,7 +5899,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.payload.codex_error_info.type, "bad_request")
 
     async def test_run_user_turn_sampling_followup_invalid_user_image_preserves_accumulated_result(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.history.append(
             ResponseItem.message(
                 "user",
@@ -5668,7 +5943,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.payload.codex_error_info.type, "bad_request")
 
     async def test_run_user_turn_sampling_drains_pending_input_before_followup(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -5711,7 +5986,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.input_queue.active_turns, [session.active_turn, session.active_turn])
 
     async def test_run_user_turn_sampling_compacts_before_draining_pending_only_followup(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -5772,7 +6047,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items[-1].content[0].text, "final answer")
 
     async def test_run_user_turn_sampling_pending_input_bypasses_tool_followup_limit(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -5813,7 +6088,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items[-1].content[0].text, "second")
 
     async def test_run_user_turn_sampling_empty_input_drains_pending_before_first_request(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         session.input_queue.items.append(UserInput.text_input("queued first"))
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
@@ -5851,7 +6126,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.last_agent_message, "done")
 
     async def test_run_user_turn_sampling_empty_input_pending_hook_blocks_first_request(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         session.input_queue.items.append(UserInput.text_input("blocked first"))
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
@@ -5892,7 +6167,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("blocked first", history_texts)
 
     async def test_run_user_turn_sampling_empty_input_pending_input_uses_active_turn(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = StrictActiveTurnInputQueue()
         session.input_queue.items.append(UserInput.text_input("queued first with active turn"))
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
@@ -5923,7 +6198,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.last_agent_message, "done")
 
     async def test_run_user_turn_sampling_empty_input_pending_input_uses_active_turn_with_keyword_only_queue(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = KeywordOnlyActiveTurnInputQueue()
         session.input_queue.items.append(UserInput.text_input("queued first with keyword-only active turn"))
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
@@ -5954,7 +6229,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.last_agent_message, "done")
 
     async def test_run_user_turn_sampling_pending_input_hook_records_context_after_input(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -6003,7 +6278,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items[-1].content[0].text, "second")
 
     async def test_run_user_turn_sampling_pending_input_hook_blocks_followup(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -6053,7 +6328,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("blocked steer", history_texts)
 
     async def test_run_user_turn_sampling_mixed_pending_input_continues_when_later_user_input_accepted(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -6114,7 +6389,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_record_pending_inputs_with_hooks_preserves_rust_mixed_input_loop_semantics(self) -> None:
         """Rust source contract: ``session::turn::run_hooks_and_record_inputs`` mixed pending loop."""
 
-        session = Session()
+        session = TurnSessionStub()
         hook_prompts = []
         injected_item = ResponseItem.message("user", (ContentItem.input_text("mailbox context"),))
 
@@ -6147,7 +6422,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorded_texts, ["blocked context", "mailbox context", "accepted steer"])
 
     async def test_run_user_turn_sampling_follows_stream_completed_end_turn_false(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -6195,7 +6470,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stream_event_apply_plans[0].completed_event_apply_plan.result_needs_follow_up, True)
 
     async def test_run_user_turn_sampling_defers_pending_input_behind_model_followup(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         session.input_queue = PendingInputQueue()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
@@ -6261,7 +6536,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.last_agent_message, "pending handled")
 
     async def test_run_user_turn_sampling_follows_raw_response_completed_end_turn_false(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         session.turn_context.turn_id = "turn-1"
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -6314,7 +6589,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.stream_event_apply_plans[0].completed_event_apply_plan.completed_response_id_after, "resp-1")
 
     async def test_run_user_turn_sampling_model_followup_bypasses_tool_followup_limit(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -6358,7 +6633,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items, (final,))
 
     async def test_run_user_input_op_sampling_records_sampler_response_items(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
@@ -6388,7 +6663,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history[-1].content[0].text, "done")
 
     async def test_run_user_turn_sampling_can_use_model_client_session_sampler(self) -> None:
-        session = Session()
+        session = TurnSessionStub()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         model_session = client.new_session()
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -6427,4 +6702,5 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

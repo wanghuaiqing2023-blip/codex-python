@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-windows-sandbox.process",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "process",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/process.rs",
+    "anchors": [
+      "PipeSpawnHandles",
+      "StderrMode",
+      "StdinMode",
+      "make_env_block"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/process.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/process.py"
+    ],
+    "anchors": [
+      "PipeSpawnHandles",
+      "StderrMode",
+      "StdinMode",
+      "make_env_block"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

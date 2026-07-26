@@ -281,27 +281,23 @@ def test_run_terminal_idle_footer_text_from_runtime_uses_canonical_providers(mon
 
 
 def test_terminal_idle_footer_text_provider_binds_runtime_callback(monkeypatch):
-    # Rust owner: codex-tui::bottom_pane::footer owns passive footer text.
-    # terminal_runtime should pass the provider's bound text callback instead
-    # of rebuilding provider-backed footer lambdas locally.
-    from pycodex.tui import runtime_projection
+    # Rust owners:
+    # - chatwidget::status_surfaces resolves configured items and live values.
+    # - bottom_pane::footer projects that line into the passive footer.
+    from pycodex.tui.chatwidget import status_surfaces
 
     class Runtime:
         pass
 
     monkeypatch.setattr(
-        runtime_projection,
-        "_runtime_model_with_reasoning",
-        lambda runtime: "runtime-model medium",
+        status_surfaces,
+        "runtime_status_line_text",
+        lambda runtime: "runtime-model medium · ~\\repo",
     )
-    monkeypatch.setattr(runtime_projection, "_runtime_cwd", lambda runtime: "C:/workspace/repo")
-    monkeypatch.setattr(runtime_projection, "_runtime_show_fast_status", lambda runtime: False)
 
     provider = TerminalIdleFooterTextProvider(Runtime())
 
-    assert provider.text() == terminal_idle_footer_text(
-        TerminalIdleFooterData("runtime-model medium", "C:/workspace/repo", False)
-    )
+    assert provider.text() == "runtime-model medium · ~\\repo"
 
 
 def test_terminal_idle_footer_right_text_projects_goal_and_agent_priority():

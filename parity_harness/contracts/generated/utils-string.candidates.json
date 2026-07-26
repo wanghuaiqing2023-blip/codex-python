@@ -1,0 +1,84 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "utils-string",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 3,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-utils-string",
+        "module": "crate",
+        "source": "codex/codex-rs/utils/string/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/utils/string/__init__.py",
+          "anchor_candidates": [
+            "approx_bytes_for_tokens",
+            "approx_token_count",
+            "approx_tokens_from_byte_count",
+            "find_uuids",
+            "normalize_markdown_hash_location_suffix",
+            "sanitize_metric_tag_value",
+            "take_bytes_at_char_boundary",
+            "to_ascii_json_string",
+            "truncate_middle_chars",
+            "truncate_middle_with_token_budget"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-utils-string",
+        "module": "json",
+        "source": "codex/codex-rs/utils/string/src/json.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-utils-string",
+        "module": "truncate",
+        "source": "codex/codex-rs/utils/string/src/truncate.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

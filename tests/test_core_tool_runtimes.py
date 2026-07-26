@@ -38,7 +38,6 @@ from pycodex.core import (
     InterceptedExecPolicyEvaluation,
     NetworkApprovalMode,
     ParsedShellCommand,
-    PreparedUnifiedExecSpawn,
     PreparedUnifiedExecZshFork,
     SHELL_ESCALATE_HANDSHAKE_MESSAGE,
     SHELL_SOCKET_MAX_FDS_PER_MESSAGE,
@@ -81,7 +80,6 @@ from pycodex.core import (
     UnifiedExecDirectRunPlan,
     UnifiedExecOptions,
     UnifiedExecRequest,
-    ZshForkSpawnLifecycle,
     approval_sandbox_permissions,
     apply_patch_approval_keys,
     apply_patch_file_system_sandbox_context_for_attempt,
@@ -102,8 +100,6 @@ from pycodex.core import (
     is_valid_shell_variable_name,
     join_program_and_argv,
     map_exec_result,
-    maybe_prepare_unified_exec_zsh_fork,
-    maybe_run_shell_command_zsh_fork,
     managed_network_for_runtime,
     maybe_wrap_shell_lc_with_snapshot,
     shell_prepared_exec_effective_arg0,
@@ -187,6 +183,14 @@ from pycodex.core import (
     unified_exec_permission_request_payload,
     unified_exec_sandbox_cwd,
 )
+from pycodex.core.tools.runtimes.shell.zsh_fork_backend import (
+    PreparedUnifiedExecSpawn,
+    maybe_prepare_unified_exec,
+    maybe_run_shell_command,
+)
+from pycodex.core.tools.runtimes.shell.zsh_fork_backend.imp import (
+    ZshForkSpawnLifecycle,
+)
 from pycodex.core import SandboxAttempt
 from pycodex.core.exec import ExecRequest
 from pycodex.core import DEFAULT_EXEC_COMMAND_TIMEOUT_MS, ExecCapturePolicy, ExecExpirationKind
@@ -230,21 +234,22 @@ class ToolRuntimesTests(unittest.TestCase):
         # Contract: cfg(not(unix)) implementations return Ok(None) for shell
         # and unified-exec paths without invoking escalation.
         async def run() -> None:
-            with patch("pycodex.core.tools.runtimes.os.name", "nt"):
-                shell_result = await maybe_run_shell_command_zsh_fork(
+            with patch(
+                "pycodex.core.tools.runtimes.shell.zsh_fork_backend.imp._is_unix_platform",
+                return_value=False,
+            ):
+                shell_result = await maybe_run_shell_command(
                     object(),
                     object(),
                     object(),
                     ("zsh", "-lc", "echo hi"),
-                    try_run_zsh_fork=lambda *_args: self.fail("delegate should not run"),
                 )
-                unified_result = await maybe_prepare_unified_exec_zsh_fork(
+                unified_result = await maybe_prepare_unified_exec(
                     object(),
                     object(),
                     object(),
                     "exec-request",
                     object(),
-                    prepare_unified_exec_zsh_fork=lambda *_args: self.fail("delegate should not run"),
                 )
             self.assertIsNone(shell_result)
             self.assertIsNone(unified_result)
@@ -265,13 +270,21 @@ class ToolRuntimesTests(unittest.TestCase):
             req = object()
             attempt = object()
             ctx = object()
-            with patch("pycodex.core.tools.runtimes.os.name", "posix"):
-                result = await maybe_run_shell_command_zsh_fork(
+            with (
+                patch(
+                    "pycodex.core.tools.runtimes.shell.zsh_fork_backend.imp._is_unix_platform",
+                    return_value=True,
+                ),
+                patch(
+                    "pycodex.core.tools.runtimes.shell.zsh_fork_backend.imp.try_run_zsh_fork",
+                    new=delegate,
+                ),
+            ):
+                result = await maybe_run_shell_command(
                     req,
                     attempt,
                     ctx,
                     ["zsh", "-lc", "echo hi"],
-                    try_run_zsh_fork=delegate,
                 )
             self.assertIs(result, output)
             self.assertEqual(calls, [(req, attempt, ctx, ("zsh", "-lc", "echo hi"))])
@@ -305,7 +318,7 @@ class ToolRuntimesTests(unittest.TestCase):
             },
         )()
 
-        def delegate(
+        async def delegate(
             req: object,
             attempt: object,
             ctx: object,
@@ -320,14 +333,22 @@ class ToolRuntimesTests(unittest.TestCase):
             req = object()
             attempt = object()
             ctx = object()
-            with patch("pycodex.core.tools.runtimes.os.name", "posix"):
-                result = await maybe_prepare_unified_exec_zsh_fork(
+            with (
+                patch(
+                    "pycodex.core.tools.runtimes.shell.zsh_fork_backend.imp._is_unix_platform",
+                    return_value=True,
+                ),
+                patch(
+                    "pycodex.core.tools.runtimes.shell.zsh_fork_backend.imp.prepare_unified_exec_zsh_fork",
+                    new=delegate,
+                ),
+            ):
+                result = await maybe_prepare_unified_exec(
                     req,
                     attempt,
                     ctx,
                     "exec-request",
                     config,
-                    prepare_unified_exec_zsh_fork=delegate,
                 )
             self.assertIsInstance(result, PreparedUnifiedExecSpawn)
             self.assertEqual(result.exec_request, "prepared-exec")

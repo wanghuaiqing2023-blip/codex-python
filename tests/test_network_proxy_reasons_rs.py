@@ -1,5 +1,4 @@
-from pycodex.network_proxy import (
-    HostBlockReason,
+from pycodex.network_proxy.reasons import (
     REASON_DENIED,
     REASON_METHOD_NOT_ALLOWED,
     REASON_MITM_HOOK_DENIED,
@@ -10,6 +9,7 @@ from pycodex.network_proxy import (
     REASON_PROXY_DISABLED,
     REASON_UNIX_SOCKET_UNSUPPORTED,
 )
+from pycodex.network_proxy.runtime import HostBlockReason
 
 
 def test_reason_constants_match_rust_reasons_rs() -> None:

@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.tools.runtimes.shell",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::runtimes::shell",
+    "source": "codex/codex-rs/core/src/tools/runtimes/shell.rs",
+    "anchors": [
+      "ShellRequest",
+      "ShellRuntime",
+      "ShellRuntimeBackend",
+      "for_shell_command",
+      "approval_keys",
+      "escalate_on_failure",
+      "exec_approval_requirement",
+      "network_approval_spec",
+      "permission_request_payload",
+      "run",
+      "sandbox_permissions",
+      "sandbox_preference"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/runtimes/shell/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/runtimes/shell/__init__.py"
+    ],
+    "anchors": [
+      "ShellRequest",
+      "ShellRuntime",
+      "ShellRuntimeBackend",
+      "for_shell_command",
+      "approval_keys",
+      "escalate_on_failure",
+      "exec_approval_requirement",
+      "network_approval_spec",
+      "permission_request_payload",
+      "run",
+      "sandbox_permissions",
+      "sandbox_preference"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-tui.status.format",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "status::format",
+    "source": "codex/codex-rs/tui/src/status/format.rs",
+    "anchors": [
+      "FieldFormatter",
+      "INDENT",
+      "continuation",
+      "from_labels",
+      "full_spans",
+      "line",
+      "line_display_width",
+      "push_label",
+      "truncate_line_to_width",
+      "value_width",
+      "label_span"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/status/format.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/status/format.py"
+    ],
+    "anchors": [
+      "FieldFormatter",
+      "INDENT",
+      "continuation",
+      "from_labels",
+      "full_spans",
+      "line",
+      "line_display_width",
+      "push_label",
+      "truncate_line_to_width",
+      "value_width",
+      "label_span"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

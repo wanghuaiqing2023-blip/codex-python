@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-app-server.command_exec",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "command_exec",
+    "source": "codex/codex-rs/app-server/src/command_exec.rs",
+    "anchors": [
+      "CommandExecManager",
+      "StartCommandExecParams",
+      "terminal_size_from_protocol"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/command_exec.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/command_exec.py"
+    ],
+    "anchors": [
+      "CommandExecManager",
+      "StartCommandExecParams",
+      "terminal_size_from_protocol"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_command_exec_rs.py"
+  ]
+}

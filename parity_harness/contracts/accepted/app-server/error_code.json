@@ -1,0 +1,85 @@
+{
+  "contract_id": "codex-app-server.error_code",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server",
+    "module": "error_code",
+    "source": "codex/codex-rs/app-server/src/error_code.rs",
+    "anchors": [
+      "INPUT_TOO_LARGE_ERROR_CODE",
+      "INTERNAL_ERROR_CODE",
+      "INVALID_PARAMS_ERROR_CODE",
+      "INVALID_REQUEST_ERROR_CODE",
+      "METHOD_NOT_FOUND_ERROR_CODE",
+      "OVERLOADED_ERROR_CODE",
+      "internal_error",
+      "invalid_params",
+      "invalid_request",
+      "method_not_found"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server/error_code.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server/error_code.py"
+    ],
+    "anchors": [
+      "INPUT_TOO_LARGE_ERROR_CODE",
+      "INTERNAL_ERROR_CODE",
+      "INVALID_PARAMS_ERROR_CODE",
+      "INVALID_REQUEST_ERROR_CODE",
+      "METHOD_NOT_FOUND_ERROR_CODE",
+      "OVERLOADED_ERROR_CODE",
+      "internal_error",
+      "invalid_params",
+      "invalid_request",
+      "method_not_found"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_command_exec_rs.py",
+    "tests/test_app_server_config_mod_rs.py",
+    "tests/test_app_server_error_code_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_app_server_in_process_rs.py",
+    "tests/test_app_server_lib_rs.py",
+    "tests/test_app_server_main_rs.py",
+    "tests/test_app_server_outgoing_message_rs.py",
+    "tests/test_app_server_request_processors_account_processor_rs.py",
+    "tests/test_app_server_request_processors_external_agent_config_processor_rs.py",
+    "tests/test_app_server_request_processors_initialize_processor_rs.py",
+    "tests/test_app_server_request_processors_mcp_processor_rs.py",
+    "tests/test_app_server_request_processors_plugins_rs.py",
+    "tests/test_app_server_request_processors_thread_goal_processor_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_exec_server_file_system_handler_rs.py",
+    "tests/test_exec_server_fs_helper_rs.py",
+    "tests/test_exec_server_handler_rs.py",
+    "tests/test_exec_server_local_process_rs.py",
+    "tests/test_exec_server_reqwest_http_client_rs.py",
+    "tests/test_exec_server_rpc_rs.py",
+    "tests/test_exec_server_session_registry_rs.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py"
+  ]
+}

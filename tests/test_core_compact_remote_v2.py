@@ -21,7 +21,7 @@ from pycodex.core import (
 )
 from pycodex.core.compact import InitialContextInjection
 from pycodex.features import Feature
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.core.responses_retry import RetryableResponseStreamAction
 from pycodex.protocol import AskForApproval, BaseInstructions, CodexErr, ContentItem, MessagePhase, ResponseItem, SandboxPolicy, TurnContextItem
 
@@ -324,7 +324,7 @@ class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
             InitialContextInjection.BEFORE_LAST_USER_MESSAGE,
             reference_context,
         )
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = Session(cwd="C:/work/project")
 
         await apply_remote_compaction_v2_install_plan(session, plan)
 
@@ -466,4 +466,5 @@ class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

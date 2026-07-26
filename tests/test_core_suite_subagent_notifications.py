@@ -3,11 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.core.agent.role import (
-    AgentRoleConfig,
-    apply_role_to_config,
-    build_spawn_agent_role_description,
-)
+from pycodex.core.agent.role import apply_role_to_config, spawn_tool_spec
+from pycodex.core.config.agent_roles import AgentRoleConfig
 from pycodex.core.hook_runtime import (
     SessionStartTarget,
     StopRequest,
@@ -227,7 +224,7 @@ def test_spawn_agent_tool_description_mentions_role_locked_settings(tmp_path):
         'model_reasoning_effort = "high"\n',
         encoding="utf-8",
     )
-    description = build_spawn_agent_role_description(
+    description = spawn_tool_spec.build(
         {"custom": AgentRoleConfig(description="Custom role", config_file=role_path)}
     )
     spec = create_spawn_agent_tool_v1(

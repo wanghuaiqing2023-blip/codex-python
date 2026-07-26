@@ -1,0 +1,58 @@
+{
+  "contract_id": "codex-utils-plugins.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-plugins",
+    "module": "crate",
+    "source": "codex/codex-rs/utils/plugins/src/lib.rs",
+    "anchors": [
+      "PluginSkillRoot",
+      "find_plugin_manifest_path",
+      "plugin_namespace_for_skill_path"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/plugins/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/plugins/__init__.py"
+    ],
+    "anchors": [
+      "PluginSkillRoot",
+      "find_plugin_manifest_path",
+      "plugin_namespace_for_skill_path"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_client_lib_rs.py",
+    "tests/test_app_server_fuzzy_file_search_rs.py",
+    "tests/test_codex_api_lib_rs.py",
+    "tests/test_core_api_lib_rs.py",
+    "tests/test_core_code_mode.py",
+    "tests/test_core_exec.py",
+    "tests/test_core_mention_syntax.py",
+    "tests/test_core_utils_path_utils.py",
+    "tests/test_core_web_search.py",
+    "tests/test_hooks_engine_mod_rs.py",
+    "tests/test_linux_sandbox_lib_rs.py",
+    "tests/test_otel_metrics_rs.py",
+    "tests/test_pycodex_init.py",
+    "tests/test_responses_api_proxy_main_rs.py",
+    "tests/test_rollout_trace_model_rs.py",
+    "tests/test_rollout_trace_terminal_rs.py",
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_tui_version.py",
+    "tests/test_uds_lib_rs.py",
+    "tests/test_utils_plugins_lib.py",
+    "tests/test_utils_plugins_mcp_connector.py",
+    "tests/test_utils_plugins_mention_syntax.py",
+    "tests/test_utils_plugins_plugin_namespace.py"
+  ]
+}

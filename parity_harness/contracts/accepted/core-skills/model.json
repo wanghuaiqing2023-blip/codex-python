@@ -1,0 +1,15 @@
+{
+  "contract_id": "codex-core-skills.model", "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs", "crate": "codex-core-skills",
+    "module": "model", "source": "codex/codex-rs/core-skills/src/model.rs",
+    "anchors": ["SkillDependencies", "SkillError", "SkillMetadata", "SkillToolDependency"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_skills/model.py", "layout": "module-file",
+    "implementation_files": ["pycodex/core_skills/model.py"],
+    "anchors": ["SkillDependencies", "SkillError", "SkillMetadata", "SkillToolDependency"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

@@ -1,6 +1,6 @@
 import pytest
 
-from pycodex.network_proxy import (
+from pycodex.network_proxy.config import (
     NetworkDomainPermission,
     NetworkMode,
     NetworkProxyConfig,

@@ -48,7 +48,10 @@ from pycodex.tools.tool_discovery import (
     collect_request_plugin_install_entries,
     filter_request_plugin_install_discoverable_tools_for_client,
 )
-from pycodex.core.tools.handlers.tool_search import TOOL_SEARCH_TOOL_NAME
+from pycodex.core.tools.handlers import (
+    list_available_plugins_to_install_spec,
+    request_plugin_install_spec,
+)
 from pycodex.protocol import ElicitationRequestEvent, EventMsg, ToolName
 from pycodex.protocol.mcp_approval_meta import (
     APPROVAL_KIND_KEY,
@@ -199,73 +202,6 @@ def verify_request_plugin_install_completed(
     return completed
 
 
-def create_list_available_plugins_to_install_tool() -> dict[str, JsonValue]:
-    description = (
-        "# List plugin/connector install candidates\n\n"
-        "Use this tool only when both are true:\n"
-        "- The user explicitly asks to use a specific plugin or connector that is not already available in the current context or active `tools` list.\n"
-        f"- `{TOOL_SEARCH_TOOL_NAME}` is not available, or it has already been called and did not find or make the requested tool callable.\n\n"
-        f"Returns known plugins and connectors that can be passed to `{REQUEST_PLUGIN_INSTALL_TOOL_NAME}`. "
-        "When both a plugin and a connector match, prefer the plugin; use the connector only when its corresponding plugin is already installed.\n"
-    )
-    return {
-        "type": "function",
-        "name": LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME,
-        "description": description,
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-            "additionalProperties": False,
-        },
-    }
-
-
-def create_request_plugin_install_tool() -> dict[str, JsonValue]:
-    description = (
-        "# Request plugin/connector install\n\n"
-        f"Use this tool only after `{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}` returns a plugin or connector that exactly matches the user's explicit request.\n\n"
-        "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. "
-        "Pass the returned `tool_type` through directly, and pass the returned `id` as `tool_id`.\n\n"
-        "IMPORTANT: DO NOT call this tool in parallel with other tools."
-    )
-    return {
-        "type": "function",
-        "name": REQUEST_PLUGIN_INSTALL_TOOL_NAME,
-        "description": description,
-        "strict": False,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "tool_type": {
-                    "type": "string",
-                    "description": 'Type of discoverable tool to suggest. Use "connector" or "plugin".',
-                },
-                "action_type": {
-                    "type": "string",
-                    "description": 'Suggested action for the tool. Use "install".',
-                },
-                "tool_id": {
-                    "type": "string",
-                    "description": "Connector or plugin id to suggest.",
-                },
-                "suggest_reason": {
-                    "type": "string",
-                    "description": "Concise one-line user-facing reason why this plugin or connector can help with the current request.",
-                },
-            },
-            "required": [
-                "tool_type",
-                "action_type",
-                "tool_id",
-                "suggest_reason",
-            ],
-            "additionalProperties": False,
-        },
-    }
-
-
 @dataclass(frozen=True)
 class ListAvailablePluginsToInstallHandler:
     tools: tuple[RequestPluginInstallEntry, ...] = field(default_factory=tuple)
@@ -289,7 +225,7 @@ class ListAvailablePluginsToInstallHandler:
         return ToolName.plain(LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME)
 
     def spec(self) -> dict[str, JsonValue]:
-        return create_list_available_plugins_to_install_tool()
+        return list_available_plugins_to_install_spec.create_list_available_plugins_to_install_tool()
 
     def supports_parallel_tool_calls(self) -> bool:
         return False
@@ -371,7 +307,7 @@ class RequestPluginInstallHandler:
         return ToolName.plain(REQUEST_PLUGIN_INSTALL_TOOL_NAME)
 
     def spec(self) -> dict[str, JsonValue]:
-        return create_request_plugin_install_tool()
+        return request_plugin_install_spec.create_request_plugin_install_tool()
 
     def supports_parallel_tool_calls(self) -> bool:
         return True
@@ -636,8 +572,6 @@ __all__ = [
     "RequestPluginInstallCallback",
     "RequestPluginInstallHandler",
     "collect_request_plugin_install_entries",
-    "create_list_available_plugins_to_install_tool",
-    "create_request_plugin_install_tool",
     "disabled_install_request",
     "maybe_persist_disabled_install_request",
     "persist_disabled_install_request",

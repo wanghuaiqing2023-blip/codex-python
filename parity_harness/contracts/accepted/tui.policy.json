@@ -1,0 +1,86 @@
+{
+  "scope": "tui",
+  "rust_root": "codex/codex-rs/tui",
+  "python_root": "pycodex/tui",
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": [
+    {
+      "path": "pycodex/tui/_porting.py",
+      "reason": "Python-only Rust-coordinate metadata helper; it is Harness navigation support, not a codex-tui module port"
+    },
+    {
+      "path": "pycodex/tui/app/test_support.py",
+      "reason": "Python test-support helper colocated with the app package"
+    },
+    {
+      "path": "pycodex/tui/bin/__init__.py",
+      "reason": "Python namespace marker for TUI command modules"
+    },
+    {
+      "path": "pycodex/tui/markdown_render_tests.py",
+      "reason": "Python test-support utilities for markdown renderer fixtures"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/__init__.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/backend.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/buffer.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/crossterm.py",
+      "reason": "Python adapter for external Rust crossterm and ratatui dependencies"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/layout.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/renderable.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/rich_adapter.py",
+      "reason": "Python terminal rendering adapter with no codex-tui Rust module owner"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/style.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/text.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/ratatui_bridge/widgets.py",
+      "reason": "Python adapter for the external Rust ratatui dependency, not a codex-tui source module"
+    },
+    {
+      "path": "pycodex/tui/rich_compat.py",
+      "reason": "Python Rich compatibility adapter with no codex-tui Rust module owner"
+    },
+    {
+      "path": "pycodex/tui/runtime_projection.py",
+      "reason": "Python terminal runtime projection adapter shared across Rust-owned TUI modules"
+    },
+    {
+      "path": "pycodex/tui/test_backend.py",
+      "reason": "Python test backend corresponding to an external terminal backend dependency"
+    },
+    {
+      "path": "pycodex/tui/test_support.py",
+      "reason": "Python-only TUI test-support helper"
+    },
+    {
+      "path": "pycodex/tui/tui_alignment.py",
+      "reason": "Python-only structural alignment metadata consumed by the porting Harness"
+    }
+  ]
+}

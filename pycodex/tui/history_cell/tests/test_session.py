@@ -2,8 +2,9 @@
 
 from pathlib import Path
 
-from pycodex.protocol.models import ManagedFileSystemPermissions, NetworkSandboxPolicy
+from pycodex.protocol.models import ManagedFileSystemPermissions
 from pycodex.protocol.models import PermissionProfile as ProtocolPermissionProfile
+from pycodex.protocol.permissions import NetworkSandboxPolicy
 from pycodex.tui.chatwidget.permission_popups import PermissionProfile
 from pycodex.tui.history_cell.session import (
     SESSION_HEADER_MAX_INNER_WIDTH,

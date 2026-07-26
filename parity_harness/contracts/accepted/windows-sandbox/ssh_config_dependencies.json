@@ -1,0 +1,35 @@
+{
+  "contract_id": "codex-windows-sandbox.ssh-config-dependencies",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "ssh_config_dependencies",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/ssh_config_dependencies.rs",
+    "anchors": [
+      "SSH_PROFILE_PATH_DIRECTIVES",
+      "ssh_config_dependency_paths"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/ssh_config_dependencies.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/ssh_config_dependencies.py"
+    ],
+    "anchors": [
+      "SSH_PROFILE_PATH_DIRECTIVES",
+      "ssh_config_dependency_paths"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_setup_contract.py",
+    "tests/test_windows_sandbox_utility_modules.py"
+  ]
+}

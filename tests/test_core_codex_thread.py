@@ -9,7 +9,7 @@ from pycodex.core.codex_thread import (
     InvalidThreadRequest,
     ThreadConfigSnapshot,
 )
-from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.session.session import Session
 from pycodex.protocol import CollaborationMode, ModeKind, NetworkSandboxPolicy, Op, PermissionProfile, ReasoningEffort, SandboxPolicy, SessionSource, Settings
 
 
@@ -124,7 +124,7 @@ async def test_thread_settings_update_derives_collaboration_mode():
 
 @pytest.mark.asyncio
 async def test_thread_settings_update_synthesizes_collaboration_mode_for_in_memory_session():
-    session = InMemoryCodexSession(cwd="C:/work/project")
+    session = Session(cwd="C:/work/project")
     thread = CodexThread(SimpleNamespace(session=session), session_configured={"model": "gpt-base"})
 
     update = await thread.thread_settings_update(
@@ -138,7 +138,7 @@ async def test_thread_settings_update_synthesizes_collaboration_mode_for_in_memo
 
 @pytest.mark.asyncio
 async def test_thread_settings_update_uses_in_memory_session_collaboration_mode_field():
-    session = InMemoryCodexSession(
+    session = Session(
         cwd="C:/work/project",
         collaboration_mode=CollaborationMode(
             mode=ModeKind.DEFAULT,
@@ -171,7 +171,7 @@ async def test_inject_response_items_rejects_empty_and_flushes_non_empty():
 
 @pytest.mark.asyncio
 async def test_inject_response_items_works_with_in_memory_session():
-    session = InMemoryCodexSession(cwd="C:/work/project")
+    session = Session(cwd="C:/work/project")
     codex = SimpleNamespace(session=session)
     thread = CodexThread(codex, session_configured=None)
     item = {
@@ -208,4 +208,5 @@ async def test_decrement_out_of_band_elicitation_count_rejects_zero():
 
     with pytest.raises(InvalidThreadRequest):
         await thread.decrement_out_of_band_elicitation_count()
+
 

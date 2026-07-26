@@ -1,0 +1,862 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "protocol",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 29,
+    "python_files": 29,
+    "modules_with_candidates": 29,
+    "modules_with_anchors": 29
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "crate",
+        "source": "codex/codex-rs/protocol/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/__init__.py",
+          "anchor_candidates": [
+            "AgentPath",
+            "SessionId",
+            "ThreadId",
+            "ToolName"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "account",
+        "source": "codex/codex-rs/protocol/src/account.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/account.py",
+          "anchor_candidates": [
+            "PlanType",
+            "ProviderAccount",
+            "is_business_like",
+            "is_team_like",
+            "is_workspace_account"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "agent_path",
+        "source": "codex/codex-rs/protocol/src/agent_path.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/agent_path.py",
+          "anchor_candidates": [
+            "AgentPath",
+            "MORPHEUS",
+            "ROOT",
+            "as_str",
+            "from_string",
+            "is_root",
+            "join",
+            "morpheus",
+            "name",
+            "resolve",
+            "root",
+            "ROOT_SEGMENT"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "approvals",
+        "source": "codex/codex-rs/protocol/src/approvals.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/approvals.py",
+          "anchor_candidates": [
+            "ApplyPatchApprovalRequestEvent",
+            "ElicitationAction",
+            "ElicitationRequest",
+            "ElicitationRequestEvent",
+            "EscalationPermissions",
+            "ExecApprovalRequestEvent",
+            "ExecPolicyAmendment",
+            "GuardianAssessmentAction",
+            "GuardianAssessmentDecisionSource",
+            "GuardianAssessmentEvent",
+            "GuardianAssessmentOutcome",
+            "GuardianAssessmentStatus"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "auth",
+        "source": "codex/codex-rs/protocol/src/auth.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/auth.py",
+          "anchor_candidates": [
+            "KnownPlan",
+            "PlanType",
+            "RefreshTokenFailedError",
+            "RefreshTokenFailedReason",
+            "display_name",
+            "from_raw_value",
+            "is_workspace_account",
+            "raw_value"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "config_types",
+        "source": "codex/codex-rs/protocol/src/config_types.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/config_types.py",
+          "anchor_candidates": [
+            "AltScreenMode",
+            "ApprovalsReviewer",
+            "AutoCompactTokenLimitScope",
+            "CollaborationMode",
+            "CollaborationModeMask",
+            "ForcedLoginMethod",
+            "ModeKind",
+            "ModelProviderAuthInfo",
+            "Personality",
+            "ProfileV2Name",
+            "ProfileV2NameParseError",
+            "ReasoningSummary"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "dynamic_tools",
+        "source": "codex/codex-rs/protocol/src/dynamic_tools.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/dynamic_tools.py",
+          "anchor_candidates": [
+            "DynamicToolCallOutputContentItem",
+            "DynamicToolCallRequest",
+            "DynamicToolResponse",
+            "DynamicToolSpec"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "error",
+        "source": "codex/codex-rs/protocol/src/error.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/error.py",
+          "anchor_candidates": [
+            "CodexErr",
+            "ConnectionFailedError",
+            "EnvVarError",
+            "ResponseStreamFailed",
+            "RetryLimitReachedError",
+            "SandboxErr",
+            "UnexpectedResponseError",
+            "UsageLimitReachedError",
+            "get_error_message_ui",
+            "http_status_code_value",
+            "is_retryable",
+            "to_codex_protocol_error"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "exec_output",
+        "source": "codex/codex-rs/protocol/src/exec_output.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/exec_output.py",
+          "anchor_candidates": [
+            "ExecToolCallOutput",
+            "StreamOutput",
+            "bytes_to_string_smart",
+            "from_utf8_lossy",
+            "new",
+            "WINDOWS_1252_PUNCT_BYTES"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "items",
+        "source": "codex/codex-rs/protocol/src/items.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/items.py",
+          "anchor_candidates": [
+            "AgentMessageContent",
+            "AgentMessageItem",
+            "ContextCompactionItem",
+            "FileChangeItem",
+            "HookPromptFragment",
+            "HookPromptItem",
+            "ImageGenerationItem",
+            "ImageViewItem",
+            "McpToolCallError",
+            "McpToolCallItem",
+            "McpToolCallStatus",
+            "PlanItem"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "mcp",
+        "source": "codex/codex-rs/protocol/src/mcp.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/mcp.py",
+          "anchor_candidates": [
+            "CallToolResult",
+            "RequestId",
+            "Resource",
+            "ResourceContent",
+            "ResourceTemplate",
+            "Tool",
+            "from_mcp_value"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "mcp_approval_meta",
+        "source": "codex/codex-rs/protocol/src/mcp_approval_meta.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/mcp_approval_meta.py",
+          "anchor_candidates": [
+            "APPROVALS_REVIEWER_KEY",
+            "APPROVAL_KIND_KEY",
+            "APPROVAL_KIND_MCP_TOOL_CALL",
+            "APPROVAL_KIND_TOOL_SUGGESTION",
+            "CONNECTOR_DESCRIPTION_KEY",
+            "CONNECTOR_ID_KEY",
+            "CONNECTOR_NAME_KEY",
+            "PERSIST_ALWAYS",
+            "PERSIST_KEY",
+            "PERSIST_SESSION",
+            "REQUEST_TYPE_APPROVAL_REQUEST",
+            "REQUEST_TYPE_KEY"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "memory_citation",
+        "source": "codex/codex-rs/protocol/src/memory_citation.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/memory_citation.py",
+          "anchor_candidates": [
+            "MemoryCitation",
+            "MemoryCitationEntry"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "models",
+        "source": "codex/codex-rs/protocol/src/models.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/models.py",
+          "anchor_candidates": [
+            "ActivePermissionProfile",
+            "AdditionalPermissionProfile",
+            "BASE_INSTRUCTIONS_DEFAULT",
+            "BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS",
+            "BUILT_IN_PERMISSION_PROFILE_READ_ONLY",
+            "BUILT_IN_PERMISSION_PROFILE_WORKSPACE",
+            "BaseInstructions",
+            "ContentItem",
+            "DEFAULT_IMAGE_DETAIL",
+            "FileSystemPermissions",
+            "FunctionCallOutputBody",
+            "FunctionCallOutputContentItem"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "network_policy",
+        "source": "codex/codex-rs/protocol/src/network_policy.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/network_policy.py",
+          "anchor_candidates": [
+            "NetworkPolicyDecisionPayload",
+            "is_ask_from_decider"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "num_format",
+        "source": "codex/codex-rs/protocol/src/num_format.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/num_format.py",
+          "anchor_candidates": [
+            "format_si_suffix",
+            "format_with_separators"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "openai_models",
+        "source": "codex/codex-rs/protocol/src/openai_models.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/openai_models.py",
+          "anchor_candidates": [
+            "ApplyPatchToolType",
+            "ClientVersion",
+            "ConfigShellToolType",
+            "InputModality",
+            "ModelAvailabilityNux",
+            "ModelInfo",
+            "ModelInfoUpgrade",
+            "ModelInstructionsVariables",
+            "ModelMessages",
+            "ModelPreset",
+            "ModelServiceTier",
+            "ModelUpgrade"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "parse_command",
+        "source": "codex/codex-rs/protocol/src/parse_command.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/parse_command.py",
+          "anchor_candidates": [
+            "ParsedCommand"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "permissions",
+        "source": "codex/codex-rs/protocol/src/permissions.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/permissions.py",
+          "anchor_candidates": [
+            "FileSystemAccessMode",
+            "FileSystemPath",
+            "FileSystemSandboxEntry",
+            "FileSystemSandboxKind",
+            "FileSystemSandboxPolicy",
+            "FileSystemSpecialPath",
+            "NetworkSandboxPolicy",
+            "PROTECTED_METADATA_PATH_NAMES",
+            "ReadDenyMatcher",
+            "can_read",
+            "can_read_path_with_cwd",
+            "can_write"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "plan_tool",
+        "source": "codex/codex-rs/protocol/src/plan_tool.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/plan_tool.py",
+          "anchor_candidates": [
+            "PlanItemArg",
+            "StepStatus",
+            "UpdatePlanArgs"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "protocol",
+        "source": "codex/codex-rs/protocol/src/protocol.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/protocol.py",
+          "anchor_candidates": [
+            "APPS_INSTRUCTIONS_CLOSE_TAG",
+            "APPS_INSTRUCTIONS_OPEN_TAG",
+            "AdditionalContextEntry",
+            "AdditionalContextKind",
+            "AgentMessageContentDeltaEvent",
+            "AgentMessageEvent",
+            "AgentReasoningEvent",
+            "AgentReasoningRawContentEvent",
+            "AgentReasoningSectionBreakEvent",
+            "AgentStatus",
+            "ApplyPatchApprovalRequestEvent",
+            "AskForApproval"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "protocol::conversation_start_prompt_serde",
+        "source": "codex/codex-rs/protocol/src/protocol.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/conversation_start_prompt_serde.py",
+          "anchor_candidates": [
+            "deserialize",
+            "serialize"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "request_permissions",
+        "source": "codex/codex-rs/protocol/src/request_permissions.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/request_permissions.py",
+          "anchor_candidates": [
+            "PermissionGrantScope",
+            "RequestPermissionProfile",
+            "RequestPermissionsArgs",
+            "RequestPermissionsEvent",
+            "RequestPermissionsResponse",
+            "is_empty"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "request_user_input",
+        "source": "codex/codex-rs/protocol/src/request_user_input.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/request_user_input.py",
+          "anchor_candidates": [
+            "RequestUserInputAnswer",
+            "RequestUserInputArgs",
+            "RequestUserInputEvent",
+            "RequestUserInputQuestion",
+            "RequestUserInputQuestionOption",
+            "RequestUserInputResponse"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "session_id",
+        "source": "codex/codex-rs/protocol/src/session_id.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/session_id.py",
+          "anchor_candidates": [
+            "SessionId",
+            "from_string",
+            "new",
+            "default"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "shell_environment",
+        "source": "codex/codex-rs/protocol/src/shell_environment.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/shell_environment.py",
+          "anchor_candidates": [
+            "CODEX_THREAD_ID_ENV_VAR",
+            "WINDOWS_CORE_ENV_VARS",
+            "create_env",
+            "create_env_from_vars",
+            "populate_env",
+            "UNIX_CORE_ENV_VARS"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "thread_id",
+        "source": "codex/codex-rs/protocol/src/thread_id.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/thread_id.py",
+          "anchor_candidates": [
+            "ThreadId",
+            "from_string",
+            "new",
+            "default"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "tool_name",
+        "source": "codex/codex-rs/protocol/src/tool_name.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/tool_name.py",
+          "anchor_candidates": [
+            "ToolName",
+            "namespaced",
+            "new",
+            "plain"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-protocol",
+        "module": "user_input",
+        "source": "codex/codex-rs/protocol/src/user_input.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/protocol/user_input.py",
+          "anchor_candidates": [
+            "ByteRange",
+            "MAX_USER_INPUT_TEXT_CHARS",
+            "TextElement",
+            "UserInput",
+            "map_range",
+            "new",
+            "placeholder",
+            "set_placeholder"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.tools.lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::lifecycle",
+    "source": "codex/codex-rs/core/src/tools/lifecycle.rs",
+    "anchors": [
+      "notify_tool_aborted",
+      "notify_tool_finish",
+      "notify_tool_start",
+      "extension_tool_call_source",
+      "notify_tool_finish_parts"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/lifecycle.py"
+    ],
+    "anchors": [
+      "notify_tool_aborted",
+      "notify_tool_finish",
+      "notify_tool_start",
+      "extension_tool_call_source",
+      "notify_tool_finish_parts"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

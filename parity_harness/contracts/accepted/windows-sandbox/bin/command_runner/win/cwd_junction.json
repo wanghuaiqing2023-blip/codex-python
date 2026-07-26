@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-windows-sandbox.bin.codex-command-runner.win.cwd_junction",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "bin::codex-command-runner::win::cwd_junction",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/bin/command_runner/win/cwd_junction.rs",
+    "anchors": [
+      "create_cwd_junction",
+      "junction_name_for_path",
+      "junction_root_for_userprofile"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/bin/command_runner/win/cwd_junction.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/bin/command_runner/win/cwd_junction.py"
+    ],
+    "anchors": [
+      "create_cwd_junction",
+      "junction_name_for_path",
+      "junction_root_for_userprofile"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_command_runner.py"
+  ]
+}

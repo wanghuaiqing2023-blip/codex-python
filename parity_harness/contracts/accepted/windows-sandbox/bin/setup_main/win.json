@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-windows-sandbox.bin.codex-windows-sandbox-setup.win",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "bin::codex-windows-sandbox-setup::win",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/bin/setup_main/win.rs",
+    "anchors": [
+      "main",
+      "SetupMode"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/bin/setup_main/win/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/bin/setup_main/win/__init__.py"
+    ],
+    "anchors": [
+      "main",
+      "SetupMode"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_setup_binary_modules.py",
+    "tests/test_windows_sandbox_setup_helper.py",
+    "tests/test_windows_sandbox_setup_orchestrator.py"
+  ]
+}

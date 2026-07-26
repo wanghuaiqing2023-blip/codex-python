@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.streaming.controller",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "streaming::controller",
+    "source": "codex/codex-rs/tui/src/streaming/controller.rs",
+    "anchors": [
+      "PlanStreamController",
+      "StreamController",
+      "clear_queue",
+      "current_tail_display_lines",
+      "current_tail_lines",
+      "finalize",
+      "has_live_tail",
+      "new",
+      "oldest_queued_age",
+      "on_commit_tick",
+      "on_commit_tick_batch",
+      "push"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/streaming/controller.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/streaming/controller.py"
+    ],
+    "anchors": [
+      "PlanStreamController",
+      "StreamController",
+      "clear_queue",
+      "current_tail_display_lines",
+      "current_tail_lines",
+      "finalize",
+      "has_live_tail",
+      "new",
+      "oldest_queued_age",
+      "on_commit_tick",
+      "on_commit_tick_batch",
+      "push"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

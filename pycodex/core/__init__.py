@@ -283,22 +283,24 @@ from .realtime_conversation import (
     stop_conversation_state,
     wrap_realtime_delegation_input,
 )
+from pycodex.app_server_protocol.config import ConfigLayerSource
+from pycodex.config.permissions_toml import NetworkToml
+from pycodex.config.state import ConfigLayerEntry
 from pycodex.network_proxy import (
-    ConfigLayerEntry,
-    ConfigLayerSource,
-    LayerMtime,
-    MtimeConfigReloader,
     NetworkDomainPermission,
     NetworkMode,
     NetworkProxyConfig,
     NetworkProxyConstraints,
-    NetworkProxyNetworkConfig,
-    NetworkToml,
+    normalize_host,
+)
+from pycodex.network_proxy.config import NetworkProxyNetworkConfig
+from .network_proxy_loader import (
+    LayerMtime,
+    MtimeConfigReloader,
     apply_exec_policy_network_rules,
     apply_network_constraints,
     collect_layer_mtimes,
     is_user_controlled_layer,
-    normalize_host,
     overlay_network_domain_permissions,
     upsert_network_domain,
 )
@@ -394,31 +396,20 @@ from .agents_md import (
     LoadedAgentsMd,
 )
 from pycodex.core.config.agent_roles import (
-    AGENT_TYPE_UNAVAILABLE_ERROR,
-    AWAITER_TOML,
-    DEFAULT_ROLE_NAME,
-    EXPLORER_TOML,
     AgentRoleConfig,
     AgentRoleError,
     ResolvedAgentRoleFile,
     agent_role_config_from_mapping,
-    build_spawn_agent_tool_description,
-    built_in_agent_role_config_file_contents,
-    built_in_agent_role_configs,
     collect_agent_role_files,
     discover_agent_roles_in_dir,
-    format_agent_nickname,
-    format_role_for_spawn_tool,
     load_agent_roles_from_config,
     load_agent_roles_from_layers,
-    locked_settings_note_for_role,
     merge_missing_role_fields,
     normalize_agent_role_description,
     normalize_agent_role_nickname_candidates,
     parse_agent_role_file_contents,
     push_agent_role_warning,
     read_declared_role_from_mapping,
-    resolve_role_config,
     validate_agent_role_file_developer_instructions,
     validate_required_agent_role_description,
 )
@@ -442,8 +433,6 @@ from .tools.handlers.agent_jobs import (
     DEFAULT_AGENT_JOB_CONCURRENCY,
     DEFAULT_AGENT_JOB_ITEM_TIMEOUT_SECONDS,
     MAX_AGENT_JOB_CONCURRENCY,
-    REPORT_AGENT_JOB_RESULT_TOOL_NAME,
-    SPAWN_AGENTS_ON_CSV_TOOL_NAME,
     AgentJobFailureSummary,
     AgentJobItem,
     AgentJobItemCreateParams,
@@ -457,8 +446,6 @@ from .tools.handlers.agent_jobs import (
     SpawnAgentsOnCsvResult,
     build_agent_job_items,
     build_worker_prompt,
-    create_report_agent_job_result_tool,
-    create_spawn_agents_on_csv_tool,
     csv_escape,
     default_output_csv_path,
     ensure_unique_headers,
@@ -506,9 +493,14 @@ from .command_canonicalization import (
     canonicalize_command_for_approval,
 )
 from .plugins.render import (
-    render_apps_section,
     render_explicit_plugin_instructions,
     render_plugins_section,
+)
+from .tools.handlers.agent_jobs_spec import (
+    REPORT_AGENT_JOB_RESULT_TOOL_NAME,
+    SPAWN_AGENTS_ON_CSV_TOOL_NAME,
+    create_report_agent_job_result_tool,
+    create_spawn_agents_on_csv_tool,
 )
 from .config_lock import (
     CONFIG_LOCK_VERSION,
@@ -619,7 +611,6 @@ from .context import (
     NetworkContext,
     NetworkRuleSaved,
     PersonalitySpecInstructions,
-    PluginCapabilitySummary,
     PluginInstructions,
     RealtimeEndInstructions,
     RealtimeStartInstructions,
@@ -636,7 +627,6 @@ from .context import (
     matches_marked_text,
     network_from_turn_context_item,
     parse_visible_hook_prompt_message,
-    render_available_skills_body,
 )
 from .event_mapping import (
     has_non_contextual_dev_message_content,
@@ -672,10 +662,7 @@ from pycodex.features import (
 )
 from .tools.handlers.goal import (
     COMPLETION_BUDGET_REPORT_MESSAGE,
-    CREATE_GOAL_TOOL_NAME,
-    GET_GOAL_TOOL_NAME,
     UPDATE_GOAL_STATUS_ERROR,
-    UPDATE_GOAL_TOOL_NAME,
     CreateGoalArgs,
     CreateGoalHandler,
     CreateGoalRequest,
@@ -687,12 +674,17 @@ from .tools.handlers.goal import (
     UpdateGoalArgs,
     UpdateGoalHandler,
     completion_budget_report,
-    create_create_goal_tool,
-    create_get_goal_tool,
-    create_update_goal_tool,
     goal_response,
     parse_create_goal_arguments,
     parse_update_goal_arguments,
+)
+from .tools.handlers.goal_spec import (
+    CREATE_GOAL_TOOL_NAME,
+    GET_GOAL_TOOL_NAME,
+    UPDATE_GOAL_TOOL_NAME,
+    create_create_goal_tool,
+    create_get_goal_tool,
+    create_update_goal_tool,
 )
 from .goals import (
     BUDGET_LIMIT_PROMPT_TEMPLATE,
@@ -712,7 +704,7 @@ from .goals import (
     state_goal_status_from_protocol,
     validate_goal_budget,
 )
-from pycodex.features.managed import (
+from pycodex.core.config.managed_features import (
     ConstraintError,
     FeatureRequirementsToml,
     ManagedFeatures,
@@ -1074,7 +1066,6 @@ from .tools.runtimes import (
     NetworkApprovalSpec,
     PROMPT_CONFLICT_REASON,
     ParsedShellCommand,
-    PreparedUnifiedExecSpawn,
     PreparedUnifiedExecZshFork,
     REJECT_RULES_APPROVAL_REASON,
     REJECT_SANDBOX_APPROVAL_REASON,
@@ -1117,7 +1108,6 @@ from .tools.runtimes import (
     UnifiedExecDirectRunPlan,
     UnifiedExecOptions,
     UnifiedExecRequest,
-    ZshForkSpawnLifecycle,
     approval_sandbox_permissions,
     apply_patch_approval_keys,
     apply_patch_file_system_sandbox_context_for_attempt,
@@ -1147,8 +1137,6 @@ from .tools.runtimes import (
     join_shell_blocks,
     join_program_and_argv,
     map_exec_result,
-    maybe_prepare_unified_exec_zsh_fork,
-    maybe_run_shell_command_zsh_fork,
     maybe_wrap_shell_lc_with_snapshot,
     managed_network_for_runtime,
     prepare_unified_exec_zsh_fork,
@@ -1247,9 +1235,6 @@ from .tools.handlers.mcp import (
     mcp_tool_to_responses_api_tool,
 )
 from .tools.handlers.mcp_resource import (
-    LIST_MCP_RESOURCES_TOOL_NAME,
-    LIST_MCP_RESOURCE_TEMPLATES_TOOL_NAME,
-    READ_MCP_RESOURCE_TOOL_NAME,
     InMemoryMcpResourceProvider,
     ListMcpResourceTemplatesHandler,
     ListMcpResourcesHandler,
@@ -1266,11 +1251,16 @@ from .tools.handlers.mcp_resource import (
     ReadResourceResult,
     ResourceTemplateWithServer,
     ResourceWithServer,
+    parse_mcp_resource_arguments,
+    serialize_function_output,
+)
+from .tools.handlers.mcp_resource_spec import (
+    LIST_MCP_RESOURCES_TOOL_NAME,
+    LIST_MCP_RESOURCE_TEMPLATES_TOOL_NAME,
+    READ_MCP_RESOURCE_TOOL_NAME,
     create_list_mcp_resource_templates_tool,
     create_list_mcp_resources_tool,
     create_read_mcp_resource_tool,
-    parse_mcp_resource_arguments,
-    serialize_function_output,
 )
 from .mcp_tool_exposure import (
     DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD,
@@ -1329,6 +1319,9 @@ from .tools.handlers.multi_agents_common import (
 from .tools.handlers.multi_agents import (
     MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION,
     MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME,
+    ResumeAgentArgs,
+    ResumeAgentHandler,
+    ResumeAgentResult,
     SendInputArgs,
     SendInputHandler,
     SendInputResult,
@@ -1355,9 +1348,6 @@ from .tools.handlers.multi_agents_v2 import (
     ListAgentsHandler,
     ListAgentsResult,
     MessageDeliveryMode,
-    ResumeAgentArgs,
-    ResumeAgentHandler,
-    ResumeAgentResult,
     SendMessageArgs,
     SendMessageHandler,
     SpawnAgentArgs,
@@ -1589,8 +1579,6 @@ from .tools.handlers.request_plugin_install import (
     PluginInstallElicitationTelemetryMetadata,
     RequestPluginInstallCallback,
     RequestPluginInstallHandler,
-    create_list_available_plugins_to_install_tool,
-    create_request_plugin_install_tool,
     disabled_install_request,
     maybe_persist_disabled_install_request,
     persist_disabled_install_request,
@@ -1601,6 +1589,10 @@ from .tools.handlers.request_plugin_install import (
     verified_plugin_install_completed,
     verify_request_plugin_install_completed,
 )
+from .tools.handlers.list_available_plugins_to_install_spec import (
+    create_list_available_plugins_to_install_tool,
+)
+from .tools.handlers.request_plugin_install_spec import create_request_plugin_install_tool
 from .realtime_context import (
     CURRENT_THREAD_SECTION_TOKEN_BUDGET,
     DIR_ENTRY_LIMIT,
@@ -1705,7 +1697,7 @@ from .tools.router import (
     extension_tool_executors,
     notify_tool_finish_if_unclaimed,
 )
-from .tools.handlers.utils import (
+from .tools.handlers import (
     EffectiveAdditionalPermissions,
     apply_granted_turn_permissions,
     implicit_granted_permissions,
@@ -2247,7 +2239,6 @@ from .unified_exec import (
     UnifiedExecProcessManager,
     apply_unified_exec_env,
     clamp_yield_time,
-    deterministic_process_ids_for_tests,
     env_overlay_for_exec_server,
     emit_exec_end_for_unified_exec,
     emit_failed_exec_end_for_unified_exec,
@@ -2334,7 +2325,6 @@ __all__ = [
     "build_network_proxy_spec",
     "profile_allows_configured_network_proxy",
     "AGENTS_MD_SEPARATOR",
-    "AGENT_TYPE_UNAVAILABLE_ERROR",
     "AGENT_NAMES",
     "APPROVAL_POLICY_NEVER",
     "APPROVAL_POLICY_ON_FAILURE",
@@ -2346,11 +2336,9 @@ __all__ = [
     "AvailablePluginsInstructions",
     "AvailableSkillsInstructions",
     "AUTO_REVIEW_APPROVAL_SUFFIX",
-    "AWAITER_TOML",
     "BACKEND_PROMPT",
     "BUDGET_LIMIT_PROMPT_TEMPLATE",
     "EXCLUDED_EXPORT_VARS",
-    "EXPLORER_TOML",
     "FEATURES",
     "GENERATED_IMAGE_ARTIFACTS_DIR",
     "DEV_NULL",
@@ -2437,7 +2425,6 @@ __all__ = [
     "CoreToolRuntime",
     "AnyToolResult",
     "CURRENT_THREAD_SECTION_TOKEN_BUDGET",
-    "DEFAULT_ROLE_NAME",
     "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS",
     "DEFAULT_MAX_OUTPUT_TOKENS",
     "EARLY_EXIT_GRACE_PERIOD_MS",
@@ -2772,7 +2759,6 @@ __all__ = [
     "REPORT_AGENT_JOB_RESULT_TOOL_NAME",
     "SPAWN_AGENTS_ON_CSV_TOOL_NAME",
     "PluginInstallElicitationTelemetryMetadata",
-    "PluginCapabilitySummary",
     "PluginInstructions",
     "ProcessState",
     "ProcessOutputChunk",
@@ -2990,7 +2976,6 @@ __all__ = [
     "build_environment_tool_router_from_turn_context",
     "build_tool_router",
     "build_uploaded_local_argument_value",
-    "build_spawn_agent_tool_description",
     "build_current_thread_section",
     "build_tool_call",
     "dispatch_tool_call",
@@ -3011,8 +2996,6 @@ __all__ = [
     "budget_limit_steering_item",
     "builtin_approval_presets",
     "builtin_permission_profile_for_active_permission_profile",
-    "built_in_agent_role_config_file_contents",
-    "built_in_agent_role_configs",
     "canonicalize_command_for_approval",
     "canonicalize_git_remote_url",
     "canonical_mcp_dependency_key",
@@ -3164,10 +3147,8 @@ __all__ = [
     "format_exec_output_for_model",
     "format_exec_output_str",
     "format_script_status",
-    "format_agent_nickname",
     "format_location",
     "format_missing_mcp_dependencies",
-    "format_role_for_spawn_tool",
     "format_review_findings_block",
     "format_section",
     "format_startup_context_blob",
@@ -3268,7 +3249,6 @@ __all__ = [
     "merge_base_with_head",
     "parse_git_apply_output",
     "lock_layer_from_config",
-    "locked_settings_note_for_role",
     "map_rollout_io_error",
     "map_session_init_error",
     "managed_app_tool_approval",
@@ -3485,7 +3465,6 @@ __all__ = [
     "RealtimeStartWithInstructions",
     "record_model_migration_seen_edit",
     "replace_mcp_servers_edit",
-    "render_apps_section",
     "build_worker_prompt",
     "render_instruction_template",
     "render_job_csv",
@@ -3498,7 +3477,6 @@ __all__ = [
     "rewrite_argument_value_for_openai_files",
     "rewrite_mcp_tool_arguments_for_openai_files",
     "render_json_schema_to_typescript",
-    "render_available_skills_body",
     "load_recent_threads",
     "render_tree",
     "render_input_preview",
@@ -3507,7 +3485,6 @@ __all__ = [
     "resolve_failed_aggregated_output",
     "resolve_max_tokens",
     "resolve_write_stdin_yield_time",
-    "deterministic_process_ids_for_tests",
     "set_deterministic_process_ids_for_tests",
     "should_emit_exec_output_delta",
     "should_emit_terminal_interaction",
@@ -3577,7 +3554,6 @@ __all__ = [
     "retry_log_message",
     "resolve_installation_id",
     "resolve_environment_selections",
-    "resolve_role_config",
     "rollout_item_is_user_turn_boundary",
     "sanitize_metric_tag_value",
     "sanitize_mcp_tool_result_for_model",
@@ -3739,7 +3715,6 @@ __all__ = [
     "PROXY_GIT_SSH_COMMAND_ENV_KEY",
     "PatchEndResult",
     "ParsedShellCommand",
-    "PreparedUnifiedExecSpawn",
     "SHELL_ESCALATE_HANDSHAKE_MESSAGE",
     "SHELL_SOCKET_MAX_FDS_PER_MESSAGE",
     "SHELL_SOCKET_STREAM_MAX_PAYLOAD",
@@ -3778,7 +3753,6 @@ __all__ = [
     "UnifiedExecDirectRunPlan",
     "UnifiedExecOptions",
     "UnifiedExecRequest",
-    "ZshForkSpawnLifecycle",
     "approval_sandbox_permissions",
     "apply_turn_diff_tracker_update",
     "apply_patch_approval_keys",
@@ -3830,8 +3804,6 @@ __all__ = [
     "join_shell_blocks",
     "join_program_and_argv",
     "map_exec_result",
-    "maybe_prepare_unified_exec_zsh_fork",
-    "maybe_run_shell_command_zsh_fork",
     "maybe_wrap_shell_lc_with_snapshot",
     "managed_network_for_runtime",
     "prepare_unified_exec_zsh_fork",

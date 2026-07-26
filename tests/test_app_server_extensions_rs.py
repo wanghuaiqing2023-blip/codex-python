@@ -1,15 +1,17 @@
 import asyncio
 import weakref
 
+import pytest
+
+from pycodex.analytics import AnalyticsEventsClient
 from pycodex.app_server.extensions import (
-    THREAD_EXTENSION_INSTALL_ORDER,
-    THREAD_MANAGER_DROPPED_MESSAGE,
-    app_server_extension_event_sink_projection,
-    app_server_thread_goal_from_core,
-    guardian_agent_spawn_projection,
-    thread_extensions_projection,
+    app_server_extension_event_sink,
+    guardian_agent_spawner,
+    thread_extensions,
 )
-from pycodex.protocol import ThreadGoal, ThreadGoalStatus, ThreadGoalUpdatedEvent, ThreadId
+from pycodex.app_server.outgoing_message import OutgoingMessageSender
+from pycodex.extension_api import ExtensionRegistry, NoopExtensionEventSink
+from pycodex.protocol import CodexErr, ThreadGoal, ThreadGoalStatus, ThreadGoalUpdatedEvent, ThreadId
 
 
 def _thread_goal(thread_id: ThreadId) -> ThreadGoal:
@@ -25,55 +27,56 @@ def _thread_goal(thread_id: ThreadId) -> ThreadGoal:
     )
 
 
-def test_thread_extensions_projection_records_rust_install_order() -> None:
-    # Rust: thread_extensions installs guardian, memories, then web-search extensions.
-    projection = thread_extensions_projection("guardian-spawner", "event-sink", "auth")
+def test_thread_extensions_returns_real_registry_with_rust_install_order() -> None:
+    class GuardianSpawner:
+        async def spawn_subagent(self, forked_from_thread_id, options):
+            return forked_from_thread_id, options
 
-    assert projection.installed_extensions == THREAD_EXTENSION_INSTALL_ORDER
-    assert projection.installed_extensions == ("guardian", "memories", "web_search")
-    assert projection.event_sink == "event-sink"
-    assert projection.auth_manager == "auth"
-    assert projection.otel_provider == "global"
+    event_sink = NoopExtensionEventSink()
+    registry = thread_extensions(GuardianSpawner(), event_sink, "auth")
+
+    assert isinstance(registry, ExtensionRegistry)
+    assert registry.event_sink() is event_sink
+    assert [type(item).__name__ for item in registry.thread_lifecycle_contributors()] == [
+        "GuardianExtension",
+        "MemoriesExtension",
+        "WebSearchExtension",
+    ]
+    assert [type(item).__name__ for item in registry.config_contributors()] == [
+        "MemoriesExtension",
+        "WebSearchExtension",
+    ]
+    assert [type(item).__name__ for item in registry.context_contributors()] == [
+        "MemoriesExtension"
+    ]
+    assert [type(item).__name__ for item in registry.tool_contributors()] == [
+        "MemoriesExtension",
+        "WebSearchExtension",
+    ]
 
 
-def test_app_server_thread_goal_from_core_preserves_goal_fields() -> None:
-    # Rust: AppServerThreadGoal is built from the core ThreadGoal via Into.
+def test_app_server_event_sink_forwards_thread_goal_updates_to_outgoing_queue() -> None:
+    outgoing = OutgoingMessageSender(analytics_events_client=AnalyticsEventsClient.disabled())
+    sink = app_server_extension_event_sink(outgoing)
     thread_id = ThreadId.from_string("11111111-1111-1111-1111-111111111111")
 
-    goal = app_server_thread_goal_from_core(_thread_goal(thread_id))
+    sink.emit(
+        {
+            "id": "call-1",
+            "msg": {
+                "type": "thread_goal_updated",
+                "payload": ThreadGoalUpdatedEvent(
+                    thread_id=thread_id,
+                    turn_id="turn-1",
+                    goal=_thread_goal(thread_id),
+                ),
+            },
+        }
+    )
 
-    assert goal.to_camel_mapping() == {
-        "threadId": "11111111-1111-1111-1111-111111111111",
-        "objective": "wire extension events",
-        "status": "active",
-        "tokenBudget": 123,
-        "tokensUsed": 45,
-        "timeUsedSeconds": 6,
-        "createdAt": 7,
-        "updatedAt": 8,
-    }
-
-
-def test_app_server_event_sink_forwards_thread_goal_updates() -> None:
-    # Rust test: app_server_event_sink_forwards_thread_goal_updates.
-    thread_id = ThreadId.from_string("11111111-1111-1111-1111-111111111111")
-    event = {
-        "id": "call-1",
-        "msg": {
-            "type": "thread_goal_updated",
-            "payload": ThreadGoalUpdatedEvent(
-                thread_id=thread_id,
-                turn_id="turn-1",
-                goal=_thread_goal(thread_id),
-            ),
-        },
-    }
-
-    projection = app_server_extension_event_sink_projection(event)
-
-    assert projection.action == "forward_thread_goal_updated"
-    assert projection.notification is not None
-    assert projection.notification.to_mapping() == {
+    envelope = outgoing.sender.get_nowait()
+    assert envelope.kind == "Broadcast"
+    assert envelope.message.payload.to_mapping() == {
         "type": "ThreadGoalUpdated",
         "method": "thread/goal/updated",
         "params": {
@@ -94,18 +97,15 @@ def test_app_server_event_sink_forwards_thread_goal_updates() -> None:
 
 
 def test_app_server_event_sink_drops_unsupported_extension_events() -> None:
-    # Rust: non-ThreadGoalUpdated extension events are debug-logged and dropped.
-    projection = app_server_extension_event_sink_projection(
-        {"id": "call-2", "msg": {"type": "other_extension_event", "payload": {"x": 1}}}
-    )
+    outgoing = OutgoingMessageSender()
+    sink = app_server_extension_event_sink(outgoing)
 
-    assert projection.action == "drop_unsupported_extension_event"
-    assert projection.notification is None
-    assert projection.debug_event_id == "call-2"
+    sink.emit({"id": "call-2", "msg": {"type": "other_extension_event"}})
+
+    assert outgoing.sender.empty()
 
 
-def test_guardian_agent_spawn_projection_calls_spawn_subagent_when_manager_alive() -> None:
-    # Rust: guardian_agent_spawner upgrades Weak<ThreadManager> and delegates to spawn_subagent.
+def test_guardian_agent_spawner_delegates_to_live_thread_manager() -> None:
     class ThreadManager:
         def __init__(self) -> None:
             self.calls = []
@@ -115,27 +115,25 @@ def test_guardian_agent_spawn_projection_calls_spawn_subagent_when_manager_alive
             return {"thread": "new"}
 
     manager = ThreadManager()
-    ref = weakref.ref(manager)
+    spawner = guardian_agent_spawner(weakref.ref(manager))
 
-    projection = asyncio.run(guardian_agent_spawn_projection(ref, "parent-thread", {"model": "codex"}))
+    result = asyncio.run(spawner.spawn_subagent("parent-thread", {"model": "codex"}))
 
-    assert projection.action == "spawn_subagent"
-    assert projection.result == {"thread": "new"}
+    assert result == {"thread": "new"}
     assert manager.calls == [("parent-thread", {"model": "codex"})]
 
 
-def test_guardian_agent_spawn_projection_reports_dropped_thread_manager() -> None:
-    # Rust: failed Weak upgrade maps to UnsupportedOperation("thread manager dropped").
+def test_guardian_agent_spawner_maps_failed_weak_upgrade_to_codex_error() -> None:
     class ThreadManager:
         async def spawn_subagent(self, forked_from_thread_id, options):
             raise AssertionError("should not be called")
 
     manager = ThreadManager()
-    ref = weakref.ref(manager)
+    spawner = guardian_agent_spawner(weakref.ref(manager))
     del manager
 
-    projection = asyncio.run(guardian_agent_spawn_projection(ref, "parent-thread", {}))
+    with pytest.raises(CodexErr) as exc_info:
+        asyncio.run(spawner.spawn_subagent("parent-thread", {}))
 
-    assert projection.action == "unsupported_operation"
-    assert projection.error == THREAD_MANAGER_DROPPED_MESSAGE
-    assert projection.result is None
+    assert exc_info.value.kind == "unsupported_operation"
+    assert exc_info.value.message == "thread manager dropped"

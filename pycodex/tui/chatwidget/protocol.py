@@ -15,12 +15,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Union
 
+from pycodex.protocol import CollaborationMode, CollaborationModeMask, ModeKind, Settings
+
 from .._porting import RustTuiModule
 from ..app_server_approval_conversions import file_update_changes_to_display
 from ..history_cell.messages import new_reasoning_summary_block
-from ..history_cell.notices import new_error_event
+from ..history_cell.notices import (
+    new_cyber_policy_error_event,
+    new_error_event,
+    new_warning_event,
+)
 from ..history_cell.patches import new_patch_apply_failure, new_patch_event
-from ..history_cell.plans import new_plan_update
+from ..history_cell.plans import new_plan_update, new_proposed_plan
 from ..history_cell.separators import FinalMessageSeparator
 from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
@@ -39,6 +45,17 @@ from .notifications import Notification, NotificationCoalescer
 from .status_surfaces import run_state_status_text
 from .status_state import StatusIndicatorState, TerminalTitleStatusKind
 from .streaming import MessagePhase, StreamingWidgetState
+from .settings import (
+    effective_collaboration_mode as settings_effective_collaboration_mode,
+    on_thread_settings_updated as apply_thread_settings_updated,
+    set_collaboration_mask as apply_collaboration_mask,
+    set_collaboration_mask_from_user_action as apply_collaboration_mask_from_user_action,
+)
+from .service_tiers import (
+    available_models as service_tiers_available_models,
+    should_show_fast_status as service_tiers_should_show_fast_status,
+)
+from ..service_tier_resolution import effective_service_tier
 from .turn_runtime import (
     ChatWidgetTurnRuntime,
     PlanItem as TurnPlanItem,
@@ -76,7 +93,6 @@ __all__ = [
     "handle_item_started_notification",
     "handle_server_notification",
     "handle_turn_completed_notification",
-    "retry_error_status_from_notification",
     "run_terminal_app_notification",
     "run_terminal_notification",
     "run_terminal_notification_action",
@@ -162,12 +178,12 @@ class TerminalProtocolEventDispatcher:
     def __init__(
         self,
         *,
-        handle_notification: Callable[[Any], Any],
+        handle_notification: Callable[[Any], bool | None],
         handle_request: Callable[[Any], Any],
         assistant_stream_active: Callable[[], bool],
         assistant_delta: Callable[[str], Any],
         assistant_completed: Callable[[str], Any],
-        retry_error: Callable[[str, str | None], Any],
+        project_status: Callable[[], Any],
         suppress_turn_status: Callable[[], Any],
         clear_turn_status: Callable[[], Any],
         hide_live_status: Callable[[], Any],
@@ -175,13 +191,14 @@ class TerminalProtocolEventDispatcher:
         finalize_active_stream: Callable[[], Any],
         ensure_turn_status: Callable[[], Any],
         restore_turn_status: Callable[[], Any],
+        immediate_follow_up_pending: Callable[[], bool] = lambda: False,
     ) -> None:
         self.handle_notification_callback = handle_notification
         self.handle_request_callback = handle_request
         self.assistant_stream_active = assistant_stream_active
         self.assistant_delta = assistant_delta
         self.assistant_completed = assistant_completed
-        self.retry_error = retry_error
+        self.project_status = project_status
         self.suppress_turn_status = suppress_turn_status
         self.clear_turn_status = clear_turn_status
         self.hide_live_status = hide_live_status
@@ -189,6 +206,7 @@ class TerminalProtocolEventDispatcher:
         self.finalize_active_stream = finalize_active_stream
         self.ensure_turn_status = ensure_turn_status
         self.restore_turn_status = restore_turn_status
+        self.immediate_follow_up_pending = immediate_follow_up_pending
 
     def handle_event(self, notification: Any) -> TerminalNotificationAction:
         if isinstance(notification, ServerRequest):
@@ -201,8 +219,9 @@ class TerminalProtocolEventDispatcher:
             apply_effect_plan=self.apply_effect_plan,
             assistant_delta=self.assistant_delta,
             assistant_completed=self.assistant_completed,
-            retry_error=self.retry_error,
+            project_status=self.project_status,
             restore_turn_status=self.restore_turn_status,
+            immediate_follow_up_pending=self.immediate_follow_up_pending,
         )
 
     def close_turn(self) -> None:
@@ -243,7 +262,24 @@ class ChatWidgetProtocolRuntime:
             recent_auto_review_denials=self.review.recent_auto_review_denials,
         )
         self.mcp_startup = McpStartupModel()
-        self.config = SimpleNamespace(show_raw_agent_reasoning=False)
+        self.config = SimpleNamespace(
+            show_raw_agent_reasoning=False,
+            plan_mode_reasoning_effort=None,
+        )
+        self.thread_id: Any | None = None
+        self.model_catalog: Any = None
+        self.has_chatgpt_account = False
+        self.effective_service_tier: Optional[str] = None
+        self.app_event_tx: Any = None
+        self.current_collaboration_mode = CollaborationMode(
+            mode=ModeKind.DEFAULT,
+            settings=Settings(model=""),
+        )
+        self.active_collaboration_mask: CollaborationModeMask | None = None
+        self.dismissed_plan_mode_nudge_scopes: set[Any] = set()
+        self._collaboration_modes_enabled = True
+        self._active_view_sink: Callable[[object], Any] | None = None
+        self._user_message_submission_sink: Callable[[str], Any] | None = None
         self.turn_lifecycle = self.turn.turn_lifecycle
         self.transcript = self.turn.transcript
         self.last_non_retry_error: Optional[Any] = None
@@ -272,6 +308,7 @@ class ChatWidgetProtocolRuntime:
         self.clipboard_lease: Any = None
         self.info_messages: list[tuple[str, Optional[str]]] = []
         self.info_message_sink: Optional[Callable[[str, Optional[str]], Any]] = None
+        self.status_line_invalid_items_warned = False
         self.tool_request_status_sink: Optional[Callable[[StatusIndicatorState], Any]] = None
         self.tool_request_status_header_sink: Optional[Callable[[str], Any]] = None
         self.notification_projection_sink: Optional[Callable[[str], Any]] = None
@@ -284,11 +321,77 @@ class ChatWidgetProtocolRuntime:
             set_active_cell=self.set_active_history_cell,
             request_redraw=self.request_redraw,
         )
+        self.command_lifecycle.bind_status_projection(
+            ensure_status_indicator=self.streaming.ensure_status_indicator,
+        )
         self.tool_requests.history_sink = self.add_to_history
         self.tool_requests.status_sink = self._set_tool_request_status
         self.tool_requests.status_header_sink = self._set_tool_request_status_header
         self.tool_requests.redraw_sink = self.request_redraw
         self.tool_requests.notification_sink = self._on_tool_request_notification
+
+    def bind_active_view_sink(self, sink: Callable[[object], Any] | None) -> None:
+        self._active_view_sink = sink
+        self.turn.bottom_pane.selection_view_sink = sink
+
+    def bind_user_message_submission_sink(self, sink: Callable[[str], Any] | None) -> None:
+        self._user_message_submission_sink = sink
+
+    def collaboration_modes_enabled(self) -> bool:
+        return self._collaboration_modes_enabled
+
+    def plan_mask_available(self) -> bool:
+        from ..collaboration_modes import plan_mask
+
+        return plan_mask(self.model_catalog) is not None
+
+    def active_mode_kind(self) -> ModeKind:
+        mask = self.active_collaboration_mask
+        return mask.mode if mask is not None and mask.mode is not None else ModeKind.DEFAULT
+
+    def effective_collaboration_mode(self) -> CollaborationMode:
+        return settings_effective_collaboration_mode(self)
+
+    def set_collaboration_mask(self, mask: CollaborationModeMask) -> None:
+        apply_collaboration_mask(self, mask)
+        self._sync_collaboration_mode_state()
+
+    def set_collaboration_mask_from_user_action(self, mask: CollaborationModeMask) -> None:
+        apply_collaboration_mask_from_user_action(self, mask)
+        self._sync_collaboration_mode_state()
+
+    def update_collaboration_mode_indicator(self) -> None:
+        self._sync_collaboration_mode_state()
+
+    def refresh_plan_mode_nudge(self) -> None:
+        self.turn.refresh_plan_mode_nudge()
+
+    def refresh_model_dependent_surfaces(self) -> None:
+        self.request_redraw()
+
+    def on_thread_settings_updated(self, notification: Any) -> None:
+        apply_thread_settings_updated(self, notification)
+        self._sync_collaboration_mode_state()
+
+    def submit_user_message_with_mode(
+        self,
+        text: str,
+        collaboration_mode: CollaborationModeMask,
+    ) -> Any:
+        if self.turn.turn_lifecycle.agent_turn_running and self.active_collaboration_mask != collaboration_mode:
+            self.add_error_message("Cannot switch collaboration mode while a turn is running.")
+            return None
+        self.set_collaboration_mask_from_user_action(collaboration_mode)
+        if self._user_message_submission_sink is None:
+            self.add_error_message("User message submission is unavailable.")
+            return None
+        return self._user_message_submission_sink(str(text))
+
+    def _sync_collaboration_mode_state(self) -> None:
+        mode = self.active_mode_kind()
+        self.turn.mode_kind = mode
+        self.turn.model_catalog = self.model_catalog
+        self.streaming.mode_kind = mode
 
     def bind_approval_request_sink(
         self,
@@ -439,6 +542,11 @@ class ChatWidgetProtocolRuntime:
     def on_task_started(self) -> None:
         self.turn.on_task_started()
         self._sync_streaming_task_state()
+        # Rust BottomPane::set_task_running(true) restores the status widget
+        # that the preceding completed turn hid.
+        self.streaming.ensure_status_indicator()
+        self.streaming.status_state.retry_status_header = None
+        self.streaming.status_state.pending_status_indicator_restore = False
         self.streaming.status_state.terminal_title_status_kind = TerminalTitleStatusKind.Working
         self.streaming.set_status_header("Working")
         self.streaming.request_redraw()
@@ -572,7 +680,33 @@ class ChatWidgetProtocolRuntime:
     def set_model(self, model: str) -> None:
         self.selected_model = str(model)
         setattr(self.config, "model", self.selected_model)
+        self.refresh_effective_service_tier()
         self.streaming.request_redraw()
+
+    def current_model(self) -> str:
+        if self.selected_model:
+            return self.selected_model
+        mode = self.effective_collaboration_mode()
+        model = mode.model() if mode is not None else None
+        return str(model or getattr(self.config, "model", "") or "")
+
+    def current_service_tier(self) -> Optional[str]:
+        return self.effective_service_tier
+
+    def refresh_effective_service_tier(self) -> None:
+        self.effective_service_tier = effective_service_tier(
+            self.config,
+            self.current_model(),
+            service_tiers_available_models(self.model_catalog),
+        )
+
+    def should_show_fast_status(self, model: str, service_tier: Optional[str]) -> bool:
+        return service_tiers_should_show_fast_status(
+            model,
+            service_tier,
+            self.model_catalog or (),
+            has_chatgpt_account=self.has_chatgpt_account,
+        )
 
     def set_reasoning_effort(self, effort: Any | None) -> None:
         setattr(self.config, "model_reasoning_effort", effort)
@@ -622,6 +756,19 @@ class ChatWidgetProtocolRuntime:
     def add_error_message(self, message: str) -> None:
         self.error_messages.append(str(message))
 
+    def refresh_status_surfaces(self) -> None:
+        self.request_redraw()
+
+    def setup_status_line(self, items: Any, use_theme_colors: bool) -> None:
+        from .status_controls import setup_status_line
+
+        setup_status_line(self, items, use_theme_colors)
+
+    def cancel_status_line_setup(self) -> None:
+        from .status_controls import cancel_status_line_setup
+
+        cancel_status_line_setup(self)
+
     def on_mcp_server_status_updated(self, payload: Any) -> None:
         """Apply Rust ``chatwidget::mcp_startup`` state to protocol runtime."""
 
@@ -639,6 +786,7 @@ class ChatWidgetProtocolRuntime:
             self.streaming.set_status_header(self.mcp_startup.status_header)
         for warning in self.mcp_startup.warnings[previous_warning_count:]:
             self.turn.on_warning(warning)
+            self.add_to_history(new_warning_event(warning))
         if self.mcp_startup.startup_status is None and self.turn.bottom_pane.task_running:
             self.streaming.restore_reasoning_status_header()
             self.turn.set_status_header(self.streaming.status_state.current_status.header)
@@ -676,6 +824,7 @@ class ChatWidgetProtocolRuntime:
     ) -> None:
         self.streaming.flush_answer_stream_with_separator()
         self.streaming.on_agent_reasoning_final()
+        self._sync_collaboration_mode_state()
         self.turn.on_task_complete(last_agent_message, duration_ms, from_replay)
         self._sync_streaming_task_state()
 
@@ -706,11 +855,43 @@ class ChatWidgetProtocolRuntime:
             self.streaming.clear_active_stream_tail()
             self.streaming.stream_controller = None
             self.streaming.adaptive_chunking_resets += 1
+        history_start = len(self.turn.history)
         self.turn.handle_non_retry_error(message, codex_error_info)
+        self._project_new_turn_error_history(history_start)
         self._sync_streaming_task_state()
+
+    def _project_new_turn_error_history(self, history_start: int) -> None:
+        """Project Rust turn-runtime error cells through the app history path."""
+
+        for item in self.turn.history[history_start:]:
+            kind = _get(item, "kind", "")
+            if kind == "error":
+                self.add_to_history(new_error_event(str(_get(item, "message", ""))))
+            elif kind == "warning":
+                self.add_to_history(new_warning_event(str(_get(item, "message", ""))))
+            elif kind == "cyber_policy_error":
+                self.add_to_history(new_cyber_policy_error_event())
 
     def on_warning(self, message: Any) -> None:
         self.turn.on_warning(message)
+
+    def on_plan_delta(self, delta: str) -> None:
+        self._sync_collaboration_mode_state()
+        self.streaming.on_plan_delta(str(delta or ""))
+
+    def on_plan_item_completed(self, text: str) -> None:
+        self._sync_collaboration_mode_state()
+        self.streaming.on_plan_item_completed(str(text or ""))
+        self.transcript.saw_plan_item_this_turn = True
+        plan_text = self.streaming.latest_proposed_plan_markdown
+        if plan_text:
+            self.transcript.latest_proposed_plan_markdown = plan_text
+            self.add_to_history(
+                new_proposed_plan(
+                    plan_text,
+                    getattr(self.config, "cwd", None) or Path.cwd(),
+                )
+            )
 
     def on_plan_update(self, update: Mapping[str, Any] | Any) -> None:
         plan = [
@@ -765,6 +946,12 @@ class ChatWidgetProtocolRuntime:
 
     def _sync_streaming_task_state(self) -> None:
         self.streaming.task_running = self.turn.bottom_pane.task_running
+        self.command_lifecycle.bottom_pane_task_running = self.turn.bottom_pane.task_running
+        # Rust BottomPane owns the status indicator as part of its running
+        # state. Once both the agent turn and MCP startup are idle, the stale
+        # Working/retry status must not be projected back into the terminal.
+        if not self.streaming.task_running:
+            self.streaming.hide_status_indicator()
 
     def _insert_final_message_separator_if_needed(self) -> None:
         if not self.transcript.needs_final_message_separator:
@@ -1046,18 +1233,6 @@ def _cell_has_visible_lines(cell: Any) -> bool:
         return True
 
 
-def retry_error_status_from_notification(notification: Any) -> tuple[str, str | None] | None:
-    """Extract transient retry status text from an Error notification."""
-
-    payload = _get(notification, "payload", notification)
-    if not bool(_get(payload, "will_retry", False)):
-        return None
-    error = _get(payload, "error", {})
-    message = str(_get(error, "message", "") or "Request failed")
-    details = _get(error, "additional_details", None)
-    return message, None if details is None else str(details)
-
-
 def terminal_notification_action(notification: Any) -> TerminalNotificationAction:
     """Plan the terminal scrollback product action for a server notification."""
 
@@ -1068,8 +1243,6 @@ def terminal_notification_action(notification: Any) -> TerminalNotificationActio
             TerminalNotificationAction(
                 "assistant_delta",
                 delta,
-                suppress_turn_status=True,
-                hide_live_status=True,
             )
             if delta
             else TerminalNotificationAction("noop")
@@ -1079,15 +1252,15 @@ def terminal_notification_action(notification: Any) -> TerminalNotificationActio
         item_kind = _get(item, "kind", None) or _get(item, "type", None)
         if item_kind is None and _get(item, "command", None) is not None:
             item_kind = "CommandExecution"
-        return (
-            TerminalNotificationAction(
+        if item_kind == "CommandExecution":
+            return TerminalNotificationAction(
                 "structured_history",
                 finalize_active_stream=True,
-                ensure_turn_status=item_kind == "CommandExecution",
+                ensure_turn_status=True,
             )
-            if item_kind in {"CommandExecution", "FileChange"}
-            else TerminalNotificationAction("noop")
-        )
+        # Rust tool_lifecycle::on_patch_apply_begin only inserts the patch cell;
+        # it does not finalize the assistant stream or alter bottom-pane status.
+        return TerminalNotificationAction("noop")
     if kind == "ItemCompleted":
         completed_message = completed_agent_message_from_notification(notification)
         if completed_message:
@@ -1096,33 +1269,24 @@ def terminal_notification_action(notification: Any) -> TerminalNotificationActio
             return TerminalNotificationAction(
                 "assistant_completed",
                 completed_message,
-                suppress_turn_status=True,
-                hide_live_status=True,
                 restore_turn_status_after_action=phase is MessagePhase.Commentary,
             )
         item = _get(_payload(notification), "item", {})
         item_kind = _get(item, "kind", None) or _get(item, "type", None)
         if item_kind is None and _get(item, "command", None) is not None:
             item_kind = "CommandExecution"
-        return (
-            TerminalNotificationAction(
+        if item_kind == "CommandExecution":
+            return TerminalNotificationAction(
                 "structured_history",
                 finalize_active_stream=True,
             )
-            if item_kind in {"CommandExecution", "FileChange"}
-            else TerminalNotificationAction("noop")
-        )
+        return TerminalNotificationAction("noop")
     if kind == "Error":
-        retry_status = retry_error_status_from_notification(notification)
-        if retry_status is None:
-            return TerminalNotificationAction("noop")
-        message, details = retry_status
-        return TerminalNotificationAction(
-            "retry_error",
-            message,
-            details,
-            suppress_turn_status=True,
-        )
+        # chatwidget::protocol and chatwidget::streaming already consume retry
+        # errors and own the status transition. The terminal adapter has no
+        # independent Error action in Rust; it only projects the resulting
+        # bottom-pane state.
+        return TerminalNotificationAction("noop")
     if kind == "TurnCompleted":
         return TerminalNotificationAction(
             "turn_completed",
@@ -1138,7 +1302,6 @@ def run_terminal_notification_action(
     *,
     assistant_delta: Callable[[str], Any],
     assistant_completed: Callable[[str], Any],
-    retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
     restore_turn_status: Callable[[], Any] | None = None,
 ) -> None:
@@ -1148,8 +1311,6 @@ def run_terminal_notification_action(
         assistant_delta(action.text)
     elif action.kind == "assistant_completed":
         assistant_completed(action.text)
-    elif action.kind == "retry_error":
-        retry_error(action.text, action.details)
     elif action.kind == "turn_completed" and turn_completed is not None:
         turn_completed()
     if action.restore_turn_status_after_action and restore_turn_status is not None:
@@ -1217,7 +1378,6 @@ def run_terminal_notification(
     apply_effect_plan: Callable[[TerminalNotificationEffectPlan], Any],
     assistant_delta: Callable[[str], Any],
     assistant_completed: Callable[[str], Any],
-    retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
     restore_turn_status: Callable[[], Any] | None = None,
 ) -> TerminalNotificationAction:
@@ -1234,7 +1394,6 @@ def run_terminal_notification(
         action,
         assistant_delta=assistant_delta,
         assistant_completed=assistant_completed,
-        retry_error=retry_error,
         turn_completed=turn_completed,
         restore_turn_status=restore_turn_status,
     )
@@ -1244,14 +1403,15 @@ def run_terminal_notification(
 def run_terminal_app_notification(
     notification: Any,
     *,
-    handle_notification: Callable[[Any], Any],
+    handle_notification: Callable[[Any], bool | None],
     assistant_stream_active: bool,
     apply_effect_plan: Callable[[TerminalNotificationEffectPlan], Any],
     assistant_delta: Callable[[str], Any],
     assistant_completed: Callable[[str], Any],
-    retry_error: Callable[[str, str | None], Any],
+    project_status: Callable[[], Any],
     turn_completed: Callable[[], Any] | None = None,
     restore_turn_status: Callable[[], Any] | None = None,
+    immediate_follow_up_pending: Callable[[], bool] = lambda: False,
 ) -> TerminalNotificationAction:
     """Synchronize app notification handling before terminal dispatch.
 
@@ -1262,18 +1422,52 @@ def run_terminal_app_notification(
     """
 
     action = terminal_notification_action(notification)
-    apply_effect_plan(
-        terminal_notification_effect_plan(
-            action,
-            assistant_stream_active=assistant_stream_active,
-        )
+    effect_plan = terminal_notification_effect_plan(
+        action,
+        assistant_stream_active=assistant_stream_active,
     )
-    handle_notification(notification)
+    if action.kind == "turn_completed":
+        # Rust core can enqueue the next turn while publishing TurnComplete.
+        # Restore its status before final stream consolidation so every frame
+        # produced while inserting the separator observes the successor turn.
+        successor_was_pending = bool(immediate_follow_up_pending())
+        if successor_was_pending:
+            apply_effect_plan(TerminalNotificationEffectPlan(ensure_turn_status=True))
+        if effect_plan.finalize_active_stream:
+            apply_effect_plan(TerminalNotificationEffectPlan(finalize_active_stream=True))
+            if successor_was_pending:
+                apply_effect_plan(TerminalNotificationEffectPlan(ensure_turn_status=True))
+        immediate_follow_up = bool(handle_notification(notification))
+        if immediate_follow_up and not successor_was_pending:
+            apply_effect_plan(TerminalNotificationEffectPlan(ensure_turn_status=True))
+        elif not immediate_follow_up:
+            apply_effect_plan(
+                TerminalNotificationEffectPlan(
+                    suppress_turn_status=effect_plan.suppress_turn_status,
+                    clear_turn_status=effect_plan.clear_turn_status,
+                    hide_live_status=effect_plan.hide_live_status,
+                    clear_live_status=effect_plan.clear_live_status,
+                    ensure_turn_status=effect_plan.ensure_turn_status,
+                )
+            )
+        if not immediate_follow_up:
+            project_status()
+    else:
+        apply_effect_plan(effect_plan)
+        handle_notification(notification)
+        run_terminal_notification_action(
+            action,
+            assistant_delta=assistant_delta,
+            assistant_completed=assistant_completed,
+            turn_completed=turn_completed,
+            restore_turn_status=restore_turn_status,
+        )
+        project_status()
+        return action
     run_terminal_notification_action(
         action,
         assistant_delta=assistant_delta,
         assistant_completed=assistant_completed,
-        retry_error=retry_error,
         turn_completed=turn_completed,
         restore_turn_status=restore_turn_status,
     )

@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-lmstudio.client",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-lmstudio",
+    "module": "client",
+    "source": "codex/codex-rs/lmstudio/src/client.rs",
+    "anchors": [
+      "LMStudioClient",
+      "download_model",
+      "fetch_models",
+      "load_model",
+      "try_from_provider",
+      "LMSTUDIO_CONNECTION_ERROR",
+      "check_server",
+      "find_lms",
+      "find_lms_with_home_dir"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/lmstudio/client.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/lmstudio/client.py"
+    ],
+    "anchors": [
+      "LMStudioClient",
+      "download_model",
+      "fetch_models",
+      "load_model",
+      "try_from_provider",
+      "LMSTUDIO_CONNECTION_ERROR",
+      "check_server",
+      "find_lms",
+      "find_lms_with_home_dir"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+# Rust source: codex/codex-rs/tui/src/bin/md-events.rs
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "md-events.py"
 spec = importlib.util.spec_from_file_location("pycodex.tui.bin.md_events", MODULE_PATH)

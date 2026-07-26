@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-utils-string.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-string",
+    "module": "crate",
+    "source": "codex/codex-rs/utils/string/src/lib.rs",
+    "anchors": [
+      "approx_bytes_for_tokens",
+      "approx_token_count",
+      "approx_tokens_from_byte_count",
+      "find_uuids",
+      "normalize_markdown_hash_location_suffix",
+      "sanitize_metric_tag_value",
+      "take_bytes_at_char_boundary",
+      "to_ascii_json_string",
+      "truncate_middle_chars",
+      "truncate_middle_with_token_budget"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/string/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/string/__init__.py"
+    ],
+    "anchors": [
+      "approx_bytes_for_tokens",
+      "approx_token_count",
+      "approx_tokens_from_byte_count",
+      "find_uuids",
+      "normalize_markdown_hash_location_suffix",
+      "sanitize_metric_tag_value",
+      "take_bytes_at_char_boundary",
+      "to_ascii_json_string",
+      "truncate_middle_chars",
+      "truncate_middle_with_token_budget"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

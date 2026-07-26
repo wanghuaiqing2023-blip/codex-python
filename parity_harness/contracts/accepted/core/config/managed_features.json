@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.config.managed_features",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "config::managed_features",
+    "source": "codex/codex-rs/core/src/config/managed_features.rs",
+    "anchors": [
+      "ManagedFeatures",
+      "can_set",
+      "disable",
+      "enable",
+      "from_configured",
+      "from_configured_with_warnings",
+      "get",
+      "set",
+      "set_enabled",
+      "validate_explicit_feature_settings_in_config_toml",
+      "validate_feature_requirements_in_config_toml",
+      "default"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/config/managed_features.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/config/managed_features.py"
+    ],
+    "anchors": [
+      "ManagedFeatures",
+      "can_set",
+      "disable",
+      "enable",
+      "from_configured",
+      "from_configured_with_warnings",
+      "get",
+      "set",
+      "set_enabled",
+      "validate_explicit_feature_settings_in_config_toml",
+      "validate_feature_requirements_in_config_toml",
+      "default"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -10,14 +10,16 @@ from pycodex.core import (
     ToolPayload,
 )
 from pycodex.core.tools.handlers.view_image import (
-    VIEW_IMAGE_TOOL_NAME,
     VIEW_IMAGE_UNSUPPORTED_MESSAGE,
     ViewImageHandler,
     ViewImageOutput,
-    ViewImageToolOptions,
-    create_view_image_tool,
     data_url_for_image,
     parse_view_image_arguments,
+)
+from pycodex.core.tools.handlers.view_image_spec import (
+    VIEW_IMAGE_TOOL_NAME,
+    ViewImageToolOptions,
+    create_view_image_tool,
 )
 from pycodex.protocol import DEFAULT_IMAGE_DETAIL, ImageDetail, SearchToolCallParams, ToolName
 

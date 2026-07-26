@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-core.tools.handlers.unified_exec.exec_command",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::unified_exec::exec_command",
+    "source": "codex/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs",
+    "anchors": [
+      "ExecCommandHandler",
+      "ExecCommandHandlerOptions",
+      "handle",
+      "matches_kind",
+      "post_tool_use_payload",
+      "pre_tool_use_payload",
+      "spec",
+      "supports_parallel_tool_calls",
+      "tool_name",
+      "with_updated_hook_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/unified_exec/exec_command.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/unified_exec/exec_command.py"
+    ],
+    "anchors": [
+      "ExecCommandHandler",
+      "ExecCommandHandlerOptions",
+      "handle",
+      "matches_kind",
+      "post_tool_use_payload",
+      "pre_tool_use_payload",
+      "spec",
+      "supports_parallel_tool_calls",
+      "tool_name",
+      "with_updated_hook_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

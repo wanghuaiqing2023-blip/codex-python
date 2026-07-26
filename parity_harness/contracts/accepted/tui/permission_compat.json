@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-tui.permission_compat",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "permission_compat",
+    "source": "codex/codex-rs/tui/src/permission_compat.rs",
+    "anchors": [
+      "legacy_compatible_permission_profile"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/permission_compat.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/permission_compat.py"
+    ],
+    "anchors": [
+      "legacy_compatible_permission_profile"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

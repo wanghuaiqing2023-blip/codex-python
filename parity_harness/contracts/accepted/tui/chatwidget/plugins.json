@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.plugins",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::plugins",
+    "source": "codex/codex-rs/tui/src/chatwidget/plugins.rs",
+    "anchors": [
+      "PluginInstallAuthFlowState",
+      "PluginListFetchState",
+      "PluginsCacheState",
+      "add_plugins_output",
+      "advance_plugin_install_auth_flow",
+      "on_marketplace_add_loaded",
+      "on_marketplace_remove_loaded",
+      "on_marketplace_upgrade_loaded",
+      "on_plugin_detail_loaded",
+      "on_plugin_install_loaded",
+      "on_plugin_uninstall_loaded",
+      "on_plugins_loaded"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/plugins.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/plugins.py"
+    ],
+    "anchors": [
+      "PluginInstallAuthFlowState",
+      "PluginListFetchState",
+      "PluginsCacheState",
+      "add_plugins_output",
+      "advance_plugin_install_auth_flow",
+      "on_marketplace_add_loaded",
+      "on_marketplace_remove_loaded",
+      "on_marketplace_upgrade_loaded",
+      "on_plugin_detail_loaded",
+      "on_plugin_install_loaded",
+      "on_plugin_uninstall_loaded",
+      "on_plugins_loaded"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

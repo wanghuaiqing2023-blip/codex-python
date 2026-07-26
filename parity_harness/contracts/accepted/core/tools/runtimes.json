@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-core.tools.runtimes",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::runtimes",
+    "source": "codex/codex-rs/core/src/tools/runtimes/mod.rs",
+    "anchors": [
+      "build_sandbox_command",
+      "disable_powershell_profile_for_elevated_windows_sandbox",
+      "exec_env_for_sandbox_permissions",
+      "maybe_wrap_shell_lc_with_snapshot",
+      "build_codex_proxy_git_ssh_command_exports",
+      "build_override_exports",
+      "build_override_exports_for_keys",
+      "build_proxy_env_exports",
+      "is_valid_shell_variable_name",
+      "join_shell_blocks",
+      "shell_single_quote"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/runtimes/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/runtimes/__init__.py"
+    ],
+    "anchors": [
+      "build_sandbox_command",
+      "disable_powershell_profile_for_elevated_windows_sandbox",
+      "exec_env_for_sandbox_permissions",
+      "maybe_wrap_shell_lc_with_snapshot",
+      "build_codex_proxy_git_ssh_command_exports",
+      "build_override_exports",
+      "build_override_exports_for_keys",
+      "build_proxy_env_exports",
+      "is_valid_shell_variable_name",
+      "join_shell_blocks",
+      "shell_single_quote"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

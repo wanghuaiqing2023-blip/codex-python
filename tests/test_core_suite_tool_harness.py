@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pycodex.apply_patch import ApplyPatchHandler
+from pycodex.core.tools.handlers.apply_patch import ApplyPatchHandler
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload

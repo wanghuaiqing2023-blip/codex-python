@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "crate",
+    "source": "codex/codex-rs/tui/src/lib.rs",
+    "anchors": [
+      "AppServerTarget",
+      "remote_addr_supports_auth_token",
+      "resolve_remote_addr",
+      "run_main",
+      "uses_remote_workspace",
+      "TUI_LOG_FILE_NAME",
+      "app_server_target_for_launch",
+      "config_cwd_for_app_server_target",
+      "latest_session_cwd_filter",
+      "remote_addr_has_explicit_port",
+      "thread_params_mode",
+      "websocket_url_supports_auth_token"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/__init__.py"
+    ],
+    "anchors": [
+      "AppServerTarget",
+      "remote_addr_supports_auth_token",
+      "resolve_remote_addr",
+      "run_main",
+      "uses_remote_workspace",
+      "TUI_LOG_FILE_NAME",
+      "app_server_target_for_launch",
+      "config_cwd_for_app_server_target",
+      "latest_session_cwd_filter",
+      "remote_addr_has_explicit_port",
+      "thread_params_mode",
+      "websocket_url_supports_auth_token"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

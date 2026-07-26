@@ -1,19 +1,21 @@
 import asyncio
 import json
 
-from pycodex.network_proxy import (
+from pycodex.core.config.network_proxy_spec import StaticNetworkProxyReloader
+from pycodex.network_proxy.config import (
+    NetworkMode,
+    NetworkProxyConfig,
+)
+from pycodex.network_proxy.runtime import (
     BlockedRequest,
     BlockedRequestArgs,
     ConfigState,
     MAX_BLOCKED_EVENTS,
     NETWORK_POLICY_VIOLATION_PREFIX,
-    NetworkMode,
-    NetworkProxyConfig,
-    NetworkProxyConstraints,
     NetworkProxyState,
-    StaticNetworkProxyReloader,
     blocked_request_violation_log_line,
 )
+from pycodex.network_proxy.state import NetworkProxyConstraints
 
 
 def state_for_blocked() -> NetworkProxyState:

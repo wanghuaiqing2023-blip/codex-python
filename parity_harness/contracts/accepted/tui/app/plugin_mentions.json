@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.app.plugin_mentions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::plugin_mentions",
+    "source": "codex/codex-rs/tui/src/app/plugin_mentions.rs",
+    "anchors": [
+      "fetch_plugin_mentions",
+      "plugin_is_eligible_for_mentions",
+      "plugin_mention_description",
+      "plugin_mention_display_name",
+      "plugin_mention_from_summary",
+      "plugin_mentions_from_list_response"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/plugin_mentions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/plugin_mentions.py"
+    ],
+    "anchors": [
+      "fetch_plugin_mentions",
+      "plugin_is_eligible_for_mentions",
+      "plugin_mention_description",
+      "plugin_mention_display_name",
+      "plugin_mention_from_summary",
+      "plugin_mentions_from_list_response"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

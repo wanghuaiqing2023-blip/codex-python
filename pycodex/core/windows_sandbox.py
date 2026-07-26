@@ -199,7 +199,7 @@ def run_elevated_setup(
 ) -> object:
     from pycodex.windows_sandbox.resolved_permissions import ResolvedWindowsSandboxPermissions
     from pycodex.windows_sandbox.setup import build_elevation_payload
-    from pycodex.windows_sandbox.setup_orchestrator import is_elevated, run_setup_helper
+    from pycodex.windows_sandbox.setup import is_elevated, run_setup_exe
 
     permissions = ResolvedWindowsSandboxPermissions.try_from_permission_profile_for_cwd(
         permission_profile, permission_profile_cwd
@@ -212,7 +212,11 @@ def run_elevated_setup(
         proxy_enforced=False,
         refresh_only=False,
     )
-    run_setup_helper(payload, elevate=not is_elevated())
+    run_setup_exe(
+        payload,
+        needs_elevation=not is_elevated(),
+        codex_home=payload.codex_home,
+    )
     return None
 
 
@@ -251,7 +255,7 @@ def run_setup_refresh_with_extra_read_roots(
         raise TypeError("env_map must be a mapping")
     from pycodex.windows_sandbox.resolved_permissions import ResolvedWindowsSandboxPermissions
     from pycodex.windows_sandbox.setup import build_elevation_payload, gather_read_roots
-    from pycodex.windows_sandbox.setup_orchestrator import run_setup_helper
+    from pycodex.windows_sandbox.setup import run_setup_exe
 
     permissions = ResolvedWindowsSandboxPermissions.try_from_permission_profile_for_cwd(
         permission_profile, permission_profile_cwd
@@ -267,7 +271,11 @@ def run_setup_refresh_with_extra_read_roots(
         write_roots_override=(),
         refresh_only=True,
     )
-    run_setup_helper(payload, elevate=False)
+    run_setup_exe(
+        payload,
+        needs_elevation=False,
+        codex_home=payload.codex_home,
+    )
     return None
 
 

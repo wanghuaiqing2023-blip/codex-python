@@ -2,9 +2,9 @@ import unittest
 
 from pycodex.core.context import (
     AvailablePluginsInstructions,
-    PluginCapabilitySummary,
     is_standard_contextual_user_text,
 )
+from pycodex.plugin import PluginCapabilitySummary
 from pycodex.protocol import (
     ContentItem,
     PLUGINS_INSTRUCTIONS_CLOSE_TAG,

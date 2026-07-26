@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-network-proxy.config",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "config",
+    "source": "codex/codex-rs/network-proxy/src/config.rs",
+    "anchors": [
+      "NetworkDomainPermission",
+      "NetworkMode",
+      "NetworkProxyConfig",
+      "RuntimeConfig",
+      "allow_unix_sockets",
+      "allowed_domains",
+      "allows_method",
+      "denied_domains",
+      "host_and_port_from_network_addr",
+      "resolve_runtime",
+      "set_allow_unix_sockets",
+      "set_allowed_domains"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/config.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/config.py"
+    ],
+    "anchors": [
+      "NetworkDomainPermission",
+      "NetworkMode",
+      "NetworkProxyConfig",
+      "RuntimeConfig",
+      "allow_unix_sockets",
+      "allowed_domains",
+      "allows_method",
+      "denied_domains",
+      "host_and_port_from_network_addr",
+      "resolve_runtime",
+      "set_allow_unix_sockets",
+      "set_allowed_domains"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

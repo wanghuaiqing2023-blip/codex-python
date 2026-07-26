@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-core.tools.handlers.tool_search",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "tools::handlers::tool_search",
+    "source": "codex/codex-rs/core/src/tools/handlers/tool_search.rs",
+    "anchors": [
+      "ToolSearchHandler",
+      "handle",
+      "search",
+      "search_output_tools",
+      "spec",
+      "supports_parallel_tool_calls",
+      "tool_name"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/tools/handlers/tool_search.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/tools/handlers/tool_search.py"
+    ],
+    "anchors": [
+      "ToolSearchHandler",
+      "handle",
+      "search",
+      "search_output_tools",
+      "spec",
+      "supports_parallel_tool_calls",
+      "tool_name"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

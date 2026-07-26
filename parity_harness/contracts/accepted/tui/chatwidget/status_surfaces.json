@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.status_surfaces",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::status_surfaces",
+    "source": "codex/codex-rs/tui/src/chatwidget/status_surfaces.rs",
+    "anchors": [
+      "CachedProjectRootName",
+      "DEFAULT_TERMINAL_TITLE_ITEMS",
+      "TERMINAL_TITLE_SPINNER_FRAMES",
+      "TERMINAL_TITLE_SPINNER_INTERVAL",
+      "run_state_status_text",
+      "truncate_terminal_title_part",
+      "StatusSurfaceSelections",
+      "TERMINAL_TITLE_ACTION_REQUIRED_INTERVAL",
+      "TERMINAL_TITLE_ACTION_REQUIRED_PREFIX",
+      "TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN",
+      "action_required_terminal_title_prefix_at",
+      "approval_mode_display"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/status_surfaces.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/status_surfaces.py"
+    ],
+    "anchors": [
+      "CachedProjectRootName",
+      "DEFAULT_TERMINAL_TITLE_ITEMS",
+      "TERMINAL_TITLE_SPINNER_FRAMES",
+      "TERMINAL_TITLE_SPINNER_INTERVAL",
+      "run_state_status_text",
+      "truncate_terminal_title_part",
+      "StatusSurfaceSelections",
+      "TERMINAL_TITLE_ACTION_REQUIRED_INTERVAL",
+      "TERMINAL_TITLE_ACTION_REQUIRED_PREFIX",
+      "TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN",
+      "action_required_terminal_title_prefix_at",
+      "approval_mode_display"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

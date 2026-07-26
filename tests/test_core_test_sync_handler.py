@@ -9,13 +9,12 @@ from pycodex.core import (
 from pycodex.core.tools.handlers.test_sync import (
     BarrierArgs,
     DEFAULT_TEST_SYNC_TIMEOUT_MS,
-    TEST_SYNC_TOOL_NAME,
     TestSyncArgs,
     TestSyncHandler,
-    create_test_sync_tool,
     parse_test_sync_arguments,
     wait_on_barrier,
 )
+from pycodex.core.tools.handlers.test_sync_spec import TEST_SYNC_TOOL_NAME, create_test_sync_tool
 from pycodex.protocol import ToolName
 
 

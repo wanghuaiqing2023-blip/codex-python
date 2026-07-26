@@ -1,0 +1,11 @@
+{
+  "scope": "experimental-api-macros",
+  "rust_root": "codex/codex-rs/codex-experimental-api-macros",
+  "python_root": "pycodex/codex_experimental_api_macros",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

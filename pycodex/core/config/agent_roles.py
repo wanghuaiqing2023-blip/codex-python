@@ -1,15 +1,13 @@
 ﻿"""Agent role helpers ported from Codex core.
 
-This module covers the dependency-free pieces of
-``core/src/config/agent_roles.rs`` and ``core/src/agent/role.rs``: parsing role
-files, normalizing role metadata, exposing built-in roles, and rendering the
-spawn-agent tool description.
+This module covers ``core/src/config/agent_roles.rs``: parsing role files and
+normalizing role metadata. Runtime role selection and spawn-tool rendering are
+owned by ``core::agent::role``.
 """
 
 from __future__ import annotations
 
 import os
-from collections import OrderedDict
 from collections.abc import Iterable, Mapping, MutableSequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,50 +16,7 @@ from typing import Any
 from pycodex.config import toml_compat as _toml
 
 
-DEFAULT_ROLE_NAME = "default"
-AGENT_TYPE_UNAVAILABLE_ERROR = "agent type is currently not available"
 UPSTREAM_AGENT_ROLES = "codex/codex-rs/core/src/config/agent_roles.rs"
-UPSTREAM_AGENT_ROLE_SPEC = "codex/codex-rs/core/src/agent/role.rs"
-
-EXPLORER_TOML = ""
-AWAITER_TOML = """background_terminal_max_timeout = 3600000
-model_reasoning_effort = "low"
-developer_instructions=\"\"\"You are an awaiter.
-Your role is to await the completion of a specific command or task and report its status only when it is finished.
-
-Behavior rules:
-
-1. When given a command or task identifier, you must:
-   - Execute or await it using the appropriate tool
-   - Continue awaiting until the task reaches a terminal state.
-
-2. You must NOT:
-   - Modify the task.
-   - Interpret or optimize the task.
-   - Perform unrelated actions.
-   - Stop awaiting unless explicitly instructed.
-
-3. Awaiting behavior:
-   - If the task is still running, continue polling using tool calls.
-   - Use repeated tool calls if necessary.
-   - Do not hallucinate completion.
-   - Use long timeouts when awaiting for something. If you need multiple awaits, increase the timeouts/yield times exponentially.
-
-4. If asked for status:
-   - Return the current known status.
-   - Immediately resume awaiting afterward.
-
-5. Termination:
-   - Only exit awaiting when:
-     - The task completes successfully, OR
-     - The task fails, OR
-     - You receive an explicit stop instruction.
-
-You must behave deterministically and conservatively.
-\"\"\"
-"""
-
-
 class AgentRoleError(ValueError):
     """Raised when an agent role declaration is malformed."""
 
@@ -512,174 +467,6 @@ def push_agent_role_warning(startup_warnings: MutableSequence[str], err: BaseExc
     startup_warnings.append(f"Ignoring malformed agent role definition: {err}")
 
 
-def built_in_agent_role_configs() -> dict[str, AgentRoleConfig]:
-    """Return built-in role declarations in upstream ``BTreeMap`` order."""
-
-    roles = {
-        DEFAULT_ROLE_NAME: AgentRoleConfig(description="Default agent."),
-        "explorer": AgentRoleConfig(
-            description="""Use `explorer` for specific codebase questions.
-Explorers are fast and authoritative.
-They must be used to ask specific, well-scoped questions on the codebase.
-Rules:
-- In order to avoid redundant work, you should avoid exploring the same problem that explorers have already covered. Typically, you should trust the explorer results without additional verification. You are still allowed to inspect the code yourself to gain the needed context!
-- You are encouraged to spawn up multiple explorers in parallel when you have multiple distinct questions to ask about the codebase that can be answered independently. This allows you to get more information faster without waiting for one question to finish before asking the next. While waiting for the explorer results, you can continue working on other local tasks that do not depend on those results. This parallelism is a key advantage of delegation, so use it whenever you have multiple questions to ask.
-- Reuse existing explorers for related questions.""",
-            config_file=Path("explorer.toml"),
-        ),
-        "worker": AgentRoleConfig(
-            description="""Use for execution and production work.
-Typical tasks:
-- Implement part of a feature
-- Fix tests or bugs
-- Split large refactors into independent chunks
-Rules:
-- Explicitly assign **ownership** of the task (files / responsibility). When the subtask involves code changes, you should clearly specify which files or modules the worker is responsible for. This helps avoid merge conflicts and ensures accountability. For example, you can say "Worker 1 is responsible for updating the authentication module, while Worker 2 will handle the database layer." By defining clear ownership, you can delegate more effectively and reduce coordination overhead.
-- Always tell workers they are **not alone in the codebase**, and they should not revert the edits made by others, and they should adjust their implementation to accommodate the changes made by others. This is important because there may be multiple workers making changes in parallel, and they need to be aware of each other's work to avoid conflicts and ensure a cohesive final product.""",
-        ),
-    }
-    return OrderedDict((name, roles[name]) for name in sorted(roles))
-
-
-def built_in_agent_role_config_file_contents(path: str | Path) -> str | None:
-    """Resolve embedded built-in role config-file contents."""
-
-    path_text = Path(path).as_posix()
-    if path_text == "explorer.toml":
-        return EXPLORER_TOML
-    if path_text == "awaiter.toml":
-        return AWAITER_TOML
-    return None
-
-
-def resolve_role_config(
-    user_defined_agent_roles: Mapping[str, AgentRoleConfig],
-    role_name: str,
-) -> AgentRoleConfig | None:
-    """Resolve a user-defined role before falling back to built-ins."""
-
-    if not isinstance(user_defined_agent_roles, Mapping):
-        raise TypeError("user_defined_agent_roles must be a mapping")
-    if not isinstance(role_name, str):
-        raise TypeError("role_name must be a string")
-    return user_defined_agent_roles.get(role_name) or built_in_agent_role_configs().get(role_name)
-
-
-def build_spawn_agent_tool_description(user_defined_agent_roles: Mapping[str, AgentRoleConfig]) -> str:
-    """Build the spawn-agent ``agent_type`` description text."""
-
-    if not isinstance(user_defined_agent_roles, Mapping):
-        raise TypeError("user_defined_agent_roles must be a mapping")
-    formatted_roles: list[str] = []
-    seen: set[str] = set()
-    for name, declaration in sorted(user_defined_agent_roles.items()):
-        if not isinstance(name, str):
-            raise TypeError("agent role names must be strings")
-        if not isinstance(declaration, AgentRoleConfig):
-            raise TypeError("agent role declarations must be AgentRoleConfig values")
-        if name not in seen:
-            seen.add(name)
-            formatted_roles.append(format_role_for_spawn_tool(name, declaration))
-    for name, declaration in built_in_agent_role_configs().items():
-        if name not in seen:
-            seen.add(name)
-            formatted_roles.append(format_role_for_spawn_tool(name, declaration))
-
-    return (
-        f"Optional type name for the new agent. If omitted, `{DEFAULT_ROLE_NAME}` is used.\n"
-        "Available roles:\n"
-        + "\n".join(formatted_roles)
-    )
-
-
-def format_role_for_spawn_tool(name: str, declaration: AgentRoleConfig) -> str:
-    """Format a single role declaration for the spawn-agent tool spec."""
-
-    if not isinstance(name, str):
-        raise TypeError("name must be a string")
-    if not isinstance(declaration, AgentRoleConfig):
-        raise TypeError("declaration must be an AgentRoleConfig")
-    if declaration.description is None:
-        return f"{name}: no description"
-
-    locked_settings_note = locked_settings_note_for_role(declaration)
-    return f"{name}: {{\n{declaration.description}{locked_settings_note}\n}}"
-
-
-def locked_settings_note_for_role(declaration: AgentRoleConfig) -> str:
-    """Return the upstream note for role config fields that lock spawn settings."""
-
-    if declaration.config_file is None:
-        return ""
-
-    contents = built_in_agent_role_config_file_contents(declaration.config_file)
-    if contents is None:
-        try:
-            contents = Path(declaration.config_file).read_text(encoding="utf-8")
-        except OSError:
-            return ""
-    if not contents.strip():
-        return ""
-
-    try:
-        role_toml = _toml.loads(contents)
-    except _toml.TOMLDecodeError:
-        return ""
-
-    model = _optional_str(role_toml.get("model"))
-    reasoning_effort = _optional_str(role_toml.get("model_reasoning_effort"))
-    service_tier = _optional_str(role_toml.get("service_tier"))
-
-    if model is not None and reasoning_effort is not None:
-        model_and_reasoning_note = (
-            f"\n- This role's model is set to `{model}` and its reasoning effort is set to "
-            f"`{reasoning_effort}`. These settings cannot be changed."
-        )
-    elif model is not None:
-        model_and_reasoning_note = f"\n- This role's model is set to `{model}` and cannot be changed."
-    elif reasoning_effort is not None:
-        model_and_reasoning_note = (
-            f"\n- This role's reasoning effort is set to `{reasoning_effort}` and cannot be changed."
-        )
-    else:
-        model_and_reasoning_note = ""
-
-    service_tier_note = (
-        f"\n- This role's service tier is set to `{service_tier}`. If it is supported by the resolved model, "
-        "it takes precedence over a valid spawn request service tier."
-        if service_tier is not None
-        else ""
-    )
-    return model_and_reasoning_note + service_tier_note
-
-
-def format_agent_nickname(name: str, nickname_reset_count: int) -> str:
-    """Format a nickname after the available name pool has been reset."""
-
-    if not isinstance(name, str):
-        raise TypeError("name must be a string")
-    if isinstance(nickname_reset_count, bool) or not isinstance(nickname_reset_count, int):
-        raise TypeError("nickname_reset_count must be an integer")
-    if nickname_reset_count == 0:
-        return name
-    value = nickname_reset_count + 1
-    if value % 100 in (11, 12, 13):
-        suffix = "th"
-    elif value % 10 == 1:
-        suffix = "st"
-    elif value % 10 == 2:
-        suffix = "nd"
-    elif value % 10 == 3:
-        suffix = "rd"
-    else:
-        suffix = "th"
-    return f"{name} the {value}{suffix}"
-
-
-def _optional_str(value: Any) -> str | None:
-    return value if isinstance(value, str) else None
-
-
 def _metadata_str(data: Mapping[str, Any], key: str, field_label: str) -> str | None:
     if key not in data:
         return None
@@ -713,31 +500,20 @@ def _layer_config_folder(layer: Any) -> Path | None:
 
 
 __all__ = [
-    "AGENT_TYPE_UNAVAILABLE_ERROR",
-    "AWAITER_TOML",
-    "DEFAULT_ROLE_NAME",
-    "EXPLORER_TOML",
     "AgentRoleConfig",
     "AgentRoleError",
     "ResolvedAgentRoleFile",
     "agent_role_config_from_mapping",
-    "build_spawn_agent_tool_description",
-    "built_in_agent_role_config_file_contents",
-    "built_in_agent_role_configs",
     "collect_agent_role_files",
     "discover_agent_roles_in_dir",
-    "format_agent_nickname",
-    "format_role_for_spawn_tool",
     "load_agent_roles_from_config",
     "load_agent_roles_from_layers",
-    "locked_settings_note_for_role",
     "merge_missing_role_fields",
     "normalize_agent_role_description",
     "normalize_agent_role_nickname_candidates",
     "parse_agent_role_file_contents",
     "push_agent_role_warning",
     "read_declared_role_from_mapping",
-    "resolve_role_config",
     "validate_agent_role_file_developer_instructions",
     "validate_required_agent_role_description",
 ]

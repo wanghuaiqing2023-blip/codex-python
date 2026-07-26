@@ -1,0 +1,15 @@
+{
+  "contract_id": "codex-core-skills.invocation_utils", "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs", "crate": "codex-core-skills",
+    "module": "invocation_utils", "source": "codex/codex-rs/core-skills/src/invocation_utils.rs",
+    "anchors": ["build_implicit_skill_path_indexes", "detect_implicit_skill_invocation_for_command", "SCRIPT_EXTENSIONS", "canonicalize_if_exists", "command_basename", "command_reads_file", "detect_skill_doc_read", "detect_skill_script_run", "script_run_token", "tokenize_command"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_skills/invocation_utils.py", "layout": "module-file",
+    "implementation_files": ["pycodex/core_skills/invocation_utils.py"],
+    "anchors": ["build_implicit_skill_path_indexes", "detect_implicit_skill_invocation_for_command", "SCRIPT_EXTENSIONS", "canonicalize_if_exists", "command_basename", "command_reads_file", "detect_skill_doc_read", "detect_skill_script_run", "script_run_token", "tokenize_command"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

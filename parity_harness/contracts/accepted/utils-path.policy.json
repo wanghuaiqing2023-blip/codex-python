@@ -1,0 +1,13 @@
+{
+  "scope": "utils-path",
+  "rust_root": "codex/codex-rs/utils/path-utils",
+  "python_root": "pycodex/utils/path_utils",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::env"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

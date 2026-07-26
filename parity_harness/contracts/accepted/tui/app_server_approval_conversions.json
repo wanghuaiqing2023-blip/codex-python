@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-tui.app_server_approval_conversions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app_server_approval_conversions",
+    "source": "codex/codex-rs/tui/src/app_server_approval_conversions.rs",
+    "anchors": [
+      "file_update_changes_to_display",
+      "granted_permission_profile_from_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app_server_approval_conversions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app_server_approval_conversions.py"
+    ],
+    "anchors": [
+      "file_update_changes_to_display",
+      "granted_permission_profile_from_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

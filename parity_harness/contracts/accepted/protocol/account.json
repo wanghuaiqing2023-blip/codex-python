@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-protocol.account",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "account",
+    "source": "codex/codex-rs/protocol/src/account.rs",
+    "anchors": [
+      "PlanType",
+      "ProviderAccount",
+      "is_business_like",
+      "is_team_like",
+      "is_workspace_account"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/account.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/account.py"
+    ],
+    "anchors": [
+      "PlanType",
+      "ProviderAccount",
+      "is_business_like",
+      "is_team_like",
+      "is_workspace_account"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_auth_account.py"
+  ]
+}

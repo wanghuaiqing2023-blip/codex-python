@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-sandboxing.landlock",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-sandboxing",
+    "module": "landlock",
+    "source": "codex/codex-rs/sandboxing/src/landlock.rs",
+    "anchors": [
+      "CODEX_LINUX_SANDBOX_ARG0",
+      "allow_network_for_proxy",
+      "create_linux_sandbox_command_args_for_permission_profile",
+      "create_linux_sandbox_command_args"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/sandboxing/landlock.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/sandboxing/landlock.py"
+    ],
+    "anchors": [
+      "CODEX_LINUX_SANDBOX_ARG0",
+      "allow_network_for_proxy",
+      "create_linux_sandbox_command_args_for_permission_profile",
+      "create_linux_sandbox_command_args"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-core.plugins",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "plugins",
+    "source": "codex/codex-rs/core/src/plugins/mod.rs",
+    "anchors": [
+      "PluginCapabilitySummary",
+      "build_connector_slug_counts",
+      "build_plugin_injections",
+      "build_skill_name_counts",
+      "collect_explicit_app_ids",
+      "collect_explicit_plugin_mentions",
+      "collect_tool_mentions_from_messages",
+      "list_tool_suggest_discoverable_plugins",
+      "render_explicit_plugin_instructions"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/plugins/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/plugins/__init__.py"
+    ],
+    "anchors": [
+      "PluginCapabilitySummary",
+      "build_connector_slug_counts",
+      "build_plugin_injections",
+      "build_skill_name_counts",
+      "collect_explicit_app_ids",
+      "collect_explicit_plugin_mentions",
+      "collect_tool_mentions_from_messages",
+      "list_tool_suggest_discoverable_plugins",
+      "render_explicit_plugin_instructions"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

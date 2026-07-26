@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-core.context.environment_context",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::environment_context",
+    "source": "codex/codex-rs/core/src/context/environment_context.rs",
+    "anchors": [
+      "EnvironmentContextEnvironment",
+      "EnvironmentContextEnvironments",
+      "NetworkContext",
+      "equals_except_shell",
+      "legacy",
+      "network_from_turn_context_item",
+      "render"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/environment_context.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/environment_context.py"
+    ],
+    "anchors": [
+      "EnvironmentContextEnvironment",
+      "EnvironmentContextEnvironments",
+      "NetworkContext",
+      "equals_except_shell",
+      "legacy",
+      "network_from_turn_context_item",
+      "render"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

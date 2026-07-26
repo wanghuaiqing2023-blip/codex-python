@@ -1,0 +1,240 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "models-manager",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 8,
+    "python_files": 8,
+    "modules_with_candidates": 8,
+    "modules_with_anchors": 8
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "crate",
+        "source": "codex/codex-rs/models-manager/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/__init__.py",
+          "anchor_candidates": [
+            "AuthMode",
+            "ModelsManagerConfig",
+            "bundled_models_response",
+            "client_version_to_whole"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "cache",
+        "source": "codex/codex-rs/models-manager/src/cache.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/cache.py",
+          "anchor_candidates": [
+            "ModelsCache",
+            "ModelsCacheManager",
+            "load_fresh",
+            "manipulate_cache_for_test",
+            "mutate_cache_for_test",
+            "persist_cache",
+            "renew_cache_ttl",
+            "set_ttl",
+            "is_fresh",
+            "load",
+            "save_internal"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "collaboration_mode_presets",
+        "source": "codex/codex-rs/models-manager/src/collaboration_mode_presets.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/collaboration_mode_presets.py",
+          "anchor_candidates": [
+            "builtin_collaboration_mode_presets",
+            "KNOWN_MODE_NAMES_TEMPLATE_KEY",
+            "default_mode_instructions",
+            "format_mode_names"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "config",
+        "source": "codex/codex-rs/models-manager/src/config.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/config.py",
+          "anchor_candidates": [
+            "ModelsManagerConfig"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "manager",
+        "source": "codex/codex-rs/models-manager/src/manager.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/manager.py",
+          "anchor_candidates": [
+            "ModelsEndpointClient",
+            "OpenAiModelsManager",
+            "RefreshStrategy",
+            "StaticModelsManager",
+            "construct_model_info_from_candidates",
+            "DEFAULT_MODEL_CACHE_TTL",
+            "MODEL_CACHE_FILE",
+            "apply_remote_models",
+            "build_available_models",
+            "default_model_from_available",
+            "fetch_and_update_models",
+            "find_model_by_longest_prefix"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "model_info",
+        "source": "codex/codex-rs/models-manager/src/model_info.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/model_info.py",
+          "anchor_candidates": [
+            "BASE_INSTRUCTIONS",
+            "model_info_from_slug",
+            "with_config_overrides",
+            "DEFAULT_PERSONALITY_HEADER",
+            "LOCAL_FRIENDLY_TEMPLATE",
+            "LOCAL_PRAGMATIC_TEMPLATE",
+            "PERSONALITY_PLACEHOLDER",
+            "local_personality_messages_for_slug"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "model_presets",
+        "source": "codex/codex-rs/models-manager/src/model_presets.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/model_presets.py",
+          "anchor_candidates": [
+            "HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG",
+            "HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-models-manager",
+        "module": "test_support",
+        "source": "codex/codex-rs/models-manager/src/test_support.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/models_manager/test_support.py",
+          "anchor_candidates": [
+            "construct_model_info_offline_for_tests",
+            "get_model_offline_for_tests"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

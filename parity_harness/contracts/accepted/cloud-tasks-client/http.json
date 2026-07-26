@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-cloud-tasks-client.http",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cloud-tasks-client",
+    "module": "http",
+    "source": "codex/codex-rs/cloud-tasks-client/src/http.rs",
+    "anchors": [
+      "HttpClient",
+      "diff",
+      "messages",
+      "new",
+      "summary",
+      "with_auth_provider",
+      "with_chatgpt_account_id",
+      "with_user_agent",
+      "apply_task",
+      "apply_task_preflight",
+      "attempt_status_from_str",
+      "attempt_total_from_status_display"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cloud_tasks_client/http.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cloud_tasks_client/http.py"
+    ],
+    "anchors": [
+      "HttpClient",
+      "diff",
+      "messages",
+      "new",
+      "summary",
+      "with_auth_provider",
+      "with_chatgpt_account_id",
+      "with_user_agent",
+      "apply_task",
+      "apply_task_preflight",
+      "attempt_status_from_str",
+      "attempt_total_from_status_display"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

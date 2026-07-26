@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.transcript_reflow",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "transcript_reflow",
+    "source": "codex/codex-rs/tui/src/transcript_reflow.rs",
+    "anchors": [
+      "TRANSCRIPT_REFLOW_DEBOUNCE",
+      "TranscriptReflowState",
+      "TranscriptWidthChange",
+      "clear",
+      "clear_pending_reflow",
+      "clear_stream_flags",
+      "has_pending_reflow",
+      "mark_ran_during_stream",
+      "mark_reflowed_width",
+      "mark_resize_requested_during_stream",
+      "note_width",
+      "pending_is_due"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/transcript_reflow.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/transcript_reflow.py"
+    ],
+    "anchors": [
+      "TRANSCRIPT_REFLOW_DEBOUNCE",
+      "TranscriptReflowState",
+      "TranscriptWidthChange",
+      "clear",
+      "clear_pending_reflow",
+      "clear_stream_flags",
+      "has_pending_reflow",
+      "mark_ran_during_stream",
+      "mark_reflowed_width",
+      "mark_resize_requested_during_stream",
+      "note_width",
+      "pending_is_due"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

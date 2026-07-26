@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.clipboard_copy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "clipboard_copy",
+    "source": "codex/codex-rs/tui/src/clipboard_copy.rs",
+    "anchors": [
+      "ClipboardLease",
+      "copy_to_clipboard",
+      "CopyEnvironment",
+      "OSC52_MAX_RAW_BYTES",
+      "STDERR_SUPPRESSION_MUTEX",
+      "SuppressStderr",
+      "arboard_copy",
+      "copy_to_clipboard_with",
+      "drop",
+      "is_ssh_session",
+      "is_tmux_session",
+      "is_wsl_session"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/clipboard_copy.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/clipboard_copy.py"
+    ],
+    "anchors": [
+      "ClipboardLease",
+      "copy_to_clipboard",
+      "CopyEnvironment",
+      "OSC52_MAX_RAW_BYTES",
+      "STDERR_SUPPRESSION_MUTEX",
+      "SuppressStderr",
+      "arboard_copy",
+      "copy_to_clipboard_with",
+      "drop",
+      "is_ssh_session",
+      "is_tmux_session",
+      "is_wsl_session"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

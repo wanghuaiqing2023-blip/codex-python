@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-uds.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-uds",
+    "module": "crate",
+    "source": "codex/codex-rs/uds/src/lib.rs",
+    "anchors": [
+      "UnixListener",
+      "UnixStream",
+      "accept",
+      "bind",
+      "connect",
+      "is_stale_socket_path",
+      "prepare_private_socket_directory",
+      "SOCKET_DIR_MODE",
+      "SOCKET_DIR_PERMISSION_BITS",
+      "read",
+      "write"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/uds/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/uds/__init__.py"
+    ],
+    "anchors": [
+      "UnixListener",
+      "UnixStream",
+      "accept",
+      "bind",
+      "connect",
+      "is_stale_socket_path",
+      "prepare_private_socket_directory",
+      "SOCKET_DIR_MODE",
+      "SOCKET_DIR_PERMISSION_BITS",
+      "read",
+      "write"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-tui.status",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "status",
+    "source": "codex/codex-rs/tui/src/status/mod.rs",
+    "anchors": [
+      "module:account",
+      "module:card",
+      "module:format",
+      "module:helpers",
+      "module:rate_limits",
+      "module:remote_connection"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/status/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/tui/status/__init__.py"
+    ],
+    "anchors": [
+      "module:account",
+      "module:card",
+      "module:format",
+      "module:helpers",
+      "module:rate_limits",
+      "module:remote_connection"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

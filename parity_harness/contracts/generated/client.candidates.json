@@ -1,0 +1,356 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "client",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 12,
+    "python_files": 11,
+    "modules_with_candidates": 11,
+    "modules_with_anchors": 11
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "bin::custom_ca_probe",
+        "source": "codex/codex-rs/codex-client/src/bin/custom_ca_probe.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "crate",
+        "source": "codex/codex-rs/codex-client/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/__init__.py",
+          "anchor_candidates": [
+            "BuildCustomCaTransportError",
+            "ByteStream",
+            "CodexHttpClient",
+            "CodexRequestBuilder",
+            "HttpTransport",
+            "PreparedRequestBody",
+            "Request",
+            "RequestBody",
+            "RequestCompression",
+            "RequestTelemetry",
+            "ReqwestTransport",
+            "Response"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "chatgpt_cloudflare_cookies",
+        "source": "codex/codex-rs/codex-client/src/chatgpt_cloudflare_cookies.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/chatgpt_cloudflare_cookies.py",
+          "anchor_candidates": [
+            "with_chatgpt_cloudflare_cookie_store",
+            "ChatGptCloudflareCookieStore",
+            "SHARED_CHATGPT_CLOUDFLARE_COOKIE_STORE",
+            "cookies",
+            "is_allowed_cloudflare_cookie_name",
+            "is_allowed_cloudflare_set_cookie_header",
+            "is_chatgpt_cookie_url",
+            "only_cloudflare_cookies",
+            "set_cookie_name",
+            "set_cookies"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "chatgpt_hosts",
+        "source": "codex/codex-rs/codex-client/src/chatgpt_hosts.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/chatgpt_hosts.py",
+          "anchor_candidates": [
+            "is_allowed_chatgpt_host"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "custom_ca",
+        "source": "codex/codex-rs/codex-client/src/custom_ca.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/custom_ca.py",
+          "anchor_candidates": [
+            "BuildCustomCaTransportError",
+            "CODEX_CA_CERT_ENV",
+            "SSL_CERT_FILE_ENV",
+            "build_reqwest_client_for_subprocess_tests",
+            "build_reqwest_client_with_custom_ca",
+            "maybe_build_rustls_client_config_with_custom_ca",
+            "CA_CERT_HINT",
+            "ConfiguredCaBundle",
+            "EnvSource",
+            "NormalizedPem",
+            "ProcessEnv",
+            "build_reqwest_client_with_env"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "default_client",
+        "source": "codex/codex-rs/codex-client/src/default_client.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/default_client.py",
+          "anchor_candidates": [
+            "CodexHttpClient",
+            "CodexRequestBuilder",
+            "bearer_auth",
+            "body",
+            "get",
+            "header",
+            "headers",
+            "json",
+            "post",
+            "request",
+            "send",
+            "timeout"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "error",
+        "source": "codex/codex-rs/codex-client/src/error.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/error.py",
+          "anchor_candidates": [
+            "StreamError",
+            "TransportError"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "request",
+        "source": "codex/codex-rs/codex-client/src/request.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/request.py",
+          "anchor_candidates": [
+            "PreparedRequestBody",
+            "Request",
+            "RequestBody",
+            "RequestCompression",
+            "Response",
+            "body_bytes",
+            "json",
+            "new",
+            "prepare_body_for_send",
+            "with_compression",
+            "with_json",
+            "with_raw_body"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "retry",
+        "source": "codex/codex-rs/codex-client/src/retry.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/retry.py",
+          "anchor_candidates": [
+            "RetryOn",
+            "RetryPolicy",
+            "backoff",
+            "run_with_retry",
+            "should_retry"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "sse",
+        "source": "codex/codex-rs/codex-client/src/sse.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/sse.py",
+          "anchor_candidates": [
+            "sse_stream"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "telemetry",
+        "source": "codex/codex-rs/codex-client/src/telemetry.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/telemetry.py",
+          "anchor_candidates": [
+            "RequestTelemetry",
+            "on_request"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-client",
+        "module": "transport",
+        "source": "codex/codex-rs/codex-client/src/transport.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_client/transport.py",
+          "anchor_candidates": [
+            "ByteStream",
+            "HttpTransport",
+            "ReqwestTransport",
+            "StreamResponse",
+            "build",
+            "execute",
+            "map_error",
+            "request_body_for_trace",
+            "stream"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

@@ -12,8 +12,8 @@ from typing import Any
 from pycodex.core.context import (
     AppsInstructions,
     AvailablePluginsInstructions,
-    PluginCapabilitySummary,
 )
+from pycodex.plugin import PluginCapabilitySummary
 from pycodex.tools.tool_discovery import AppInfo
 
 JsonValue = Any

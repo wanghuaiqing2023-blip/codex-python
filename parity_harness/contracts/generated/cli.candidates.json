@@ -1,0 +1,703 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "cli",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 29,
+    "python_files": 26,
+    "modules_with_candidates": 21,
+    "modules_with_anchors": 21
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex",
+        "source": "codex/codex-rs/cli/src/main.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::app_cmd",
+        "source": "codex/codex-rs/cli/src/app_cmd.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/app_cmd.py",
+          "anchor_candidates": [
+            "AppCommand"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::desktop_app",
+        "source": "codex/codex-rs/cli/src/desktop_app/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::desktop_app::mac",
+        "source": "codex/codex-rs/cli/src/desktop_app/mac.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::desktop_app::windows",
+        "source": "codex/codex-rs/cli/src/desktop_app/windows.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor",
+        "source": "codex/codex-rs/cli/src/doctor.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/__init__.py",
+          "anchor_candidates": [
+            "LOCALE_ENV_VARS",
+            "NpmRootCheck",
+            "OPENAI_BETA_HEADER",
+            "PROXY_ENV_VARS",
+            "RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE",
+            "ReachabilityEndpoint",
+            "ReachabilityPlan",
+            "TerminalCheckInputs",
+            "codex_path_entries",
+            "compare_npm_package_roots",
+            "default_reachability_plan",
+            "describe_install_context"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::background",
+        "source": "codex/codex-rs/cli/src/doctor/background.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/background.py",
+          "anchor_candidates": [
+            "background_server_check"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::git",
+        "source": "codex/codex-rs/cli/src/doctor/git.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/git.py",
+          "anchor_candidates": [
+            "git_check",
+            "GitCheckInputs",
+            "git_candidates"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::output",
+        "source": "codex/codex-rs/cli/src/doctor/output.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/output/__init__.py",
+          "anchor_candidates": [
+            "redact_detail",
+            "separator"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::output::detail",
+        "source": "codex/codex-rs/cli/src/doctor/output/detail.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/output/detail.py",
+          "anchor_candidates": [
+            "format_bytes",
+            "value"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::progress",
+        "source": "codex/codex-rs/cli/src/doctor/progress.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/progress.py",
+          "anchor_candidates": [
+            "should_show_progress"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::runtime",
+        "source": "codex/codex-rs/cli/src/doctor/runtime.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/runtime.py",
+          "anchor_candidates": [
+            "runtime_check",
+            "search_check",
+            "search_provider"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::system",
+        "source": "codex/codex-rs/cli/src/doctor/system.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/system.py",
+          "anchor_candidates": [
+            "system_check",
+            "SystemCheckInputs"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::thread_inventory",
+        "source": "codex/codex-rs/cli/src/doctor/thread_inventory.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/thread_inventory.py",
+          "anchor_candidates": [
+            "thread_inventory_check",
+            "duplicate_db_paths",
+            "duplicate_rollout_thread_ids"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::title",
+        "source": "codex/codex-rs/cli/src/doctor/title.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/title.py",
+          "anchor_candidates": [
+            "terminal_title_check",
+            "TerminalTitleInputs"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::doctor::updates",
+        "source": "codex/codex-rs/cli/src/doctor/updates.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/doctor/updates.py",
+          "anchor_candidates": [
+            "updates_check",
+            "GITHUB_LATEST_RELEASE_URL",
+            "HOMEBREW_CASK_API_URL",
+            "VersionInfo",
+            "fetch_homebrew_cask_version",
+            "fetch_latest_github_release_version",
+            "fetch_latest_version",
+            "http_get_json",
+            "is_newer",
+            "push_cached_version_details",
+            "update_action_label"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::marketplace_cmd",
+        "source": "codex/codex-rs/cli/src/marketplace_cmd.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::mcp_cmd",
+        "source": "codex/codex-rs/cli/src/mcp_cmd.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::plugin_cmd",
+        "source": "codex/codex-rs/cli/src/plugin_cmd.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::remote_control_cmd",
+        "source": "codex/codex-rs/cli/src/remote_control_cmd.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::state_db_recovery",
+        "source": "codex/codex-rs/cli/src/state_db_recovery.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/state_db_recovery.py",
+          "anchor_candidates": [
+            "confirm_repair",
+            "is_locked",
+            "print_diagnostic_guidance",
+            "print_locked_guidance",
+            "print_repair_backups",
+            "repair_files",
+            "startup_error",
+            "backup_path",
+            "print_technical_details",
+            "sqlite_paths"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "bin::codex::wsl_paths",
+        "source": "codex/codex-rs/cli/src/wsl_paths.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/wsl_paths.py",
+          "anchor_candidates": [
+            "is_wsl",
+            "normalize_for_wsl",
+            "win_path_to_wsl"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "crate",
+        "source": "codex/codex-rs/cli/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/__init__.py",
+          "anchor_candidates": [
+            "module:debug_sandbox",
+            "module:exit_status",
+            "module:login"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "debug_sandbox",
+        "source": "codex/codex-rs/cli/src/debug_sandbox.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/debug_sandbox.py",
+          "anchor_candidates": [
+            "ManagedRequirementsMode",
+            "cli_overrides_use_legacy_sandbox_mode",
+            "config_uses_permission_profiles",
+            "for_profile_invocation"
+          ]
+        },
+        {
+          "owner": "pycodex/cli/debug_sandbox/__init__.py",
+          "anchor_candidates": [
+            "spawn_input_forwarder",
+            "spawn_output_forwarder",
+            "ManagedRequirementsMode",
+            "STDIN_FORWARD_CHUNK_SIZE",
+            "cli_overrides_use_legacy_sandbox_mode",
+            "config_uses_permission_profiles",
+            "for_profile_invocation"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "debug_sandbox::pid_tracker",
+        "source": "codex/codex-rs/cli/src/debug_sandbox/pid_tracker.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/debug_sandbox/pid_tracker.py",
+          "anchor_candidates": [
+            "PidTracker",
+            "new",
+            "stop",
+            "list_child_pids",
+            "pid_is_alive",
+            "track_descendants"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "debug_sandbox::seatbelt",
+        "source": "codex/codex-rs/cli/src/debug_sandbox/seatbelt.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/debug_sandbox/seatbelt.py",
+          "anchor_candidates": [
+            "SandboxDenial",
+            "parse_message"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "debug_sandbox::windows_stdio_bridge",
+        "source": "codex/codex-rs/cli/src/debug_sandbox.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/debug_sandbox/windows_stdio_bridge.py",
+          "anchor_candidates": [
+            "spawn_input_forwarder",
+            "spawn_output_forwarder",
+            "STDIN_FORWARD_CHUNK_SIZE"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "exit_status",
+        "source": "codex/codex-rs/cli/src/exit_status.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/exit_status.py",
+          "anchor_candidates": [
+            "handle_exit_status"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-cli",
+        "module": "login",
+        "source": "codex/codex-rs/cli/src/login.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/cli/login.py",
+          "anchor_candidates": [
+            "ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE",
+            "API_KEY_LOGIN_DISABLED_MESSAGE",
+            "CHATGPT_LOGIN_DISABLED_MESSAGE",
+            "LOGIN_SUCCESS_MESSAGE",
+            "print_login_server_start",
+            "safe_format_key"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

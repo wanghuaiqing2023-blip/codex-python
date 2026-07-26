@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-core.context.personality_spec_instructions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::personality_spec_instructions",
+    "source": "codex/codex-rs/core/src/context/personality_spec_instructions.rs",
+    "anchors": [
+      "PersonalitySpecInstructions",
+      "new",
+      "body",
+      "role",
+      "type_markers"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/personality_spec_instructions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/personality_spec_instructions.py"
+    ],
+    "anchors": [
+      "PersonalitySpecInstructions",
+      "new",
+      "body",
+      "role",
+      "type_markers"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

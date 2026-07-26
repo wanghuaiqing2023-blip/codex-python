@@ -83,6 +83,7 @@ class CommandLifecycleState:
     insert_history_cell: Optional[Callable[[object], Any]] = None
     set_active_cell: Optional[Callable[[object | None], Any]] = None
     redraw_sink: Optional[Callable[[], Any]] = None
+    ensure_status_indicator_sink: Optional[Callable[[], Any]] = None
 
     def bind_history_projection(
         self,
@@ -95,6 +96,13 @@ class CommandLifecycleState:
         self.set_active_cell = set_active_cell
         self.redraw_sink = request_redraw
         self._publish_active_cell()
+
+    def bind_status_projection(
+        self,
+        *,
+        ensure_status_indicator: Callable[[], Any],
+    ) -> None:
+        self.ensure_status_indicator_sink = ensure_status_indicator
 
     def flush_unified_exec_wait_streak(self) -> Optional[UnifiedExecInteractionCell]:
         wait = self.unified_exec_wait_streak
@@ -332,6 +340,8 @@ class CommandLifecycleState:
 
     def ensure_status_indicator(self) -> None:
         self.status_indicator_visible = True
+        if self.ensure_status_indicator_sink is not None:
+            self.ensure_status_indicator_sink()
 
     def flush_answer_stream_with_separator(self) -> None:
         self.answer_stream_flushes += 1

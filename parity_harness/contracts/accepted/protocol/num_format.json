@@ -1,0 +1,35 @@
+{
+  "contract_id": "codex-protocol.num_format",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "num_format",
+    "source": "codex/codex-rs/protocol/src/num_format.rs",
+    "anchors": [
+      "format_si_suffix",
+      "format_with_separators"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/num_format.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/num_format.py"
+    ],
+    "anchors": [
+      "format_si_suffix",
+      "format_with_separators"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate",
+      "owned_symbols": ["format_si_suffix", "format_with_separators"]
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_num_format.py"
+  ]
+}

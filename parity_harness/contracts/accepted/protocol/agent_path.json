@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-protocol.agent_path",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "agent_path",
+    "source": "codex/codex-rs/protocol/src/agent_path.rs",
+    "anchors": [
+      "AgentPath",
+      "MORPHEUS",
+      "ROOT",
+      "as_str",
+      "from_string",
+      "is_root",
+      "join",
+      "morpheus",
+      "name",
+      "resolve",
+      "root",
+      "ROOT_SEGMENT"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/agent_path.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/agent_path.py"
+    ],
+    "anchors": [
+      "AgentPath",
+      "MORPHEUS",
+      "ROOT",
+      "as_str",
+      "from_string",
+      "is_root",
+      "join",
+      "morpheus",
+      "name",
+      "resolve",
+      "root",
+      "ROOT_SEGMENT"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_agent_path.py"
+  ]
+}

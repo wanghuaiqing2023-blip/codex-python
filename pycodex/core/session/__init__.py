@@ -38,8 +38,6 @@ from pycodex.core.session.handlers import (
     user_input_or_turn,
     user_input_or_turn_inner,
     UserInputTurnInput,
-    UserShellCommandTask,
-    USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY,
 )
 from pycodex.core.session.config_lock import (
     export_config_lock_if_configured,
@@ -116,8 +114,6 @@ __all__ = [
     "user_input_or_turn",
     "user_input_or_turn_inner",
     "UserInputTurnInput",
-    "UserShellCommandTask",
-    "USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY",
     "usage_hint_text",
     "validate_config_lock_if_configured",
 ]

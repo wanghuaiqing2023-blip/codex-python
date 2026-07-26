@@ -1,6 +1,6 @@
 """Tool-spec coordinate for ``codex-goal-extension::spec``."""
 
-from pycodex.core.tools.handlers.goal import (
+from pycodex.core.tools.handlers.goal_spec import (
     CREATE_GOAL_TOOL_NAME,
     GET_GOAL_TOOL_NAME,
     UPDATE_GOAL_TOOL_NAME,

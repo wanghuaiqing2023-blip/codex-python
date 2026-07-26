@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-cloud-tasks-mock-client.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cloud-tasks-mock-client",
+    "module": "crate",
+    "source": "codex/codex-rs/cloud-tasks-mock-client/src/lib.rs",
+    "anchors": [
+      "MockClient"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cloud_tasks_mock_client/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cloud_tasks_mock_client/__init__.py"
+    ],
+    "anchors": [
+      "MockClient"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

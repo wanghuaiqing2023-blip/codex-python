@@ -1,7 +1,7 @@
 import asyncio
 import re
 
-from pycodex.network_proxy import (
+from pycodex.network_proxy.network_policy import (
     AUDIT_TARGET,
     DEFAULT_CLIENT_ADDRESS,
     DEFAULT_METHOD,
@@ -10,20 +10,24 @@ from pycodex.network_proxy import (
     POLICY_SCOPE_DOMAIN,
     POLICY_SCOPE_NON_DOMAIN,
     BlockDecisionAuditEventArgs,
-    HostBlockDecision,
-    HostBlockReason,
     NetworkDecision,
     NetworkDecisionSource,
     NetworkPolicyDecision,
     NetworkPolicyRequest,
     NetworkPolicyRequestArgs,
     NetworkProtocol,
+    emit_block_decision_audit_event,
+    evaluate_host_policy,
+)
+from pycodex.network_proxy.reasons import (
     REASON_DENIED,
     REASON_METHOD_NOT_ALLOWED,
     REASON_NOT_ALLOWED,
     REASON_NOT_ALLOWED_LOCAL,
-    emit_block_decision_audit_event,
-    evaluate_host_policy,
+)
+from pycodex.network_proxy.runtime import (
+    HostBlockDecision,
+    HostBlockReason,
 )
 
 

@@ -84,7 +84,7 @@ def test_debug_windows_product_session_round_trips_live_stdio(tmp_path: Path) ->
 
 
 def test_default_debug_windows_elevated_path_uses_native_capture(tmp_path: Path, monkeypatch) -> None:
-    from pycodex.windows_sandbox import elevated
+    from pycodex.windows_sandbox import elevated_impl
     from pycodex.windows_sandbox.process import ProcessCaptureResult
 
     observed: dict[str, object] = {}
@@ -94,7 +94,11 @@ def test_default_debug_windows_elevated_path_uses_native_capture(tmp_path: Path,
         observed["kwargs"] = kwargs
         return ProcessCaptureResult(0, b"ok", b"")
 
-    monkeypatch.setattr(elevated, "run_elevated_capture", fake_capture)
+    monkeypatch.setattr(
+        elevated_impl,
+        "run_windows_sandbox_capture_for_permission_profile",
+        fake_capture,
+    )
     plan = build_debug_sandbox_windows_session_plan(
         ["cmd.exe", "/c", "echo elevated-native"],
         cwd=Path.cwd(),
@@ -108,4 +112,5 @@ def test_default_debug_windows_elevated_path_uses_native_capture(tmp_path: Path,
 
     assert result.exit_code == 0
     assert result.error_message is None
-    assert observed["kwargs"]["proxy_enforced"] is False
+    assert observed["args"][0].codex_home == tmp_path
+    assert observed["args"][0].proxy_enforced is False

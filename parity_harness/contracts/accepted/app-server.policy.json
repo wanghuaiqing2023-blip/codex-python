@@ -1,0 +1,16 @@
+{
+  "scope": "app-server",
+  "rust_root": "codex/codex-rs/app-server",
+  "python_root": "pycodex/app_server",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": [
+    {
+      "path": "pycodex/app_server/bin/__init__.py",
+      "reason": "Package marker for Rust binary entrypoints; it contains no production behavior."
+    }
+  ]
+}

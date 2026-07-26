@@ -11,11 +11,13 @@ from pycodex.core.state.turn import (
 )
 from pycodex.protocol.models import (
     AdditionalPermissionProfile,
-    FileSystemAccessMode,
     FileSystemPermissions,
+    NetworkPermissions,
+)
+from pycodex.protocol.permissions import (
+    FileSystemAccessMode,
     FileSystemPath,
     FileSystemSandboxEntry,
-    NetworkPermissions,
 )
 from pycodex.protocol.request_permissions import RequestPermissionProfile
 

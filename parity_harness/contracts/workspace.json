@@ -1,0 +1,967 @@
+{
+  "schema": "parity-harness/workspace-contract/v1",
+  "workspace": "codex/codex-rs",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "crates": [
+    {
+      "scope": "agent-graph-store",
+      "rust_crate": "codex-agent-graph-store",
+      "rust_root": "codex/codex-rs/agent-graph-store",
+      "cargo_toml": "codex/codex-rs/agent-graph-store/Cargo.toml",
+      "python_root": "pycodex/agent_graph_store",
+      "disposition": "partial"
+    },
+    {
+      "scope": "agent-identity",
+      "rust_crate": "codex-agent-identity",
+      "rust_root": "codex/codex-rs/agent-identity",
+      "cargo_toml": "codex/codex-rs/agent-identity/Cargo.toml",
+      "python_root": "pycodex/agent_identity",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "analytics",
+      "rust_crate": "codex-analytics",
+      "rust_root": "codex/codex-rs/analytics",
+      "cargo_toml": "codex/codex-rs/analytics/Cargo.toml",
+      "python_root": "pycodex/analytics",
+      "disposition": "partial"
+    },
+    {
+      "scope": "ansi-escape",
+      "rust_crate": "codex-ansi-escape",
+      "rust_root": "codex/codex-rs/ansi-escape",
+      "cargo_toml": "codex/codex-rs/ansi-escape/Cargo.toml",
+      "python_root": "pycodex/ansi_escape",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "api",
+      "rust_crate": "codex-api",
+      "rust_root": "codex/codex-rs/codex-api",
+      "cargo_toml": "codex/codex-rs/codex-api/Cargo.toml",
+      "python_root": "pycodex/codex_api",
+      "disposition": "partial"
+    },
+    {
+      "scope": "app-server",
+      "rust_crate": "codex-app-server",
+      "rust_root": "codex/codex-rs/app-server",
+      "cargo_toml": "codex/codex-rs/app-server/Cargo.toml",
+      "python_root": "pycodex/app_server",
+      "disposition": "partial"
+    },
+    {
+      "scope": "app-server-client",
+      "rust_crate": "codex-app-server-client",
+      "rust_root": "codex/codex-rs/app-server-client",
+      "cargo_toml": "codex/codex-rs/app-server-client/Cargo.toml",
+      "python_root": "pycodex/app_server_client",
+      "disposition": "partial"
+    },
+    {
+      "scope": "app-server-daemon",
+      "rust_crate": "codex-app-server-daemon",
+      "rust_root": "codex/codex-rs/app-server-daemon",
+      "cargo_toml": "codex/codex-rs/app-server-daemon/Cargo.toml",
+      "python_root": "pycodex/app_server_daemon",
+      "disposition": "deferred",
+      "reason": "No Python product package exists for the Rust app-server daemon crate at the fixed baseline."
+    },
+    {
+      "scope": "app-server-protocol",
+      "rust_crate": "codex-app-server-protocol",
+      "rust_root": "codex/codex-rs/app-server-protocol",
+      "cargo_toml": "codex/codex-rs/app-server-protocol/Cargo.toml",
+      "python_root": "pycodex/app_server_protocol",
+      "disposition": "partial"
+    },
+    {
+      "scope": "app-server-test-client",
+      "rust_crate": "codex-app-server-test-client",
+      "rust_root": "codex/codex-rs/app-server-test-client",
+      "cargo_toml": "codex/codex-rs/app-server-test-client/Cargo.toml",
+      "python_root": "pycodex/app_server_test_client",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "app-server-transport",
+      "rust_crate": "codex-app-server-transport",
+      "rust_root": "codex/codex-rs/app-server-transport",
+      "cargo_toml": "codex/codex-rs/app-server-transport/Cargo.toml",
+      "python_root": "pycodex/app_server_transport",
+      "disposition": "partial"
+    },
+    {
+      "scope": "app_test_support",
+      "rust_crate": "app_test_support",
+      "rust_root": "codex/codex-rs/app-server/tests/common",
+      "cargo_toml": "codex/codex-rs/app-server/tests/common/Cargo.toml",
+      "python_root": "pycodex/app_test_support",
+      "disposition": "deferred",
+      "reason": "Rust integration-test support crate with no Python product package; it is not a production ownership scope."
+    },
+    {
+      "scope": "apply-patch",
+      "rust_crate": "codex-apply-patch",
+      "rust_root": "codex/codex-rs/apply-patch",
+      "cargo_toml": "codex/codex-rs/apply-patch/Cargo.toml",
+      "python_root": "pycodex/apply_patch",
+      "disposition": "partial"
+    },
+    {
+      "scope": "arg0",
+      "rust_crate": "codex-arg0",
+      "rust_root": "codex/codex-rs/arg0",
+      "cargo_toml": "codex/codex-rs/arg0/Cargo.toml",
+      "python_root": "pycodex/arg0",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "async-utils",
+      "rust_crate": "codex-async-utils",
+      "rust_root": "codex/codex-rs/async-utils",
+      "cargo_toml": "codex/codex-rs/async-utils/Cargo.toml",
+      "python_root": "pycodex/async_utils",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "aws-auth",
+      "rust_crate": "codex-aws-auth",
+      "rust_root": "codex/codex-rs/aws-auth",
+      "cargo_toml": "codex/codex-rs/aws-auth/Cargo.toml",
+      "python_root": "pycodex/aws_auth",
+      "disposition": "partial"
+    },
+    {
+      "scope": "backend-client",
+      "rust_crate": "codex-backend-client",
+      "rust_root": "codex/codex-rs/backend-client",
+      "cargo_toml": "codex/codex-rs/backend-client/Cargo.toml",
+      "python_root": "pycodex/backend_client",
+      "disposition": "partial"
+    },
+    {
+      "scope": "backend-openapi-models",
+      "rust_crate": "codex-backend-openapi-models",
+      "rust_root": "codex/codex-rs/codex-backend-openapi-models",
+      "cargo_toml": "codex/codex-rs/codex-backend-openapi-models/Cargo.toml",
+      "python_root": "pycodex/codex_backend_openapi_models",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "bwrap",
+      "rust_crate": "codex-bwrap",
+      "rust_root": "codex/codex-rs/bwrap",
+      "cargo_toml": "codex/codex-rs/bwrap/Cargo.toml",
+      "python_root": "pycodex/bwrap",
+      "disposition": "partial"
+    },
+    {
+      "scope": "chatgpt",
+      "rust_crate": "codex-chatgpt",
+      "rust_root": "codex/codex-rs/chatgpt",
+      "cargo_toml": "codex/codex-rs/chatgpt/Cargo.toml",
+      "python_root": "pycodex/chatgpt",
+      "disposition": "deferred",
+      "reason": "No Python product package exists for the Rust ChatGPT authentication crate at the fixed baseline."
+    },
+    {
+      "scope": "cli",
+      "rust_crate": "codex-cli",
+      "rust_root": "codex/codex-rs/cli",
+      "cargo_toml": "codex/codex-rs/cli/Cargo.toml",
+      "python_root": "pycodex/cli",
+      "disposition": "partial"
+    },
+    {
+      "scope": "client",
+      "rust_crate": "codex-client",
+      "rust_root": "codex/codex-rs/codex-client",
+      "cargo_toml": "codex/codex-rs/codex-client/Cargo.toml",
+      "python_root": "pycodex/codex_client",
+      "disposition": "partial"
+    },
+    {
+      "scope": "cloud-requirements",
+      "rust_crate": "codex-cloud-requirements",
+      "rust_root": "codex/codex-rs/cloud-requirements",
+      "cargo_toml": "codex/codex-rs/cloud-requirements/Cargo.toml",
+      "python_root": "pycodex/cloud_requirements",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "cloud-tasks",
+      "rust_crate": "codex-cloud-tasks",
+      "rust_root": "codex/codex-rs/cloud-tasks",
+      "cargo_toml": "codex/codex-rs/cloud-tasks/Cargo.toml",
+      "python_root": "pycodex/cloud_tasks",
+      "disposition": "partial"
+    },
+    {
+      "scope": "cloud-tasks-client",
+      "rust_crate": "codex-cloud-tasks-client",
+      "rust_root": "codex/codex-rs/cloud-tasks-client",
+      "cargo_toml": "codex/codex-rs/cloud-tasks-client/Cargo.toml",
+      "python_root": "pycodex/cloud_tasks_client",
+      "disposition": "partial"
+    },
+    {
+      "scope": "cloud-tasks-mock-client",
+      "rust_crate": "codex-cloud-tasks-mock-client",
+      "rust_root": "codex/codex-rs/cloud-tasks-mock-client",
+      "cargo_toml": "codex/codex-rs/cloud-tasks-mock-client/Cargo.toml",
+      "python_root": "pycodex/cloud_tasks_mock_client",
+      "disposition": "partial"
+    },
+    {
+      "scope": "code-mode",
+      "rust_crate": "codex-code-mode",
+      "rust_root": "codex/codex-rs/code-mode",
+      "cargo_toml": "codex/codex-rs/code-mode/Cargo.toml",
+      "python_root": "pycodex/code_mode",
+      "disposition": "partial"
+    },
+    {
+      "scope": "collaboration-mode-templates",
+      "rust_crate": "codex-collaboration-mode-templates",
+      "rust_root": "codex/codex-rs/collaboration-mode-templates",
+      "cargo_toml": "codex/codex-rs/collaboration-mode-templates/Cargo.toml",
+      "python_root": "pycodex/collaboration_mode_templates",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "config",
+      "rust_crate": "codex-config",
+      "rust_root": "codex/codex-rs/config",
+      "cargo_toml": "codex/codex-rs/config/Cargo.toml",
+      "python_root": "pycodex/config",
+      "disposition": "partial"
+    },
+    {
+      "scope": "connectors",
+      "rust_crate": "codex-connectors",
+      "rust_root": "codex/codex-rs/connectors",
+      "cargo_toml": "codex/codex-rs/connectors/Cargo.toml",
+      "python_root": "pycodex/connectors",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "core",
+      "rust_crate": "codex-core",
+      "rust_root": "codex/codex-rs/core",
+      "cargo_toml": "codex/codex-rs/core/Cargo.toml",
+      "python_root": "pycodex/core",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "core-api",
+      "rust_crate": "codex-core-api",
+      "rust_root": "codex/codex-rs/core-api",
+      "cargo_toml": "codex/codex-rs/core-api/Cargo.toml",
+      "python_root": "pycodex/core_api",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "core-plugins",
+      "rust_crate": "codex-core-plugins",
+      "rust_root": "codex/codex-rs/core-plugins",
+      "cargo_toml": "codex/codex-rs/core-plugins/Cargo.toml",
+      "python_root": "pycodex/core_plugins",
+      "disposition": "partial"
+    },
+    {
+      "scope": "core-skills",
+      "rust_crate": "codex-core-skills",
+      "rust_root": "codex/codex-rs/core-skills",
+      "cargo_toml": "codex/codex-rs/core-skills/Cargo.toml",
+      "python_root": "pycodex/core_skills",
+      "disposition": "partial"
+    },
+    {
+      "scope": "core_test_support",
+      "rust_crate": "core_test_support",
+      "rust_root": "codex/codex-rs/core/tests/common",
+      "cargo_toml": "codex/codex-rs/core/tests/common/Cargo.toml",
+      "python_root": "pycodex/core_test_support",
+      "disposition": "deferred",
+      "reason": "Rust Core integration-test support crate with no Python product package; it is not a production ownership scope."
+    },
+    {
+      "scope": "debug-client",
+      "rust_crate": "codex-debug-client",
+      "rust_root": "codex/codex-rs/debug-client",
+      "cargo_toml": "codex/codex-rs/debug-client/Cargo.toml",
+      "python_root": "pycodex/debug_client",
+      "disposition": "partial"
+    },
+    {
+      "scope": "exec",
+      "rust_crate": "codex-exec",
+      "rust_root": "codex/codex-rs/exec",
+      "cargo_toml": "codex/codex-rs/exec/Cargo.toml",
+      "python_root": "pycodex/exec",
+      "disposition": "partial"
+    },
+    {
+      "scope": "exec-server",
+      "rust_crate": "codex-exec-server",
+      "rust_root": "codex/codex-rs/exec-server",
+      "cargo_toml": "codex/codex-rs/exec-server/Cargo.toml",
+      "python_root": "pycodex/exec_server",
+      "disposition": "partial"
+    },
+    {
+      "scope": "execpolicy",
+      "rust_crate": "codex-execpolicy",
+      "rust_root": "codex/codex-rs/execpolicy",
+      "cargo_toml": "codex/codex-rs/execpolicy/Cargo.toml",
+      "python_root": "pycodex/execpolicy",
+      "disposition": "partial"
+    },
+    {
+      "scope": "execpolicy-legacy",
+      "rust_crate": "codex-execpolicy-legacy",
+      "rust_root": "codex/codex-rs/execpolicy-legacy",
+      "cargo_toml": "codex/codex-rs/execpolicy-legacy/Cargo.toml",
+      "python_root": "pycodex/execpolicy_legacy",
+      "disposition": "partial"
+    },
+    {
+      "scope": "experimental-api-macros",
+      "rust_crate": "codex-experimental-api-macros",
+      "rust_root": "codex/codex-rs/codex-experimental-api-macros",
+      "cargo_toml": "codex/codex-rs/codex-experimental-api-macros/Cargo.toml",
+      "python_root": "pycodex/codex_experimental_api_macros",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "extension-api",
+      "rust_crate": "codex-extension-api",
+      "rust_root": "codex/codex-rs/ext/extension-api",
+      "cargo_toml": "codex/codex-rs/ext/extension-api/Cargo.toml",
+      "python_root": "pycodex/ext/extension_api",
+      "disposition": "deferred",
+      "reason": "No Python product package exists for the standalone Rust extension API crate at the fixed baseline."
+    },
+    {
+      "scope": "external-agent-migration",
+      "rust_crate": "codex-external-agent-migration",
+      "rust_root": "codex/codex-rs/external-agent-migration",
+      "cargo_toml": "codex/codex-rs/external-agent-migration/Cargo.toml",
+      "python_root": "pycodex/external_agent_migration",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "external-agent-sessions",
+      "rust_crate": "codex-external-agent-sessions",
+      "rust_root": "codex/codex-rs/external-agent-sessions",
+      "cargo_toml": "codex/codex-rs/external-agent-sessions/Cargo.toml",
+      "python_root": "pycodex/external_agent_sessions",
+      "disposition": "partial"
+    },
+    {
+      "scope": "features",
+      "rust_crate": "codex-features",
+      "rust_root": "codex/codex-rs/features",
+      "cargo_toml": "codex/codex-rs/features/Cargo.toml",
+      "python_root": "pycodex/features",
+      "disposition": "partial"
+    },
+    {
+      "scope": "feedback",
+      "rust_crate": "codex-feedback",
+      "rust_root": "codex/codex-rs/feedback",
+      "cargo_toml": "codex/codex-rs/feedback/Cargo.toml",
+      "python_root": "pycodex/feedback",
+      "disposition": "partial"
+    },
+    {
+      "scope": "file-search",
+      "rust_crate": "codex-file-search",
+      "rust_root": "codex/codex-rs/file-search",
+      "cargo_toml": "codex/codex-rs/file-search/Cargo.toml",
+      "python_root": "pycodex/file_search",
+      "disposition": "partial"
+    },
+    {
+      "scope": "file-system",
+      "rust_crate": "codex-file-system",
+      "rust_root": "codex/codex-rs/file-system",
+      "cargo_toml": "codex/codex-rs/file-system/Cargo.toml",
+      "python_root": "pycodex/file_system",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "file-watcher",
+      "rust_crate": "codex-file-watcher",
+      "rust_root": "codex/codex-rs/file-watcher",
+      "cargo_toml": "codex/codex-rs/file-watcher/Cargo.toml",
+      "python_root": "pycodex/file_watcher",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "git-utils",
+      "rust_crate": "codex-git-utils",
+      "rust_root": "codex/codex-rs/git-utils",
+      "cargo_toml": "codex/codex-rs/git-utils/Cargo.toml",
+      "python_root": "pycodex/git_utils",
+      "disposition": "partial"
+    },
+    {
+      "scope": "goal-extension",
+      "rust_crate": "codex-goal-extension",
+      "rust_root": "codex/codex-rs/ext/goal",
+      "cargo_toml": "codex/codex-rs/ext/goal/Cargo.toml",
+      "python_root": "pycodex/ext/goal",
+      "disposition": "partial"
+    },
+    {
+      "scope": "guardian",
+      "rust_crate": "codex-guardian",
+      "rust_root": "codex/codex-rs/ext/guardian",
+      "cargo_toml": "codex/codex-rs/ext/guardian/Cargo.toml",
+      "python_root": "pycodex/ext/guardian",
+      "disposition": "partial"
+    },
+    {
+      "scope": "hooks",
+      "rust_crate": "codex-hooks",
+      "rust_root": "codex/codex-rs/hooks",
+      "cargo_toml": "codex/codex-rs/hooks/Cargo.toml",
+      "python_root": "pycodex/hooks",
+      "disposition": "partial"
+    },
+    {
+      "scope": "install-context",
+      "rust_crate": "codex-install-context",
+      "rust_root": "codex/codex-rs/install-context",
+      "cargo_toml": "codex/codex-rs/install-context/Cargo.toml",
+      "python_root": "pycodex/install_context",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "keyring-store",
+      "rust_crate": "codex-keyring-store",
+      "rust_root": "codex/codex-rs/keyring-store",
+      "cargo_toml": "codex/codex-rs/keyring-store/Cargo.toml",
+      "python_root": "pycodex/keyring_store",
+      "disposition": "partial"
+    },
+    {
+      "scope": "linux-sandbox",
+      "rust_crate": "codex-linux-sandbox",
+      "rust_root": "codex/codex-rs/linux-sandbox",
+      "cargo_toml": "codex/codex-rs/linux-sandbox/Cargo.toml",
+      "python_root": "pycodex/linux_sandbox",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "lmstudio",
+      "rust_crate": "codex-lmstudio",
+      "rust_root": "codex/codex-rs/lmstudio",
+      "cargo_toml": "codex/codex-rs/lmstudio/Cargo.toml",
+      "python_root": "pycodex/lmstudio",
+      "disposition": "partial"
+    },
+    {
+      "scope": "login",
+      "rust_crate": "codex-login",
+      "rust_root": "codex/codex-rs/login",
+      "cargo_toml": "codex/codex-rs/login/Cargo.toml",
+      "python_root": "pycodex/login",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "mcp",
+      "rust_crate": "codex-mcp",
+      "rust_root": "codex/codex-rs/codex-mcp",
+      "cargo_toml": "codex/codex-rs/codex-mcp/Cargo.toml",
+      "python_root": "pycodex/codex_mcp",
+      "disposition": "deferred",
+      "reason": "No Python product package exists for the standalone Rust MCP orchestration crate at the fixed baseline."
+    },
+    {
+      "scope": "mcp-server",
+      "rust_crate": "codex-mcp-server",
+      "rust_root": "codex/codex-rs/mcp-server",
+      "cargo_toml": "codex/codex-rs/mcp-server/Cargo.toml",
+      "python_root": "pycodex/mcp_server",
+      "disposition": "deferred",
+      "reason": "No Python product package exists for the standalone Rust MCP server binary crate at the fixed baseline."
+    },
+    {
+      "scope": "mcp_test_support",
+      "rust_crate": "mcp_test_support",
+      "rust_root": "codex/codex-rs/mcp-server/tests/common",
+      "cargo_toml": "codex/codex-rs/mcp-server/tests/common/Cargo.toml",
+      "python_root": "pycodex/mcp_test_support",
+      "disposition": "deferred",
+      "reason": "Rust MCP integration-test support crate with no Python product package; it is not a production ownership scope."
+    },
+    {
+      "scope": "memories-extension",
+      "rust_crate": "codex-memories-extension",
+      "rust_root": "codex/codex-rs/ext/memories",
+      "cargo_toml": "codex/codex-rs/ext/memories/Cargo.toml",
+      "python_root": "pycodex/ext/memories",
+      "disposition": "partial"
+    },
+    {
+      "scope": "memories-read",
+      "rust_crate": "codex-memories-read",
+      "rust_root": "codex/codex-rs/memories/read",
+      "cargo_toml": "codex/codex-rs/memories/read/Cargo.toml",
+      "python_root": "pycodex/memories/read",
+      "disposition": "partial"
+    },
+    {
+      "scope": "memories-write",
+      "rust_crate": "codex-memories-write",
+      "rust_root": "codex/codex-rs/memories/write",
+      "cargo_toml": "codex/codex-rs/memories/write/Cargo.toml",
+      "python_root": "pycodex/memories/write",
+      "disposition": "partial"
+    },
+    {
+      "scope": "message-history",
+      "rust_crate": "codex-message-history",
+      "rust_root": "codex/codex-rs/message-history",
+      "cargo_toml": "codex/codex-rs/message-history/Cargo.toml",
+      "python_root": "pycodex/message_history",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "model-provider",
+      "rust_crate": "codex-model-provider",
+      "rust_root": "codex/codex-rs/model-provider",
+      "cargo_toml": "codex/codex-rs/model-provider/Cargo.toml",
+      "python_root": "pycodex/model_provider",
+      "disposition": "partial"
+    },
+    {
+      "scope": "model-provider-info",
+      "rust_crate": "codex-model-provider-info",
+      "rust_root": "codex/codex-rs/model-provider-info",
+      "cargo_toml": "codex/codex-rs/model-provider-info/Cargo.toml",
+      "python_root": "pycodex/model_provider_info",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "models-manager",
+      "rust_crate": "codex-models-manager",
+      "rust_root": "codex/codex-rs/models-manager",
+      "cargo_toml": "codex/codex-rs/models-manager/Cargo.toml",
+      "python_root": "pycodex/models_manager",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "network-proxy",
+      "rust_crate": "codex-network-proxy",
+      "rust_root": "codex/codex-rs/network-proxy",
+      "cargo_toml": "codex/codex-rs/network-proxy/Cargo.toml",
+      "python_root": "pycodex/network_proxy",
+      "disposition": "partial"
+    },
+    {
+      "scope": "ollama",
+      "rust_crate": "codex-ollama",
+      "rust_root": "codex/codex-rs/ollama",
+      "cargo_toml": "codex/codex-rs/ollama/Cargo.toml",
+      "python_root": "pycodex/ollama",
+      "disposition": "partial"
+    },
+    {
+      "scope": "otel",
+      "rust_crate": "codex-otel",
+      "rust_root": "codex/codex-rs/otel",
+      "cargo_toml": "codex/codex-rs/otel/Cargo.toml",
+      "python_root": "pycodex/otel",
+      "disposition": "partial"
+    },
+    {
+      "scope": "plugin",
+      "rust_crate": "codex-plugin",
+      "rust_root": "codex/codex-rs/plugin",
+      "cargo_toml": "codex/codex-rs/plugin/Cargo.toml",
+      "python_root": "pycodex/plugin",
+      "disposition": "partial"
+    },
+    {
+      "scope": "process-hardening",
+      "rust_crate": "codex-process-hardening",
+      "rust_root": "codex/codex-rs/process-hardening",
+      "cargo_toml": "codex/codex-rs/process-hardening/Cargo.toml",
+      "python_root": "pycodex/process_hardening",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "protocol",
+      "rust_crate": "codex-protocol",
+      "rust_root": "codex/codex-rs/protocol",
+      "cargo_toml": "codex/codex-rs/protocol/Cargo.toml",
+      "python_root": "pycodex/protocol",
+      "disposition": "partial"
+    },
+    {
+      "scope": "realtime-webrtc",
+      "rust_crate": "codex-realtime-webrtc",
+      "rust_root": "codex/codex-rs/realtime-webrtc",
+      "cargo_toml": "codex/codex-rs/realtime-webrtc/Cargo.toml",
+      "python_root": "pycodex/realtime_webrtc",
+      "disposition": "partial"
+    },
+    {
+      "scope": "response-debug-context",
+      "rust_crate": "codex-response-debug-context",
+      "rust_root": "codex/codex-rs/response-debug-context",
+      "cargo_toml": "codex/codex-rs/response-debug-context/Cargo.toml",
+      "python_root": "pycodex/response_debug_context",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "responses-api-proxy",
+      "rust_crate": "codex-responses-api-proxy",
+      "rust_root": "codex/codex-rs/responses-api-proxy",
+      "cargo_toml": "codex/codex-rs/responses-api-proxy/Cargo.toml",
+      "python_root": "pycodex/responses_api_proxy",
+      "disposition": "partial"
+    },
+    {
+      "scope": "rmcp-client",
+      "rust_crate": "codex-rmcp-client",
+      "rust_root": "codex/codex-rs/rmcp-client",
+      "cargo_toml": "codex/codex-rs/rmcp-client/Cargo.toml",
+      "python_root": "pycodex/rmcp_client",
+      "disposition": "partial"
+    },
+    {
+      "scope": "rollout",
+      "rust_crate": "codex-rollout",
+      "rust_root": "codex/codex-rs/rollout",
+      "cargo_toml": "codex/codex-rs/rollout/Cargo.toml",
+      "python_root": "pycodex/rollout",
+      "disposition": "partial"
+    },
+    {
+      "scope": "rollout-trace",
+      "rust_crate": "codex-rollout-trace",
+      "rust_root": "codex/codex-rs/rollout-trace",
+      "cargo_toml": "codex/codex-rs/rollout-trace/Cargo.toml",
+      "python_root": "pycodex/rollout_trace",
+      "disposition": "partial"
+    },
+    {
+      "scope": "sandboxing",
+      "rust_crate": "codex-sandboxing",
+      "rust_root": "codex/codex-rs/sandboxing",
+      "cargo_toml": "codex/codex-rs/sandboxing/Cargo.toml",
+      "python_root": "pycodex/sandboxing",
+      "disposition": "partial"
+    },
+    {
+      "scope": "secrets",
+      "rust_crate": "codex-secrets",
+      "rust_root": "codex/codex-rs/secrets",
+      "cargo_toml": "codex/codex-rs/secrets/Cargo.toml",
+      "python_root": "pycodex/secrets",
+      "disposition": "partial"
+    },
+    {
+      "scope": "shell-command",
+      "rust_crate": "codex-shell-command",
+      "rust_root": "codex/codex-rs/shell-command",
+      "cargo_toml": "codex/codex-rs/shell-command/Cargo.toml",
+      "python_root": "pycodex/shell_command",
+      "disposition": "partial"
+    },
+    {
+      "scope": "shell-escalation",
+      "rust_crate": "codex-shell-escalation",
+      "rust_root": "codex/codex-rs/shell-escalation",
+      "cargo_toml": "codex/codex-rs/shell-escalation/Cargo.toml",
+      "python_root": "pycodex/shell_escalation",
+      "disposition": "partial"
+    },
+    {
+      "scope": "skills",
+      "rust_crate": "codex-skills",
+      "rust_root": "codex/codex-rs/skills",
+      "cargo_toml": "codex/codex-rs/skills/Cargo.toml",
+      "python_root": "pycodex/skills",
+      "disposition": "partial"
+    },
+    {
+      "scope": "state",
+      "rust_crate": "codex-state",
+      "rust_root": "codex/codex-rs/state",
+      "cargo_toml": "codex/codex-rs/state/Cargo.toml",
+      "python_root": "pycodex/state",
+      "disposition": "partial"
+    },
+    {
+      "scope": "stdio-to-uds",
+      "rust_crate": "codex-stdio-to-uds",
+      "rust_root": "codex/codex-rs/stdio-to-uds",
+      "cargo_toml": "codex/codex-rs/stdio-to-uds/Cargo.toml",
+      "python_root": "pycodex/stdio_to_uds",
+      "disposition": "partial"
+    },
+    {
+      "scope": "terminal-detection",
+      "rust_crate": "codex-terminal-detection",
+      "rust_root": "codex/codex-rs/terminal-detection",
+      "cargo_toml": "codex/codex-rs/terminal-detection/Cargo.toml",
+      "python_root": "pycodex/terminal_detection",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "test-binary-support",
+      "rust_crate": "codex-test-binary-support",
+      "rust_root": "codex/codex-rs/test-binary-support",
+      "cargo_toml": "codex/codex-rs/test-binary-support/Cargo.toml",
+      "python_root": "pycodex/test_binary_support",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "thread-manager-sample",
+      "rust_crate": "codex-thread-manager-sample",
+      "rust_root": "codex/codex-rs/thread-manager-sample",
+      "cargo_toml": "codex/codex-rs/thread-manager-sample/Cargo.toml",
+      "python_root": "pycodex/thread_manager_sample",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "thread-store",
+      "rust_crate": "codex-thread-store",
+      "rust_root": "codex/codex-rs/thread-store",
+      "cargo_toml": "codex/codex-rs/thread-store/Cargo.toml",
+      "python_root": "pycodex/thread_store",
+      "disposition": "partial"
+    },
+    {
+      "scope": "tools",
+      "rust_crate": "codex-tools",
+      "rust_root": "codex/codex-rs/tools",
+      "cargo_toml": "codex/codex-rs/tools/Cargo.toml",
+      "python_root": "pycodex/tools",
+      "disposition": "partial"
+    },
+    {
+      "scope": "tui",
+      "rust_crate": "codex-tui",
+      "rust_root": "codex/codex-rs/tui",
+      "cargo_toml": "codex/codex-rs/tui/Cargo.toml",
+      "python_root": "pycodex/tui",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "uds",
+      "rust_crate": "codex-uds",
+      "rust_root": "codex/codex-rs/uds",
+      "cargo_toml": "codex/codex-rs/uds/Cargo.toml",
+      "python_root": "pycodex/uds",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-absolute-path",
+      "rust_crate": "codex-utils-absolute-path",
+      "rust_root": "codex/codex-rs/utils/absolute-path",
+      "cargo_toml": "codex/codex-rs/utils/absolute-path/Cargo.toml",
+      "python_root": "pycodex/utils/absolute_path",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-approval-presets",
+      "rust_crate": "codex-utils-approval-presets",
+      "rust_root": "codex/codex-rs/utils/approval-presets",
+      "cargo_toml": "codex/codex-rs/utils/approval-presets/Cargo.toml",
+      "python_root": "pycodex/utils/approval_presets",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-cache",
+      "rust_crate": "codex-utils-cache",
+      "rust_root": "codex/codex-rs/utils/cache",
+      "cargo_toml": "codex/codex-rs/utils/cache/Cargo.toml",
+      "python_root": "pycodex/utils/cache",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-cargo-bin",
+      "rust_crate": "codex-utils-cargo-bin",
+      "rust_root": "codex/codex-rs/utils/cargo-bin",
+      "cargo_toml": "codex/codex-rs/utils/cargo-bin/Cargo.toml",
+      "python_root": "pycodex/utils/cargo_bin",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-cli",
+      "rust_crate": "codex-utils-cli",
+      "rust_root": "codex/codex-rs/utils/cli",
+      "cargo_toml": "codex/codex-rs/utils/cli/Cargo.toml",
+      "python_root": "pycodex/utils/cli",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-elapsed",
+      "rust_crate": "codex-utils-elapsed",
+      "rust_root": "codex/codex-rs/utils/elapsed",
+      "cargo_toml": "codex/codex-rs/utils/elapsed/Cargo.toml",
+      "python_root": "pycodex/utils/elapsed",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-fuzzy-match",
+      "rust_crate": "codex-utils-fuzzy-match",
+      "rust_root": "codex/codex-rs/utils/fuzzy-match",
+      "cargo_toml": "codex/codex-rs/utils/fuzzy-match/Cargo.toml",
+      "python_root": "pycodex/utils/fuzzy_match",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-home-dir",
+      "rust_crate": "codex-utils-home-dir",
+      "rust_root": "codex/codex-rs/utils/home-dir",
+      "cargo_toml": "codex/codex-rs/utils/home-dir/Cargo.toml",
+      "python_root": "pycodex/utils/home_dir",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-image",
+      "rust_crate": "codex-utils-image",
+      "rust_root": "codex/codex-rs/utils/image",
+      "cargo_toml": "codex/codex-rs/utils/image/Cargo.toml",
+      "python_root": "pycodex/utils/image",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-json-to-toml",
+      "rust_crate": "codex-utils-json-to-toml",
+      "rust_root": "codex/codex-rs/utils/json-to-toml",
+      "cargo_toml": "codex/codex-rs/utils/json-to-toml/Cargo.toml",
+      "python_root": "pycodex/utils/json_to_toml",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-oss",
+      "rust_crate": "codex-utils-oss",
+      "rust_root": "codex/codex-rs/utils/oss",
+      "cargo_toml": "codex/codex-rs/utils/oss/Cargo.toml",
+      "python_root": "pycodex/utils/oss",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-output-truncation",
+      "rust_crate": "codex-utils-output-truncation",
+      "rust_root": "codex/codex-rs/utils/output-truncation",
+      "cargo_toml": "codex/codex-rs/utils/output-truncation/Cargo.toml",
+      "python_root": "pycodex/utils/output_truncation",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-path",
+      "rust_crate": "codex-utils-path",
+      "rust_root": "codex/codex-rs/utils/path-utils",
+      "cargo_toml": "codex/codex-rs/utils/path-utils/Cargo.toml",
+      "python_root": "pycodex/utils/path_utils",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-plugins",
+      "rust_crate": "codex-utils-plugins",
+      "rust_root": "codex/codex-rs/utils/plugins",
+      "cargo_toml": "codex/codex-rs/utils/plugins/Cargo.toml",
+      "python_root": "pycodex/utils/plugins",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-pty",
+      "rust_crate": "codex-utils-pty",
+      "rust_root": "codex/codex-rs/utils/pty",
+      "cargo_toml": "codex/codex-rs/utils/pty/Cargo.toml",
+      "python_root": "pycodex/utils/pty",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-readiness",
+      "rust_crate": "codex-utils-readiness",
+      "rust_root": "codex/codex-rs/utils/readiness",
+      "cargo_toml": "codex/codex-rs/utils/readiness/Cargo.toml",
+      "python_root": "pycodex/utils/readiness",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-rustls-provider",
+      "rust_crate": "codex-utils-rustls-provider",
+      "rust_root": "codex/codex-rs/utils/rustls-provider",
+      "cargo_toml": "codex/codex-rs/utils/rustls-provider/Cargo.toml",
+      "python_root": "pycodex/utils/rustls_provider",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "utils-sandbox-summary",
+      "rust_crate": "codex-utils-sandbox-summary",
+      "rust_root": "codex/codex-rs/utils/sandbox-summary",
+      "cargo_toml": "codex/codex-rs/utils/sandbox-summary/Cargo.toml",
+      "python_root": "pycodex/utils/sandbox_summary",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-sleep-inhibitor",
+      "rust_crate": "codex-utils-sleep-inhibitor",
+      "rust_root": "codex/codex-rs/utils/sleep-inhibitor",
+      "cargo_toml": "codex/codex-rs/utils/sleep-inhibitor/Cargo.toml",
+      "python_root": "pycodex/utils/sleep_inhibitor",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-stream-parser",
+      "rust_crate": "codex-utils-stream-parser",
+      "rust_root": "codex/codex-rs/utils/stream-parser",
+      "cargo_toml": "codex/codex-rs/utils/stream-parser/Cargo.toml",
+      "python_root": "pycodex/utils/stream_parser",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-string",
+      "rust_crate": "codex-utils-string",
+      "rust_root": "codex/codex-rs/utils/string",
+      "cargo_toml": "codex/codex-rs/utils/string/Cargo.toml",
+      "python_root": "pycodex/utils/string",
+      "disposition": "partial"
+    },
+    {
+      "scope": "utils-template",
+      "rust_crate": "codex-utils-template",
+      "rust_root": "codex/codex-rs/utils/template",
+      "cargo_toml": "codex/codex-rs/utils/template/Cargo.toml",
+      "python_root": "pycodex/utils/template",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "v8-poc",
+      "rust_crate": "codex-v8-poc",
+      "rust_root": "codex/codex-rs/v8-poc",
+      "cargo_toml": "codex/codex-rs/v8-poc/Cargo.toml",
+      "python_root": "pycodex/v8_poc",
+      "disposition": "accepted"
+    },
+    {
+      "scope": "windows-sandbox",
+      "rust_crate": "codex-windows-sandbox",
+      "rust_root": "codex/codex-rs/windows-sandbox-rs",
+      "cargo_toml": "codex/codex-rs/windows-sandbox-rs/Cargo.toml",
+      "python_root": "pycodex/windows_sandbox",
+      "disposition": "partial"
+    },
+    {
+      "scope": "web-search-extension",
+      "rust_crate": "codex-web-search-extension",
+      "rust_root": "codex/codex-rs/ext/web-search",
+      "cargo_toml": "codex/codex-rs/ext/web-search/Cargo.toml",
+      "python_root": "pycodex/ext/web_search",
+      "disposition": "partial"
+    }
+  ]
+}

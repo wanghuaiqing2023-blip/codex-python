@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from .._porting import RustTuiModule
+from ..app_event import AppEvent
+from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+from ..bottom_pane.popup_consts import standard_popup_hint_line
 
 RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::plan_implementation", source="codex/codex-rs/tui/src/chatwidget/plan_implementation.rs")
 
@@ -23,66 +25,50 @@ PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX = (
 PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE = "Default mode unavailable"
 PLAN_IMPLEMENTATION_NO_APPROVED_PLAN = "No approved plan available"
 
-
-@dataclass(frozen=True)
-class SelectionActionPlan:
-    event: str
-    payload: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class SelectionItemPlan:
-    name: str
-    description: str | None = None
-    selected_description: str | None = None
-    is_current: bool = False
-    actions: tuple[SelectionActionPlan, ...] = ()
-    disabled_reason: str | None = None
-    dismiss_on_select: bool = True
-
-
-@dataclass(frozen=True)
-class SelectionViewParamsPlan:
-    title: str | None = None
-    subtitle: str | None = None
-    footer_hint: str | None = None
-    items: tuple[SelectionItemPlan, ...] = ()
-
-
-def standard_popup_hint_line() -> str:
-    return "Enter select ? Esc cancel"
+def _emit(tx: Any, event: AppEvent) -> None:
+    send = getattr(tx, "send", None)
+    if callable(send):
+        send(event)
+    elif callable(tx):
+        tx(event)
+    elif hasattr(tx, "append"):
+        tx.append(event)
 
 
 def selection_view_params(
     default_mask: Any | None,
     plan_markdown: str | None,
     clear_context_usage_label: str | None,
-) -> SelectionViewParamsPlan:
+) -> SelectionViewParams:
     if default_mask is not None:
-        implement_actions = (
-            SelectionActionPlan(
-                "SubmitUserMessageWithMode",
-                {"text": PLAN_IMPLEMENTATION_CODING_MESSAGE, "collaboration_mode": default_mask},
-            ),
-        )
+        implement_actions = [
+            lambda tx, mask=default_mask: _emit(
+                tx,
+                AppEvent.submit_user_message_with_mode(
+                    PLAN_IMPLEMENTATION_CODING_MESSAGE,
+                    mask,
+                ),
+            )
+        ]
         implement_disabled_reason = None
     else:
-        implement_actions = ()
+        implement_actions = []
         implement_disabled_reason = PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE
 
     if default_mask is None:
-        clear_context_actions: tuple[SelectionActionPlan, ...] = ()
+        clear_context_actions = []
         clear_context_disabled_reason = PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE
     elif plan_markdown is not None and plan_markdown.strip() != "":
-        clear_context_actions = (
-            SelectionActionPlan(
-                "ClearUiAndSubmitUserMessage",
-                {"text": f"{PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX}\n\n{plan_markdown}"},
-            ),
-        )
+        clear_text = f"{PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX}\n\n{plan_markdown}"
+        clear_context_actions = [
+            lambda tx, text=clear_text: _emit(
+                tx,
+                AppEvent.clear_ui_and_submit_user_message(text),
+            )
+        ]
         clear_context_disabled_reason = None
     else:
-        clear_context_actions = ()
+        clear_context_actions = []
         clear_context_disabled_reason = PLAN_IMPLEMENTATION_NO_APPROVED_PLAN
 
     clear_context_description = (
@@ -91,30 +77,33 @@ def selection_view_params(
         else f"Fresh thread. Context: {clear_context_usage_label}."
     )
 
-    return SelectionViewParamsPlan(
+    return SelectionViewParams(
         title=PLAN_IMPLEMENTATION_TITLE,
         subtitle=None,
         footer_hint=standard_popup_hint_line(),
-        items=(
-            SelectionItemPlan(
+        items=[
+            SelectionItem(
                 name=PLAN_IMPLEMENTATION_YES,
                 description="Switch to Default and start coding.",
                 actions=implement_actions,
                 disabled_reason=implement_disabled_reason,
+                dismiss_on_select=True,
             ),
-            SelectionItemPlan(
+            SelectionItem(
                 name=PLAN_IMPLEMENTATION_CLEAR_CONTEXT,
                 description=clear_context_description,
                 actions=clear_context_actions,
                 disabled_reason=clear_context_disabled_reason,
+                dismiss_on_select=True,
             ),
-            SelectionItemPlan(
+            SelectionItem(
                 name=PLAN_IMPLEMENTATION_NO,
                 description="Continue planning with the model.",
-                actions=(),
+                actions=[],
                 disabled_reason=None,
+                dismiss_on_select=True,
             ),
-        ),
+        ],
     )
 
 
@@ -128,9 +117,6 @@ __all__ = [
     "PLAN_IMPLEMENTATION_TITLE",
     "PLAN_IMPLEMENTATION_YES",
     "RUST_MODULE",
-    "SelectionActionPlan",
-    "SelectionItemPlan",
-    "SelectionViewParamsPlan",
     "selection_view_params",
     "standard_popup_hint_line",
 ]

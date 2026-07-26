@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.chatwidget.status_state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "chatwidget::status_state",
+    "source": "codex/codex-rs/tui/src/chatwidget/status_state.rs",
+    "anchors": [
+      "PendingGuardianReviewStatus",
+      "StatusIndicatorState",
+      "StatusState",
+      "TerminalTitleStatusKind",
+      "finish",
+      "is_empty",
+      "is_guardian_review",
+      "remember_retry_status_header",
+      "set_status",
+      "start_or_update",
+      "status_indicator_state",
+      "take_retry_status_header"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/chatwidget/status_state.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/chatwidget/status_state.py"
+    ],
+    "anchors": [
+      "PendingGuardianReviewStatus",
+      "StatusIndicatorState",
+      "StatusState",
+      "TerminalTitleStatusKind",
+      "finish",
+      "is_empty",
+      "is_guardian_review",
+      "remember_retry_status_header",
+      "set_status",
+      "start_or_update",
+      "status_indicator_state",
+      "take_retry_status_header"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

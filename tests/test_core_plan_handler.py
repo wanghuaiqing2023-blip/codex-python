@@ -11,10 +11,9 @@ from pycodex.core.tools.handlers.plan import (
     PLAN_UPDATED_MESSAGE,
     PlanHandler,
     PlanToolOutput,
-    UPDATE_PLAN_TOOL_NAME,
-    create_update_plan_tool,
     parse_update_plan_arguments,
 )
+from pycodex.core.tools.handlers.plan_spec import UPDATE_PLAN_TOOL_NAME, create_update_plan_tool
 from pycodex.protocol import EventMsg, PlanItemArg, SearchToolCallParams, StepStatus, ToolName, UpdatePlanArgs
 from types import SimpleNamespace
 

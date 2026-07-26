@@ -7,6 +7,7 @@ Rust source:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any
 
 from pycodex.codex_client import RequestCompression
@@ -130,8 +131,28 @@ def _jsonify(value: Any) -> Any:
     return value
 
 
+def response_items_from_responses_payload(payload: Any) -> tuple[Any, ...]:
+    """Extract response output items from a Responses API payload."""
+
+    from pycodex.protocol import ResponseItem
+
+    if not isinstance(payload, Mapping):
+        raise TypeError("response payload must be a mapping")
+    output = payload.get("output")
+    if output is None:
+        output = payload.get("response_items")
+    if output is None:
+        return ()
+    if isinstance(output, Mapping):
+        output = (output,)
+    if isinstance(output, (str, bytes)) or not isinstance(output, (list, tuple)):
+        raise TypeError("response output must be an object or sequence")
+    return tuple(item if isinstance(item, ResponseItem) else ResponseItem.from_mapping(item) for item in output)
+
+
 __all__ = [
     "ResponsesClient",
     "ResponsesOptions",
+    "response_items_from_responses_payload",
     "spawn_response_stream",
 ]

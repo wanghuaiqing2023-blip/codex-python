@@ -538,7 +538,9 @@ def test_reasoning_popup_view_projects_through_chatwidget_rendering_buffer() -> 
 
     plain = buffer.plain_lines()
     assert "Select Reasoning Level for gpt-5.4" in plain[1]
-    assert "> 1. * Low" in plain[2]
-    assert "2.   Medium (default)" in plain[3]
-    assert "3.   High" in plain[4]
-    assert buffer.cell(0, frame.writes[2].row - 1).style.fg == RatatuiColor.LightBlue
+    assert not plain[2].strip()
+    assert "> 1. * Low" in plain[3]
+    assert "2.   Medium (default)" in plain[4]
+    assert "3.   High" in plain[5]
+    selected = next(write for write in frame.writes if write.selected)
+    assert buffer.cell(0, selected.row - 1).style.fg == RatatuiColor.LightBlue

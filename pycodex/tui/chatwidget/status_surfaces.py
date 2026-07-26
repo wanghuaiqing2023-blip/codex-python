@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterable, TextIO, TypeVar
 
 from .._porting import RustTuiModule
 from ..bottom_pane.status_line_setup import StatusLineItem
+from ..bottom_pane.status_line_style import status_line_from_segments
 from ..bottom_pane.title_setup import TerminalTitleItem
 from ..custom_terminal import clear_inline_status_line, write_inline_status_line
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
@@ -33,7 +34,7 @@ RUST_MODULE = RustTuiModule(
 DEFAULT_STATUS_LINE_ITEMS = ("model-with-reasoning", "current-dir")
 DEFAULT_TERMINAL_TITLE_ITEMS = ("activity", "project-name")
 TERMINAL_LIVE_STATUS_PREFIX = "\u2022 "
-TERMINAL_LIVE_STATUS_DETAIL_PREFIX = " \u2514 "
+TERMINAL_LIVE_STATUS_DETAIL_PREFIX = "  \u2502 "
 TERMINAL_TURN_INTERRUPT_HINT = "esc to interrupt"
 
 TERMINAL_TITLE_SPINNER_FRAMES = ("⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈", "⠐", "⠠")
@@ -97,6 +98,59 @@ def status_surface_selections(
         terminal_title_items=tuple(title_items),
         invalid_terminal_title_items=tuple(invalid_title),
     )
+
+
+def runtime_status_line_text(app_runtime: Any) -> str:
+    """Render the configured status line from the active runtime values."""
+
+    from ..runtime_projection import (
+        _runtime_status_line_item_ids,
+        _runtime_status_line_use_colors,
+        _runtime_status_line_value,
+    )
+
+    items, _invalid = parse_status_line_items_with_invalids(
+        _runtime_status_line_item_ids(app_runtime)
+    )
+    widget = getattr(app_runtime, "chat_widget", None)
+    status = "Ready"
+    status_text = getattr(widget, "run_state_status_text", None)
+    if callable(status_text):
+        status = str(status_text())
+    segments = []
+    for item in items:
+        value = _runtime_status_line_value(app_runtime, item, status)
+        if value is not None:
+            segments.append((item, value))
+    line = status_line_from_segments(
+        segments,
+        _runtime_status_line_use_colors(app_runtime),
+    )
+    return "" if line is None else line.text
+
+
+def refresh_runtime_status_surfaces(widget: Any, app_runtime: Any) -> StatusSurfaceSelections:
+    """Apply Rust's parse-and-warn phase for one terminal refresh."""
+
+    from ..runtime_projection import _runtime_status_line_item_ids
+
+    selections = status_surface_selections(
+        _runtime_status_line_item_ids(app_runtime),
+        getattr(getattr(widget, "config", None), "tui_terminal_title", None),
+    )
+    invalid = selections.invalid_status_line_items
+    if (
+        getattr(widget, "thread_id", None) is not None
+        and invalid
+        and not bool(getattr(widget, "status_line_invalid_items_warned", False))
+    ):
+        widget.status_line_invalid_items_warned = True
+        label = "item" if len(invalid) == 1 else "items"
+        message = f"Ignored invalid status line {label}: {', '.join(invalid)}."
+        from ..history_cell.notices import new_warning_event
+
+        widget.add_to_history(new_warning_event(message))
+    return selections
 
 
 def five_hour_status_window(
@@ -242,7 +296,7 @@ def terminal_live_status_text(header: str, details: str | None = None) -> str:
 
     text = f"{TERMINAL_LIVE_STATUS_PREFIX}{header}"
     if details:
-        text = f"{text}{TERMINAL_LIVE_STATUS_DETAIL_PREFIX}{details}"
+        text = f"{text}\n{TERMINAL_LIVE_STATUS_DETAIL_PREFIX}{details}"
     return text
 
 
@@ -271,13 +325,27 @@ class TerminalLiveStatusSurface:
         return bool(self.active and self.text)
 
     @property
+    def footprint_height(self) -> int:
+        return len(self.render_lines)
+
+    @property
     def render_text(self) -> str | None:
         return self.text if self.active else None
+
+    @property
+    def render_lines(self) -> tuple[str, ...]:
+        if not self.active or not self.text:
+            return ()
+        return tuple(str(self.text).splitlines())
 
     def rows_for_size(self, size: os.terminal_size) -> list[int]:
         from ..bottom_pane.terminal_footprint import bottom_pane_rows_for_size
 
-        return bottom_pane_rows_for_size(size, live_status_active=self.footprint_active)
+        return bottom_pane_rows_for_size(
+            size,
+            live_status_active=self.footprint_active,
+            live_status_height=self.footprint_height,
+        )
 
 
 @dataclass(frozen=True)
@@ -290,7 +358,11 @@ class TerminalLiveStatusTransition:
 class TerminalLiveStatusProjection:
     """Terminal row projection for a live-status string."""
 
-    line: str | None
+    lines: tuple[str, ...]
+
+    @property
+    def line(self) -> str | None:
+        return self.lines[0] if self.lines else None
 
 
 @dataclass(frozen=True)
@@ -316,8 +388,11 @@ def terminal_live_status_projection(
     """Project live status text into the terminal bottom-pane row."""
 
     if text is None:
-        return TerminalLiveStatusProjection(None)
-    return TerminalLiveStatusProjection(str(text)[: max(0, int(columns) - 1)])
+        return TerminalLiveStatusProjection(())
+    width = max(0, int(columns) - 1)
+    return TerminalLiveStatusProjection(
+        tuple(line[:width] for line in str(text).splitlines())
+    )
 
 
 def terminal_live_status_transition_to_status(
@@ -428,10 +503,10 @@ def run_terminal_live_status_show(
         stdin_is_terminal=stdin_is_terminal,
         layout_active=layout_active,
     )
-    if plan.check_resize:
-        check_resize()
     if apply_state is not None:
         apply_state(plan.transition.current)
+    if plan.check_resize:
+        check_resize()
     run_terminal_live_status_action_plan(
         writer,
         plan,
@@ -595,6 +670,7 @@ class TerminalStatusSurfaceWriter:
     animations_enabled: bool = True
     status_indicator: StatusIndicatorWidget | None = None
     status_indicator_visible: Callable[[], bool] = lambda: True
+    terminal_width: Callable[[], int] = lambda: 4096
 
     @property
     def turn_active(self) -> bool:
@@ -688,21 +764,45 @@ class TerminalStatusSurfaceWriter:
         )
         self.render_turn_status(force=True)
 
+    def project_chatwidget_status(self, status: StatusIndicatorState | None) -> None:
+        """Render the status selected by ``chatwidget::streaming``.
+
+        The terminal backend owns only the live viewport projection. Retry,
+        recovery, and visibility transitions remain in ChatWidget, matching
+        Rust's BottomPane ownership.
+        """
+
+        if status is None:
+            self.suppress_turn_status()
+            self.hide_live_status()
+            return
+        self.turn_status = TerminalTurnStatusState(
+            active=self.turn_status.active,
+            last_second=self.turn_status.last_second,
+            suppressed=False,
+        )
+        widget = self._ensure_status_indicator()
+        widget.update_header(status.header)
+        widget.update_details(
+            status.details,
+            StatusDetailsCapitalization.Preserve,
+            status.details_max_lines,
+        )
+        self.render_turn_status(force=True)
+
     def render_turn_status(self, *, force: bool = False, now: float | None = None) -> None:
         render_now = time.monotonic() if now is None else float(now)
         elapsed = terminal_turn_elapsed_seconds(self.turn_started_at, now=render_now)
         if not self.turn_status.should_render(elapsed, force=force):
             return
         widget = self._ensure_status_indicator()
-        widget.update_header("Working")
-        widget.update_details(
-            None,
-            StatusDetailsCapitalization.Preserve,
-            widget.details_max_lines,
+        lines = widget.render_lines(
+            max(1, int(self.terminal_width())),
+            height=1 + widget.details_max_lines,
+            now=render_now,
         )
-        lines = widget.render_lines(4096, height=1, now=render_now)
         if lines:
-            self._show_raw_live_status(line_text(lines[0]))
+            self._show_raw_live_status("\n".join(line_text(line) for line in lines))
         self.turn_status = self.turn_status.after_render(elapsed)
 
     def render_turn_status_force(self) -> None:

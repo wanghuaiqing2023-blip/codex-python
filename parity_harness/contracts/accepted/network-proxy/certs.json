@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-network-proxy.certs",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "certs",
+    "source": "codex/codex-rs/network-proxy/src/certs.rs",
+    "anchors": [
+      "MANAGED_MITM_CA_CERT",
+      "MANAGED_MITM_CA_DIR",
+      "MANAGED_MITM_CA_KEY",
+      "managed_ca_paths",
+      "validate_existing_ca_key_file",
+      "write_atomic_create_new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/certs.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/certs.py"
+    ],
+    "anchors": [
+      "MANAGED_MITM_CA_CERT",
+      "MANAGED_MITM_CA_DIR",
+      "MANAGED_MITM_CA_KEY",
+      "managed_ca_paths",
+      "validate_existing_ca_key_file",
+      "write_atomic_create_new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

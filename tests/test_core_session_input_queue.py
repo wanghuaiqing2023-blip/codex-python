@@ -1,18 +1,18 @@
-import asyncio
+﻿import asyncio
 import unittest
 from types import SimpleNamespace
 
-from pycodex.core.session.runtime import InMemoryInputQueue
+from pycodex.core.session.input_queue import InputQueue
 from pycodex.core.state.turn import MailboxDeliveryPhase, TurnState
 from pycodex.protocol import InterAgentCommunication, MessagePhase, ResponseItem
 
 
-class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
+class InputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_input_queue_drains_mailbox_in_delivery_order(self) -> None:
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust test: input_queue_drains_mailbox_in_delivery_order
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         mail_one = InterAgentCommunication("/root", "/root/worker", "one", False)
         mail_two = InterAgentCommunication("/root/worker", "/root", "two", False)
 
@@ -33,7 +33,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust test: input_queue_tracks_pending_trigger_turn_mail
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
 
         await queue.enqueue_mailbox_communication(InterAgentCommunication("/root", "/root/worker", "queued", False))
         self.assertFalse(await queue.has_trigger_turn_mailbox_items())
@@ -45,7 +45,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust test: input_queue_notifies_mailbox_subscribers
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         subscriber = await queue.subscribe_mailbox()
 
         await queue.enqueue_mailbox_communication(InterAgentCommunication("/root", "/root/worker", "one", False))
@@ -57,7 +57,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: subscribe_mailbox pending mail branch
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         await queue.enqueue_mailbox_communication(InterAgentCommunication("/root", "/root/worker", "one", False))
 
         subscriber = await queue.subscribe_mailbox()
@@ -68,7 +68,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
     async def test_input_queue_accepts_mapping_mail_and_preserves_commentary_phase(self) -> None:
         # Rust crate: codex-core / codex-protocol
         # Rust module: session::input_queue plus InterAgentCommunication::to_response_input_item
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
 
         await queue.enqueue_mailbox_communication(
             {
@@ -91,7 +91,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: extend_pending_input_for_turn_state / take_pending_input_for_turn_state
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState()
 
         await queue.extend_pending_input_for_turn_state(turn_state, ["one"])
@@ -104,7 +104,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: extend_pending_input_and_accept_mailbox_delivery_for_turn_state
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(mailbox_delivery_phase=MailboxDeliveryPhase.NEXT_TURN)
 
         await queue.extend_pending_input_and_accept_mailbox_delivery_for_turn_state(turn_state, ["item"])
@@ -116,7 +116,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: accept_mailbox_delivery_for_turn_state
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(mailbox_delivery_phase=MailboxDeliveryPhase.NEXT_TURN)
 
         await queue.accept_mailbox_delivery_for_turn_state(turn_state)
@@ -127,7 +127,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Contract: Python keeps compatibility with Rust's pending_input.items shape.
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(pending_input=SimpleNamespace(items=["existing"]))
 
         await queue.extend_pending_input_for_turn_state(turn_state, ["new"])
@@ -138,7 +138,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: get_pending_input
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(pending_input=SimpleNamespace(items=["turn-item"]))
         active_turn = SimpleNamespace(turn_state=turn_state)
         mail = InterAgentCommunication("/root", "/root/worker", "mail", False)
@@ -155,7 +155,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: get_pending_input
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(
             pending_input=SimpleNamespace(items=["turn-item"]),
             mailbox_delivery_phase=MailboxDeliveryPhase.NEXT_TURN,
@@ -170,7 +170,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: has_pending_input
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         current_turn = SimpleNamespace(turn_state=TurnState())
         next_turn = SimpleNamespace(turn_state=TurnState(mailbox_delivery_phase=MailboxDeliveryPhase.NEXT_TURN))
 
@@ -184,7 +184,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: get_pending_input active_turn None branch
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         queue.items.append("legacy-item")
         mail = InterAgentCommunication("/root", "/root/worker", "mail", False)
         await queue.enqueue_mailbox_communication(mail)
@@ -199,7 +199,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: turn_state_for_sub_id
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState()
         active_turn = SimpleNamespace(
             task=SimpleNamespace(turn_context=SimpleNamespace(sub_id="sub-1")),
@@ -214,7 +214,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: clear_pending
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(pending_input=SimpleNamespace(items=["pending"]))
         turn_state.pending_approvals["approval"] = object()
         turn_state.pending_user_input["input"] = object()
@@ -230,7 +230,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: defer_mailbox_delivery_to_next_turn
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState()
         active_turn = SimpleNamespace(
             task=SimpleNamespace(turn_context=SimpleNamespace(sub_id="sub-1")),
@@ -247,7 +247,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: defer_mailbox_delivery_to_next_turn pending-input guard
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(pending_input=SimpleNamespace(items=["pending"]))
         active_turn = SimpleNamespace(
             task=SimpleNamespace(turn_context=SimpleNamespace(sub_id="sub-1")),
@@ -262,7 +262,7 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
         # Rust crate: codex-core
         # Rust module: session::input_queue
         # Rust item: accept_mailbox_delivery_for_current_turn
-        queue = InMemoryInputQueue()
+        queue = InputQueue()
         turn_state = TurnState(mailbox_delivery_phase=MailboxDeliveryPhase.NEXT_TURN)
         active_turn = SimpleNamespace(
             task=SimpleNamespace(turn_context=SimpleNamespace(sub_id="sub-1")),
@@ -278,3 +278,5 @@ class InMemoryInputQueueMailboxTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

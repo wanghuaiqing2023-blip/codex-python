@@ -2127,16 +2127,18 @@ async def load_transcript_preview(*args: Any, **kwargs: Any) -> Any:
 
 @dataclass(frozen=True)
 class TerminalResumeSelectionAction:
-    """Selection event emitted by the bottom-pane resume compatibility view."""
+    """Selection event emitted by the terminal session picker."""
 
     target: Any
+    action: SessionPickerAction = SessionPickerAction.RESUME
 
 
 @dataclass
 class TerminalResumePopupController:
-    """Project local resume targets through the canonical active-view stack."""
+    """Project local session targets through the canonical active-view stack."""
 
     app_runtime: Any
+    action: SessionPickerAction = SessionPickerAction.RESUME
 
     def open_view(self) -> Any:
         from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
@@ -2153,7 +2155,7 @@ class TerminalResumePopupController:
                     name=str(name),
                     description=f"{thread_id}  {cwd}" if cwd is not None else thread_id,
                     search_value=" ".join(filter(None, (str(name), thread_id, str(cwd or "")))),
-                    actions=[TerminalResumeSelectionAction(row)],
+                    actions=[TerminalResumeSelectionAction(row, self.action)],
                     dismiss_on_select=True,
                 )
             )
@@ -2166,9 +2168,13 @@ class TerminalResumePopupController:
                 )
             )
         return SelectionViewParams(
-            view_id="resume-session-picker",
-            title="Resume a previous session",
-            subtitle="Select a local session to restore its history.",
+            view_id=f"{self.action.action_label()}-session-picker",
+            title=self.action.title(),
+            subtitle=(
+                "Select a local session to restore its history."
+                if self.action is SessionPickerAction.RESUME
+                else "Select a local session to fork into a new session."
+            ),
             items=items,
             is_searchable=True,
             search_placeholder="Search sessions",
@@ -2181,12 +2187,26 @@ class TerminalResumePopupController:
             if not isinstance(event, TerminalResumeSelectionAction):
                 continue
 
-            def apply(target: Any = event.target) -> None:
+            def apply(
+                target: Any = event.target,
+                action: SessionPickerAction = event.action,
+            ) -> None:
                 try:
-                    thread_id = self.app_runtime.resume_session_target(target)
-                    self.app_runtime.insert_info_history_message(f"Resumed session {thread_id}.")
+                    if action is SessionPickerAction.FORK:
+                        if self.app_runtime.fork_startup_session_target(target):
+                            thread_id = self.app_runtime.current_displayed_thread_id()
+                            self.app_runtime.insert_info_history_message(
+                                f"Forked session {thread_id}."
+                            )
+                    else:
+                        thread_id = self.app_runtime.resume_session_target(target)
+                        self.app_runtime.insert_info_history_message(
+                            f"Resumed session {thread_id}."
+                        )
                 except Exception as exc:
-                    self.app_runtime.chat_widget.add_error_message(f"Failed to resume session: {exc}")
+                    self.app_runtime.chat_widget.add_error_message(
+                        f"Failed to {action.action_label()} session: {exc}"
+                    )
 
             return TerminalSelectionTransition(after_pop=apply)
         return None

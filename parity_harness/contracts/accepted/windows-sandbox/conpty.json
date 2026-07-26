@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-windows-sandbox.conpty",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "conpty",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/conpty/mod.rs",
+    "anchors": [
+      "ConptyInstance",
+      "create_conpty",
+      "raw_handle",
+      "spawn_conpty_process_as_user",
+      "take_input_write",
+      "take_output_read"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/conpty/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/conpty/__init__.py"
+    ],
+    "anchors": [
+      "ConptyInstance",
+      "create_conpty",
+      "raw_handle",
+      "spawn_conpty_process_as_user",
+      "take_input_write",
+      "take_output_read"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_conpty_proc_thread_attr.py",
+    "tests/test_windows_sandbox_process.py",
+    "tests/test_core_unified_exec_windows_sandbox.py"
+  ]
+}

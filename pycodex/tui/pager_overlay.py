@@ -15,6 +15,9 @@ from .history_cell import (
     transcript_hyperlink_lines,
 )
 from .line_truncation import _display_width
+from .key_hint import KeyBinding as HintKeyBinding
+from .key_hint import KeyEvent as HintKeyEvent
+from .keymap import RuntimeKeymap
 from .ratatui_bridge import Rect
 from .terminal_hyperlinks import visible_lines
 
@@ -175,26 +178,29 @@ class PagerView:
         return round((min(max(self.scroll_offset, 0), max_scroll) / max_scroll) * 100)
 
     def handle_input(self, event_kind: str, event_text: str, viewport_area: Rect) -> bool:
-        """Apply the fixed Rust pager keymap subset; return whether it changed."""
+        """Dispatch pager navigation through Rust's configured ``PagerKeymap``."""
 
-        kind, text = _normalized_pager_input(event_kind, event_text)
-        if kind == "up" or (kind == "text" and text == "k"):
+        keymap = self.keymap or RuntimeKeymap.built_in_defaults().pager
+        event = _pager_key_event(event_kind, event_text)
+        if event is None:
+            return False
+        if _pager_bindings_pressed(keymap.scroll_up, event):
             self.scroll_offset = max(0, self.scroll_offset - 1)
-        elif kind == "down" or (kind == "text" and text == "j"):
+        elif _pager_bindings_pressed(keymap.scroll_down, event):
             self.scroll_offset += 1
-        elif kind in {"page_up", "ctrl_b"}:
+        elif _pager_bindings_pressed(keymap.page_up, event):
             self.scroll_offset = max(0, self.scroll_offset - self.page_height(viewport_area))
-        elif kind in {"page_down", "ctrl_f"} or (kind == "text" and text == " "):
+        elif _pager_bindings_pressed(keymap.page_down, event):
             self.scroll_offset += self.page_height(viewport_area)
-        elif kind == "ctrl_u":
+        elif _pager_bindings_pressed(keymap.half_page_up, event):
             half_page = (self.content_area(viewport_area).height + 1) // 2
             self.scroll_offset = max(0, self.scroll_offset - half_page)
-        elif kind == "ctrl_d":
+        elif _pager_bindings_pressed(keymap.half_page_down, event):
             half_page = (self.content_area(viewport_area).height + 1) // 2
             self.scroll_offset += half_page
-        elif kind == "home":
+        elif _pager_bindings_pressed(keymap.jump_top, event):
             self.scroll_offset = 0
-        elif kind == "end":
+        elif _pager_bindings_pressed(keymap.jump_bottom, event):
             self.scroll_offset = MAX_SCROLL
         else:
             return False
@@ -358,9 +364,28 @@ class TranscriptOverlay:
         top_height = max(0, area.height - 3)
         top = Rect(area.x, area.y, area.width, top_height)
         rows = self.view.render_frame(top)
+        keymap = self.view.keymap or RuntimeKeymap.built_in_defaults().pager
         hints = [
-            " Up/Down to scroll   PageUp/PageDown to page   Home/End to jump",
-            " q/Ctrl+T to quit",
+            render_key_hints(
+                (
+                    (
+                        _first_binding_labels(keymap.scroll_up)
+                        + _first_binding_labels(keymap.scroll_down),
+                        "to scroll",
+                    ),
+                    (
+                        _first_binding_labels(keymap.page_up)
+                        + _first_binding_labels(keymap.page_down),
+                        "to page",
+                    ),
+                    (
+                        _first_binding_labels(keymap.jump_top)
+                        + _first_binding_labels(keymap.jump_bottom),
+                        "to jump",
+                    ),
+                )
+            ),
+            render_key_hints(((_first_binding_labels(keymap.close), "to quit"),)),
             "",
         ]
         rows.extend(_fit_display_width(line, area.width) for line in hints)
@@ -370,8 +395,14 @@ class TranscriptOverlay:
         """Route one terminal input event through Rust's transcript pager."""
 
         kind, text = _normalized_pager_input(event_kind, event_text)
-        if kind in {"ctrl_t", "interrupt", "eof"} or (
-            kind == "text" and text == "q"
+        keymap = self.view.keymap or RuntimeKeymap.built_in_defaults().pager
+        event = _pager_key_event(kind, text)
+        if kind in {"interrupt", "eof"} or (
+            event is not None
+            and (
+                _pager_bindings_pressed(keymap.close, event)
+                or _pager_bindings_pressed(keymap.close_transcript, event)
+            )
         ):
             self.is_done_flag = True
             return True
@@ -478,6 +509,45 @@ def _normalized_pager_input(event_kind: str, event_text: str) -> tuple[str, str]
     return kind, text
 
 
+def _pager_key_event(event_kind: str, event_text: str) -> HintKeyEvent | None:
+    """Project terminal input into the key event consumed by Rust key bindings."""
+
+    kind, text = _normalized_pager_input(event_kind, event_text)
+    named = {
+        "up": "Up",
+        "down": "Down",
+        "home": "Home",
+        "end": "End",
+        "page_up": "PageUp",
+        "page_down": "PageDown",
+        "escape": "Esc",
+        "enter": "Enter",
+        "tab": "Tab",
+    }
+    if kind == "text":
+        if len(text) != 1:
+            return None
+        return HintKeyEvent.new(text)
+    if kind.startswith("ctrl_") and len(kind) == len("ctrl_") + 1:
+        return HintKeyEvent.new(kind[-1], {"control"})
+    if kind.startswith("alt_") and len(kind) == len("alt_") + 1:
+        return HintKeyEvent.new(kind[-1], {"alt"})
+    if kind.startswith("shift_") and len(kind) == len("shift_") + 1:
+        return HintKeyEvent.new(kind[-1], {"shift"})
+    code = named.get(kind)
+    return None if code is None else HintKeyEvent.new(code)
+
+
+def _pager_bindings_pressed(bindings: Sequence[Any], event: HintKeyEvent) -> bool:
+    return any(
+        HintKeyBinding.new(
+            getattr(binding, "code", getattr(binding, "key", "")),
+            getattr(binding, "modifiers", ()),
+        ).is_press(event)
+        for binding in bindings
+    )
+
+
 def _is_stream_continuation(value: Any) -> bool:
     if callable(getattr(value, "render_lines", None)):
         # Existing Renderable values are already layout chunks; only canonical
@@ -539,6 +609,18 @@ def _pager_separator(width: int, percent: int) -> str:
 
 def first_or_empty(bindings: Sequence[Any]) -> list[Any]:
     return list(bindings[:1])
+
+
+def _first_binding_labels(bindings: Sequence[Any]) -> list[str]:
+    labels: list[str] = []
+    for binding in first_or_empty(bindings):
+        labels.append(
+            HintKeyBinding.new(
+                getattr(binding, "code", ""),
+                getattr(binding, "modifiers", ()),
+            ).display_label()
+        )
+    return labels
 
 
 def render_key_hints(pairs: Sequence[tuple[Sequence[str], str]]) -> str:

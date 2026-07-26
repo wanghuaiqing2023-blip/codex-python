@@ -290,7 +290,7 @@ def test_resize_reflow_replay_callback_moves_viewport_before_app_replay() -> Non
     replay_observations: list[tuple[Rect | None, tuple[tuple[object, ...], ...]]] = []
     bind_replay = runner.resize_reflow_replay_callback_factory(
         terminal_size=lambda: size[0],
-        live_status=lambda: SimpleNamespace(footprint_active=False),
+        live_status=lambda: SimpleNamespace(footprint_active=False, footprint_height=0),
         bottom_pane_state=state,
         composer_cursor_visible=lambda: True,
     )

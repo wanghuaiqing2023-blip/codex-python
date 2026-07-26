@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.turn_timing",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "turn_timing",
+    "source": "codex/codex-rs/core/src/turn_timing.rs",
+    "anchors": [
+      "TurnTimingState",
+      "completed_at_and_duration_ms",
+      "mark_turn_started",
+      "now_unix_timestamp_ms",
+      "record_ttfm_for_turn_item",
+      "record_ttft_for_response_event",
+      "record_turn_ttfm_metric",
+      "record_turn_ttft_metric",
+      "started_at_unix_secs",
+      "time_to_first_token_ms",
+      "now_unix_timestamp_secs",
+      "response_event_records_turn_ttft"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/turn_timing.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/turn_timing.py"
+    ],
+    "anchors": [
+      "TurnTimingState",
+      "completed_at_and_duration_ms",
+      "mark_turn_started",
+      "now_unix_timestamp_ms",
+      "record_ttfm_for_turn_item",
+      "record_ttft_for_response_event",
+      "record_turn_ttfm_metric",
+      "record_turn_ttft_metric",
+      "started_at_unix_secs",
+      "time_to_first_token_ms",
+      "now_unix_timestamp_secs",
+      "response_event_records_turn_ttft"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

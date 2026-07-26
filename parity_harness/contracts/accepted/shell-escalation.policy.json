@@ -1,0 +1,21 @@
+{
+  "scope": "shell-escalation",
+  "rust_root": "codex/codex-rs/shell-escalation",
+  "python_root": "pycodex/shell_escalation",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "bin::codex-execve-wrapper",
+    "crate::unix",
+    "crate::unix::escalate_client",
+    "crate::unix::escalate_protocol",
+    "crate::unix::escalate_server",
+    "crate::unix::escalation_policy",
+    "crate::unix::execve_wrapper",
+    "crate::unix::socket",
+    "crate::unix::stopwatch"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

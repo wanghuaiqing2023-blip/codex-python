@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.bottom_pane.file_search_popup",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "bottom_pane::file_search_popup",
+    "source": "codex/codex-rs/tui/src/bottom_pane/file_search_popup.rs",
+    "anchors": [
+      "FileSearchPopup",
+      "calculate_required_height",
+      "move_down",
+      "move_up",
+      "new",
+      "selected_match",
+      "set_empty_prompt",
+      "set_matches",
+      "set_query",
+      "render_ref"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/bottom_pane/file_search_popup.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/bottom_pane/file_search_popup.py"
+    ],
+    "anchors": [
+      "FileSearchPopup",
+      "calculate_required_height",
+      "move_down",
+      "move_up",
+      "new",
+      "selected_match",
+      "set_empty_prompt",
+      "set_matches",
+      "set_query",
+      "render_ref"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-core.agent.role.built_in",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "agent::role::built_in",
+    "source": "codex/codex-rs/core/src/agent/role.rs",
+    "anchors": [
+      "config_file_contents",
+      "configs"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/agent/role/built_in.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/agent/role/built_in.py"
+    ],
+    "anchors": [
+      "config_file_contents",
+      "configs"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

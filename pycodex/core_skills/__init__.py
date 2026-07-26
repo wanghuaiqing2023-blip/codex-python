@@ -5,7 +5,7 @@ from .config_rules import *  # noqa: F401,F403
 from .injections import *  # noqa: F401,F403
 from .invocation_utils import *  # noqa: F401,F403
 from .manager import *  # noqa: F401,F403
-from .mentions import *  # noqa: F401,F403
+from .mention_counts import build_skill_name_counts
 from .model import *  # noqa: F401,F403
 from .rendering import *  # noqa: F401,F403
 
@@ -45,8 +45,6 @@ __all__ = [
     "skill_load_outcome_with_implicit_indexes",
     "tokenize_command",
     "build_skill_name_counts",
-    "collect_explicit_skill_mentions",
-    "text_mentions_skill",
     "APPROX_BYTES_PER_TOKEN",
     "AliasPlan",
     "AvailableSkills",

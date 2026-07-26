@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-protocol.tool_name",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-protocol",
+    "module": "tool_name",
+    "source": "codex/codex-rs/protocol/src/tool_name.rs",
+    "anchors": [
+      "ToolName",
+      "namespaced",
+      "new",
+      "plain"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/protocol/tool_name.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/protocol/tool_name.py"
+    ],
+    "anchors": [
+      "ToolName",
+      "namespaced",
+      "new",
+      "plain"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate",
+      "owned_symbols": ["ToolName"]
+    }
+  },
+  "fixture_refs": [
+    "tests/test_protocol_ids_tool_user_input.py"
+  ]
+}

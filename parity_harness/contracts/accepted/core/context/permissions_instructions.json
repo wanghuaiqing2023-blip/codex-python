@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.context.permissions_instructions",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "context::permissions_instructions",
+    "source": "codex/codex-rs/core/src/context/permissions_instructions.rs",
+    "anchors": [
+      "PermissionsInstructions",
+      "from_permission_profile",
+      "APPROVAL_POLICY_NEVER",
+      "APPROVAL_POLICY_ON_FAILURE",
+      "APPROVAL_POLICY_ON_REQUEST_RULE",
+      "APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION",
+      "APPROVAL_POLICY_UNLESS_TRUSTED",
+      "AUTO_REVIEW_APPROVAL_SUFFIX",
+      "PermissionsPromptConfig",
+      "SANDBOX_MODE_DANGER_FULL_ACCESS",
+      "SANDBOX_MODE_READ_ONLY",
+      "SANDBOX_MODE_WORKSPACE_WRITE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/context/permissions_instructions.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/context/permissions_instructions.py"
+    ],
+    "anchors": [
+      "PermissionsInstructions",
+      "from_permission_profile",
+      "APPROVAL_POLICY_NEVER",
+      "APPROVAL_POLICY_ON_FAILURE",
+      "APPROVAL_POLICY_ON_REQUEST_RULE",
+      "APPROVAL_POLICY_ON_REQUEST_RULE_REQUEST_PERMISSION",
+      "APPROVAL_POLICY_UNLESS_TRUSTED",
+      "AUTO_REVIEW_APPROVAL_SUFFIX",
+      "PermissionsPromptConfig",
+      "SANDBOX_MODE_DANGER_FULL_ACCESS",
+      "SANDBOX_MODE_READ_ONLY",
+      "SANDBOX_MODE_WORKSPACE_WRITE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

@@ -1,0 +1,13 @@
+{
+  "scope": "memories-read",
+  "rust_root": "codex/codex-rs/memories/read",
+  "python_root": "pycodex/memories/read",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::metrics"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

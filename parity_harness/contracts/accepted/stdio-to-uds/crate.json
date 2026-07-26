@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-stdio-to-uds.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-stdio-to-uds",
+    "module": "crate",
+    "source": "codex/codex-rs/stdio-to-uds/src/lib.rs",
+    "anchors": [
+      "run"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/stdio_to_uds/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/stdio_to_uds/__init__.py"
+    ],
+    "anchors": [
+      "run"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

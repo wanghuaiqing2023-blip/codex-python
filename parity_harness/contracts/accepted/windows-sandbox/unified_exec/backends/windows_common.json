@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-windows-sandbox.unified_exec.backends.windows_common",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "unified_exec::backends::windows_common",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/unified_exec/backends/windows_common.rs",
+    "anchors": [
+      "finish_driver_spawn",
+      "make_runner_resizer",
+      "normalize_windows_tty_input",
+      "start_runner_pipe_writer",
+      "start_runner_stdin_writer",
+      "start_runner_stdout_reader"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/unified_exec/backends/windows_common.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/unified_exec/backends/windows_common.py"
+    ],
+    "anchors": [
+      "finish_driver_spawn",
+      "make_runner_resizer",
+      "normalize_windows_tty_input",
+      "start_runner_pipe_writer",
+      "start_runner_stdin_writer",
+      "start_runner_stdout_reader"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_runner_transport.py"
+  ]
+}

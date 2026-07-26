@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-agent-graph-store.error",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-agent-graph-store",
+    "module": "error",
+    "source": "codex/codex-rs/agent-graph-store/src/error.rs",
+    "anchors": ["AgentGraphStoreError", "AgentGraphStoreResult"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/agent_graph_store/error.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/agent_graph_store/error.py"],
+    "anchors": ["AgentGraphStoreError", "AgentGraphStoreResult"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_agent_graph_store_error_rs.py"]
+}

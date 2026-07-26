@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-core.network_proxy_loader",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "network_proxy_loader",
+    "source": "codex/codex-rs/core/src/network_proxy_loader.rs",
+    "anchors": [
+      "MtimeConfigReloader",
+      "build_network_proxy_state",
+      "build_network_proxy_state_and_reloader",
+      "LayerMtime",
+      "NetworkTablesToml",
+      "apply_exec_policy_network_rules",
+      "apply_network_constraints",
+      "apply_network_tables",
+      "collect_layer_mtimes",
+      "config_from_layers",
+      "is_user_controlled_layer",
+      "needs_reload"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/network_proxy_loader.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/network_proxy_loader.py"
+    ],
+    "anchors": [
+      "MtimeConfigReloader",
+      "build_network_proxy_state",
+      "build_network_proxy_state_and_reloader",
+      "LayerMtime",
+      "NetworkTablesToml",
+      "apply_exec_policy_network_rules",
+      "apply_network_constraints",
+      "apply_network_tables",
+      "collect_layer_mtimes",
+      "config_from_layers",
+      "is_user_controlled_layer",
+      "needs_reload"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

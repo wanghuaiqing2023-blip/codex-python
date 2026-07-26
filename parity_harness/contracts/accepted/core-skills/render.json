@@ -1,0 +1,15 @@
+{
+  "contract_id": "codex-core-skills.render", "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs", "crate": "codex-core-skills",
+    "module": "render", "source": "codex/codex-rs/core-skills/src/render.rs",
+    "anchors": ["AvailableSkills", "SkillMetadataBudget", "SkillRenderReport", "SkillRenderSideEffects", "aliased_render_is_better", "available_skills_cost", "build_skill_root_lines", "default_skill_metadata_budget", "render_available_skills_body"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_skills/rendering.py", "layout": "module-file",
+    "implementation_files": ["pycodex/core_skills/rendering.py"],
+    "anchors": ["AvailableSkills", "SkillMetadataBudget", "SkillRenderReport", "SkillRenderSideEffects", "aliased_render_is_better", "available_skills_cost", "build_skill_root_lines", "default_skill_metadata_budget", "render_available_skills_body"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
+}

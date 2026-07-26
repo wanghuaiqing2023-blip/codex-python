@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-core.rollout.list",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core",
+    "module": "rollout::list",
+    "source": "codex/codex-rs/core/src/rollout.rs",
+    "anchors": [
+      "find_thread_path_by_id_str"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core/rollout/list.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core/rollout/list.py"
+    ],
+    "anchors": [
+      "find_thread_path_by_id_str"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

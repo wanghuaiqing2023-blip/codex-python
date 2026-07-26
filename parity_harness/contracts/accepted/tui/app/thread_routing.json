@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.app.thread_routing",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "app::thread_routing",
+    "source": "codex/codex-rs/tui/src/app/thread_routing.rs",
+    "anchors": [
+      "abort_all_thread_event_listeners",
+      "abort_thread_event_listener",
+      "activate_thread_channel",
+      "active_non_primary_shutdown_target",
+      "clear_active_thread",
+      "enqueue_primary_thread_notification",
+      "enqueue_primary_thread_request",
+      "ensure_thread_channel",
+      "interactive_request_for_thread_request",
+      "pending_inactive_thread_requests",
+      "should_handle_active_thread_events",
+      "should_prompt_for_paused_goal_after_startup_resume"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/app/thread_routing.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/app/thread_routing.py"
+    ],
+    "anchors": [
+      "abort_all_thread_event_listeners",
+      "abort_thread_event_listener",
+      "activate_thread_channel",
+      "active_non_primary_shutdown_target",
+      "clear_active_thread",
+      "enqueue_primary_thread_notification",
+      "enqueue_primary_thread_request",
+      "ensure_thread_channel",
+      "interactive_request_for_thread_request",
+      "pending_inactive_thread_requests",
+      "should_handle_active_thread_events",
+      "should_prompt_for_paused_goal_after_startup_resume"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

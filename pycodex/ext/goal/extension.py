@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pycodex.core.tools.handlers.goal import UPDATE_GOAL_TOOL_NAME
+from pycodex.core.tools.handlers.goal_spec import UPDATE_GOAL_TOOL_NAME
 from pycodex.extension_api import ExtensionData, ExtensionRegistryBuilder
 from pycodex.protocol import ModeKind, ThreadGoalStatus
 from pycodex.state import GoalAccountingMode, ThreadGoalStatus as StateGoalStatus

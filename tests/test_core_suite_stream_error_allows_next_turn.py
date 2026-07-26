@@ -13,7 +13,7 @@ from pycodex.protocol import (
     UserInput,
 )
 
-from test_core_turn_runtime import Router, Session, events_of_type
+from test_core_turn_runtime import Router, TurnSessionStub as Session, events_of_type
 
 
 class StreamErrorAllowsNextTurnTests(unittest.IsolatedAsyncioTestCase):

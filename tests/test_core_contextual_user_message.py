@@ -20,7 +20,6 @@ from pycodex.core import (
     ModelSwitchInstructions,
     NetworkRuleSaved,
     PersonalitySpecInstructions,
-    PluginCapabilitySummary,
     PluginInstructions,
     RealtimeEndInstructions,
     RealtimeStartInstructions,
@@ -34,6 +33,7 @@ from pycodex.core import (
     is_standard_contextual_user_text,
     parse_visible_hook_prompt_message,
 )
+from pycodex.plugin import PluginCapabilitySummary
 from pycodex.protocol import (
     AgentStatus,
     CollaborationMode,

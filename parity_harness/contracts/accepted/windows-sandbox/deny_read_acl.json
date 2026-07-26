@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-windows-sandbox.deny_read_acl",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-windows-sandbox",
+    "module": "deny_read_acl",
+    "source": "codex/codex-rs/windows-sandbox-rs/src/deny_read_acl.rs",
+    "anchors": [
+      "apply_deny_read_acls",
+      "lexical_path_key",
+      "plan_deny_read_acl_paths"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/windows_sandbox/deny_read_acl.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/windows_sandbox/deny_read_acl.py"
+    ],
+    "anchors": [
+      "apply_deny_read_acls",
+      "lexical_path_key",
+      "plan_deny_read_acl_paths"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_windows_sandbox_deny_read_state.py"
+  ]
+}

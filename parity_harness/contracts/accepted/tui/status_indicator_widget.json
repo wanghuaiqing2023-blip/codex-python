@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-tui.status_indicator_widget",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "status_indicator_widget",
+    "source": "codex/codex-rs/tui/src/status_indicator_widget.rs",
+    "anchors": [
+      "STATUS_DETAILS_DEFAULT_MAX_LINES",
+      "StatusDetailsCapitalization",
+      "StatusIndicatorWidget",
+      "elapsed_seconds",
+      "fmt_elapsed_compact",
+      "interrupt",
+      "new",
+      "pause_timer",
+      "pause_timer_at",
+      "resume_timer",
+      "resume_timer_at",
+      "set_interrupt_binding"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/status_indicator_widget.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/status_indicator_widget.py"
+    ],
+    "anchors": [
+      "STATUS_DETAILS_DEFAULT_MAX_LINES",
+      "StatusDetailsCapitalization",
+      "StatusIndicatorWidget",
+      "elapsed_seconds",
+      "fmt_elapsed_compact",
+      "interrupt",
+      "new",
+      "pause_timer",
+      "pause_timer_at",
+      "resume_timer",
+      "resume_timer_at",
+      "set_interrupt_binding"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

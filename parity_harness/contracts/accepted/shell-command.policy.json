@@ -1,0 +1,18 @@
+{
+  "scope": "shell-command",
+  "rust_root": "codex/codex-rs/shell-command",
+  "python_root": "pycodex/shell_command",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "partial",
+  "uncovered_rust_modules": [
+    "crate::bash",
+    "crate::command_safety::is_dangerous_command",
+    "crate::command_safety::is_dangerous_command::windows_dangerous_commands",
+    "crate::command_safety::is_safe_command",
+    "crate::command_safety::windows_safe_commands",
+    "crate::parse_command::tests"
+  ],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-network-proxy.responses",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-network-proxy",
+    "module": "responses",
+    "source": "codex/codex-rs/network-proxy/src/responses.rs",
+    "anchors": [
+      "PolicyDecisionDetails",
+      "blocked_header_value",
+      "blocked_message",
+      "blocked_message_with_policy",
+      "blocked_text_response",
+      "blocked_text_response_with_policy",
+      "json_response",
+      "text_response"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/network_proxy/responses.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/network_proxy/responses.py"
+    ],
+    "anchors": [
+      "PolicyDecisionDetails",
+      "blocked_header_value",
+      "blocked_message",
+      "blocked_message_with_policy",
+      "blocked_text_response",
+      "blocked_text_response_with_policy",
+      "json_response",
+      "text_response"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

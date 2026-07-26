@@ -1,0 +1,48 @@
+{
+  "contract_id": "codex-tui.file_search",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-tui",
+    "module": "file_search",
+    "source": "codex/codex-rs/tui/src/file_search.rs",
+    "anchors": [
+      "FileSearchManager",
+      "new",
+      "on_user_query",
+      "update_search_dir",
+      "SearchState",
+      "TuiSessionReporter",
+      "on_complete",
+      "on_update",
+      "send_snapshot",
+      "start_session_locked"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/tui/file_search.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/tui/file_search.py"
+    ],
+    "anchors": [
+      "FileSearchManager",
+      "new",
+      "on_user_query",
+      "update_search_dir",
+      "SearchState",
+      "TuiSessionReporter",
+      "on_complete",
+      "on_update",
+      "send_snapshot",
+      "start_session_locked"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

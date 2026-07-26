@@ -12,9 +12,16 @@ from enum import Enum
 from typing import Any, Callable, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
-from .popup_consts import MAX_POPUP_ROWS
+from ..keymap import RuntimeKeymap, primary_binding
+from ..ratatui_bridge import Rect
+from .popup_consts import MAX_POPUP_ROWS, key_binding_hint
 from .scroll_state import ScrollState
-from .selection_popup_common import GenericDisplayRow
+from .selection_popup_common import (
+    GenericDisplayRow,
+    Line,
+    TerminalPopupLine,
+    render_rows_single_line,
+)
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -263,6 +270,48 @@ class MultiSelectPicker:
         subtitle_height = 1 if self.subtitle else 0
         return 1 + subtitle_height + self.rows_height(rows) + 3 + 2 + 1 + preview_height
 
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        """Project the Rust picker layout into the terminal live pane."""
+
+        lines = [TerminalPopupLine(self.title)]
+        if self.subtitle:
+            lines.append(TerminalPopupLine(self.subtitle))
+        lines.extend(
+            [
+                TerminalPopupLine(""),
+                TerminalPopupLine(SEARCH_PLACEHOLDER),
+                TerminalPopupLine(
+                    SEARCH_PROMPT_PREFIX
+                    if not self.search_query
+                    else f"{SEARCH_PROMPT_PREFIX}{self.search_query}"
+                ),
+            ]
+        )
+
+        rows = self.build_rows()
+        rows_height = self.rows_height(rows)
+        row_buffer: List[Line] = []
+        render_rows_single_line(
+            Rect(0, 0, max(self.rows_width(width), 1), rows_height),
+            row_buffer,
+            rows.rows,
+            rows.state,
+            rows_height,
+            "no matches",
+        )
+        lines.extend(
+            TerminalPopupLine(
+                row.text,
+                row.text.lstrip().startswith(">"),
+            )
+            for row in row_buffer
+        )
+
+        if self.preview_line is not None:
+            lines.append(TerminalPopupLine(_line_text(self.preview_line)))
+        lines.append(TerminalPopupLine(self.footer_hint))
+        return lines
+
     def render(self, area: Any = None, buf: Any = None) -> Dict[str, Any]:
         rows = self.build_rows()
         return {
@@ -324,7 +373,8 @@ class MultiSelectPickerBuilder:
         return self
 
     def list_keymap(self, keymap: Any) -> "MultiSelectPickerBuilder":
-        self.keymap = keymap
+        if keymap is not None:
+            self.keymap = keymap
         return self
 
     def on_preview(self, callback: PreviewCallback) -> "MultiSelectPickerBuilder":
@@ -344,6 +394,7 @@ class MultiSelectPickerBuilder:
         return self
 
     def build(self) -> MultiSelectPicker:
+        keymap = self.keymap or RuntimeKeymap.built_in_defaults().list
         picker = MultiSelectPicker(
             items=list(self.builder_items),
             state=ScrollState.new(),
@@ -351,9 +402,9 @@ class MultiSelectPickerBuilder:
             app_event_tx=self.app_event_tx,
             title=self.title,
             subtitle=self.subtitle,
-            footer_hint=self._footer_hint(),
+            footer_hint=self._footer_hint(keymap),
             ordering_enabled=self.ordering_enabled,
-            keymap=self.keymap,
+            keymap=keymap,
             preview_builder=self.preview_builder,
             on_change=self.on_change_callback,
             on_confirm=self.on_confirm_callback,
@@ -363,13 +414,34 @@ class MultiSelectPickerBuilder:
         picker.update_preview_line()
         return picker
 
-    def _footer_hint(self) -> str:
-        parts = ["Press Space to toggle"]
+    def _footer_hint(self, keymap: Any) -> str:
+        parts = ["Press space to toggle"]
         if self.ordering_enabled:
-            parts.append("Left/Right to move")
-        parts.append("Enter to confirm and close")
-        parts.append("Esc to close")
+            move_left = primary_binding(keymap.move_left)
+            move_right = primary_binding(keymap.move_right)
+            if move_left is not None and move_right is not None:
+                parts.append(
+                    f"{key_binding_hint(move_left)}/{key_binding_hint(move_right)} to move"
+                )
+        accept = primary_binding(keymap.accept)
+        if accept is not None:
+            parts.append(f"{key_binding_hint(accept)} to confirm and close")
+        cancel = primary_binding(keymap.cancel)
+        if cancel is not None:
+            parts.append(f"{key_binding_hint(cancel)} to close")
         return "; ".join(parts)
+
+
+def _line_text(line: Any) -> str:
+    if isinstance(line, str):
+        return line
+    value = getattr(line, "text", None)
+    if value is not None:
+        return str(value() if callable(value) else value)
+    spans = getattr(line, "spans", None)
+    if spans is not None:
+        return "".join(str(getattr(span, "text", span)) for span in spans)
+    return str(line)
 
 
 def match_item(filter: str, display_name: str, name: str) -> Optional[Tuple[Optional[List[int]], int]]:
@@ -428,7 +500,9 @@ def _normalize_event(event: Any) -> Any:
             return "end"
         if ctrl and key.lower() == "a":
             return "home"
-        return key
+        event = key
+    if event == " ":
+        return "space"
     return event
 
 

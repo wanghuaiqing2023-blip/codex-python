@@ -1,0 +1,68 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "utils-path",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 2,
+    "python_files": 1,
+    "modules_with_candidates": 1,
+    "modules_with_anchors": 1
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-utils-path",
+        "module": "crate",
+        "source": "codex/codex-rs/utils/path-utils/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/utils/path_utils/__init__.py",
+          "anchor_candidates": [
+            "SymlinkWritePaths",
+            "is_wsl",
+            "normalize_for_native_workdir",
+            "normalize_for_path_comparison",
+            "paths_match_after_normalization",
+            "resolve_symlink_write_paths",
+            "write_atomically",
+            "normalize_for_native_workdir_with_flag",
+            "normalize_for_wsl",
+            "normalize_for_wsl_with_flag"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-utils-path",
+        "module": "env",
+        "source": "codex/codex-rs/utils/path-utils/src/env.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}
