@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-rmcp-client.logging_client_handler",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "logging_client_handler",
+    "source": "codex/codex-rs/rmcp-client/src/logging_client_handler.rs",
+    "anchors": [
+      "LoggingClientHandler",
+      "create_elicitation",
+      "get_info",
+      "on_cancelled",
+      "on_logging_message",
+      "on_progress",
+      "on_prompt_list_changed",
+      "on_resource_list_changed",
+      "on_resource_updated",
+      "on_tool_list_changed"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/logging_client_handler.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/rmcp_client/logging_client_handler.py"
+    ],
+    "anchors": [
+      "LoggingClientHandler",
+      "create_elicitation",
+      "get_info",
+      "on_cancelled",
+      "on_logging_message",
+      "on_progress",
+      "on_prompt_list_changed",
+      "on_resource_list_changed",
+      "on_resource_updated",
+      "on_tool_list_changed"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_rmcp_client_elicitation_logging_rs.py"
+  ]
+}

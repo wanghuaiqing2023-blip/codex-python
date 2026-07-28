@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-exec-server.local_file_system",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "local_file_system",
+    "source": "codex/codex-rs/exec-server/src/local_file_system.rs",
+    "anchors": [
+      "DirectFileSystem",
+      "LOCAL_FS",
+      "LocalFileSystem",
+      "UnsandboxedFileSystem",
+      "current_sandbox_cwd",
+      "resolve_existing_path",
+      "unsandboxed",
+      "with_runtime_paths",
+      "MAX_READ_FILE_BYTES",
+      "copy",
+      "create_directory",
+      "file_system_for"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/local_file_system.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec_server/local_file_system.py"
+    ],
+    "anchors": [
+      "DirectFileSystem",
+      "LOCAL_FS",
+      "LocalFileSystem",
+      "UnsandboxedFileSystem",
+      "current_sandbox_cwd",
+      "resolve_existing_path",
+      "unsandboxed",
+      "with_runtime_paths",
+      "MAX_READ_FILE_BYTES",
+      "copy",
+      "create_directory",
+      "file_system_for"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_local_file_system_rs.py"
+  ]
+}

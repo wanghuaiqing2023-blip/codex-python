@@ -7,7 +7,6 @@
     "module": "crate",
     "source": "codex/codex-rs/features/src/lib.rs",
     "anchors": [
-      "AppsMcpPathOverrideConfigToml",
       "FEATURES",
       "Feature",
       "FeatureConfig",
@@ -18,7 +17,11 @@
       "Features",
       "FeaturesToml",
       "LegacyFeatureUsage",
-      "MultiAgentV2ConfigToml"
+      "Stage",
+      "canonical_feature_for_key",
+      "feature_for_key",
+      "is_known_feature_key",
+      "unstable_features_warning_event"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
@@ -29,7 +32,6 @@
       "pycodex/features/__init__.py"
     ],
     "anchors": [
-      "AppsMcpPathOverrideConfigToml",
       "FEATURES",
       "Feature",
       "FeatureConfig",
@@ -40,7 +42,11 @@
       "Features",
       "FeaturesToml",
       "LegacyFeatureUsage",
-      "MultiAgentV2ConfigToml"
+      "Stage",
+      "canonical_feature_for_key",
+      "feature_for_key",
+      "is_known_feature_key",
+      "unstable_features_warning_event"
     ]
   },
   "checks": {
@@ -48,5 +54,9 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_core_features.py",
+    "tests/test_core_managed_features.py",
+    "tests/test_core_suite_unstable_features_warning.py"
+  ]
 }

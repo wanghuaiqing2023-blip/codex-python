@@ -7,7 +7,7 @@ from enum import Enum
 import os
 from typing import Iterable
 
-from pycodex.cloud_tasks import format_relative_time
+from pycodex.cloud_tasks.util import format_relative_time
 from pycodex.cloud_tasks.app import App, AttemptView, EnvironmentRow
 from pycodex.cloud_tasks.scrollable_diff import ScrollableDiff
 from pycodex.cloud_tasks_client import AttemptStatus, TaskStatus, TaskSummary

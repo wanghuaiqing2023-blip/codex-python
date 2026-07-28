@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-rollout.metadata",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rollout",
+    "module": "metadata",
+    "source": "codex/codex-rs/rollout/src/metadata.rs",
+    "anchors": ["backfill_sessions", "builder_from_items", "builder_from_session_meta", "extract_metadata_from_rollout", "backfill_watermark_for_path", "collect_rollout_paths"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rollout/metadata.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rollout/metadata.py"],
+    "anchors": ["backfill_sessions", "builder_from_items", "builder_from_session_meta", "extract_metadata_from_rollout", "backfill_watermark_for_path", "collect_rollout_paths"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rollout_module_ownership_rs.py", "tests/test_rollout_metadata.py"]
+}

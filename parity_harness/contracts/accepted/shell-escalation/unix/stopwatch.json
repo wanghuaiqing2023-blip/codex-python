@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-shell-escalation.unix.stopwatch",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-escalation",
+    "module": "unix::stopwatch",
+    "source": "codex/codex-rs/shell-escalation/src/unix/stopwatch.rs",
+    "anchors": [
+      "Stopwatch",
+      "cancellation_token",
+      "new",
+      "pause_for",
+      "unlimited"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_escalation/unix/stopwatch.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_escalation/unix/stopwatch.py"
+    ],
+    "anchors": [
+      "Stopwatch",
+      "cancellation_token",
+      "new",
+      "pause_for",
+      "unlimited"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": ["tests/test_shell_escalation_crate.py"]
+}

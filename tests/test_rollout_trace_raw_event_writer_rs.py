@@ -4,11 +4,8 @@ import pytest
 
 from pycodex.rollout_trace import (
     ExecutionStatus,
-    MANIFEST_FILE_NAME,
-    PAYLOADS_DIR_NAME,
     RawPayloadKind,
     RawPayloadRef,
-    RAW_EVENT_LOG_FILE_NAME,
     RawToolCallRequester,
     RawTraceEventContext,
     RawTraceEventPayload,
@@ -16,6 +13,11 @@ from pycodex.rollout_trace import (
     RolloutStatus,
     TraceWriter,
     replay_bundle,
+)
+from pycodex.rollout_trace.bundle import (
+    MANIFEST_FILE_NAME,
+    PAYLOADS_DIR_NAME,
+    RAW_EVENT_LOG_FILE_NAME,
 )
 
 

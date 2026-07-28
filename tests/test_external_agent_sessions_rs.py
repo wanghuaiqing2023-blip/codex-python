@@ -1,26 +1,31 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from pycodex.external_agent_sessions import (
-    EXTERNAL_SESSION_IMPORTED_MARKER,
     ExternalAgentSessionMigration,
     SessionNotDetected,
     detect_recent_sessions,
     load_session_for_import,
     prepare_pending_session_imports,
     record_imported_session,
-    tool_call_note,
-    tool_result_note,
 )
+from pycodex.external_agent_sessions.export import EXTERNAL_SESSION_IMPORTED_MARKER
+from pycodex.external_agent_sessions.records import tool_call_note, tool_result_note
 
 
-def record(role: str, text: str, cwd: Path, timestamp: str = "2026-06-23T00:00:00Z") -> dict:
+def record(
+    role: str,
+    text: str,
+    cwd: Path,
+    timestamp: str | None = None,
+) -> dict:
     return {
         "type": role,
         "cwd": str(cwd),
-        "timestamp": timestamp,
+        "timestamp": timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "message": {"content": text},
     }
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pycodex.app_server.config.external_agent_config import ExternalAgentConfigService
 from pycodex.app_server.error_code import internal_error, invalid_params
 from pycodex.app_server_protocol import (
     CommandMigration,
@@ -77,7 +78,7 @@ class ExternalAgentConfigRequestProcessor:
     def __post_init__(self) -> None:
         self.codex_home = Path(self.codex_home)
         if self.migration_service is None:
-            self.migration_service = NullExternalAgentConfigService(self.codex_home)
+            self.migration_service = ExternalAgentConfigService.new(self.codex_home)
         if self.session_import_lock is None:
             self.session_import_lock = asyncio.Lock()
 
@@ -202,6 +203,10 @@ class ExternalAgentConfigRequestProcessor:
     async def prepare_validated_session_imports(self, sessions: Sequence[SessionMigration]) -> tuple[PendingSessionImport, ...]:
         if self.session_import_preparer is not None:
             prepared = await _maybe_await(self.session_import_preparer(sessions))
+            return tuple(prepared or ())
+        preparer = _callable(self.migration_service, "prepare_validated_session_imports")
+        if preparer is not None:
+            prepared = await _maybe_await(preparer(sessions))
             return tuple(prepared or ())
         return tuple(PendingSessionImport(source_path=session.path, session=session) for session in sessions)
 

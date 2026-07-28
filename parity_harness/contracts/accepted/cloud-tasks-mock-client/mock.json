@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-cloud-tasks-mock-client.mock",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cloud-tasks-mock-client",
+    "module": "mock",
+    "source": "codex/codex-rs/cloud-tasks-mock-client/src/mock.rs",
+    "anchors": [
+      "MockClient",
+      "list_tasks",
+      "get_task_summary",
+      "get_task_diff",
+      "get_task_messages",
+      "get_task_text",
+      "apply_task",
+      "apply_task_preflight",
+      "list_sibling_attempts",
+      "create_task",
+      "mock_diff_for",
+      "count_from_unified"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cloud_tasks_mock_client/mock.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/cloud_tasks_mock_client/mock.py"],
+    "anchors": [
+      "MockClient",
+      "list_tasks",
+      "get_task_summary",
+      "get_task_diff",
+      "get_task_messages",
+      "get_task_text",
+      "apply_task",
+      "apply_task_preflight",
+      "list_sibling_attempts",
+      "create_task",
+      "mock_diff_for",
+      "count_from_unified"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_cloud_tasks_mock_client.py",
+    "tests/test_cloud_tasks_mock_client_module_ownership_rs.py",
+    "tests/test_cloud_tasks_lib_rs.py"
+  ]
+}

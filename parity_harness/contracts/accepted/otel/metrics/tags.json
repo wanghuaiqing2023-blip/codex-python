@@ -1,0 +1,51 @@
+{
+  "contract_id": "codex-otel.metrics.tags",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-otel",
+    "module": "metrics::tags",
+    "source": "codex/codex-rs/otel/src/metrics/tags.rs",
+    "anchors": [
+      "APP_VERSION_TAG",
+      "AUTH_MODE_TAG",
+      "MODEL_TAG",
+      "ORIGINATOR_TAG",
+      "SERVICE_NAME_TAG",
+      "SESSION_SOURCE_TAG",
+      "SessionMetricTagValues",
+      "bounded_originator_tag_value",
+      "into_tags",
+      "KNOWN_ORIGINATOR_TAG_VALUES"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/otel/metrics/tags.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/otel/metrics/tags.py"
+    ],
+    "anchors": [
+      "APP_VERSION_TAG",
+      "AUTH_MODE_TAG",
+      "MODEL_TAG",
+      "ORIGINATOR_TAG",
+      "SERVICE_NAME_TAG",
+      "SESSION_SOURCE_TAG",
+      "SessionMetricTagValues",
+      "bounded_originator_tag_value",
+      "into_tags",
+      "KNOWN_ORIGINATOR_TAG_VALUES"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_otel_module_ownership_rs.py",
+    "tests/test_otel_metrics_rs.py"
+  ]
+}

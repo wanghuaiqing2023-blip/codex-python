@@ -4,21 +4,21 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.execpolicy_legacy import ArgMatcher
-from pycodex.execpolicy_legacy import ArgType
-from pycodex.execpolicy_legacy import ExecCall
-from pycodex.execpolicy_legacy import Forbidden
-from pycodex.execpolicy_legacy import ForbiddenProgramRegex
-from pycodex.execpolicy_legacy import MatchedArg
-from pycodex.execpolicy_legacy import MatchedExec
-from pycodex.execpolicy_legacy import NegativeExamplePassedCheck
-from pycodex.execpolicy_legacy import NoSpecForProgram
-from pycodex.execpolicy_legacy import Opt
-from pycodex.execpolicy_legacy import Policy
-from pycodex.execpolicy_legacy import ProgramSpec
-from pycodex.execpolicy_legacy import UnknownOption
-from pycodex.execpolicy_legacy import ValidExec
-from pycodex.execpolicy_legacy import VarargMatcherDidNotMatchAnything
+from pycodex.execpolicy_legacy.arg_matcher import ArgMatcher
+from pycodex.execpolicy_legacy.arg_type import ArgType
+from pycodex.execpolicy_legacy.exec_call import ExecCall
+from pycodex.execpolicy_legacy.program import Forbidden
+from pycodex.execpolicy_legacy.policy_parser import ForbiddenProgramRegex
+from pycodex.execpolicy_legacy.valid_exec import MatchedArg
+from pycodex.execpolicy_legacy.program import MatchedExec
+from pycodex.execpolicy_legacy.program import NegativeExamplePassedCheck
+from pycodex.execpolicy_legacy.error import NoSpecForProgram
+from pycodex.execpolicy_legacy.opt import Opt
+from pycodex.execpolicy_legacy.policy import Policy
+from pycodex.execpolicy_legacy.program import ProgramSpec
+from pycodex.execpolicy_legacy.error import UnknownOption
+from pycodex.execpolicy_legacy.valid_exec import ValidExec
+from pycodex.execpolicy_legacy.error import VarargMatcherDidNotMatchAnything
 
 
 def _cat_spec() -> ProgramSpec:

@@ -5,6 +5,7 @@ import re
 import pytest
 
 import pycodex.cloud_tasks as cloud_tasks_module
+import pycodex.cloud_tasks.util as cloud_tasks_util
 from pycodex.cloud_tasks import (
     App,
     ApplyCommand,
@@ -369,8 +370,8 @@ def test_load_auth_manager_uses_codex_home_config_and_disables_api_key_env(tmp_p
         encoding="utf-8",
     )
     CapturingAuthManagerFactory.calls = []
-    monkeypatch.setattr(cloud_tasks_module, "find_codex_home", lambda: tmp_path)
-    monkeypatch.setattr(cloud_tasks_module, "AuthManager", CapturingAuthManagerFactory)
+    monkeypatch.setattr(cloud_tasks_util, "find_codex_home", lambda: tmp_path)
+    monkeypatch.setattr(cloud_tasks_util, "AuthManager", CapturingAuthManagerFactory)
 
     manager = asyncio.run(load_auth_manager())
 
@@ -389,8 +390,8 @@ def test_load_auth_manager_prefers_explicit_base_url_and_returns_none_on_config_
         'chatgpt_base_url = "https://configured.example/backend-api"\n',
         encoding="utf-8",
     )
-    monkeypatch.setattr(cloud_tasks_module, "find_codex_home", lambda: tmp_path)
-    monkeypatch.setattr(cloud_tasks_module, "AuthManager", CapturingAuthManagerFactory)
+    monkeypatch.setattr(cloud_tasks_util, "find_codex_home", lambda: tmp_path)
+    monkeypatch.setattr(cloud_tasks_util, "AuthManager", CapturingAuthManagerFactory)
 
     manager = asyncio.run(load_auth_manager("https://override.example/backend-api"))
 
@@ -400,7 +401,7 @@ def test_load_auth_manager_prefers_explicit_base_url_and_returns_none_on_config_
     ]
 
     monkeypatch.setattr(
-        cloud_tasks_module,
+        cloud_tasks_util,
         "find_codex_home",
         lambda: (_ for _ in ()).throw(FileNotFoundError("missing CODEX_HOME")),
     )

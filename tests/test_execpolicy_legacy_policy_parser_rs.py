@@ -6,17 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from pycodex.execpolicy_legacy import ArgType
-from pycodex.execpolicy_legacy import ExecCall
-from pycodex.execpolicy_legacy import Forbidden
-from pycodex.execpolicy_legacy import MatchedArg
-from pycodex.execpolicy_legacy import MatchedExec
-from pycodex.execpolicy_legacy import MatchedFlag
-from pycodex.execpolicy_legacy import MatchedOpt
-from pycodex.execpolicy_legacy import MissingRequiredOptions
-from pycodex.execpolicy_legacy import OptionFollowedByOptionInsteadOfValue
-from pycodex.execpolicy_legacy import PolicyParser
-from pycodex.execpolicy_legacy import ValidExec
+from pycodex.execpolicy_legacy.arg_type import ArgType
+from pycodex.execpolicy_legacy.exec_call import ExecCall
+from pycodex.execpolicy_legacy.program import Forbidden
+from pycodex.execpolicy_legacy.valid_exec import MatchedArg
+from pycodex.execpolicy_legacy.program import MatchedExec
+from pycodex.execpolicy_legacy.valid_exec import MatchedFlag
+from pycodex.execpolicy_legacy.valid_exec import MatchedOpt
+from pycodex.execpolicy_legacy.error import MissingRequiredOptions
+from pycodex.execpolicy_legacy.error import OptionFollowedByOptionInsteadOfValue
+from pycodex.execpolicy_legacy.policy_parser import PolicyParser
+from pycodex.execpolicy_legacy.valid_exec import ValidExec
 from pycodex.execpolicy_legacy import get_default_policy
 
 

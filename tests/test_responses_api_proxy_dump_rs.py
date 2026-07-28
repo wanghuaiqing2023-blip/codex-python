@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pycodex.responses_api_proxy import ExchangeDumper
+from pycodex.responses_api_proxy.dump import ExchangeDumper
 
 
 def _single_dump_file(dump_dir: Path, suffix: str) -> Path:

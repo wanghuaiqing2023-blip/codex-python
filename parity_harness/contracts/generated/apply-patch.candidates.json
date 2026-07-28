@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 7,
-    "python_files": 1,
-    "modules_with_candidates": 2,
-    "modules_with_anchors": 1
+    "python_files": 7,
+    "modules_with_candidates": 7,
+    "modules_with_anchors": 7
   },
   "contracts": [
     {
@@ -25,8 +25,10 @@
       },
       "python_candidates": [
         {
-          "owner": "pycodex/apply_patch/__init__.py",
-          "anchor_candidates": []
+          "owner": "pycodex/apply_patch/bin/apply_patch.py",
+          "anchor_candidates": [
+            "main"
+          ]
         }
       ],
       "review": {
@@ -78,7 +80,18 @@
         "source": "codex/codex-rs/apply-patch/src/invocation.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/apply_patch/invocation.py",
+          "anchor_candidates": [
+            "MaybeApplyPatch",
+            "maybe_parse_apply_patch",
+            "maybe_parse_apply_patch_verified",
+            "verify_apply_patch_args",
+            "APPLY_PATCH_COMMANDS"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -94,7 +107,25 @@
         "source": "codex/codex-rs/apply-patch/src/parser.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/apply_patch/parser.py",
+          "anchor_candidates": [
+            "ADD_FILE_MARKER",
+            "BEGIN_PATCH_MARKER",
+            "CHANGE_CONTEXT_MARKER",
+            "DELETE_FILE_MARKER",
+            "EMPTY_CHANGE_CONTEXT_MARKER",
+            "END_PATCH_MARKER",
+            "ENVIRONMENT_ID_MARKER",
+            "EOF_MARKER",
+            "Hunk",
+            "MOVE_TO_MARKER",
+            "UPDATE_FILE_MARKER",
+            "UpdateFileChunk"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -110,7 +141,14 @@
         "source": "codex/codex-rs/apply-patch/src/seek_sequence.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/apply_patch/seek_sequence.py",
+          "anchor_candidates": [
+            "seek_sequence"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -126,7 +164,14 @@
         "source": "codex/codex-rs/apply-patch/src/standalone_executable.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/apply_patch/standalone_executable.py",
+          "anchor_candidates": [
+            "run_main"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -142,7 +187,17 @@
         "source": "codex/codex-rs/apply-patch/src/streaming_parser.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/apply_patch/streaming_parser.py",
+          "anchor_candidates": [
+            "StreamingPatchParser",
+            "finish",
+            "push_delta",
+            "ENVIRONMENT_ID_MARKER"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

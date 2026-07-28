@@ -68,6 +68,8 @@ from .cli import ExecCli
 from .event_processor import (
     final_message_from_notification_items,
     handle_last_message,
+)
+from .event_processor_with_human_output import (
     should_print_final_message_to_stdout,
     should_print_final_message_to_tty,
 )

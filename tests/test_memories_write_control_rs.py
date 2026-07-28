@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pycodex.memories.write import clear_memory_root_contents
+from pycodex.memories.write.control import clear_memory_root_contents
 
 
 def test_clear_memory_root_contents_preserves_root_directory(tmp_path: Path) -> None:

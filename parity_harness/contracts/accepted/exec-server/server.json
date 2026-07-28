@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-exec-server.server",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "server",
+    "source": "codex/codex-rs/exec-server/src/server.rs",
+    "anchors": [
+      "DEFAULT_LISTEN_URL",
+      "ExecServerListenUrlParseError",
+      "run_main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/server/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/exec_server/server/__init__.py"
+    ],
+    "anchors": [
+      "DEFAULT_LISTEN_URL",
+      "ExecServerListenUrlParseError",
+      "run_main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_server_rs.py"
+  ]
+}

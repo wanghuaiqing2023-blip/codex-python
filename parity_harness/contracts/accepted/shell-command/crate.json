@@ -8,6 +8,7 @@
     "source": "codex/codex-rs/shell-command/src/lib.rs",
     "anchors": [
       "module:shell_detect",
+      "module:bash",
       "module:command_safety",
       "module:parse_command",
       "module:powershell"
@@ -22,6 +23,7 @@
     ],
     "anchors": [
       "module:shell_detect",
+      "module:bash",
       "module:command_safety",
       "module:parse_command",
       "module:powershell"

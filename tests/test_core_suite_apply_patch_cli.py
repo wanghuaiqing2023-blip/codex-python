@@ -8,8 +8,8 @@ from pycodex.apply_patch import (
     StreamingPatchParser,
     ApplyPatchFileChange,
     apply_patch_action_to_disk,
-    maybe_parse_apply_patch_verified,
 )
+from pycodex.apply_patch.invocation import maybe_parse_apply_patch_verified
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.handlers.apply_patch import convert_apply_patch_hunks_to_protocol

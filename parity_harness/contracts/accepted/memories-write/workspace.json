@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-memories-write.workspace",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "workspace",
+    "source": "codex/codex-rs/memories/write/src/workspace.rs",
+    "anchors": [
+      "memory_workspace_diff",
+      "prepare_memory_workspace",
+      "previous_char_boundary",
+      "remove_workspace_diff",
+      "render_workspace_diff_file",
+      "reset_memory_workspace_baseline",
+      "write_workspace_diff"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/workspace.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/write/workspace.py"
+    ],
+    "anchors": [
+      "memory_workspace_diff",
+      "prepare_memory_workspace",
+      "previous_char_boundary",
+      "remove_workspace_diff",
+      "render_workspace_diff_file",
+      "reset_memory_workspace_baseline",
+      "write_workspace_diff"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_workspace_rs.py"
+  ]
+}

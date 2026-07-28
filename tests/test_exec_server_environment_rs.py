@@ -8,12 +8,14 @@ from pycodex.exec_server import (
     LOCAL_ENVIRONMENT_ID,
     REMOTE_ENVIRONMENT_ID,
     Environment,
-    EnvironmentDefault,
     EnvironmentManager,
-    EnvironmentProviderSnapshot,
     ExecServerError,
     ExecServerRuntimePaths,
     LocalFileSystem,
+)
+from pycodex.exec_server.environment_provider import (
+    EnvironmentDefault,
+    EnvironmentProviderSnapshot,
 )
 
 

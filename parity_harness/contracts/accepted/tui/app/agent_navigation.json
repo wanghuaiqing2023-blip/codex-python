@@ -16,8 +16,8 @@
       "has_non_primary_thread",
       "is_empty",
       "mark_closed",
-      "ordered_thread_ids",
       "ordered_threads",
+      "tracked_thread_ids",
       "picker_subtitle"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
@@ -38,8 +38,8 @@
       "has_non_primary_thread",
       "is_empty",
       "mark_closed",
-      "ordered_thread_ids",
       "ordered_threads",
+      "tracked_thread_ids",
       "picker_subtitle"
     ]
   },

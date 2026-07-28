@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from pycodex.execpolicy import ExecPolicyCheckCommand, ExecPolicyCli, parse_execpolicy_cli, run_execpolicy_cli
+from pycodex.execpolicy import ExecPolicyCheckCommand
+from pycodex.execpolicy.main import Cli, main, parse_execpolicy_cli
 
 
 def test_parse_execpolicy_cli_builds_check_command():
@@ -23,7 +24,7 @@ def test_parse_execpolicy_cli_builds_check_command():
         ]
     )
 
-    assert cli == ExecPolicyCli(
+    assert cli == Cli(
         ExecPolicyCheckCommand(
             rules=[Path("policy.rules")],
             command=["git", "status"],
@@ -61,7 +62,7 @@ def test_parse_execpolicy_cli_requires_rules_and_command():
         parse_execpolicy_cli(["check", "--rules", "policy.rules"])
 
 
-def test_run_execpolicy_cli_dispatches_to_check_command_and_reports_missing_policy():
+def test_main_dispatches_to_check_command_and_reports_missing_policy():
     """Rust main.rs dispatches Check(cmd) to cmd.run; load_policies reports missing files."""
     with pytest.raises(OSError, match="failed to read policy at"):
-        run_execpolicy_cli(["check", "--rules", "policy.rules", "git", "status"])
+        main(["check", "--rules", "policy.rules", "git", "status"])

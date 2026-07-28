@@ -4,13 +4,8 @@
   "python_root": "pycodex/external_agent_sessions",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::detect",
-    "crate::export",
-    "crate::ledger",
-    "crate::records"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

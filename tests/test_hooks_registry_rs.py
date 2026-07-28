@@ -19,7 +19,7 @@ from datetime import timezone
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 
-import pycodex.hooks as hooks_mod
+import pycodex.hooks.registry as hooks_mod
 from pycodex.hooks import Hook
 from pycodex.hooks import HookEvent
 from pycodex.hooks import HookEventAfterAgent

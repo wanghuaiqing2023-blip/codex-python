@@ -17,16 +17,16 @@ from pathlib import PurePosixPath
 from types import SimpleNamespace
 
 from pycodex.hooks import PermissionRequestDecision
-from pycodex.hooks import PermissionRequestHandlerData
+from pycodex.hooks.events.permission_request import PermissionRequestHandlerData
 from pycodex.hooks import PermissionRequestRequest
 from pycodex.hooks import SubagentHookContext
-from pycodex.hooks import _running_summary
-from pycodex.hooks import hook_completed_for_tool_use
-from pycodex.hooks import hook_run_for_tool_use
-from pycodex.hooks import parse_permission_request_completed
-from pycodex.hooks import permission_request_command_input_json
-from pycodex.hooks import resolve_permission_request_decision
-from pycodex.hooks import serialization_failure_hook_events_for_tool_use
+from pycodex.hooks.engine.dispatcher import _running_summary
+from pycodex.hooks.events.common import hook_completed_for_tool_use
+from pycodex.hooks.events.common import hook_run_for_tool_use
+from pycodex.hooks.events.permission_request import parse_permission_request_completed
+from pycodex.hooks.events.permission_request import permission_request_command_input_json
+from pycodex.hooks.events.permission_request import resolve_permission_request_decision
+from pycodex.hooks.events.common import serialization_failure_hook_events_for_tool_use
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookOutputEntry
 from pycodex.protocol import HookOutputEntryKind

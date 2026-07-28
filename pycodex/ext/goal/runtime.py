@@ -9,6 +9,7 @@ from pycodex.protocol import ModeKind, ThreadGoalStatus
 from pycodex.state import GoalAccountingMode, ThreadGoalStatus as StateGoalStatus
 
 from .accounting import BudgetLimitedGoalDisposition, GoalAccountingState
+from .metrics import GoalMetrics
 from .steering import budget_limit_steering_item, objective_updated_steering_item
 from .tool import protocol_goal_from_state
 
@@ -34,12 +35,14 @@ class GoalRuntimeHandle:
         *,
         thread_id: Any = None,
         event_emitter: Any = None,
+        metrics: GoalMetrics,
         enabled: bool,
     ) -> None:
         self.session = session
         self.state_dbs = state_dbs
         self.thread_id = thread_id
         self.event_emitter = event_emitter
+        self.metrics = metrics
         self.accounting_state = GoalAccountingState()
         self._enabled = bool(enabled)
 
@@ -55,6 +58,7 @@ class GoalRuntimeHandle:
         goal = await self._state_goal()
         if goal is not None and goal.status is StateGoalStatus.ACTIVE:
             self.accounting_state.mark_idle_goal_active(goal.goal_id)
+            self.metrics.record_resumed()
         else:
             self.accounting_state.clear_active_goal()
 
@@ -83,6 +87,18 @@ class GoalRuntimeHandle:
     ) -> None:
         if not self._enabled:
             return
+        replaced_existing_goal = (
+            previous_goal is not None and previous_goal.goal_id != goal.goal_id
+        )
+        if previous_goal is None or replaced_existing_goal:
+            self.metrics.record_created()
+        previous_status = (
+            None
+            if previous_goal is None or replaced_existing_goal
+            else previous_goal.status
+        )
+        self.metrics.record_resumed_if_status_changed(previous_status, goal.status)
+        self.metrics.record_terminal_if_status_changed(previous_status, goal)
         if goal.status is StateGoalStatus.ACTIVE:
             if self.accounting_state.current_turn_id() is None:
                 self.accounting_state.mark_idle_goal_active(goal.goal_id)
@@ -135,9 +151,11 @@ class GoalRuntimeHandle:
         limiter = getattr(self._thread_goals(), "usage_limit_active_thread_goal", None)
         if not callable(limiter):
             return
+        previous_status = await self._current_goal_status_for_metrics()
         state_goal = await _maybe_await(limiter(self._thread_id()))
         if state_goal is None:
             return
+        self.metrics.record_terminal_if_status_changed(previous_status, state_goal)
         self.accounting_state.clear_active_goal()
         await self._emit_goal_updated(
             f"{turn_id}:usage-limit",
@@ -160,6 +178,9 @@ class GoalRuntimeHandle:
         snapshot = self.accounting_state.progress_snapshot(turn_id)
         if snapshot is None:
             return None
+        previous_status = await self._current_goal_status_for_metrics(
+            snapshot.expected_goal_id
+        )
         outcome = await _maybe_await(
             self._thread_goals().account_thread_goal_usage(
                 self._thread_id(),
@@ -172,6 +193,7 @@ class GoalRuntimeHandle:
         if not bool(getattr(outcome, "updated", False)):
             return None
         state_goal = outcome.goal
+        self.metrics.record_terminal_if_status_changed(previous_status, state_goal)
         self.accounting_state.mark_progress_accounted_for_status(
             turn_id,
             snapshot,
@@ -191,6 +213,9 @@ class GoalRuntimeHandle:
         snapshot = self.accounting_state.idle_progress_snapshot()
         if snapshot is None:
             return None
+        previous_status = await self._current_goal_status_for_metrics(
+            snapshot.expected_goal_id
+        )
         outcome = await _maybe_await(
             self._thread_goals().account_thread_goal_usage(
                 self._thread_id(),
@@ -204,6 +229,7 @@ class GoalRuntimeHandle:
             self.accounting_state.reset_idle_progress_baseline_and_clear_active_goal()
             return None
         state_goal = outcome.goal
+        self.metrics.record_terminal_if_status_changed(previous_status, state_goal)
         self.accounting_state.mark_idle_progress_accounted_for_status(
             snapshot,
             state_goal.status,
@@ -241,6 +267,17 @@ class GoalRuntimeHandle:
 
     async def _state_goal(self) -> Any:
         return await _maybe_await(self._thread_goals().get_thread_goal(self._thread_id()))
+
+    async def _current_goal_status_for_metrics(
+        self,
+        expected_goal_id: str | None = None,
+    ) -> StateGoalStatus | None:
+        goal = await self._state_goal()
+        if goal is None:
+            return None
+        if expected_goal_id is not None and goal.goal_id != expected_goal_id:
+            return None
+        return goal.status
 
     def _thread_goals(self) -> Any:
         value = getattr(self.state_dbs, "thread_goals", None)

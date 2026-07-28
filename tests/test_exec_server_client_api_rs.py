@@ -5,16 +5,18 @@ from pathlib import Path
 import pytest
 
 from pycodex.exec_server import (
+    ExecServerClientConnectOptions,
+    HttpClient,
+    HttpRequestParams,
+    RemoteExecServerConnectArgs,
+)
+from pycodex.exec_server.client_api import (
     DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
     DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
     DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT_SECONDS,
-    ExecServerClientConnectOptions,
     ExecServerTransportKind,
     ExecServerTransportParams,
-    HttpClient,
-    HttpRequestParams,
-    RemoteExecServerConnectArgs,
     StdioExecServerCommand,
     StdioExecServerConnectArgs,
 )

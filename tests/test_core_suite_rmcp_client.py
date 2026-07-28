@@ -4,11 +4,14 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from pycodex.config.types import OAuthCredentialsStoreMode
 from pycodex.protocol import McpInvocation
 from pycodex.rmcp_client import (
     DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
     MCP_SANDBOX_STATE_META_CAPABILITY,
+    OAuthTokenResponse,
     REMOTE_MCP_ENVIRONMENT,
     TEXT_ONLY_IMAGE_OMISSION_TEXT,
     StoredOAuthTokens,
@@ -21,7 +24,6 @@ from pycodex.rmcp_client import (
     mcp_call_begin_event,
     mcp_call_end_event,
     mcp_namespace,
-    read_fallback_oauth_tokens,
     remote_aware_environment_id,
     resolved_env_value,
     responses_output_from_mcp_result,
@@ -33,7 +35,6 @@ from pycodex.rmcp_client import (
     sync_tool_result,
     unwrap_mcp_output,
     wrap_mcp_output,
-    write_fallback_oauth_tokens,
 )
 
 
@@ -160,22 +161,50 @@ class RmcpClientSuiteParityTests(unittest.TestCase):
         # Rust source: core/tests/suite/rmcp_client.rs::streamable_http_with_oauth_round_trip
         server_name = "rmcp_http_oauth"
         server_url = "http://127.0.0.1:8080/mcp"
-        delete_oauth_tokens(server_name, server_url)
-
-        self.assertEqual(
-            asyncio.run(determine_streamable_http_auth_status(server_name, server_url)).value,
-            "unauthenticated",
-        )
-        save_oauth_tokens(server_name, server_url, WrappedOAuthTokenResponse(StoredOAuthTokens("initial-access-token", "initial-refresh-token")))
-        self.assertEqual(load_oauth_tokens(server_name, server_url).access_token, "initial-access-token")
-        self.assertEqual(
-            asyncio.run(determine_streamable_http_auth_status(server_name, server_url)).value,
-            "authenticated",
-        )
         with tempfile.TemporaryDirectory() as tmpdir:
-            write_fallback_oauth_tokens(tmpdir, server_name, server_url, "test-client-id", "initial-access-token", "initial-refresh-token")
-            loaded = read_fallback_oauth_tokens(tmpdir, server_name, server_url)
-        self.assertEqual(loaded, StoredOAuthTokens("initial-access-token", "initial-refresh-token"))
+            with patch.dict("os.environ", {"CODEX_HOME": tmpdir}):
+                store_mode = OAuthCredentialsStoreMode.FILE
+                delete_oauth_tokens(server_name, server_url, store_mode)
+                self.assertEqual(
+                    asyncio.run(
+                        determine_streamable_http_auth_status(
+                            server_name,
+                            server_url,
+                            store_mode=store_mode,
+                        )
+                    ).value,
+                    "unsupported",
+                )
+                stored = StoredOAuthTokens(
+                    server_name=server_name,
+                    url=server_url,
+                    client_id="test-client-id",
+                    token_response=WrappedOAuthTokenResponse(
+                        OAuthTokenResponse(
+                            access_token="initial-access-token",
+                            refresh_token="initial-refresh-token",
+                        )
+                    ),
+                    expires_at=None,
+                )
+                save_oauth_tokens(server_name, stored, store_mode)
+                loaded = load_oauth_tokens(server_name, server_url, store_mode)
+                self.assertIsNotNone(loaded)
+                assert loaded is not None
+                self.assertEqual(
+                    loaded.token_response.response.access_token,
+                    "initial-access-token",
+                )
+                self.assertEqual(
+                    asyncio.run(
+                        determine_streamable_http_auth_status(
+                            server_name,
+                            server_url,
+                            store_mode=store_mode,
+                        )
+                    ).value,
+                    "oauth",
+                )
 
 
 if __name__ == "__main__":

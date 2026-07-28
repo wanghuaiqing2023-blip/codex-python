@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-memories-write.stage_one",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "stage_one",
+    "source": "codex/codex-rs/memories/write/src/lib.rs",
+    "anchors": [
+      "CONCURRENCY_LIMIT",
+      "CONTEXT_WINDOW_PERCENT",
+      "DEFAULT_ROLLOUT_TOKEN_LIMIT",
+      "JOB_LEASE_SECONDS",
+      "JOB_RETRY_DELAY_SECONDS",
+      "MODEL",
+      "PROMPT",
+      "PRUNE_BATCH_SIZE",
+      "REASONING_EFFORT",
+      "THREAD_SCAN_LIMIT"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/stage_one.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/write/stage_one.py"
+    ],
+    "anchors": [
+      "CONCURRENCY_LIMIT",
+      "CONTEXT_WINDOW_PERCENT",
+      "DEFAULT_ROLLOUT_TOKEN_LIMIT",
+      "JOB_LEASE_SECONDS",
+      "JOB_RETRY_DELAY_SECONDS",
+      "MODEL",
+      "PROMPT",
+      "PRUNE_BATCH_SIZE",
+      "REASONING_EFFORT",
+      "THREAD_SCAN_LIMIT"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_phase1_rs.py"
+  ]
+}

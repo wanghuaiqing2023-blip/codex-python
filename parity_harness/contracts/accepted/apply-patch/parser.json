@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-apply-patch.parser",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-apply-patch",
+    "module": "parser",
+    "source": "codex/codex-rs/apply-patch/src/parser.rs",
+    "anchors": [
+      "ADD_FILE_MARKER",
+      "BEGIN_PATCH_MARKER",
+      "CHANGE_CONTEXT_MARKER",
+      "DELETE_FILE_MARKER",
+      "EMPTY_CHANGE_CONTEXT_MARKER",
+      "END_PATCH_MARKER",
+      "ENVIRONMENT_ID_MARKER",
+      "EOF_MARKER",
+      "Hunk",
+      "MOVE_TO_MARKER",
+      "UPDATE_FILE_MARKER",
+      "UpdateFileChunk"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/apply_patch/parser.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/apply_patch/parser.py"],
+    "anchors": [
+      "ADD_FILE_MARKER",
+      "BEGIN_PATCH_MARKER",
+      "CHANGE_CONTEXT_MARKER",
+      "DELETE_FILE_MARKER",
+      "EMPTY_CHANGE_CONTEXT_MARKER",
+      "END_PATCH_MARKER",
+      "ENVIRONMENT_ID_MARKER",
+      "EOF_MARKER",
+      "Hunk",
+      "MOVE_TO_MARKER",
+      "UPDATE_FILE_MARKER",
+      "UpdateFileChunk"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_apply_patch_module_ownership_rs.py"]
+}

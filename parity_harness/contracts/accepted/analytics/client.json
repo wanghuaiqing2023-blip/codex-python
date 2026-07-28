@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-analytics.client",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-analytics",
+    "module": "client",
+    "source": "codex/codex-rs/analytics/src/client.rs",
+    "anchors": [
+      "ANALYTICS_EVENT_DEDUPE_MAX_KEYS",
+      "AnalyticsEventsClient",
+      "AnalyticsEventsQueue",
+      "send_track_events",
+      "send_track_events_request",
+      "track_event_request_batches"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/analytics/client.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/analytics/client.py"
+    ],
+    "anchors": [
+      "ANALYTICS_EVENT_DEDUPE_MAX_KEYS",
+      "AnalyticsEventsClient",
+      "AnalyticsEventsQueue",
+      "send_track_events",
+      "send_track_events_request",
+      "track_event_request_batches"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_analytics_client_rs.py"
+  ]
+}

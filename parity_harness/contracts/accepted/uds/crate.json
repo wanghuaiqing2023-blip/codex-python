@@ -14,8 +14,6 @@
       "connect",
       "is_stale_socket_path",
       "prepare_private_socket_directory",
-      "SOCKET_DIR_MODE",
-      "SOCKET_DIR_PERMISSION_BITS",
       "read",
       "write"
     ],
@@ -35,8 +33,6 @@
       "connect",
       "is_stale_socket_path",
       "prepare_private_socket_directory",
-      "SOCKET_DIR_MODE",
-      "SOCKET_DIR_PERMISSION_BITS",
       "read",
       "write"
     ]
@@ -46,5 +42,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_uds_lib_rs.py",
+    "tests/test_uds_module_ownership_rs.py"
+  ]
 }

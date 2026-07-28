@@ -14,7 +14,6 @@ from pycodex.execpolicy import (
     ErrorLocation,
     Evaluation,
     ExecPolicyCheckCommand,
-    ExecPolicyError,
     MatchOptions,
     NetworkRuleProtocol,
     PatternToken,
@@ -30,6 +29,7 @@ from pycodex.execpolicy import (
     blocking_append_allow_prefix_rule,
     blocking_append_network_rule,
 )
+from pycodex.execpolicy.error import ExecPolicyError
 
 
 def test_lib_public_exports_are_available_from_package_root():

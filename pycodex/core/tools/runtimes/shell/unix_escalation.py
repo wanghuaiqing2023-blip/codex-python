@@ -205,7 +205,8 @@ def commands_for_intercepted_exec_policy(program: str | Path, argv: tuple[str, .
     return CandidateCommands((join_program_and_argv(program, argv_tuple),), False)
 
 def evaluate_intercepted_exec_policy(policy: Any, program: str | Path, argv: tuple[str, ...] | list[str], context: InterceptedExecPolicyContext) -> InterceptedExecPolicyEvaluation:
-    from pycodex.execpolicy import Decision, strongest_decision
+    from pycodex.core.exec_policy import strongest_decision
+    from pycodex.execpolicy import Decision
     if not isinstance(context, InterceptedExecPolicyContext):
         raise TypeError('context must be InterceptedExecPolicyContext')
     if context.enable_shell_wrapper_parsing:

@@ -38,7 +38,6 @@ def test_lib_rs_all_exports_public_facade_names() -> None:
         "spawn_from_driver",
         "spawn_pipe_process",
         "spawn_pipe_process_no_stdin",
-        "spawn_pipe_process_no_stdin_with_inherited_fds",
         "spawn_pty_process",
     }
 

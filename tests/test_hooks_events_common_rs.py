@@ -15,18 +15,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from pycodex.hooks import append_additional_context
-from pycodex.hooks import flatten_additional_contexts
-from pycodex.hooks import hook_completed_for_tool_use
-from pycodex.hooks import hook_run_for_tool_use
-from pycodex.hooks import join_text_chunks
-from pycodex.hooks import matcher_inputs
-from pycodex.hooks import matcher_pattern_for_event
-from pycodex.hooks import matches_matcher
-from pycodex.hooks import serialization_failure_hook_events
-from pycodex.hooks import serialization_failure_hook_events_for_tool_use
-from pycodex.hooks import trimmed_non_empty
-from pycodex.hooks import validate_matcher_pattern
+from pycodex.hooks.events.common import append_additional_context
+from pycodex.hooks.events.common import flatten_additional_contexts
+from pycodex.hooks.events.common import hook_completed_for_tool_use
+from pycodex.hooks.events.common import hook_run_for_tool_use
+from pycodex.hooks.events.common import join_text_chunks
+from pycodex.hooks.events.common import matcher_inputs
+from pycodex.hooks.events.common import matcher_pattern_for_event
+from pycodex.hooks.events.common import matches_matcher
+from pycodex.hooks.events.common import serialization_failure_hook_events
+from pycodex.hooks.events.common import serialization_failure_hook_events_for_tool_use
+from pycodex.hooks.events.common import trimmed_non_empty
+from pycodex.hooks.events.common import validate_matcher_pattern
 from pycodex.protocol import HookCompletedEvent
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookExecutionMode

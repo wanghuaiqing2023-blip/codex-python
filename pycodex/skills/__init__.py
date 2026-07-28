@@ -5,7 +5,6 @@ from .system import (
     embedded_system_skills_fingerprint,
     install_system_skills,
     system_cache_root_dir,
-    uninstall_system_skills,
 )
 
 __all__ = [
@@ -13,5 +12,4 @@ __all__ = [
     "embedded_system_skills_fingerprint",
     "install_system_skills",
     "system_cache_root_dir",
-    "uninstall_system_skills",
 ]

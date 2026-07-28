@@ -1,10 +1,4 @@
-"""Parse shell commands into Codex display summaries.
-
-Ported from ``codex/codex-rs/shell-command/src/parse_command.rs`` with a
-standard-library shell tokenizer instead of tree-sitter. The public protocol
-shape is identical; the parser intentionally falls back to ``unknown`` when the
-script is not a plain word-only command sequence.
-"""
+"""Parse shell commands into Codex display summaries."""
 
 from __future__ import annotations
 
@@ -14,10 +8,26 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from pycodex.protocol.parse_command import ParsedCommand
+from pycodex.shell_command.bash import (
+    extract_bash_command,
+    parse_shell_lc_plain_commands,
+    parse_shell_lc_single_command_prefix,
+    try_parse_shell,
+    try_parse_word_only_commands_sequence,
+)
+from pycodex.shell_command.powershell import extract_powershell_command
+
+
+"""Parse shell commands into Codex display summaries.
+
+Ported from ``codex/codex-rs/shell-command/src/parse_command.rs`` with a
+standard-library shell tokenizer instead of tree-sitter. The public protocol
+shape is identical; the parser intentionally falls back to ``unknown`` when the
+script is not a plain word-only command sequence.
+"""
 
 
 CONNECTORS = {"&&", "||", "|", ";"}
-POWERSHELL_FLAGS = {"-nologo", "-noprofile", "-command", "-c"}
 
 
 def shlex_join(tokens: Sequence[str]) -> str:
@@ -46,38 +56,6 @@ def _executable_name(path: str) -> str:
     if name.endswith(".exe"):
         name = name[:-4]
     return name
-
-
-def _is_bashish(path: str) -> bool:
-    return _executable_name(path) in {"bash", "zsh", "sh"}
-
-
-def _is_powershellish(path: str) -> bool:
-    return _executable_name(path) in {"powershell", "pwsh"}
-
-
-def extract_bash_command(command: Sequence[str]) -> tuple[str, str] | None:
-    if len(command) != 3:
-        return None
-    shell, flag, script = command
-    if flag not in {"-lc", "-c"} or not _is_bashish(shell):
-        return None
-    return shell, script
-
-
-def extract_powershell_command(command: Sequence[str]) -> tuple[str, str] | None:
-    if len(command) < 3 or not _is_powershellish(command[0]):
-        return None
-    index = 1
-    while index + 1 < len(command):
-        flag = command[index]
-        flag_lc = flag.lower()
-        if flag_lc not in POWERSHELL_FLAGS:
-            return None
-        if flag_lc in {"-command", "-c"}:
-            return command[0], command[index + 1]
-        index += 1
-    return None
 
 
 def extract_shell_command(command: Sequence[str]) -> tuple[str, str] | None:
@@ -127,187 +105,6 @@ def parse_command_impl(command: Sequence[str]) -> list[ParsedCommand]:
         commands.append(parsed)
 
     return simplify_commands(commands)
-
-
-def parse_shell_lc_plain_commands(command: Sequence[str]) -> list[list[str]] | None:
-    """Return word-only commands from a bash/zsh/sh wrapper.
-
-    This mirrors ``bash::parse_shell_lc_plain_commands`` for callers that need a
-    safety-oriented argv view. It is intentionally conservative with the
-    standard library tokenizer: unsupported shell punctuation, redirection, and
-    subshell-like tokens return ``None``.
-    """
-
-    extracted = extract_bash_command(command)
-    if extracted is None:
-        return None
-    script = extracted[1]
-    if _contains_unsupported_bash_plain_construct(script):
-        return None
-    tokens = _bash_plain_split(script)
-    if tokens is None or _contains_unsupported_shell_token(tokens):
-        return None
-    if _has_empty_connector_segment(tokens):
-        return None
-    commands = split_on_connectors(tokens) if contains_connectors(tokens) else [tokens]
-    if not commands or any(not item for item in commands):
-        return None
-    return commands
-
-
-def _bash_plain_split(script: str) -> list[str] | None:
-    lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return list(lexer)
-    except ValueError:
-        return None
-
-
-def _contains_unsupported_bash_plain_construct(script: str) -> bool:
-    if "`" in script or ";;" in script:
-        return True
-    if _has_unquoted_single_ampersand(script):
-        return True
-    if _has_unquoted_dollar_expansion(script):
-        return True
-    if _has_unquoted_shell_grouping_or_redirection(script):
-        return True
-    tokens = _bash_plain_split(script)
-    if tokens is None or not tokens:
-        return True
-    if tokens[0] in CONNECTORS or tokens[-1] in CONNECTORS:
-        return True
-    if tokens[0] == "env":
-        tokens = tokens[1:]
-        while tokens and _is_assignment_word(tokens[0]):
-            tokens = tokens[1:]
-        return not tokens
-    return _is_assignment_word(tokens[0])
-
-
-def _has_unquoted_shell_grouping_or_redirection(script: str) -> bool:
-    in_single = False
-    in_double = False
-    escaped = False
-    for char in script:
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\":
-            escaped = True
-            continue
-        if char == "'" and not in_double:
-            in_single = not in_single
-            continue
-        if char == '"' and not in_single:
-            in_double = not in_double
-            continue
-        if not in_single and not in_double and char in "(){}<>":
-            return True
-    return False
-
-
-def _has_unquoted_single_ampersand(script: str) -> bool:
-    in_single = False
-    in_double = False
-    escaped = False
-    for index, char in enumerate(script):
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\":
-            escaped = True
-            continue
-        if char == "'" and not in_double:
-            in_single = not in_single
-            continue
-        if char == '"' and not in_single:
-            in_double = not in_double
-            continue
-        if char == "&" and not in_single and not in_double:
-            previous_is_amp = index > 0 and script[index - 1] == "&"
-            next_is_amp = index + 1 < len(script) and script[index + 1] == "&"
-            if not previous_is_amp and not next_is_amp:
-                return True
-    return False
-
-
-def _has_unquoted_dollar_expansion(script: str) -> bool:
-    in_single = False
-    escaped = False
-    for index, char in enumerate(script):
-        if escaped:
-            escaped = False
-            continue
-        if char == "\\":
-            escaped = True
-            continue
-        if char == "'":
-            in_single = not in_single
-            continue
-        if char == "$" and not in_single:
-            next_char = script[index + 1] if index + 1 < len(script) else ""
-            if next_char == "" or next_char.isspace():
-                continue
-            return True
-    return False
-
-
-def _is_assignment_word(token: str) -> bool:
-    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token) is not None
-
-
-def parse_shell_lc_single_command_prefix(command: Sequence[str]) -> list[str] | None:
-    """Return the command words before a single heredoc redirect.
-
-    Upstream uses tree-sitter to accept a single command with ``<<`` and reject
-    other redirects, chained commands, substitutions, and assignment prefixes.
-    This stdlib port keeps the same conservative surface for exec-policy
-    matching.
-    """
-
-    extracted = extract_bash_command(command)
-    if extracted is None:
-        return None
-    script = extracted[1]
-    if "<<" not in script or "<<<" in script:
-        return None
-
-    prefix, rest = script.split("<<", 1)
-    prefix = prefix.strip()
-    if not prefix or any(marker in prefix for marker in (";", "|", "&", ">", "<", "$", "`", "(", ")", "{", "}")):
-        return None
-
-    newline_index = rest.find("\n")
-    if newline_index < 0:
-        return None
-    heredoc_header = rest[:newline_index].strip()
-    heredoc_body = rest[newline_index + 1 :]
-
-    delimiter_tokens = _shlex_split(heredoc_header)
-    if delimiter_tokens is None or len(delimiter_tokens) != 1:
-        return None
-    delimiter = delimiter_tokens[0]
-    if not delimiter:
-        return None
-
-    lines = heredoc_body.splitlines()
-    terminator_index = next((index for index, line in enumerate(lines) if line.strip() == delimiter), None)
-    if terminator_index is None:
-        return None
-    if any(line.strip() for line in lines[terminator_index + 1 :]):
-        return None
-
-    words = _shlex_split(prefix)
-    if words is None or not words:
-        return None
-    if "=" in words[0]:
-        return None
-    if _contains_unsupported_shell_token(words):
-        return None
-    return words
 
 
 def simplify_commands(commands: list[ParsedCommand]) -> list[ParsedCommand]:
@@ -656,14 +453,15 @@ def parse_shell_lc_commands(original: Sequence[str]) -> list[ParsedCommand] | No
     if extracted is None:
         return None
     script = extracted[1]
-    script_tokens = _bash_plain_split(script)
-    if script_tokens is None or _contains_unsupported_bash_plain_construct(script):
+    tree = try_parse_shell(script)
+    all_commands = try_parse_word_only_commands_sequence(tree, script)
+    if all_commands is None:
         return [ParsedCommand.unknown(script)]
 
-    all_commands = split_on_connectors(script_tokens) if contains_connectors(script_tokens) else [script_tokens]
     if not all_commands:
         return [ParsedCommand.unknown(script)]
 
+    script_tokens = _shlex_split(script) or [script]
     had_multiple_commands = len(all_commands) > 1
     filtered_commands = drop_small_formatting_commands(all_commands)
     if not filtered_commands:

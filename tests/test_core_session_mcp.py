@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pycodex.app_server_protocol.elicitation import (
+from pycodex.app_server_protocol.mcp import (
     McpElicitationSchema,
     McpServerElicitationRequest,
     McpServerElicitationRequestParams,

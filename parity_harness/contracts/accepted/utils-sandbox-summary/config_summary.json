@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-utils-sandbox-summary.config_summary",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-sandbox-summary",
+    "module": "config_summary",
+    "source": "codex/codex-rs/utils/sandbox-summary/src/config_summary.rs",
+    "anchors": [
+      "create_config_summary_entries"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/sandbox_summary/config_summary.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/sandbox_summary/config_summary.py"
+    ],
+    "anchors": [
+      "create_config_summary_entries"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_sandbox_summary.py"
+  ]
+}

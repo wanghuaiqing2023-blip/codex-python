@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pycodex.execpolicy_legacy import ExecCall
+from pycodex.execpolicy_legacy.exec_call import ExecCall
 
 
 def test_exec_call_new_copies_program_and_args_as_strings() -> None:

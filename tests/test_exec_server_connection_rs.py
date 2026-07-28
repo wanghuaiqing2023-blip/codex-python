@@ -6,7 +6,13 @@ import asyncio
 import json
 
 from pycodex.app_server_protocol import JSONRPCMessage, JSONRPCRequest
-from pycodex.exec_server import JsonRpcConnection, JsonRpcConnectionEvent, JsonRpcTransport, JsonRpcWebSocketMessage, StdioTransport
+from pycodex.exec_server.connection import (
+    JsonRpcConnection,
+    JsonRpcConnectionEvent,
+    JsonRpcTransport,
+    JsonRpcWebSocketMessage,
+    StdioTransport,
+)
 
 
 def test_stdio_connection_reads_messages_skips_blanks_and_reports_eof() -> None:

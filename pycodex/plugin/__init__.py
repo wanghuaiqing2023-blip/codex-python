@@ -6,41 +6,12 @@ Rust source:
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
-class PluginIdError(ValueError):
-    pass
-
-
-def validate_plugin_segment(segment: str) -> None:
-    if not segment or not re.fullmatch(r"[A-Za-z0-9._-]+", segment):
-        raise PluginIdError(f"invalid plugin id segment: {segment}")
-
-
-@dataclass(frozen=True)
-class PluginId:
-    value: str
-
-    @classmethod
-    def parse(cls, value: str) -> "PluginId":
-        if "@" in value:
-            name, marketplace = value.split("@", 1)
-            validate_plugin_segment(name)
-            validate_plugin_segment(marketplace)
-        else:
-            validate_plugin_segment(value)
-        return cls(value)
-
-    def as_key(self) -> str:
-        return self.value
-
-    def __str__(self) -> str:
-        return self.value
+from .plugin_id import PluginId, PluginIdError, validate_plugin_segment
 
 
 @dataclass(frozen=True)
@@ -118,25 +89,12 @@ class PluginTelemetryMetadata:
         return cls(plugin_id)
 
 
-@dataclass
-class EffectiveSkillRoots:
-    roots: list[Path] = field(default_factory=list)
-
-
-@dataclass
-class LoadedPlugin:
-    plugin_id: PluginId
-    root: Path | None = None
-
-
-@dataclass
-class PluginLoadOutcome:
-    loaded_plugins: list[LoadedPlugin] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-
-
-def prompt_safe_plugin_description(description: str | None) -> str | None:
-    return description.strip() if isinstance(description, str) and description.strip() else None
+from .load_outcome import (
+    EffectiveSkillRoots,
+    LoadedPlugin,
+    PluginLoadOutcome,
+    prompt_safe_plugin_description,
+)
 
 
 def mention_syntax(plugin_id: str) -> str:

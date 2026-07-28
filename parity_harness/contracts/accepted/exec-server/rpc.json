@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-exec-server.rpc",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "rpc",
+    "source": "codex/codex-rs/exec-server/src/rpc.rs",
+    "anchors": [
+      "RpcCallError",
+      "RpcClient",
+      "RpcClientEvent",
+      "RpcNotificationSender",
+      "RpcRouter",
+      "RpcServerOutboundMessage",
+      "call",
+      "encode_server_message",
+      "internal_error",
+      "invalid_params",
+      "invalid_request",
+      "is_disconnected"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/rpc.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec_server/rpc.py"
+    ],
+    "anchors": [
+      "RpcCallError",
+      "RpcClient",
+      "RpcClientEvent",
+      "RpcNotificationSender",
+      "RpcRouter",
+      "RpcServerOutboundMessage",
+      "call",
+      "encode_server_message",
+      "internal_error",
+      "invalid_params",
+      "invalid_request",
+      "is_disconnected"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_rpc_rs.py"
+  ]
+}

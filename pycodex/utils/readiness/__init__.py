@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from typing import Protocol
+
+from . import errors as _errors
 
 LOCK_TIMEOUT_SECONDS = 1.0
 
@@ -13,18 +16,18 @@ class Token:
     value: int
 
 
-class ReadinessError(Exception):
-    pass
+class Readiness(Protocol):
+    def is_ready(self) -> bool:
+        ...
 
+    async def subscribe(self) -> Token:
+        ...
 
-class TokenLockFailed(ReadinessError):
-    def __init__(self) -> None:
-        super().__init__("Failed to acquire readiness token lock")
+    async def mark_ready(self, token: Token) -> bool:
+        ...
 
-
-class FlagAlreadyReady(ReadinessError):
-    def __init__(self) -> None:
-        super().__init__("Flag is already ready. Impossible to subscribe")
+    async def wait_ready(self) -> None:
+        ...
 
 
 class ReadinessFlag:
@@ -46,10 +49,10 @@ class ReadinessFlag:
 
     async def subscribe(self) -> Token:
         if self._ready:
-            raise FlagAlreadyReady()
+            raise _errors.FlagAlreadyReady()
         async with await self._lock_with_timeout():
             if self._ready:
-                raise FlagAlreadyReady()
+                raise _errors.FlagAlreadyReady()
             while True:
                 token = Token(self._next_id)
                 self._next_id = _i32_wrap(self._next_id + 1)
@@ -78,7 +81,7 @@ class ReadinessFlag:
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=LOCK_TIMEOUT_SECONDS)
         except TimeoutError as exc:
-            raise TokenLockFailed() from exc
+            raise _errors.TokenLockFailed() from exc
         return _ReadinessLockGuard(self._lock)
 
     def __repr__(self) -> str:
@@ -102,10 +105,8 @@ def _i32_wrap(value: int) -> int:
 
 
 __all__ = [
-    "FlagAlreadyReady",
     "LOCK_TIMEOUT_SECONDS",
-    "ReadinessError",
+    "Readiness",
     "ReadinessFlag",
     "Token",
-    "TokenLockFailed",
 ]

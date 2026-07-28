@@ -4,15 +4,9 @@
   "python_root": "pycodex/state",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "bin::logs_client",
-    "bin::logs_client::formatter",
-    "bin::logs_client::matcher"
-  ],
-  "uncovered_python_files": [
-    "pycodex/state/state_runtime.py"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
   "allowed_unowned": [
     {
       "path": "pycodex/state/runtime/test_support.py",

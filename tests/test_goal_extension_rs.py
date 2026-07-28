@@ -22,6 +22,11 @@ from pycodex.extension_api import (
     ThreadStartInput,
     TurnStartInput,
 )
+from pycodex.otel.metrics.client import MetricsClient
+from pycodex.otel.metrics.names import GOAL_BLOCKED_METRIC
+from pycodex.otel.metrics.names import GOAL_CREATED_METRIC
+from pycodex.otel.metrics.names import GOAL_DURATION_SECONDS_METRIC
+from pycodex.otel.metrics.names import GOAL_TOKEN_COUNT_METRIC
 from pycodex.protocol import (
     CollaborationMode,
     CodexErr,
@@ -149,8 +154,14 @@ def test_installed_tools_share_extension_accounting_and_event_sink() -> None:
     _init_goal_schema(connection)
     state_dbs = SimpleNamespace(thread_goals=lambda: GoalStore(connection))
     sink = _RecordingEventSink()
+    metrics = MetricsClient()
     builder = ExtensionRegistryBuilder.with_event_sink(sink)
-    extension = install_with_backend(builder, state_dbs, lambda _config: True)
+    extension = install_with_backend(
+        builder,
+        state_dbs,
+        lambda _config: True,
+        metrics_client=metrics,
+    )
     registry = builder.build()
     session_store = ExtensionData("session-1")
     thread_store = ExtensionData("00000000-0000-0000-0000-000000000123")
@@ -234,6 +245,16 @@ def test_installed_tools_share_extension_accounting_and_event_sink() -> None:
         ThreadGoalStatus.BLOCKED,
     ]
     assert [event.msg.payload.turn_id for event in sink.events] == ["turn-1", "turn-1", "turn-1"]
+    assert [record.name for record in metrics.counter_records] == [
+        GOAL_CREATED_METRIC,
+        GOAL_BLOCKED_METRIC,
+    ]
+    assert [record.name for record in metrics.histogram_records] == [
+        GOAL_TOKEN_COUNT_METRIC,
+        GOAL_DURATION_SECONDS_METRIC,
+    ]
+    assert metrics.histogram_records[0].value == 23
+    assert metrics.histogram_records[0].tags == [("status", "blocked")]
 
 
 @pytest.mark.asyncio

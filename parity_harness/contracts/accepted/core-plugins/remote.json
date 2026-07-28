@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-core-plugins.remote",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "remote",
+    "source": "codex/codex-rs/core-plugins/src/remote.rs",
+    "anchors": [
+      "REMOTE_GLOBAL_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_GLOBAL_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_WORKSPACE_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME",
+      "RemoteInstalledPlugin",
+      "RemoteInstalledPluginBundleSyncError",
+      "RemoteInstalledPluginBundleSyncOutcome"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/remote/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/core_plugins/remote/__init__.py"
+    ],
+    "anchors": [
+      "REMOTE_GLOBAL_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_GLOBAL_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_WORKSPACE_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_DISPLAY_NAME",
+      "REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME",
+      "RemoteInstalledPlugin",
+      "RemoteInstalledPluginBundleSyncError",
+      "RemoteInstalledPluginBundleSyncOutcome"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_remote_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

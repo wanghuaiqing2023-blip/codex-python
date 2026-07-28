@@ -4,10 +4,8 @@
   "python_root": "pycodex/stdio_to_uds",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "bin::codex-stdio-to-uds"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

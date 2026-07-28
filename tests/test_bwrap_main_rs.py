@@ -4,6 +4,7 @@ from pycodex.bwrap import (
     BWRAP_UNAVAILABLE_MESSAGE,
     NON_LINUX_MESSAGE,
     build_bwrap_main_plan,
+    main,
     run_bwrap_main,
 )
 
@@ -56,3 +57,15 @@ def test_linux_available_branch_rejects_embedded_nul_like_cstring() -> None:
 def test_linux_available_branch_requires_runner() -> None:
     with pytest.raises(RuntimeError, match="runner is not available"):
         run_bwrap_main(["bwrap"], target_os="linux", bwrap_available=True)
+
+
+def test_main_exits_with_bwrap_main_return_code() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            ["bwrap", "--version"],
+            target_os="linux",
+            bwrap_available=True,
+            runner=lambda _argv: 23,
+        )
+
+    assert exc_info.value.code == 23

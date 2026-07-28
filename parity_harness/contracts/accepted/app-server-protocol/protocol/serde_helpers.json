@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-app-server-protocol.protocol.serde_helpers",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-protocol",
+    "module": "protocol::serde_helpers",
+    "source": "codex/codex-rs/app-server-protocol/src/protocol/serde_helpers.rs",
+    "anchors": [
+      "deserialize_double_option",
+      "deserialize_empty_path_as_none",
+      "serialize_double_option"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_protocol/serde_helpers.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server_protocol/serde_helpers.py"
+    ],
+    "anchors": [
+      "deserialize_double_option",
+      "deserialize_empty_path_as_none",
+      "serialize_double_option"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_protocol_remaining_ownership_rs.py"
+  ]
+}

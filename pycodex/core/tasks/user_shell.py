@@ -38,7 +38,7 @@ from pycodex.protocol import (
     StreamOutput,
     TurnStartedEvent,
 )
-from pycodex.sandboxing import SandboxType
+from pycodex.sandboxing.manager import SandboxType
 from pycodex.shell_command.parse_command import parse_command
 
 

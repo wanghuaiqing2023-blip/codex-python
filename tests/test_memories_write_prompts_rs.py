@@ -3,11 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from pycodex.memories.write import (
-    STAGE_ONE_CONTEXT_WINDOW_PERCENT,
-    STAGE_ONE_DEFAULT_ROLLOUT_TOKEN_LIMIT,
-    build_consolidation_prompt,
-    build_stage_one_input_message,
+from pycodex.memories.write import build_consolidation_prompt, build_stage_one_input_message
+from pycodex.memories.write.stage_one import (
+    CONTEXT_WINDOW_PERCENT as STAGE_ONE_CONTEXT_WINDOW_PERCENT,
+    DEFAULT_ROLLOUT_TOKEN_LIMIT as STAGE_ONE_DEFAULT_ROLLOUT_TOKEN_LIMIT,
 )
 from pycodex.models_manager.model_info import model_info_from_slug
 from pycodex.protocol import TruncationPolicyConfig

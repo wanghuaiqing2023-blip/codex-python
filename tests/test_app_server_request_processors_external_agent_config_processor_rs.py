@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+from pycodex.app_server.config.external_agent_config import ExternalAgentConfigService
 from pycodex.app_server.error_code import INVALID_PARAMS_ERROR_CODE
 from pycodex.app_server.request_processors_external_agent_config_processor import (
     ExternalAgentConfigDetectOptions,
@@ -303,3 +304,16 @@ def _processor(**overrides):
         task_runner=overrides.get("task_runner"),
         session_import_preparer=overrides.get("session_import_preparer"),
     )
+
+
+def test_processor_defaults_to_real_external_agent_config_service() -> None:
+    processor = ExternalAgentConfigRequestProcessor(
+        outgoing=FakeOutgoing(),
+        codex_home=Path("codex-home"),
+        thread_manager=FakeThreadManager(),
+        config_manager=object(),
+        config_processor=FakeConfigProcessor(),
+        arg0_paths=object(),
+    )
+
+    assert isinstance(processor.migration_service, ExternalAgentConfigService)

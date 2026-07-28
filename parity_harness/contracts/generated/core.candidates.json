@@ -2062,17 +2062,17 @@
           "owner": "pycodex/core/exec_policy.py",
           "anchor_candidates": [
             "ExecApprovalRequest",
+            "ExecPolicyCommandOrigin",
             "ExecPolicyError",
             "ExecPolicyManager",
             "ExecPolicyUpdateError",
+            "UnmatchedCommandContext",
             "append_amendment_and_update",
             "append_network_rule_and_update",
             "check_execpolicy_for_warnings",
             "child_uses_parent_exec_policy",
             "create_exec_approval_requirement_for_command",
-            "current",
-            "format_exec_policy_error_with_source",
-            "load"
+            "current"
           ]
         }
       ],
@@ -4506,7 +4506,13 @@
         {
           "owner": "pycodex/core/tools/code_mode/wait_handler.py",
           "anchor_candidates": [
-            "ExecWaitArgs"
+            "CodeModeWaitHandler",
+            "ExecWaitArgs",
+            "handle",
+            "post_tool_use_payload",
+            "pre_tool_use_payload",
+            "spec",
+            "tool_name"
           ]
         }
       ],

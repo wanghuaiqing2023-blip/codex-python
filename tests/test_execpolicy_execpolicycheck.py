@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-from pycodex.execpolicy import Decision, RuleMatch, format_matches_json, load_policies
+from pycodex.execpolicy import Decision, RuleMatch
+from pycodex.execpolicy.execpolicycheck import format_matches_json, load_policies
 
 
 def test_format_matches_json_compact_prefix_match():

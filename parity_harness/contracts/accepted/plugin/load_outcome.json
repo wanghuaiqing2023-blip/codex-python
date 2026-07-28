@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-plugin.load_outcome",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-plugin",
+    "module": "load_outcome",
+    "source": "codex/codex-rs/plugin/src/load_outcome.rs",
+    "anchors": [
+      "EffectiveSkillRoots",
+      "LoadedPlugin",
+      "PluginLoadOutcome",
+      "capability_summaries",
+      "effective_apps",
+      "effective_mcp_servers",
+      "effective_plugin_hook_sources",
+      "effective_plugin_hook_warnings",
+      "from_plugins",
+      "is_active",
+      "plugins",
+      "prompt_safe_plugin_description"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/plugin/load_outcome.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/plugin/load_outcome.py"
+    ],
+    "anchors": [
+      "EffectiveSkillRoots",
+      "LoadedPlugin",
+      "PluginLoadOutcome",
+      "capability_summaries",
+      "effective_apps",
+      "effective_mcp_servers",
+      "effective_plugin_hook_sources",
+      "effective_plugin_hook_warnings",
+      "from_plugins",
+      "is_active",
+      "plugins",
+      "prompt_safe_plugin_description"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_plugin_module_ownership_rs.py",
+    "tests/test_core_plugins_manager_rs.py"
+  ]
+}

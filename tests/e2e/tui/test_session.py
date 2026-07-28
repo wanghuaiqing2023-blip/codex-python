@@ -1394,6 +1394,12 @@ def test_windows_conpty_native_and_python_long_transcript_overlay_home_screen_wh
                 ready_quiet_period=0.5,
             ),
             ConptyInputStep("\x1b[H", ready_timeout=0.5, ready_quiet_period=0.5, chunk_delay=0.02),
+            ConptyInputStep(
+                "",
+                ready_pattern=r"(?<!\d)0%(?!\d)",
+                ready_timeout=10.0,
+                ready_quiet_period=0.5,
+            ),
         ]
         return run_windows_conpty_tui_command(
             command,
@@ -2009,7 +2015,19 @@ def test_windows_conpty_native_and_python_long_transcript_overlay_end_screen_whe
                 ready_quiet_period=0.5,
             ),
             ConptyInputStep("\x1b[H", ready_timeout=0.5, ready_quiet_period=0.5, chunk_delay=0.02),
+            ConptyInputStep(
+                "",
+                ready_screen_text="0%",
+                ready_timeout=5.0,
+                ready_quiet_period=0.3,
+            ),
             ConptyInputStep("\x1b[F", ready_timeout=0.5, ready_quiet_period=0.5, chunk_delay=0.02),
+            ConptyInputStep(
+                "",
+                ready_screen_text="100%",
+                ready_timeout=5.0,
+                ready_quiet_period=0.3,
+            ),
         ]
         return run_windows_conpty_tui_command(
             command,

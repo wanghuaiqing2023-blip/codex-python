@@ -10,7 +10,7 @@ import sys
 from typing import Any, TextIO
 
 from pycodex.protocol import TokenUsage
-from pycodex.utils_cli import resume_hint
+from pycodex.utils.cli import resume_hint
 from pycodex.tui.update_action import UpdateAction
 
 

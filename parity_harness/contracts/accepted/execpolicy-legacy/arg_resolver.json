@@ -1,0 +1,35 @@
+{
+  "contract_id": "codex-execpolicy-legacy.arg_resolver",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy-legacy",
+    "module": "arg_resolver",
+    "source": "codex/codex-rs/execpolicy-legacy/src/arg_resolver.rs",
+    "anchors": [
+      "PositionalArg",
+      "resolve_observed_args_with_patterns"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy_legacy/arg_resolver.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/execpolicy_legacy/arg_resolver.py"
+    ],
+    "anchors": [
+      "PositionalArg",
+      "resolve_observed_args_with_patterns"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_execpolicy_legacy_arg_resolver_rs.py",
+    "tests/test_execpolicy_legacy_module_ownership_rs.py"
+  ]
+}

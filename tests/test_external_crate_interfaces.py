@@ -101,12 +101,8 @@ def test_model_provider_info_defaults_validation_and_catalog() -> None:
 def test_model_provider_bearer_auth_and_configured_provider() -> None:
     """Rust: ``model-provider/src/lib.rs``, ``provider.rs``, ``bearer_auth_provider.rs``."""
 
-    from pycodex.model_provider import (
-        DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL,
-        BearerAuthProvider,
-        ProviderCapabilities,
-        create_model_provider,
-    )
+    from pycodex.model_provider import BearerAuthProvider, ProviderCapabilities, create_model_provider
+    from pycodex.model_provider.provider import DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL
     from pycodex.model_provider_info import ModelProviderInfo
 
     auth = BearerAuthProvider.for_test("token", "workspace-1")
@@ -417,7 +413,6 @@ def test_rollout_trace_writer_payload_refs_and_noop_contexts(tmp_path: Path) -> 
 
     from pycodex.rollout_trace import (
         MCP_CALL_ID_META_KEY,
-        RAW_TRACE_EVENT_SCHEMA_VERSION,
         InferenceTraceAttempt,
         McpCallTraceContext,
         RawPayloadKind,
@@ -427,6 +422,7 @@ def test_rollout_trace_writer_payload_refs_and_noop_contexts(tmp_path: Path) -> 
         ThreadTraceContext,
         TraceWriter,
     )
+    from pycodex.rollout_trace.raw_event import RAW_TRACE_EVENT_SCHEMA_VERSION
 
     assert REDUCED_STATE_FILE_NAME == "state.json"
 
@@ -667,14 +663,13 @@ def test_exec_server_protocol_and_environment_shapes() -> None:
     from pycodex.exec_server import (
         CODEX_FS_HELPER_ARG1,
         DEFAULT_LISTEN_URL,
-        EXEC_METHOD,
-        ByteChunk,
         Environment,
         EnvironmentManager,
         ExecOutputStream,
         ProcessOutputChunk,
         ReadResponse,
     )
+    from pycodex.exec_server.protocol import ByteChunk, EXEC_METHOD
 
     assert CODEX_FS_HELPER_ARG1 == "--codex-run-as-fs-helper"
     assert DEFAULT_LISTEN_URL == "ws://127.0.0.1:0"

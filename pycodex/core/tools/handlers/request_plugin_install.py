@@ -20,7 +20,7 @@ from pycodex.core.config.edit import ConfigEditsBuilder, ToolSuggestDisabledTool
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
 from pycodex.app_server_protocol.apps import AppInfo
-from pycodex.app_server_protocol.elicitation import McpServerElicitationRequestParams
+from pycodex.app_server_protocol.mcp import McpServerElicitationRequestParams
 from pycodex.tools.request_plugin_install import (
     REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
     REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE,

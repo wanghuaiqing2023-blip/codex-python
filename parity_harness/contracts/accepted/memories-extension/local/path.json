@@ -1,0 +1,40 @@
+{
+    "contract_id":  "codex-memories-extension.local.path",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-memories-extension",
+                 "module":  "local::path",
+                 "source":  "codex/codex-rs/ext/memories/src/local/path.rs",
+                 "anchors":  [
+                                 "display_relative_path",
+                                 "is_hidden_component",
+                                 "is_hidden_path",
+                                 "read_sorted_dir_paths",
+                                 "reject_symlink"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/ext/memories/local/path.py",
+                   "layout":  "module-file",
+                   "implementation_files":  [
+                                                "pycodex/ext/memories/local/path.py"
+                                            ],
+                   "anchors":  [
+                                   "display_relative_path",
+                                   "is_hidden_component",
+                                   "is_hidden_path",
+                                   "read_sorted_dir_paths",
+                                   "reject_symlink"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_memories_extension_module_ownership_rs.py"
+                     ]
+}

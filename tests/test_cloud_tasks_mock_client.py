@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.cloud_tasks_mock_client import (
+from pycodex.cloud_tasks_client import (
     ApplyStatus,
     AttemptStatus,
     CloudTaskError,
-    MockClient,
     TaskId,
     TaskStatus,
+)
+from pycodex.cloud_tasks_mock_client import MockClient
+from pycodex.cloud_tasks_mock_client.mock import (
     count_from_unified,
     mock_diff_for,
 )

@@ -31,13 +31,13 @@ from pycodex.rollout import (
     first_rollout_content_match_snippet,
     get_threads,
     get_threads_in_root,
-    list_threads_from_state_metadata,
     parse_cursor,
     read_thread_item_from_rollout,
     read_session_meta_line,
     rollout_date_parts,
     search_rollout_paths,
 )
+from pycodex.rollout.list import list_threads_from_state_metadata
 
 from ..error import ThreadStoreError
 from ..in_memory import InMemoryThreadStore
@@ -68,7 +68,7 @@ def stored_thread_from_rollout_item(store: LocalThreadStore, item: Any, *, archi
         archived_at=updated_at if archived else None,
         cwd=Path(getattr(item, "cwd", None) or ""),
         cli_version=getattr(item, "cli_version", None) or "",
-        source=SessionSource.from_startup_arg(getattr(item, "source", None) or "unknown"),
+        source=_coerce_session_source(getattr(item, "source", None)),
         thread_source=None,
         agent_nickname=getattr(item, "agent_nickname", None),
         agent_role=getattr(item, "agent_role", None),
@@ -88,6 +88,11 @@ def _git_info_from_rollout_item(item: Any) -> Any:
     if sha is None and branch is None and origin_url is None:
         return None
     return GitInfoPatch(sha=sha, branch=branch, origin_url=origin_url)
+
+def _coerce_session_source(value: Any) -> SessionSource:
+    if isinstance(value, SessionSource):
+        return value
+    return SessionSource.from_startup_arg(str(value or "unknown"))
 
 def touch_modified_time(path: Path) -> None:
     Path(path).touch(exist_ok=True)

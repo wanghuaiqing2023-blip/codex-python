@@ -1,0 +1,35 @@
+{
+  "contract_id": "codex-code-mode.runtime.value",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-code-mode",
+    "module": "runtime::value",
+    "source": "codex/codex-rs/code-mode/src/runtime/value.rs",
+    "anchors": [
+      "CODEX_IMAGE_DETAIL_META_KEY",
+      "IMAGE_HELPER_EXPECTS_MESSAGE",
+      "normalize_output_image",
+      "serialize_output_text",
+      "value_to_error_text"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/code_mode/runtime/value.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/code_mode/runtime/value.py"],
+    "anchors": [
+      "CODEX_IMAGE_DETAIL_META_KEY",
+      "IMAGE_HELPER_EXPECTS_MESSAGE",
+      "normalize_output_image",
+      "serialize_output_text",
+      "value_to_error_text"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_codex_code_mode_modules_rs.py",
+    "tests/test_core_code_mode.py"
+  ]
+}

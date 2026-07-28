@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-rollout.default_client",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rollout",
+    "module": "default_client",
+    "source": "codex/codex-rs/rollout/src/lib.rs",
+    "anchors": ["reexport:default_client"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rollout/default_client.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rollout/default_client.py"],
+    "anchors": ["reexport:default_client"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rollout_module_ownership_rs.py"]
+}

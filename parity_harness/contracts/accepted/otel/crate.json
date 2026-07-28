@@ -48,5 +48,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_otel_module_ownership_rs.py",
+    "tests/test_otel_metrics_rs.py"
+  ]
 }

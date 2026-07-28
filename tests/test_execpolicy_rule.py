@@ -6,12 +6,10 @@ import pytest
 
 from pycodex.execpolicy import (
     Decision,
-    ExampleDidMatchError,
-    ExampleDidNotMatchError,
     Policy,
-    validate_match_examples,
-    validate_not_match_examples,
 )
+from pycodex.execpolicy.error import ExampleDidMatchError, ExampleDidNotMatchError
+from pycodex.execpolicy.rule import validate_match_examples, validate_not_match_examples
 
 
 def _policy_with_git_status_rule() -> tuple[Policy, tuple[object, ...]]:

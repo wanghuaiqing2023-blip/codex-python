@@ -20,6 +20,8 @@ from pycodex.config import ConfigLayerStack
 from pycodex.config import HookStateToml
 from pycodex.hooks import hook_states_from_stack
 
+_ABSOLUTE_TEST_ROOT = Path.cwd().resolve() / ".test-hooks-config"
+
 
 def _config_with_hook_state(key: str, state: HookStateToml) -> dict[str, object]:
     return {"hooks": {"state": {key: state.to_mapping()}}}
@@ -27,7 +29,7 @@ def _config_with_hook_state(key: str, state: HookStateToml) -> dict[str, object]
 
 def _user_layer(config: dict[str, object]) -> ConfigLayerEntry:
     return ConfigLayerEntry.new(
-        ConfigLayerSource.user(Path("/tmp/config.toml")),
+        ConfigLayerSource.user(_ABSOLUTE_TEST_ROOT / "config.toml"),
         config,
     )
 
@@ -135,12 +137,12 @@ def test_hook_states_from_stack_ignores_project_and_system_layers() -> None:
     stack = ConfigLayerStack.new(
         (
             ConfigLayerEntry.new(
-                ConfigLayerSource.system(Path("/tmp/system.toml")),
+                ConfigLayerSource.system(_ABSOLUTE_TEST_ROOT / "system.toml"),
                 _config_with_hook_state(key, HookStateToml(enabled=True)),
             ),
             _user_layer(_config_with_hook_state(key, HookStateToml(enabled=False))),
             ConfigLayerEntry.new(
-                ConfigLayerSource.project(Path("/tmp/.codex")),
+                ConfigLayerSource.project(_ABSOLUTE_TEST_ROOT / ".codex"),
                 _config_with_hook_state(key, HookStateToml(enabled=True)),
             ),
         )

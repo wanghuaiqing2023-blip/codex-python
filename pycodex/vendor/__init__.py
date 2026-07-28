@@ -61,9 +61,26 @@ def import_vendored(module_name: str) -> ModuleType:
     """
 
     ensure_vendor_packages_on_path()
+    _discard_non_vendored_package(module_name.partition(".")[0])
     module = importlib.import_module(module_name)
     assert_vendored_module(module, module_name)
     return module
+
+
+def _discard_non_vendored_package(package_name: str) -> None:
+    package = sys.modules.get(package_name)
+    if package is None:
+        return
+    try:
+        assert_vendored_module(package, package_name)
+        return
+    except VendoredImportError:
+        pass
+
+    prefix = f"{package_name}."
+    for loaded_name in tuple(sys.modules):
+        if loaded_name == package_name or loaded_name.startswith(prefix):
+            sys.modules.pop(loaded_name, None)
 
 
 def assert_vendored_module(module: ModuleType, module_name: str | None = None) -> None:

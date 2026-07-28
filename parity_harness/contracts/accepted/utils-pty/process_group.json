@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-utils-pty.process_group",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-pty",
+    "module": "process_group",
+    "source": "codex/codex-rs/utils/pty/src/process_group.rs",
+    "anchors": [
+      "detach_from_tty",
+      "kill_child_process_group",
+      "kill_process_group",
+      "kill_process_group_by_pid",
+      "set_parent_death_signal",
+      "set_process_group",
+      "terminate_process_group"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/pty/process_group.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/pty/process_group.py"
+    ],
+    "anchors": [
+      "detach_from_tty",
+      "kill_child_process_group",
+      "kill_process_group",
+      "kill_process_group_by_pid",
+      "set_parent_death_signal",
+      "set_process_group",
+      "terminate_process_group"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_pty_process_group_rs.py"
+  ]
+}

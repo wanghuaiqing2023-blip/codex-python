@@ -4,15 +4,17 @@ import asyncio
 from pathlib import Path
 
 from pycodex.git_utils import GitBaselineChange, GitBaselineChangeStatus, GitBaselineDiff
-from pycodex.memories.write import (
-    PHASE2_WORKSPACE_DIFF_FILENAME,
-    PHASE2_WORKSPACE_DIFF_MAX_BYTES,
+from pycodex.memories.write.workspace import (
     memory_workspace_diff,
     prepare_memory_workspace,
     previous_char_boundary,
     render_workspace_diff_file,
     reset_memory_workspace_baseline,
     write_workspace_diff,
+)
+from pycodex.memories.write.workspace_diff import (
+    FILENAME as PHASE2_WORKSPACE_DIFF_FILENAME,
+    MAX_BYTES as PHASE2_WORKSPACE_DIFF_MAX_BYTES,
 )
 
 

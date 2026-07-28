@@ -1,0 +1,35 @@
+{
+  "contract_id": "codex-config.mcp_types.option_duration_secs",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-config",
+    "module": "mcp_types::option_duration_secs",
+    "source": "codex/codex-rs/config/src/mcp_types.rs",
+    "anchors": [
+      "deserialize",
+      "serialize"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/config/mcp_types/option_duration_secs.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/config/mcp_types/option_duration_secs.py"
+    ],
+    "anchors": [
+      "deserialize",
+      "serialize"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_config_mcp_types.py",
+    "tests/test_config_module_ownership_rs.py"
+  ]
+}

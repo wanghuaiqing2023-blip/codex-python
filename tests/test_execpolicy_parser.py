@@ -8,12 +8,11 @@ import pytest
 
 from pycodex.execpolicy import (
     Decision,
-    InvalidRuleError,
     NetworkRuleProtocol,
     PolicyParser,
-    format_matches_json,
-    load_policies,
 )
+from pycodex.execpolicy.error import InvalidRuleError
+from pycodex.execpolicy.execpolicycheck import format_matches_json, load_policies
 
 
 def test_policy_parser_parses_prefix_rule_and_default_allow_decision():

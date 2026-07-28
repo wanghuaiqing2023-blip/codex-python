@@ -1,16 +1,16 @@
 import asyncio
 from pathlib import Path
 
-from pycodex.hooks import CommandRunResult
-from pycodex.hooks import CommandShell
-from pycodex.hooks import ConfiguredHandler
-from pycodex.hooks import ParsedHandler
-from pycodex.hooks import completed_summary
-from pycodex.hooks import execute_handlers
-from pycodex.hooks import running_summary
-from pycodex.hooks import scope_for_event
-from pycodex.hooks import select_handlers
-from pycodex.hooks import select_handlers_for_matcher_inputs
+from pycodex.hooks.engine.command_runner import CommandRunResult
+from pycodex.hooks.engine import CommandShell
+from pycodex.hooks.engine import ConfiguredHandler
+from pycodex.hooks.engine.dispatcher import ParsedHandler
+from pycodex.hooks.engine.dispatcher import completed_summary
+from pycodex.hooks.engine.dispatcher import execute_handlers
+from pycodex.hooks.engine.dispatcher import running_summary
+from pycodex.hooks.engine.dispatcher import scope_for_event
+from pycodex.hooks.engine.dispatcher import select_handlers
+from pycodex.hooks.engine.dispatcher import select_handlers_for_matcher_inputs
 from pycodex.protocol import HookCompletedEvent
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookOutputEntry

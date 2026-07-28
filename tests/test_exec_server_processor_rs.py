@@ -7,13 +7,19 @@ from pathlib import Path
 import sys
 
 from pycodex.exec_server import (
+    ExecServerRuntimePaths,
+)
+from pycodex.exec_server.protocol import (
     EXEC_METHOD,
     EXEC_READ_METHOD,
     EXEC_TERMINATE_METHOD,
     INITIALIZED_METHOD,
     INITIALIZE_METHOD,
+)
+from pycodex.exec_server.server.processor import (
     ConnectionProcessor,
-    ExecServerRuntimePaths,
+)
+from pycodex.exec_server.server.session_registry import (
     SessionRegistry,
 )
 

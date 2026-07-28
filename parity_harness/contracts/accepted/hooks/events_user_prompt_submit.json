@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-hooks.events.user_prompt_submit",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "events::user_prompt_submit",
+    "source": "codex/codex-rs/hooks/src/events/user_prompt_submit.rs",
+    "anchors": [
+      "UserPromptSubmitOutcome",
+      "UserPromptSubmitRequest",
+      "UserPromptSubmitHandlerData"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/events/user_prompt_submit.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/events/user_prompt_submit.py"
+    ],
+    "anchors": [
+      "UserPromptSubmitOutcome",
+      "UserPromptSubmitRequest",
+      "UserPromptSubmitHandlerData"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_events_user_prompt_submit_rs.py"
+  ]
+}

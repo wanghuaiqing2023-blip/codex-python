@@ -4,22 +4,8 @@
   "python_root": "pycodex/execpolicy_legacy",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::arg_matcher",
-    "crate::arg_resolver",
-    "crate::arg_type",
-    "crate::error",
-    "crate::exec_call",
-    "crate::execv_checker",
-    "crate::opt",
-    "crate::policy",
-    "crate::policy_parser",
-    "crate::program",
-    "crate::sed_command",
-    "crate::valid_exec",
-    "bin::codex-execpolicy-legacy"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

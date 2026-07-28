@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 11,
-    "python_files": 10,
-    "modules_with_candidates": 7,
-    "modules_with_anchors": 7
+    "python_files": 12,
+    "modules_with_candidates": 10,
+    "modules_with_anchors": 10
   },
   "contracts": [
     {
@@ -74,7 +74,17 @@
         "source": "codex/codex-rs/core-skills/src/injection.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/injection/__init__.py",
+          "anchor_candidates": [
+            "SkillInjection",
+            "SkillInjections",
+            "build_skill_injections",
+            "collect_explicit_skill_mentions"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -122,7 +132,16 @@
         "source": "codex/codex-rs/core-skills/src/loader.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/loader.py",
+          "anchor_candidates": [
+            "SkillRoot",
+            "load_skills_from_roots",
+            "skill_roots"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -142,6 +161,7 @@
         {
           "owner": "pycodex/core_skills/manager.py",
           "anchor_candidates": [
+            "SkillsLoadInput",
             "SkillsManager",
             "clear_cache",
             "new",
@@ -265,7 +285,16 @@
         "source": "codex/codex-rs/core-skills/src/system.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_skills/system.py",
+          "anchor_candidates": [
+            "install_system_skills",
+            "system_cache_root_dir",
+            "uninstall_system_skills"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

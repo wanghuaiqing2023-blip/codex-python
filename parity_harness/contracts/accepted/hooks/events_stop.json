@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-hooks.events.stop",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "events::stop",
+    "source": "codex/codex-rs/hooks/src/events/stop.rs",
+    "anchors": [
+      "StopHookTarget",
+      "StopOutcome",
+      "StopRequest",
+      "StopHandlerData",
+      "event_name",
+      "matcher_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/events/stop.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/events/stop.py"
+    ],
+    "anchors": [
+      "StopHookTarget",
+      "StopOutcome",
+      "StopRequest",
+      "StopHandlerData",
+      "event_name",
+      "matcher_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_events_stop_rs.py"
+  ]
+}

@@ -7,30 +7,40 @@
     "module": "crate",
     "source": "codex/codex-rs/app-server-client/src/lib.rs",
     "anchors": [
-      "DEFAULT_AGENTS_MD_FILENAME",
-      "LOCAL_AGENTS_MD_FILENAME",
-      "McpManager",
-      "check_execpolicy_for_warnings",
-      "format_exec_policy_error_with_source",
-      "grant_read_root_non_elevated",
-      "web_search_detail"
+      "AppServerClient",
+      "AppServerEvent",
+      "AppServerRequestHandle",
+      "DEFAULT_IN_PROCESS_CHANNEL_CAPACITY",
+      "EnvironmentManager",
+      "ExecServerRuntimePaths",
+      "InProcessAppServerClient",
+      "InProcessAppServerRequestHandle",
+      "InProcessClientStartArgs",
+      "InProcessServerEvent",
+      "RemoteAppServerClient",
+      "RemoteAppServerConnectArgs"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
   "python": {
-    "owner": "pycodex/app_server_client/legacy_core.py",
+    "owner": "pycodex/app_server_client/__init__.py",
     "layout": "module-file",
     "implementation_files": [
-      "pycodex/app_server_client/legacy_core.py"
+      "pycodex/app_server_client/__init__.py"
     ],
     "anchors": [
-      "DEFAULT_AGENTS_MD_FILENAME",
-      "LOCAL_AGENTS_MD_FILENAME",
-      "McpManager",
-      "check_execpolicy_for_warnings",
-      "format_exec_policy_error_with_source",
-      "grant_read_root_non_elevated",
-      "web_search_detail"
+      "AppServerClient",
+      "AppServerEvent",
+      "AppServerRequestHandle",
+      "DEFAULT_IN_PROCESS_CHANNEL_CAPACITY",
+      "EnvironmentManager",
+      "ExecServerRuntimePaths",
+      "InProcessAppServerClient",
+      "InProcessAppServerRequestHandle",
+      "InProcessClientStartArgs",
+      "InProcessServerEvent",
+      "RemoteAppServerClient",
+      "RemoteAppServerConnectArgs"
     ]
   },
   "checks": {
@@ -40,21 +50,7 @@
   },
   "fixture_refs": [
     "tests/test_app_server_client_lib_rs.py",
-    "tests/test_app_server_client_remote_rs.py",
-    "tests/test_app_server_fuzzy_file_search_rs.py",
-    "tests/test_codex_api_lib_rs.py",
-    "tests/test_core_api_lib_rs.py",
-    "tests/test_core_code_mode.py",
-    "tests/test_core_exec.py",
-    "tests/test_hooks_engine_mod_rs.py",
-    "tests/test_linux_sandbox_lib_rs.py",
-    "tests/test_otel_metrics_rs.py",
-    "tests/test_pycodex_init.py",
-    "tests/test_responses_api_proxy_main_rs.py",
-    "tests/test_rollout_trace_model_rs.py",
-    "tests/test_rollout_trace_terminal_rs.py",
-    "tests/test_stdio_to_uds_crate.py",
-    "tests/test_tui_version.py",
-    "tests/test_uds_lib_rs.py"
+    "tests/test_app_server_client_module_ownership_rs.py",
+    "tests/test_app_server_client_remote_rs.py"
   ]
 }

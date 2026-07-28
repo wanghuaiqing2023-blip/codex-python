@@ -9,7 +9,7 @@ import sys
 from typing import Any, Awaitable, Callable, Iterable, TextIO
 
 from pycodex.protocol import TokenUsage
-from pycodex.utils_cli import resume_hint
+from pycodex.utils.cli import resume_hint
 
 from . import AppExitInfo, Cli, ExitReason, ExitReasonPayload, RUST_MODULE as TUI_LIB_RUST_MODULE, run_main
 from ._porting import RustTuiModule

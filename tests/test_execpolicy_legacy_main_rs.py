@@ -6,14 +6,14 @@ import io
 import json
 from pathlib import Path
 
-from pycodex.execpolicy_legacy import FORBIDDEN_EXIT_CODE
-from pycodex.execpolicy_legacy import MATCHED_BUT_WRITES_FILES_EXIT_CODE
-from pycodex.execpolicy_legacy import MIGHT_BE_SAFE_EXIT_CODE
-from pycodex.execpolicy_legacy import ExecArg
-from pycodex.execpolicy_legacy import PolicyParser
-from pycodex.execpolicy_legacy import check_command
+from pycodex.execpolicy_legacy.main import FORBIDDEN_EXIT_CODE
+from pycodex.execpolicy_legacy.main import MATCHED_BUT_WRITES_FILES_EXIT_CODE
+from pycodex.execpolicy_legacy.main import MIGHT_BE_SAFE_EXIT_CODE
+from pycodex.execpolicy_legacy.main import ExecArg
+from pycodex.execpolicy_legacy.policy_parser import PolicyParser
+from pycodex.execpolicy_legacy.main import check_command
 from pycodex.execpolicy_legacy import get_default_policy
-from pycodex.execpolicy_legacy import run_main
+from pycodex.execpolicy_legacy.main import run_main
 
 
 def test_check_command_safe_output_matches_main_rs_contract() -> None:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from pycodex.core_skills.model import SkillMetadata
-from pycodex.core_skills.injections import (
+from pycodex.core_skills.injection import (
     SkillInjection,
     SkillInjections,
     build_skill_injections,

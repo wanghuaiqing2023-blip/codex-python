@@ -4,11 +4,13 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.memories.write import (
-    memory_startup_skip_reason,
-    memory_root,
-    start_memories_startup_task,
-)
+import pytest
+
+from pycodex.memories.write import memory_root, start_memories_startup_task
+from pycodex.memories.write import guard as guard_module
+from pycodex.memories.write import phase1 as phase1_module
+from pycodex.memories.write import phase2 as phase2_module
+from pycodex.memories.write.start import memory_startup_skip_reason
 
 
 class Features:
@@ -54,7 +56,10 @@ def test_memory_startup_skip_reason_matches_start_rs_gates(tmp_path: Path) -> No
     assert memory_startup_skip_reason(config(tmp_path), Source(), True) is None
 
 
-def test_start_memories_startup_task_creates_root_seeds_and_runs_phases(tmp_path: Path) -> None:
+def test_start_memories_startup_task_creates_root_seeds_and_runs_phases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Rust crate: codex-memories-write
     # Rust module/test: src/start.rs + src/startup_tests.rs::memories_startup_creates_memory_root
     # Contract: eligible startup creates the memory root, seeds extension instructions, prunes, checks rate limits, then runs phase1 and phase2.
@@ -67,16 +72,21 @@ def test_start_memories_startup_task_creates_root_seeds_and_runs_phases(tmp_path
         assert (memory_root(tmp_path) / "extensions" / "ad_hoc" / "instructions.md").is_file()
         assert context.state_db() == {"db": "ok"}
 
-    def rate_limits_ok(_auth_manager, _config) -> bool:
+    async def rate_limits_ok(_auth_manager, _config) -> bool:
         calls.append("rate_limits")
         return True
 
-    async def phase1(context, _config) -> None:
+    async def run_phase1(context, _config) -> None:
         calls.append("phase1")
         assert context.thread_id == "thread-1"
 
-    def phase2(_context, _config) -> None:
+    async def run_phase2(_context, _config) -> None:
         calls.append("phase2")
+
+    monkeypatch.setattr(phase1_module, "prune", prune)
+    monkeypatch.setattr(guard_module, "rate_limits_ok", rate_limits_ok)
+    monkeypatch.setattr(phase1_module, "run", run_phase1)
+    monkeypatch.setattr(phase2_module, "run", run_phase2)
 
     result = asyncio.run(
         start_memories_startup_task(
@@ -86,10 +96,6 @@ def test_start_memories_startup_task_creates_root_seeds_and_runs_phases(tmp_path
             Thread({"db": "ok"}),
             cfg,
             Source(),
-            phase1_prune=prune,
-            rate_limits_ok_fn=rate_limits_ok,
-            phase1_run=phase1,
-            phase2_run=phase2,
         )
     )
 
@@ -98,24 +104,32 @@ def test_start_memories_startup_task_creates_root_seeds_and_runs_phases(tmp_path
     assert calls == ["prune", "rate_limits", "phase1", "phase2"]
 
 
-def test_start_memories_startup_task_rate_limit_skip_after_prune(tmp_path: Path) -> None:
+def test_start_memories_startup_task_rate_limit_skip_after_prune(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Rust crate: codex-memories-write
     # Rust module/source: src/start.rs::start_memories_startup_task
     # Contract: phase1 pruning runs before the rate-limit gate; a failed gate records skipped_rate_limit and prevents phase runs.
     calls: list[str] = []
 
-    def prune(_context, _config) -> None:
+    async def prune(_context, _config) -> None:
         calls.append("prune")
 
-    def rate_limits_ok(_auth_manager, _config) -> bool:
+    async def rate_limits_ok(_auth_manager, _config) -> bool:
         calls.append("rate_limits")
         return False
 
-    def phase1(_context, _config) -> None:
+    async def run_phase1(_context, _config) -> None:
         calls.append("phase1")
 
-    def phase2(_context, _config) -> None:
+    async def run_phase2(_context, _config) -> None:
         calls.append("phase2")
+
+    monkeypatch.setattr(phase1_module, "prune", prune)
+    monkeypatch.setattr(guard_module, "rate_limits_ok", rate_limits_ok)
+    monkeypatch.setattr(phase1_module, "run", run_phase1)
+    monkeypatch.setattr(phase2_module, "run", run_phase2)
 
     result = asyncio.run(
         start_memories_startup_task(
@@ -125,10 +139,6 @@ def test_start_memories_startup_task_rate_limit_skip_after_prune(tmp_path: Path)
             Thread({"db": "ok"}),
             config(tmp_path),
             Source(),
-            phase1_prune=prune,
-            rate_limits_ok_fn=rate_limits_ok,
-            phase1_run=phase1,
-            phase2_run=phase2,
         )
     )
 

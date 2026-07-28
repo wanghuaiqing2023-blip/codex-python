@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-utils-pty.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-pty",
+    "module": "crate",
+    "source": "codex/codex-rs/utils/pty/src/lib.rs",
+    "anchors": [
+      "DEFAULT_OUTPUT_BYTES_CAP",
+      "ExecCommandSession",
+      "ProcessDriver",
+      "ProcessHandle",
+      "SpawnedProcess",
+      "SpawnedPty",
+      "TerminalSize",
+      "combine_output_receivers",
+      "conpty_supported",
+      "spawn_from_driver",
+      "spawn_pipe_process",
+      "spawn_pipe_process_no_stdin"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/pty/__init__.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/pty/__init__.py"
+    ],
+    "anchors": [
+      "DEFAULT_OUTPUT_BYTES_CAP",
+      "ExecCommandSession",
+      "ProcessDriver",
+      "ProcessHandle",
+      "SpawnedProcess",
+      "SpawnedPty",
+      "TerminalSize",
+      "combine_output_receivers",
+      "conpty_supported",
+      "spawn_from_driver",
+      "spawn_pipe_process",
+      "spawn_pipe_process_no_stdin"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_pty_lib_rs.py",
+    "tests/test_utils_pty_module_ownership_rs.py"
+  ]
+}

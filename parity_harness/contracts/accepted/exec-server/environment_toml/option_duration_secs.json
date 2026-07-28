@@ -1,0 +1,30 @@
+{
+  "contract_id": "codex-exec-server.environment_toml.option_duration_secs",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "environment_toml::option_duration_secs",
+    "source": "codex/codex-rs/exec-server/src/environment_toml.rs",
+    "anchors": [
+      "deserialize"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/environment_toml/option_duration_secs.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec_server/environment_toml/option_duration_secs.py"
+    ],
+    "anchors": [
+      "deserialize"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

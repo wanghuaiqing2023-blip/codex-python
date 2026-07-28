@@ -13,25 +13,33 @@ import textwrap
 
 import pytest
 
-import pycodex.exec_server as exec_server
+import pycodex.exec_server.server.transport as exec_server
 from pycodex.app_server_protocol import JSONRPCMessage, JSONRPCRequest, JSONRPCResponse
 from pycodex.exec_server import (
-    DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
-    ENVIRONMENT_CLIENT_NAME,
     ExecServerClient,
     ExecServerClientConnectOptions,
     ExecServerError,
+    RemoteExecServerConnectArgs,
+)
+from pycodex.exec_server.client_api import (
+    DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
     ExecServerTransportParams,
+    StdioExecServerCommand,
+    StdioExecServerConnectArgs,
+)
+from pycodex.exec_server.client_transport import (
+    ENVIRONMENT_CLIENT_NAME,
+    is_rendezvous_harness_url,
+    stdio_command_process_spec,
+)
+from pycodex.exec_server.connection import (
     JsonRpcConnection,
     JsonRpcConnectionEvent,
     JsonRpcWebSocketMessage,
+)
+from pycodex.exec_server.relay import (
     RelayFrameBodyKind,
-    RemoteExecServerConnectArgs,
-    StdioExecServerCommand,
-    StdioExecServerConnectArgs,
     decode_relay_message_frame,
-    is_rendezvous_harness_url,
-    stdio_command_process_spec,
 )
 
 

@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-core-plugins.remote_legacy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "remote_legacy",
+    "source": "codex/codex-rs/core-plugins/src/remote_legacy.rs",
+    "anchors": [
+      "RemotePluginFetchError",
+      "RemotePluginMutationError",
+      "RemotePluginStatusSummary",
+      "enable_remote_plugin",
+      "fetch_remote_featured_plugin_ids",
+      "fetch_remote_plugin_status",
+      "uninstall_remote_plugin",
+      "DEFAULT_REMOTE_MARKETPLACE_NAME",
+      "REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT",
+      "REMOTE_PLUGIN_FETCH_TIMEOUT",
+      "REMOTE_PLUGIN_MUTATION_TIMEOUT",
+      "remote_plugin_mutation_url"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/remote_legacy.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/remote_legacy.py"
+    ],
+    "anchors": [
+      "RemotePluginFetchError",
+      "RemotePluginMutationError",
+      "RemotePluginStatusSummary",
+      "enable_remote_plugin",
+      "fetch_remote_featured_plugin_ids",
+      "fetch_remote_plugin_status",
+      "uninstall_remote_plugin",
+      "DEFAULT_REMOTE_MARKETPLACE_NAME",
+      "REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT",
+      "REMOTE_PLUGIN_FETCH_TIMEOUT",
+      "REMOTE_PLUGIN_MUTATION_TIMEOUT",
+      "remote_plugin_mutation_url"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_remote_legacy_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-utils-pty.win.procthreadattr",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-pty",
+    "module": "win::procthreadattr",
+    "source": "codex/codex-rs/utils/pty/src/win/procthreadattr.rs",
+    "anchors": [
+      "ProcThreadAttributeList",
+      "as_mut_ptr",
+      "set_pty",
+      "with_capacity"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/pty/win/procthreadattr.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/pty/win/procthreadattr.py"
+    ],
+    "anchors": [
+      "ProcThreadAttributeList",
+      "as_mut_ptr",
+      "set_pty",
+      "with_capacity"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_pty_win_rs.py"
+  ]
+}

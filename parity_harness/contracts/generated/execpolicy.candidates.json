@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 10,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 10,
+    "modules_with_candidates": 9,
+    "modules_with_anchors": 9
   },
   "contracts": [
     {
@@ -73,7 +73,16 @@
         "source": "codex/codex-rs/execpolicy/src/amend.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/amend.py",
+          "anchor_candidates": [
+            "AmendError",
+            "blocking_append_allow_prefix_rule",
+            "blocking_append_network_rule"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +98,15 @@
         "source": "codex/codex-rs/execpolicy/src/decision.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/decision.py",
+          "anchor_candidates": [
+            "Decision",
+            "parse"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +122,20 @@
         "source": "codex/codex-rs/execpolicy/src/error.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/error.py",
+          "anchor_candidates": [
+            "Error",
+            "ErrorLocation",
+            "Result",
+            "TextPosition",
+            "TextRange",
+            "location",
+            "with_location"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +151,17 @@
         "source": "codex/codex-rs/execpolicy/src/execpolicycheck.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/execpolicycheck.py",
+          "anchor_candidates": [
+            "ExecPolicyCheckCommand",
+            "format_matches_json",
+            "load_policies",
+            "run"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +177,15 @@
         "source": "codex/codex-rs/execpolicy/src/executable_name.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/executable_name.py",
+          "anchor_candidates": [
+            "executable_lookup_key",
+            "executable_path_lookup_key"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +201,16 @@
         "source": "codex/codex-rs/execpolicy/src/parser.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/parser.py",
+          "anchor_candidates": [
+            "PolicyParser",
+            "parse",
+            "build"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +226,25 @@
         "source": "codex/codex-rs/execpolicy/src/policy.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/policy.py",
+          "anchor_candidates": [
+            "Evaluation",
+            "MatchOptions",
+            "Policy",
+            "add_network_rule",
+            "add_prefix_rule",
+            "check",
+            "compiled_network_domains",
+            "empty",
+            "is_match",
+            "matches_for_command",
+            "network_rules",
+            "rules"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +260,25 @@
         "source": "codex/codex-rs/execpolicy/src/rule.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/execpolicy/rule.py",
+          "anchor_candidates": [
+            "NetworkRule",
+            "NetworkRuleProtocol",
+            "PatternToken",
+            "PrefixPattern",
+            "PrefixRule",
+            "Rule",
+            "RuleMatch",
+            "RuleRef",
+            "alternatives",
+            "as_policy_string",
+            "decision",
+            "matches_prefix"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

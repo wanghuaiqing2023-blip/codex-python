@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-utils-absolute-path.absolutize",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-absolute-path",
+    "module": "absolutize",
+    "source": "codex/codex-rs/utils/absolute-path/src/absolutize.rs",
+    "anchors": [
+      "absolutize",
+      "absolutize_from",
+      "normalize_path",
+      "path_with_base"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/absolute_path/absolutize.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/absolute_path/absolutize.py"
+    ],
+    "anchors": [
+      "absolutize",
+      "absolutize_from",
+      "normalize_path",
+      "path_with_base"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_absolute_path_absolutize.py",
+    "tests/test_utils_absolute_path_module_ownership_rs.py"
+  ]
+}

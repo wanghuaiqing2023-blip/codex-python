@@ -35,7 +35,9 @@ def _python_candidates(
         expected = (root / "__main__.py", root / "main.py")
     elif module.startswith("bin::"):
         source = PurePosixPath(rust_source) if rust_source is not None else None
-        if source is not None and "bin" in source.parts:
+        if source is not None and source.name == "main.rs" and "bin" not in source.parts:
+            expected = (root / "__main__.py", root / "main.py")
+        elif source is not None and "bin" in source.parts:
             bin_index = len(source.parts) - 1 - source.parts[::-1].index("bin")
             relative = source.parts[bin_index + 1 :]
             directories = relative[:-1]

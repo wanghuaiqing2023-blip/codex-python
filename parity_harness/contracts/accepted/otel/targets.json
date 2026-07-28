@@ -1,0 +1,41 @@
+{
+  "contract_id": "codex-otel.targets",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-otel",
+    "module": "targets",
+    "source": "codex/codex-rs/otel/src/targets.rs",
+    "anchors": [
+      "OTEL_LOG_ONLY_TARGET",
+      "OTEL_TARGET_PREFIX",
+      "OTEL_TRACE_SAFE_TARGET",
+      "is_log_export_target",
+      "is_trace_safe_target"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/otel/targets.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/otel/targets.py"
+    ],
+    "anchors": [
+      "OTEL_LOG_ONLY_TARGET",
+      "OTEL_TARGET_PREFIX",
+      "OTEL_TRACE_SAFE_TARGET",
+      "is_log_export_target",
+      "is_trace_safe_target"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_otel_module_ownership_rs.py",
+    "tests/test_otel_metrics_rs.py"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-git-utils.platform",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-git-utils",
+    "module": "platform",
+    "source": "codex/codex-rs/git-utils/src/platform.rs",
+    "anchors": ["create_symlink"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/git_utils/platform.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/git_utils/platform.py"],
+    "anchors": ["create_symlink"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_git_utils_module_ownership_rs.py"]
+}

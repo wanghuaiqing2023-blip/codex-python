@@ -7,14 +7,18 @@ import asyncio
 import pytest
 
 from pycodex.exec_server import (
-    ByteChunk,
     ExecOutputStream,
     ExecProcess,
     ExecProcessEvent,
-    ExecProcessEventLog,
     ExecProcessEventReceiver,
     ProcessOutputChunk,
     StartedExecProcess,
+)
+from pycodex.exec_server.process import (
+    ExecProcessEventLog,
+)
+from pycodex.exec_server.protocol import (
+    ByteChunk,
 )
 
 

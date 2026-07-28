@@ -7,34 +7,31 @@
     "module": "runtime",
     "source": "codex/codex-rs/state/src/runtime.rs",
     "anchors": [
-      "GoalAccountingMode",
-      "GoalAccountingOutcome",
-      "GoalStore",
-      "GoalUpdate",
-      "MemoryStore",
-      "RemoteControlEnrollmentRecord",
-      "ThreadFilterOptions",
-      "LOG_PARTITION_ROW_LIMIT",
-      "LOG_PARTITION_SIZE_LIMIT_BYTES"
+      "RuntimeDbPath",
+      "StateRuntime",
+      "goals_db_path",
+      "logs_db_path",
+      "memories_db_path",
+      "sqlite_integrity_check",
+      "state_db_path"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
   "python": {
     "owner": "pycodex/state/runtime/__init__.py",
-    "layout": "module-file",
+    "layout": "module-package",
     "implementation_files": [
-      "pycodex/state/runtime/__init__.py"
+      "pycodex/state/runtime/__init__.py",
+      "pycodex/state/runtime/state_runtime.py"
     ],
     "anchors": [
-      "GoalAccountingMode",
-      "GoalAccountingOutcome",
-      "GoalStore",
-      "GoalUpdate",
-      "MemoryStore",
-      "RemoteControlEnrollmentRecord",
-      "ThreadFilterOptions",
-      "LOG_PARTITION_ROW_LIMIT",
-      "LOG_PARTITION_SIZE_LIMIT_BYTES"
+      "RuntimeDbPath",
+      "StateRuntime",
+      "goals_db_path",
+      "logs_db_path",
+      "memories_db_path",
+      "sqlite_integrity_check",
+      "state_db_path"
     ]
   },
   "checks": {
@@ -42,5 +39,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_state_runtime_rs.py",
+    "tests/test_state_logs_client_rs.py"
+  ]
 }

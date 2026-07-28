@@ -4,15 +4,8 @@
   "python_root": "pycodex/utils/cli",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::approval_mode_cli_arg",
-    "crate::config_override",
-    "crate::format_env_display",
-    "crate::resume_command",
-    "crate::sandbox_mode_cli_arg",
-    "crate::shared_options"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

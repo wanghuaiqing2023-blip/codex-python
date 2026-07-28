@@ -1,0 +1,54 @@
+{
+    "contract_id":  "codex-memories-extension.backend",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-memories-extension",
+                 "module":  "backend",
+                 "source":  "codex/codex-rs/ext/memories/src/backend.rs",
+                 "anchors":  [
+                                 "AddAdHocMemoryNoteRequest",
+                                 "AddAdHocMemoryNoteResponse",
+                                 "ListMemoriesRequest",
+                                 "ListMemoriesResponse",
+                                 "MemoriesBackend",
+                                 "MemoriesBackendError",
+                                 "MemoryEntry",
+                                 "MemoryEntryType",
+                                 "MemorySearchMatch",
+                                 "ReadMemoryRequest",
+                                 "ReadMemoryResponse",
+                                 "SearchMatchMode"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/ext/memories/backend.py",
+                   "layout":  "module-file",
+                   "implementation_files":  [
+                                                "pycodex/ext/memories/backend.py"
+                                            ],
+                   "anchors":  [
+                                   "AddAdHocMemoryNoteRequest",
+                                   "AddAdHocMemoryNoteResponse",
+                                   "ListMemoriesRequest",
+                                   "ListMemoriesResponse",
+                                   "MemoriesBackend",
+                                   "MemoriesBackendError",
+                                   "MemoryEntry",
+                                   "MemoryEntryType",
+                                   "MemorySearchMatch",
+                                   "ReadMemoryRequest",
+                                   "ReadMemoryResponse",
+                                   "SearchMatchMode"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_memories_extension_module_ownership_rs.py"
+                     ]
+}

@@ -1764,8 +1764,8 @@ def _match_intercepted_exec_prefix_rules(command: tuple[str, ...], rules: tuple[
     return tuple(matches)
 
 def _runtime_prefix_rule_from_object(rule: Any) -> tuple[tuple[str | tuple[str, ...], ...], Any, str | None] | None:
-    from pycodex.execpolicy import Decision, ExecPolicyPrefixRule
-    if isinstance(rule, ExecPolicyPrefixRule):
+    from pycodex.execpolicy import Decision, PrefixRule
+    if isinstance(rule, PrefixRule):
         return (rule.pattern, rule.decision, rule.justification)
     if isinstance(rule, Mapping):
         pattern = rule.get('pattern')

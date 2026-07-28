@@ -1,0 +1,41 @@
+{
+  "contract_id": "codex-exec.event_processor_with_human_output",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec",
+    "module": "event_processor_with_human_output",
+    "source": "codex/codex-rs/exec/src/event_processor_with_human_output.rs",
+    "anchors": [
+      "EventProcessorWithHumanOutput",
+      "blended_total",
+      "config_summary_entries",
+      "should_print_final_message_to_stdout",
+      "should_print_final_message_to_tty"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec/event_processor_with_human_output.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec/event_processor_with_human_output.py"
+    ],
+    "anchors": [
+      "EventProcessorWithHumanOutput",
+      "blended_total",
+      "config_summary_entries",
+      "should_print_final_message_to_stdout",
+      "should_print_final_message_to_tty"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_event_processor.py",
+    "tests/test_exec_module_ownership_rs.py"
+  ]
+}

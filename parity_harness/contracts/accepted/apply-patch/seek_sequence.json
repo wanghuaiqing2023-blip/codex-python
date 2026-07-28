@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-apply-patch.seek_sequence",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-apply-patch",
+    "module": "seek_sequence",
+    "source": "codex/codex-rs/apply-patch/src/seek_sequence.rs",
+    "anchors": ["seek_sequence"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/apply_patch/seek_sequence.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/apply_patch/seek_sequence.py"],
+    "anchors": ["seek_sequence"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_apply_patch.py"]
+}

@@ -1,0 +1,42 @@
+{
+    "contract_id":  "codex-memories-extension.tools",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-memories-extension",
+                 "module":  "tools",
+                 "source":  "codex/codex-rs/ext/memories/src/tools/mod.rs",
+                 "anchors":  [
+                                 "memory_function_tool",
+                                 "memory_tool_name",
+                                 "memory_tools",
+                                 "backend_error_to_function_call",
+                                 "clamp_max_results",
+                                 "parse_args"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/ext/memories/tools/__init__.py",
+                   "layout":  "module-package",
+                   "implementation_files":  [
+                                                "pycodex/ext/memories/tools/__init__.py"
+                                            ],
+                   "anchors":  [
+                                   "memory_function_tool",
+                                   "memory_tool_name",
+                                   "memory_tools",
+                                   "backend_error_to_function_call",
+                                   "clamp_max_results",
+                                   "parse_args"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_memories_extension_module_ownership_rs.py"
+                     ]
+}

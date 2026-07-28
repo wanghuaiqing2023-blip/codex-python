@@ -39,6 +39,12 @@ class DetailView(str, Enum):
     PROMPT = "prompt"
 
 
+class ApplyResultLevel(str, Enum):
+    SUCCESS = "success"
+    PARTIAL = "partial"
+    ERROR = "error"
+
+
 @dataclass
 class ApplyModalState:
     task_id: TaskId

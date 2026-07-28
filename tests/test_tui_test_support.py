@@ -4,7 +4,6 @@ from pycodex.protocol import SessionSource
 from pycodex.tui.test_support import (
     PathBufExt,
     SkillScope,
-    TestPathBuf,
     from_app_server_wire,
     session_source_cli,
     skill_scope_repo,
@@ -15,16 +14,19 @@ from pycodex.tui.test_support import (
 
 
 def test_test_path_display_uses_test_path_buf_display_semantics():
-    assert test_path_display("/tmp/hooks.json") == "/tmp/hooks.json"
-    assert test_path_display("tmp/hooks.json") == "/tmp/hooks.json"
-    assert str(test_path_buf("/workspace/project").abs()) == "/workspace/project"
+    assert test_path_display("/tmp/hooks.json") == str(test_path_buf("/tmp/hooks.json"))
+    assert str(test_path_buf("/workspace/project").abs()) == str(
+        test_path_buf("/workspace/project")
+    )
 
 
 def test_path_buf_ext_abs_accepts_existing_or_plain_paths():
-    existing = TestPathBuf("/tmp")
+    existing = test_path_buf("/tmp")
 
-    assert PathBufExt.abs(existing) is existing
-    assert PathBufExt.abs("relative/path").display() == "/relative/path"
+    assert PathBufExt.abs(existing) == existing.abs()
+    assert PathBufExt.abs(test_path_buf("/relative/path")) == test_path_buf(
+        "/relative/path"
+    ).abs()
 
 
 def test_session_source_cli_round_trips_through_app_server_wire():

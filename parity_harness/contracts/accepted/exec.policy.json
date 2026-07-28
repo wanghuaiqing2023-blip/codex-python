@@ -4,19 +4,8 @@
   "python_root": "pycodex/exec",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::event_processor_with_human_output",
-    "crate::event_processor_with_jsonl_output",
-    "bin::codex-exec"
-  ],
-  "uncovered_python_files": [
-    "pycodex/exec/config_plan.py",
-    "pycodex/exec/core_runtime.py",
-    "pycodex/exec/local_runtime.py",
-    "pycodex/exec/run.py",
-    "pycodex/exec/session.py",
-    "pycodex/exec/websocket.py"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
   "allowed_unowned": []
 }

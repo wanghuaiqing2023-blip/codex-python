@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
-from pycodex.app_server_protocol.elicitation import McpServerElicitationRequest
+from pycodex.app_server_protocol.mcp import McpServerElicitationRequest
 from pycodex.core.guardian import (
     GuardianApprovalRequest,
     guardian_rejection_message,

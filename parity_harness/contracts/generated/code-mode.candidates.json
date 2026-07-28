@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 10,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 10,
+    "modules_with_candidates": 10,
+    "modules_with_anchors": 10
   },
   "contracts": [
     {
@@ -57,7 +57,25 @@
         "source": "codex/codex-rs/code-mode/src/description.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/description.py",
+          "anchor_candidates": [
+            "CODE_MODE_PRAGMA_PREFIX",
+            "CodeModeToolKind",
+            "EnabledToolMetadata",
+            "ParsedExecSource",
+            "ToolDefinition",
+            "ToolNamespaceDescription",
+            "augment_tool_definition",
+            "build_exec_tool_description",
+            "build_wait_tool_description",
+            "enabled_tool_metadata",
+            "is_code_mode_nested_tool",
+            "normalize_code_mode_identifier"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +91,16 @@
         "source": "codex/codex-rs/code-mode/src/response.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/response.py",
+          "anchor_candidates": [
+            "DEFAULT_IMAGE_DETAIL",
+            "FunctionCallOutputContentItem",
+            "ImageDetail"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +116,25 @@
         "source": "codex/codex-rs/code-mode/src/runtime/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/runtime/__init__.py",
+          "anchor_candidates": [
+            "CodeModeNestedToolCall",
+            "CompletionState",
+            "DEFAULT_EXEC_YIELD_TIME_MS",
+            "DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL",
+            "DEFAULT_WAIT_YIELD_TIME_MS",
+            "ExecuteRequest",
+            "ExecuteToPendingOutcome",
+            "PendingRuntimeMode",
+            "RuntimeCommand",
+            "RuntimeControlCommand",
+            "RuntimeEvent",
+            "RuntimeResponse"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +150,23 @@
         "source": "codex/codex-rs/code-mode/src/runtime/callbacks.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/runtime/callbacks.py",
+          "anchor_candidates": [
+            "clear_timeout_callback",
+            "exit_callback",
+            "image_callback",
+            "load_callback",
+            "notify_callback",
+            "set_timeout_callback",
+            "store_callback",
+            "text_callback",
+            "tool_callback",
+            "yield_control_callback"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +182,14 @@
         "source": "codex/codex-rs/code-mode/src/runtime/globals.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/runtime/globals.py",
+          "anchor_candidates": [
+            "install_globals"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +205,14 @@
         "source": "codex/codex-rs/code-mode/src/runtime/module_loader.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/runtime/module_loader.py",
+          "anchor_candidates": [
+            "is_exit_exception"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +228,16 @@
         "source": "codex/codex-rs/code-mode/src/runtime/timers.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/runtime/timers.py",
+          "anchor_candidates": [
+            "clear_timeout",
+            "invoke_timeout_callback",
+            "schedule_timeout"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +253,18 @@
         "source": "codex/codex-rs/code-mode/src/runtime/value.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/runtime/value.py",
+          "anchor_candidates": [
+            "normalize_output_image",
+            "serialize_output_text",
+            "value_to_error_text",
+            "CODEX_IMAGE_DETAIL_META_KEY",
+            "IMAGE_HELPER_EXPECTS_MESSAGE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +280,25 @@
         "source": "codex/codex-rs/code-mode/src/service.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/code_mode/service.py",
+          "anchor_candidates": [
+            "CodeModeService",
+            "CodeModeTurnHost",
+            "CodeModeTurnWorker",
+            "allocate_cell_id",
+            "execute",
+            "execute_to_pending",
+            "wait",
+            "wait_to_pending",
+            "PendingResult",
+            "invoke_tool",
+            "missing_cell_response",
+            "notify"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

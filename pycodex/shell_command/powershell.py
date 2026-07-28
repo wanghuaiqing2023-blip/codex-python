@@ -10,11 +10,34 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
-from .command_safety import parse_powershell_script
-from .parse_command import extract_powershell_command
+from .command_safety.windows_safe_commands import parse_powershell_script
 
 
 UTF8_OUTPUT_PREFIX = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;\n"
+POWERSHELL_FLAGS = {"-nologo", "-noprofile", "-command", "-c"}
+
+
+def extract_powershell_command(command: Sequence[str]) -> tuple[str, str] | None:
+    if len(command) < 3 or not _is_powershellish(command[0]):
+        return None
+    index = 1
+    while index + 1 < len(command):
+        flag = command[index]
+        flag_lc = flag.lower()
+        if flag_lc not in POWERSHELL_FLAGS:
+            return None
+        if flag_lc in {"-command", "-c"}:
+            return command[0], command[index + 1]
+        index += 1
+    return None
+
+
+def _is_powershellish(path: str) -> bool:
+    normalized = path.replace("\\", "/").rstrip("/")
+    name = normalized.rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return name in {"powershell", "pwsh"}
 
 
 def prefix_powershell_script_with_utf8(command: Sequence[str]) -> list[str]:

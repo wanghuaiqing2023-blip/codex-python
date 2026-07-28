@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-app-server-transport.transport.remote_control.protocol",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-transport",
+    "module": "transport::remote_control::protocol",
+    "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/protocol.rs",
+    "anchors": ["ClientEnvelope", "ServerEnvelope", "normalize_remote_control_url"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_transport/transport/remote_control/protocol.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/app_server_transport/transport/remote_control/protocol.py"],
+    "anchors": ["ClientEnvelope", "ServerEnvelope", "normalize_remote_control_url"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_server_transport_remote_control_protocol_rs.py"]
+}

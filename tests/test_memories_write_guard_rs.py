@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from pycodex.memories.write import CODEX_LIMIT_ID, rate_limits_check, rate_limits_ok, snapshot_allows_startup
+from pycodex.memories.write.guard import rate_limits_check, rate_limits_ok, snapshot_allows_startup
+from pycodex.memories.write.guard_limits import CODEX_LIMIT_ID
 from pycodex.protocol import RateLimitReachedType, RateLimitSnapshot, RateLimitWindow
 
 

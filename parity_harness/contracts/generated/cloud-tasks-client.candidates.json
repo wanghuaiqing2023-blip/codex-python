@@ -11,7 +11,7 @@
   },
   "summary": {
     "rust_modules": 4,
-    "python_files": 3,
+    "python_files": 4,
     "modules_with_candidates": 4,
     "modules_with_anchors": 4
   },
@@ -93,7 +93,7 @@
       },
       "python_candidates": [
         {
-          "owner": "pycodex/cloud_tasks_client/http.py",
+          "owner": "pycodex/cloud_tasks_client/http/__init__.py",
           "anchor_candidates": [
             "HttpClient",
             "diff",
@@ -127,11 +127,20 @@
       },
       "python_candidates": [
         {
-          "owner": "pycodex/cloud_tasks_client/api.py",
+          "owner": "pycodex/cloud_tasks_client/http/api.py",
           "anchor_candidates": [
             "diff",
             "messages",
-            "summary"
+            "attempt_status_from_str",
+            "attempt_total_from_status_display",
+            "details_path",
+            "diff_summary_from_diff",
+            "diff_summary_from_status_display",
+            "env_label_from_status_display",
+            "extract_assistant_messages_from_body",
+            "extract_assistant_messages_from_turn",
+            "extract_diff_from_turn",
+            "is_unified_diff"
           ]
         }
       ],

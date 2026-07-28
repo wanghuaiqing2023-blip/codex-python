@@ -1,0 +1,45 @@
+{
+  "contract_id": "codex-rmcp-client.elicitation_client_service",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "elicitation_client_service",
+    "source": "codex/codex-rs/rmcp-client/src/elicitation_client_service.rs",
+    "anchors": [
+      "ElicitationClientService",
+      "MCP_PROGRESS_TOKEN_META_KEY",
+      "elicitation_response_result",
+      "get_info",
+      "handle_notification",
+      "handle_request",
+      "restore_context_meta"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/elicitation_client_service.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/rmcp_client/elicitation_client_service.py"
+    ],
+    "anchors": [
+      "ElicitationClientService",
+      "MCP_PROGRESS_TOKEN_META_KEY",
+      "elicitation_response_result",
+      "get_info",
+      "handle_notification",
+      "handle_request",
+      "restore_context_meta"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_rmcp_client_elicitation_logging_rs.py",
+    "tests/test_rmcp_client_stdio_launcher_rs.py"
+  ]
+}

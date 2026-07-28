@@ -36,10 +36,10 @@ class ConfigRequirementsExecPolicyTests(unittest.TestCase):
         policy = toml.to_requirements_policy()
 
         self.assertEqual(len(policy.prefix_rules), 2)
-        self.assertEqual(policy.prefix_rules[0].pattern, ("git", ("push", "fetch")))
+        self.assertEqual(tuple(policy.prefix_rules[0].pattern), ("git", ("push", "fetch")))
         self.assertEqual(policy.prefix_rules[0].decision, Decision.PROMPT)
         self.assertEqual(policy.prefix_rules[0].justification, "review remote access")
-        self.assertEqual(policy.prefix_rules[1].pattern, ("rm",))
+        self.assertEqual(tuple(policy.prefix_rules[1].pattern), ("rm",))
         self.assertEqual(policy.prefix_rules[1].decision, Decision.FORBIDDEN)
         self.assertEqual(toml.to_policy(), {"prefix_rules": policy.prefix_rules})
 
@@ -59,7 +59,10 @@ class ConfigRequirementsExecPolicyTests(unittest.TestCase):
 
         rules = toml.to_requirements_policy().prefix_rules
 
-        self.assertEqual([rule.pattern for rule in rules], [("python", "-m"), ("python3", "-m")])
+        self.assertEqual(
+            [tuple(rule.pattern) for rule in rules],
+            [("python", "-m"), ("python3", "-m")],
+        )
 
     def test_requirements_policy_equality_uses_policy_fingerprint(self) -> None:
         # Rust source: RequirementsExecPolicy PartialEq compares sorted policy fingerprints.
@@ -183,7 +186,7 @@ class ConfigRequirementsExecPolicyTests(unittest.TestCase):
 
         rule = toml.to_requirements_policy().prefix_rules[0]
 
-        self.assertEqual(rule.pattern, ("cargo", ("test", "build")))
+        self.assertEqual(tuple(rule.pattern), ("cargo", ("test", "build")))
         self.assertEqual(rule.decision, Decision.PROMPT)
         self.assertEqual(rule.justification, "build commands")
 

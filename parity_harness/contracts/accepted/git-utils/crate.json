@@ -48,5 +48,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_git_utils_module_ownership_rs.py",
+    "tests/test_core_git_info.py"
+  ]
 }

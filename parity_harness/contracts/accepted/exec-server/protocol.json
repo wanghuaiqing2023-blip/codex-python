@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-exec-server.protocol",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "protocol",
+    "source": "codex/codex-rs/exec-server/src/protocol.rs",
+    "anchors": [
+      "ByteChunk",
+      "EXEC_CLOSED_METHOD",
+      "EXEC_EXITED_METHOD",
+      "EXEC_METHOD",
+      "EXEC_OUTPUT_DELTA_METHOD",
+      "EXEC_READ_METHOD",
+      "EXEC_TERMINATE_METHOD",
+      "EXEC_WRITE_METHOD",
+      "ExecClosedNotification",
+      "ExecEnvPolicy",
+      "ExecExitedNotification",
+      "ExecOutputDeltaNotification"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/protocol/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/exec_server/protocol/__init__.py"
+    ],
+    "anchors": [
+      "ByteChunk",
+      "EXEC_CLOSED_METHOD",
+      "EXEC_EXITED_METHOD",
+      "EXEC_METHOD",
+      "EXEC_OUTPUT_DELTA_METHOD",
+      "EXEC_READ_METHOD",
+      "EXEC_TERMINATE_METHOD",
+      "EXEC_WRITE_METHOD",
+      "ExecClosedNotification",
+      "ExecEnvPolicy",
+      "ExecExitedNotification",
+      "ExecOutputDeltaNotification"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_protocol_rs.py"
+  ]
+}

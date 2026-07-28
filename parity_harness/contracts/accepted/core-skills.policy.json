@@ -4,8 +4,8 @@
   "python_root": "pycodex/core_skills",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": ["crate::injection", "crate::loader", "crate::system"],
-  "uncovered_python_files": ["pycodex/core_skills/injections.py", "pycodex/core_skills/mentions.py"],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
   "allowed_unowned": []
 }

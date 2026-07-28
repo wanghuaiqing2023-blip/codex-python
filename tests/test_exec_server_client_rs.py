@@ -9,13 +9,6 @@ import pytest
 from pycodex.app_server_protocol import JSONRPCError, JSONRPCMessage, JSONRPCNotification, JSONRPCResponse
 from pycodex.app_server_protocol.jsonrpc_lite import JSONRPCErrorError
 from pycodex.exec_server import (
-    EXEC_CLOSED_METHOD,
-    EXEC_EXITED_METHOD,
-    EXEC_OUTPUT_DELTA_METHOD,
-    EXEC_READ_METHOD,
-    EXEC_TERMINATE_METHOD,
-    EXEC_WRITE_METHOD,
-    ByteChunk,
     ExecClosedNotification,
     ExecExitedNotification,
     ExecOutputDeltaNotification,
@@ -24,20 +17,35 @@ from pycodex.exec_server import (
     ExecServerClient,
     ExecServerClientConnectOptions,
     ExecServerError,
-    ExecServerTransportParams,
     HttpHeader,
     HttpRequestParams,
     HttpRequestResponse,
-    JsonRpcConnection,
-    JsonRpcConnectionEvent,
-    LazyRemoteExecServerClient,
     ProcessId,
     ProcessOutputChunk,
     ReadParams,
-    StdioExecServerCommand,
     TerminateResponse,
     WriteResponse,
     WriteStatus,
+)
+from pycodex.exec_server.client import (
+    LazyRemoteExecServerClient,
+)
+from pycodex.exec_server.client_api import (
+    ExecServerTransportParams,
+    StdioExecServerCommand,
+)
+from pycodex.exec_server.connection import (
+    JsonRpcConnection,
+    JsonRpcConnectionEvent,
+)
+from pycodex.exec_server.protocol import (
+    EXEC_CLOSED_METHOD,
+    EXEC_EXITED_METHOD,
+    EXEC_OUTPUT_DELTA_METHOD,
+    EXEC_READ_METHOD,
+    EXEC_TERMINATE_METHOD,
+    EXEC_WRITE_METHOD,
+    ByteChunk,
     encode_exec_closed_notification,
     encode_exec_exited_notification,
     encode_exec_output_delta_notification,

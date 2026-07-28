@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-core-plugins.marketplace_remove",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "marketplace_remove",
+    "source": "codex/codex-rs/core-plugins/src/marketplace_remove.rs",
+    "anchors": [
+      "MarketplaceRemoveError",
+      "MarketplaceRemoveOutcome",
+      "MarketplaceRemoveRequest",
+      "remove_marketplace"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/marketplace_remove.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/marketplace_remove.py"
+    ],
+    "anchors": [
+      "MarketplaceRemoveError",
+      "MarketplaceRemoveOutcome",
+      "MarketplaceRemoveRequest",
+      "remove_marketplace"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_marketplace_mutation_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

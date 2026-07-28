@@ -68,6 +68,25 @@ def run_bwrap_main(
     return int(runner(plan.argv))
 
 
+def main(
+    argv: Iterable[str | bytes] | None = None,
+    *,
+    target_os: str | None = None,
+    bwrap_available: bool = False,
+    runner: Callable[[tuple[str | bytes, ...]], int] | None = None,
+) -> NoReturn:
+    """Run the cfg-selected bwrap entry point and exit with its return code."""
+
+    raise SystemExit(
+        run_bwrap_main(
+            argv,
+            target_os=target_os,
+            bwrap_available=bwrap_available,
+            runner=runner,
+        )
+    )
+
+
 def _validate_argv_for_cstring(argv: Iterable[str | bytes]) -> None:
     for arg in argv:
         raw = arg if isinstance(arg, bytes) else arg.encode(errors="surrogateescape")
@@ -84,5 +103,6 @@ __all__ = [
     "BwrapMainPlan",
     "NON_LINUX_MESSAGE",
     "build_bwrap_main_plan",
+    "main",
     "run_bwrap_main",
 ]

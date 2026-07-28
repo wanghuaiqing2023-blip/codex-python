@@ -7,10 +7,6 @@
     "module": "crate",
     "source": "codex/codex-rs/memories/write/src/lib.rs",
     "anchors": [
-      "CODEX_LIMIT_ID",
-      "EXTENSIONS_SUBDIR",
-      "RAW_MEMORIES_FILENAME",
-      "ROLLOUT_SUMMARIES_SUBDIR",
       "build_consolidation_prompt",
       "build_stage_one_input_message",
       "clear_memory_roots_contents",
@@ -18,21 +14,21 @@
       "memory_extensions_root",
       "memory_root",
       "prune_old_extension_resources",
-      "raw_memories_file"
+      "raw_memories_file",
+      "rebuild_raw_memories_file_from_memories",
+      "rollout_summaries_dir",
+      "rollout_summary_file_stem",
+      "start_memories_startup_task"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
   "python": {
     "owner": "pycodex/memories/write/__init__.py",
-    "layout": "module-file",
+    "layout": "module-package",
     "implementation_files": [
       "pycodex/memories/write/__init__.py"
     ],
     "anchors": [
-      "CODEX_LIMIT_ID",
-      "EXTENSIONS_SUBDIR",
-      "RAW_MEMORIES_FILENAME",
-      "ROLLOUT_SUMMARIES_SUBDIR",
       "build_consolidation_prompt",
       "build_stage_one_input_message",
       "clear_memory_roots_contents",
@@ -40,7 +36,11 @@
       "memory_extensions_root",
       "memory_root",
       "prune_old_extension_resources",
-      "raw_memories_file"
+      "raw_memories_file",
+      "rebuild_raw_memories_file_from_memories",
+      "rollout_summaries_dir",
+      "rollout_summary_file_stem",
+      "start_memories_startup_task"
     ]
   },
   "checks": {
@@ -48,5 +48,7 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_memories_write_module_ownership_rs.py"
+  ]
 }

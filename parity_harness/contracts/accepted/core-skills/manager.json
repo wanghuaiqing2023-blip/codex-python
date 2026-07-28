@@ -3,13 +3,13 @@
   "rust": {
     "workspace": "codex/codex-rs", "crate": "codex-core-skills",
     "module": "manager", "source": "codex/codex-rs/core-skills/src/manager.rs",
-    "anchors": ["SkillsManager", "clear_cache", "new", "skill_roots_for_config", "skills_for_config", "skills_for_cwd"],
+    "anchors": ["SkillsLoadInput", "SkillsManager", "clear_cache", "new", "skill_roots_for_config", "skills_for_config", "skills_for_cwd"],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
   "python": {
     "owner": "pycodex/core_skills/manager.py", "layout": "module-file",
     "implementation_files": ["pycodex/core_skills/manager.py"],
-    "anchors": ["SkillsManager", "clear_cache", "new", "skill_roots_for_config", "skills_for_config", "skills_for_cwd"]
+    "anchors": ["SkillsLoadInput", "SkillsManager", "clear_cache", "new", "skill_roots_for_config", "skills_for_config", "skills_for_cwd"]
   },
   "checks": {"structure": {"checker": "structure.owner-and-coordinate"}}, "fixture_refs": []
 }

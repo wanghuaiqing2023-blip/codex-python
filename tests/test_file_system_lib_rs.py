@@ -46,7 +46,8 @@ def test_file_system_sandbox_context_permission_profile_constructors(tmp_path: P
         PermissionProfile.read_only(),
         tmp_path,
     )
-    assert read_only_context.cwd == tmp_path
+    assert read_only_context.cwd is not None
+    assert read_only_context.cwd.as_path() == tmp_path
     assert read_only_context.windows_sandbox_level is WindowsSandboxLevel.DISABLED
     assert read_only_context.should_run_in_sandbox()
     assert not read_only_context.has_cwd_dependent_permissions()
@@ -58,7 +59,9 @@ def test_file_system_sandbox_context_permission_profile_constructors(tmp_path: P
     )
     assert workspace_context.should_run_in_sandbox()
     assert workspace_context.has_cwd_dependent_permissions()
-    assert workspace_context.drop_cwd_if_unused().cwd == tmp_path
+    retained_cwd = workspace_context.drop_cwd_if_unused().cwd
+    assert retained_cwd is not None
+    assert retained_cwd.as_path() == tmp_path
 
     disabled_context = FileSystemSandboxContext.from_permission_profile(PermissionProfile.disabled())
     assert not disabled_context.should_run_in_sandbox()
@@ -77,7 +80,8 @@ def test_from_legacy_sandbox_policy_uses_cwd_materialized_permissions(tmp_path: 
 
     context = FileSystemSandboxContext.from_legacy_sandbox_policy(sandbox_policy, tmp_path)
 
-    assert context.cwd == tmp_path
+    assert context.cwd is not None
+    assert context.cwd.as_path() == tmp_path
     assert context.windows_sandbox_level is WindowsSandboxLevel.DISABLED
     assert context.permissions == PermissionProfile.from_legacy_sandbox_policy_for_cwd(
         sandbox_policy,

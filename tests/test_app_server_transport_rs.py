@@ -1,3 +1,6 @@
+import pycodex.app_server.transport as app_server_transport
+import pycodex.app_server_transport as transport_crate
+
 from pycodex.app_server.transport import (
     ConnectionStateProjection,
     DisconnectConnectionProjection,
@@ -80,6 +83,13 @@ def test_transport_reexport_surface_projection_matches_rust_use_declarations() -
             "start_remote_control",
         ),
     )
+
+
+def test_transport_reexports_are_the_real_transport_crate_items() -> None:
+    for name in app_server_transport.TRANSPORT_PUBLIC_REEXPORTS:
+        assert getattr(app_server_transport, name) is getattr(transport_crate, name)
+    for name in app_server_transport.TRANSPORT_CRATE_REEXPORTS:
+        assert getattr(app_server_transport, name) is getattr(transport_crate, name)
 
 
 def test_connection_state_projection_ignores_origin_and_creates_session() -> None:

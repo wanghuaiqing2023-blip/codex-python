@@ -7,8 +7,6 @@ import pytest
 from pycodex.execpolicy import (
     Decision,
     Evaluation,
-    InvalidPatternError,
-    InvalidRuleError,
     NetworkRuleProtocol,
     PatternToken,
     Policy,
@@ -16,6 +14,7 @@ from pycodex.execpolicy import (
     PrefixRule,
     RuleMatch,
 )
+from pycodex.execpolicy.error import InvalidPatternError, InvalidRuleError
 
 
 def _allow_all(_: tuple[str, ...]) -> Decision:

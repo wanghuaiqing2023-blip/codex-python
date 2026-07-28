@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.execpolicy_legacy import ArgType
-from pycodex.execpolicy_legacy import EmptyFileName
-from pycodex.execpolicy_legacy import InvalidPositiveInteger
-from pycodex.execpolicy_legacy import MatchedArg
-from pycodex.execpolicy_legacy import MatchedFlag
-from pycodex.execpolicy_legacy import MatchedOpt
-from pycodex.execpolicy_legacy import SedCommandNotProvablySafe
-from pycodex.execpolicy_legacy import ValidExec
+from pycodex.execpolicy_legacy.arg_type import ArgType
+from pycodex.execpolicy_legacy.error import EmptyFileName
+from pycodex.execpolicy_legacy.error import InvalidPositiveInteger
+from pycodex.execpolicy_legacy.valid_exec import MatchedArg
+from pycodex.execpolicy_legacy.valid_exec import MatchedFlag
+from pycodex.execpolicy_legacy.valid_exec import MatchedOpt
+from pycodex.execpolicy_legacy.error import SedCommandNotProvablySafe
+from pycodex.execpolicy_legacy.valid_exec import ValidExec
 
 
 def test_valid_exec_new_matches_rust_constructor_defaults() -> None:

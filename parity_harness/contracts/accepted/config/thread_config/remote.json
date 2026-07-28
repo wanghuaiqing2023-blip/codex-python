@@ -1,0 +1,45 @@
+{
+  "contract_id": "codex-config.thread_config.remote",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-config",
+    "module": "thread_config::remote",
+    "source": "codex/codex-rs/config/src/thread_config/remote.rs",
+    "anchors": [
+      "RemoteThreadConfigLoader",
+      "load_thread_config_request",
+      "model_provider_auth_from_proto",
+      "model_provider_from_proto",
+      "remote_status_to_error",
+      "session_thread_config_from_proto",
+      "thread_config_source_from_proto"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/config/thread_config/remote/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/config/thread_config/remote/__init__.py"
+    ],
+    "anchors": [
+      "RemoteThreadConfigLoader",
+      "load_thread_config_request",
+      "model_provider_auth_from_proto",
+      "model_provider_from_proto",
+      "remote_status_to_error",
+      "session_thread_config_from_proto",
+      "thread_config_source_from_proto"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_config_module_ownership_rs.py",
+    "tests/test_config_thread_config.py"
+  ]
+}

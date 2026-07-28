@@ -8,6 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from pycodex.utils.sleep_inhibitor import SleepInhibitor
+
 from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
@@ -15,20 +17,6 @@ RUST_MODULE = RustTuiModule(
     module="chatwidget::turn_lifecycle",
     source="codex/codex-rs/tui/src/chatwidget/turn_lifecycle.rs",
 )
-
-
-@dataclass
-class SleepInhibitor:
-    """Semantic stand-in for Rust ``SleepInhibitor`` used by this module."""
-
-    prevent_idle_sleep: bool
-    turn_running: bool = False
-
-    def set_turn_running(self, turn_running: bool) -> None:
-        self.turn_running = bool(turn_running)
-
-    def is_turn_running(self) -> bool:
-        return self.turn_running
 
 
 @dataclass

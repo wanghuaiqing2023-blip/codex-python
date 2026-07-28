@@ -1,0 +1,34 @@
+{
+  "contract_id": "codex-rmcp-client.auth_status",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "auth_status",
+    "source": "codex/codex-rs/rmcp-client/src/auth_status.rs",
+    "anchors": [
+      "StreamableHttpOAuthDiscovery",
+      "determine_streamable_http_auth_status",
+      "discover_streamable_http_oauth",
+      "supports_oauth_login",
+      "OAUTH_DISCOVERY_HEADER",
+      "OAUTH_DISCOVERY_VERSION"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/auth_status.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rmcp_client/auth_status.py"],
+    "anchors": [
+      "StreamableHttpOAuthDiscovery",
+      "determine_streamable_http_auth_status",
+      "discover_streamable_http_oauth",
+      "supports_oauth_login",
+      "OAUTH_DISCOVERY_HEADER",
+      "OAUTH_DISCOVERY_VERSION"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rmcp_client_foundation_modules_rs.py"]
+}

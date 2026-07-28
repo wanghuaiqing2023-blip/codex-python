@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-hooks.events",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "events",
+    "source": "codex/codex-rs/hooks/src/events/mod.rs",
+    "anchors": [
+      "module:common",
+      "module:compact",
+      "module:permission_request",
+      "module:post_tool_use",
+      "module:pre_tool_use",
+      "module:session_start",
+      "module:stop",
+      "module:user_prompt_submit"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/events/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/hooks/events/__init__.py"
+    ],
+    "anchors": [
+      "module:common",
+      "module:compact",
+      "module:permission_request",
+      "module:post_tool_use",
+      "module:pre_tool_use",
+      "module:session_start",
+      "module:stop",
+      "module:user_prompt_submit"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_module_ownership_rs.py"
+  ]
+}

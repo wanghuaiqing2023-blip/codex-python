@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-core-plugins.marketplace_add.source",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "marketplace_add::source",
+    "source": "codex/codex-rs/core-plugins/src/marketplace_add/source.rs",
+    "anchors": [
+      "MarketplaceSource",
+      "display",
+      "parse_marketplace_source",
+      "validate_marketplace_source_root"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/marketplace_add/source.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/marketplace_add/source.py"
+    ],
+    "anchors": [
+      "MarketplaceSource",
+      "display",
+      "parse_marketplace_source",
+      "validate_marketplace_source_root"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_marketplace_mutation_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

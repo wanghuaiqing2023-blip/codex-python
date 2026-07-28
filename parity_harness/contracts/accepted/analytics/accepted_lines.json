@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-analytics.accepted_lines",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-analytics",
+    "module": "accepted_lines",
+    "source": "codex/codex-rs/analytics/src/accepted_lines.rs",
+    "anchors": [
+      "AcceptedLineFingerprintEventInput",
+      "AcceptedLineFingerprintSummary",
+      "accepted_line_fingerprint_event_requests",
+      "accepted_line_fingerprints_from_unified_diff",
+      "fingerprint_hash"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/analytics/accepted_lines.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/analytics/accepted_lines.py"
+    ],
+    "anchors": [
+      "AcceptedLineFingerprintEventInput",
+      "AcceptedLineFingerprintSummary",
+      "accepted_line_fingerprint_event_requests",
+      "accepted_line_fingerprints_from_unified_diff",
+      "fingerprint_hash"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_analytics_accepted_lines_rs.py"
+  ]
+}

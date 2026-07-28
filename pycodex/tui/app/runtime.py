@@ -1495,7 +1495,7 @@ class CoreExecActiveThreadRuntime:
         codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
         if codex_home is None:
             raise RuntimeError("codex_home is required for thread goals")
-        from pycodex.state.state_runtime import StateRuntime
+        from pycodex.state.runtime import StateRuntime
 
         self._state_runtime = _run_coro_blocking(
             StateRuntime.init(
@@ -1593,10 +1593,10 @@ class CoreExecActiveThreadRuntime:
         """Load one picker target into the active core runtime."""
 
         from pycodex.app_server.request_processors import build_api_turns_from_rollout_items
-        from pycodex.rollout import (
+        from pycodex.rollout import read_session_meta_line
+        from pycodex.rollout.recorder import (
             RolloutRecorder,
             read_rollout_reconstruction_from_rollout,
-            read_session_meta_line,
         )
 
         rollout_path = Path(_field(target, "rollout_path", _field(target, "path", "")))
@@ -1629,11 +1629,11 @@ class CoreExecActiveThreadRuntime:
         import uuid
 
         from pycodex.app_server.request_processors import build_api_turns_from_rollout_items
-        from pycodex.rollout import (
+        from pycodex.rollout import read_session_meta_line
+        from pycodex.rollout.recorder import (
             RolloutRecorder,
             append_rollout_item_to_path,
             materialize_session_rollout,
-            read_session_meta_line,
         )
         from pycodex.protocol import SessionMeta, ThreadId
 

@@ -12,7 +12,7 @@ import errno
 import os
 import sys
 from pathlib import Path
-from typing import BinaryIO, Sequence
+from typing import BinaryIO
 
 
 class StdioToUdsError(OSError):
@@ -81,21 +81,7 @@ async def _shutdown_socket_writer(writer: asyncio.StreamWriter) -> None:
             raise StdioToUdsError("failed to shutdown socket writer") from exc
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if not args:
-        print("Usage: codex-stdio-to-uds <socket-path>", file=sys.stderr)
-        return 1
-    if len(args) > 1:
-        print("Expected exactly one argument: <socket-path>", file=sys.stderr)
-        return 1
-
-    asyncio.run(run(args[0]))
-    return 0
-
-
 __all__ = [
     "StdioToUdsError",
-    "main",
     "run",
 ]

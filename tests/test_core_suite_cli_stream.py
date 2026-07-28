@@ -4,13 +4,11 @@ from pycodex.core import ModelClient
 from pycodex.core.client_common import Prompt
 from pycodex.core.client import _parse_responses_sse_stream, _provider_responses_endpoint
 from pycodex.protocol import BaseInstructions, ContentItem, ResponseItem
-from pycodex.rollout import (
-    GitInfo,
-    SessionMeta,
-    SessionMetaLine,
+from pycodex.protocol import GitInfo, SessionMeta, SessionMetaLine, ThreadId
+from pycodex.rollout import read_session_meta_line
+from pycodex.rollout.recorder import (
     materialize_session_rollout,
     read_response_items_from_rollout,
-    read_session_meta_line,
 )
 
 
@@ -121,7 +119,7 @@ def test_integration_creates_and_checks_session_file(tmp_path):
 
     assert rel_parts[:3] == ("2025", "01", "02")
     assert rollout_path.name.startswith("rollout-")
-    assert meta.meta.id == thread_id
+    assert meta.meta.id == ThreadId.from_string(thread_id)
     assert items[-1].content[0].text == f"echo {marker}"
 
 
@@ -147,5 +145,6 @@ def test_integration_git_info_unit_test():
     decoded = SessionMetaLine.from_mapping(encoded)
 
     assert decoded.git == git_info
-    assert len(decoded.git.commit_hash) == 40
-    assert all(char in "0123456789abcdef" for char in decoded.git.commit_hash)
+    commit_hash = decoded.git.commit_hash.to_json()
+    assert len(commit_hash) == 40
+    assert all(char in "0123456789abcdef" for char in commit_hash)

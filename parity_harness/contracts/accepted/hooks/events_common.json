@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-hooks.events.common",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "events::common",
+    "source": "codex/codex-rs/hooks/src/events/common.rs",
+    "anchors": [
+      "SubagentHookContext",
+      "append_additional_context",
+      "flatten_additional_contexts",
+      "hook_completed_for_tool_use",
+      "hook_run_for_tool_use",
+      "join_text_chunks",
+      "matcher_inputs",
+      "matcher_pattern_for_event",
+      "matches_matcher",
+      "serialization_failure_hook_events",
+      "serialization_failure_hook_events_for_tool_use",
+      "trimmed_non_empty"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/events/common.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/events/common.py"
+    ],
+    "anchors": [
+      "SubagentHookContext",
+      "append_additional_context",
+      "flatten_additional_contexts",
+      "hook_completed_for_tool_use",
+      "hook_run_for_tool_use",
+      "join_text_chunks",
+      "matcher_inputs",
+      "matcher_pattern_for_event",
+      "matches_matcher",
+      "serialization_failure_hook_events",
+      "serialization_failure_hook_events_for_tool_use",
+      "trimmed_non_empty"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_events_common_rs.py"
+  ]
+}

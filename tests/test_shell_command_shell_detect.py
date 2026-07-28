@@ -2,8 +2,8 @@ from pathlib import PureWindowsPath
 
 import pytest
 
-from pycodex.core.shell import ShellType
 from pycodex.shell_command import detect_shell_type
+from pycodex.shell_command.shell_detect import ShellType
 
 
 def test_detect_shell_type_exact_known_names() -> None:

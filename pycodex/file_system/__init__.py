@@ -20,6 +20,9 @@ from pycodex.protocol import (
     SandboxPolicy,
     WindowsSandboxLevel,
 )
+from pycodex.utils.absolute_path import AbsolutePathBuf
+
+FileSystemResult = Any
 
 
 @dataclass(frozen=True)
@@ -57,7 +60,7 @@ class ReadDirectoryEntry:
 @dataclass(frozen=True)
 class FileSystemSandboxContext:
     permissions: Any
-    cwd: Path | None = None
+    cwd: AbsolutePathBuf | None = None
     windows_sandbox_level: Any = WindowsSandboxLevel.DISABLED
     windows_sandbox_private_desktop: bool = False
     use_legacy_landlock: bool = False
@@ -86,11 +89,16 @@ class FileSystemSandboxContext:
     def from_permission_profile_with_cwd(
         cls, permissions: Any, cwd: str | os.PathLike[str]
     ) -> "FileSystemSandboxContext":
-        return cls.from_permissions_and_cwd(permissions, Path(cwd))
+        return cls.from_permissions_and_cwd(
+            permissions,
+            cwd
+            if isinstance(cwd, AbsolutePathBuf)
+            else AbsolutePathBuf.from_absolute_path(cwd),
+        )
 
     @classmethod
     def from_permissions_and_cwd(
-        cls, permissions: Any, cwd: Path | None
+        cls, permissions: Any, cwd: AbsolutePathBuf | None
     ) -> "FileSystemSandboxContext":
         return cls(
             permissions=permissions,

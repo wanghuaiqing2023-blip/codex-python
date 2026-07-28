@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-exec-server.remote",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "remote",
+    "source": "codex/codex-rs/exec-server/src/remote.rs",
+    "anchors": [
+      "RemoteEnvironmentConfig",
+      "new",
+      "run_remote_environment",
+      "ERROR_BODY_PREVIEW_BYTES",
+      "EnvironmentRegistryClient",
+      "EnvironmentRegistryRegistrationResponse",
+      "endpoint_url",
+      "environment_registry_auth_error",
+      "environment_registry_http_error",
+      "normalize_base_url",
+      "normalize_environment_id",
+      "parse_json_response"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/remote.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec_server/remote.py"
+    ],
+    "anchors": [
+      "RemoteEnvironmentConfig",
+      "new",
+      "run_remote_environment",
+      "ERROR_BODY_PREVIEW_BYTES",
+      "EnvironmentRegistryClient",
+      "EnvironmentRegistryRegistrationResponse",
+      "endpoint_url",
+      "environment_registry_auth_error",
+      "environment_registry_http_error",
+      "normalize_base_url",
+      "normalize_environment_id",
+      "parse_json_response"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_remote_rs.py"
+  ]
+}

@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 11,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 11,
+    "modules_with_candidates": 11,
+    "modules_with_anchors": 11
   },
   "contracts": [
     {
@@ -33,12 +33,12 @@
             "EventPersistenceMode",
             "INTERACTIVE_SESSION_SOURCES",
             "RolloutConfig",
+            "RolloutConfigView",
             "RolloutRecorder",
             "RolloutRecorderParams",
             "SESSIONS_SUBDIR",
             "SessionMeta",
-            "SortDirection",
-            "ThreadItem"
+            "SortDirection"
           ]
         }
       ],
@@ -57,7 +57,22 @@
         "source": "codex/codex-rs/rollout/src/config.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/config.py",
+          "anchor_candidates": [
+            "Config",
+            "RolloutConfig",
+            "RolloutConfigView",
+            "from_view",
+            "codex_home",
+            "cwd",
+            "generate_memories",
+            "model_provider_id",
+            "sqlite_home"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +88,14 @@
         "source": "codex/codex-rs/rollout/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/default_client.py",
+          "anchor_candidates": [
+            "reexport:default_client"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +111,25 @@
         "source": "codex/codex-rs/rollout/src/list.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/list.py",
+          "anchor_candidates": [
+            "ConversationItem",
+            "ConversationsPage",
+            "Cursor",
+            "SortDirection",
+            "ThreadItem",
+            "ThreadListConfig",
+            "ThreadListLayout",
+            "ThreadSortKey",
+            "ThreadsPage",
+            "find_archived_thread_path_by_id_str",
+            "find_thread_path_by_id_str",
+            "get_threads"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +145,21 @@
         "source": "codex/codex-rs/rollout/src/metadata.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/metadata.py",
+          "anchor_candidates": [
+            "backfill_sessions",
+            "builder_from_items",
+            "builder_from_session_meta",
+            "extract_metadata_from_rollout",
+            "BACKFILL_BATCH_SIZE",
+            "backfill_watermark_for_path",
+            "collect_rollout_paths",
+            "parse_timestamp_to_utc"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +175,20 @@
         "source": "codex/codex-rs/rollout/src/policy.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/policy.py",
+          "anchor_candidates": [
+            "EventPersistenceMode",
+            "is_persisted_rollout_item",
+            "persisted_rollout_items",
+            "should_persist_event_msg",
+            "should_persist_response_item",
+            "should_persist_response_item_for_memories",
+            "PERSISTED_EXEC_AGGREGATED_OUTPUT_MAX_BYTES"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +204,25 @@
         "source": "codex/codex-rs/rollout/src/recorder.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/recorder.py",
+          "anchor_candidates": [
+            "RolloutRecorder",
+            "RolloutRecorderParams",
+            "append_rollout_item_to_path",
+            "get_rollout_history",
+            "load_rollout_items",
+            "record_canonical_items",
+            "resume",
+            "rollout_path",
+            "RolloutWriterState",
+            "add_items",
+            "fill_missing_thread_item_metadata",
+            "flush"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +238,17 @@
         "source": "codex/codex-rs/rollout/src/search.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/search.py",
+          "anchor_candidates": [
+            "first_rollout_content_match_snippet",
+            "search_rollout_paths",
+            "MATCH_CONTEXT_AFTER_CHARS",
+            "MATCH_CONTEXT_BEFORE_CHARS"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +264,21 @@
         "source": "codex/codex-rs/rollout/src/session_index.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/session_index.py",
+          "anchor_candidates": [
+            "SessionIndexEntry",
+            "append_session_index_entry",
+            "append_thread_name",
+            "find_thread_meta_by_name_str",
+            "find_thread_name_by_id",
+            "find_thread_names_by_ids",
+            "SESSION_INDEX_FILE",
+            "session_index_path"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +294,16 @@
         "source": "codex/codex-rs/rollout/src/sqlite_metrics.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/sqlite_metrics.py",
+          "anchor_candidates": [
+            "counter",
+            "record_duration",
+            "with_originator"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -201,7 +319,25 @@
         "source": "codex/codex-rs/rollout/src/state_db.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/rollout/state_db.py",
+          "anchor_candidates": [
+            "StateDbHandle",
+            "apply_rollout_items",
+            "find_rollout_path_by_id",
+            "get_state_db",
+            "init",
+            "list_thread_ids_db",
+            "list_threads_db",
+            "mark_thread_memory_mode_polluted",
+            "normalize_cwd_for_state_db",
+            "read_repair_rollout_path",
+            "reconcile_rollout",
+            "sqlite_telemetry_recorder"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

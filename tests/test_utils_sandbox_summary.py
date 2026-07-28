@@ -67,6 +67,9 @@ def test_lib_rs_public_reexports_match_python_public_surface() -> None:
         "summarize_permission_profile",
         "summarize_sandbox_policy",
     }
+    assert create_config_summary_entries.__module__ == "pycodex.utils.sandbox_summary.config_summary"
+    assert summarize_permission_profile.__module__ == "pycodex.utils.sandbox_summary.sandbox_summary"
+    assert summarize_sandbox_policy.__module__ == "pycodex.utils.sandbox_summary.sandbox_summary"
 
 
 def test_config_summary_entries_include_base_effective_config_values() -> None:

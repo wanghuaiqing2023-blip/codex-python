@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-execpolicy.execpolicycheck",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy",
+    "module": "execpolicycheck",
+    "source": "codex/codex-rs/execpolicy/src/execpolicycheck.rs",
+    "anchors": ["ExecPolicyCheckCommand", "format_matches_json", "load_policies", "run"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy/execpolicycheck.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/execpolicy/execpolicycheck.py"],
+    "anchors": ["ExecPolicyCheckCommand", "format_matches_json", "load_policies", "run"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_execpolicy_execpolicycheck.py", "tests/test_execpolicy_module_ownership_rs.py"]
+}

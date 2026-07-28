@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-external-agent-sessions.records",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-external-agent-sessions",
+    "module": "records",
+    "source": "codex/codex-rs/external-agent-sessions/src/records.rs",
+    "anchors": [
+      "SessionSummary",
+      "conversation_messages",
+      "project_root_from_records",
+      "read_records",
+      "source_title_from_records",
+      "summarize_session",
+      "EXTERNAL_AGENT_TOOL_CALL_TAG",
+      "EXTERNAL_AGENT_TOOL_RESULT_TAG",
+      "NOTE_MAX_LEN",
+      "TOOL_RESULT_MAX_LEN",
+      "tool_call_note",
+      "tool_result_note"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/external_agent_sessions/records.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/external_agent_sessions/records.py"
+    ],
+    "anchors": [
+      "SessionSummary",
+      "conversation_messages",
+      "project_root_from_records",
+      "read_records",
+      "source_title_from_records",
+      "summarize_session",
+      "EXTERNAL_AGENT_TOOL_CALL_TAG",
+      "EXTERNAL_AGENT_TOOL_RESULT_TAG",
+      "NOTE_MAX_LEN",
+      "TOOL_RESULT_MAX_LEN",
+      "tool_call_note",
+      "tool_result_note"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_external_agent_sessions_module_ownership_rs.py"
+  ]
+}

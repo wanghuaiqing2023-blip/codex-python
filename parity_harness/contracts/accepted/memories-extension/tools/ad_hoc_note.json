@@ -1,0 +1,40 @@
+{
+    "contract_id":  "codex-memories-extension.tools.ad_hoc_note",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-memories-extension",
+                 "module":  "tools::ad_hoc_note",
+                 "source":  "codex/codex-rs/ext/memories/src/tools/ad_hoc_note.rs",
+                 "anchors":  [
+                                 "AddAdHocNoteTool",
+                                 "AddAdHocNoteArgs",
+                                 "handle",
+                                 "spec",
+                                 "tool_name"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/ext/memories/tools/ad_hoc_note.py",
+                   "layout":  "module-file",
+                   "implementation_files":  [
+                                                "pycodex/ext/memories/tools/ad_hoc_note.py"
+                                            ],
+                   "anchors":  [
+                                   "AddAdHocNoteTool",
+                                   "AddAdHocNoteArgs",
+                                   "handle",
+                                   "spec",
+                                   "tool_name"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_memories_extension_module_ownership_rs.py"
+                     ]
+}

@@ -10,14 +10,13 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from pycodex.execpolicy import (
-    Decision,
-    ExecPolicyPrefixRule,
+from pycodex.core.exec_policy import (
     PROMPT_CONFLICT_REASON,
     REJECT_RULES_APPROVAL_REASON,
     REJECT_SANDBOX_APPROVAL_REASON,
     commands_for_intercepted_exec_policy,
 )
+from pycodex.execpolicy import Decision, PrefixRule
 from pycodex.core.guardian.approval_request import (
     GuardianNetworkAccessTrigger as CanonicalGuardianNetworkAccessTrigger,
 )
@@ -3862,7 +3861,7 @@ class ToolRuntimesTests(unittest.TestCase):
         # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
         # Rust test: evaluate_intercepted_exec_policy_uses_wrapper_command_when_shell_wrapper_parsing_disabled.
         evaluation = evaluate_intercepted_exec_policy(
-            (ExecPolicyPrefixRule.new(("npm", "publish"), "prompt"),),
+            (PrefixRule.new(("npm", "publish"), "prompt"),),
             "/bin/zsh",
             ("zsh", "-lc", "npm publish"),
             _intercepted_exec_context(enable_shell_wrapper_parsing=False),
@@ -3886,7 +3885,7 @@ class ToolRuntimesTests(unittest.TestCase):
         # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
         # Rust test: evaluate_intercepted_exec_policy_matches_inner_shell_commands_when_enabled.
         evaluation = evaluate_intercepted_exec_policy(
-            (ExecPolicyPrefixRule.new(("npm", "publish"), "prompt"),),
+            (PrefixRule.new(("npm", "publish"), "prompt"),),
             "/bin/bash",
             ("bash", "-lc", "npm publish"),
             _intercepted_exec_context(enable_shell_wrapper_parsing=True),
@@ -3911,7 +3910,7 @@ class ToolRuntimesTests(unittest.TestCase):
         # Rust tests: intercepted_exec_policy_uses_host_executable_mappings and
         # intercepted_exec_policy_rejects_disallowed_host_executable_mapping.
         policy = {
-            "rules": (ExecPolicyPrefixRule.new(("git", "status"), "prompt"),),
+            "rules": (PrefixRule.new(("git", "status"), "prompt"),),
             "host_executables": {"git": ("/usr/bin/git",)},
         }
 

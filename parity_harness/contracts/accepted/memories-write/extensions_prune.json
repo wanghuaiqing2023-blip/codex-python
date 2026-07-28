@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-memories-write.extensions.prune",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "extensions::prune",
+    "source": "codex/codex-rs/memories/write/src/extensions/prune.rs",
+    "anchors": [
+      "prune_old_extension_resources",
+      "prune_old_extension_resources_with_now",
+      "resource_timestamp"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/extensions/prune.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/write/extensions/prune.py"
+    ],
+    "anchors": [
+      "prune_old_extension_resources",
+      "prune_old_extension_resources_with_now",
+      "resource_timestamp"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_extensions_rs.py"
+  ]
+}

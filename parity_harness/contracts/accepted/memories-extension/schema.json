@@ -1,0 +1,36 @@
+{
+    "contract_id":  "codex-memories-extension.schema",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-memories-extension",
+                 "module":  "schema",
+                 "source":  "codex/codex-rs/ext/memories/src/schema.rs",
+                 "anchors":  [
+                                 "input_schema_for",
+                                 "output_schema_for",
+                                 "schema_for"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/ext/memories/schema.py",
+                   "layout":  "module-file",
+                   "implementation_files":  [
+                                                "pycodex/ext/memories/schema.py"
+                                            ],
+                   "anchors":  [
+                                   "input_schema_for",
+                                   "output_schema_for",
+                                   "schema_for"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_memories_extension_module_ownership_rs.py"
+                     ]
+}

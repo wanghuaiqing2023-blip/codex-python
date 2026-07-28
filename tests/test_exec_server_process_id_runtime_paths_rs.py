@@ -3,12 +3,14 @@ from __future__ import annotations
 import pytest
 
 from pycodex.exec_server import (
-    ByteChunk,
     ExecOutputDeltaNotification,
     ExecOutputStream,
     ExecResponse,
     ExecServerRuntimePaths,
     ProcessId,
+)
+from pycodex.exec_server.protocol import (
+    ByteChunk,
 )
 
 

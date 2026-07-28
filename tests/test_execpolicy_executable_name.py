@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pycodex.execpolicy import executable_lookup_key, executable_path_lookup_key
+from pycodex.execpolicy.executable_name import executable_lookup_key, executable_path_lookup_key
 
 
 def test_executable_lookup_key_matches_target_platform_suffix_rules():

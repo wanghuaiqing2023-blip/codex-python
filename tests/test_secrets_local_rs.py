@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pycodex.keyring_store import MockKeyringStore
+from pycodex.keyring_store.tests import MockKeyringStore
 from pycodex.secrets import (
     SecretListEntry,
     SecretName,

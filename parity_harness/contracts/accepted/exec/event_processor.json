@@ -8,6 +8,7 @@
     "source": "codex/codex-rs/exec/src/event_processor.rs",
     "anchors": [
       "CodexStatus",
+      "EventProcessor",
       "handle_last_message",
       "print_config_summary",
       "print_final_output",
@@ -24,6 +25,7 @@
     ],
     "anchors": [
       "CodexStatus",
+      "EventProcessor",
       "handle_last_message",
       "print_config_summary",
       "print_final_output",

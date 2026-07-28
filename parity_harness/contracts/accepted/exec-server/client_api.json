@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-exec-server.client_api",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "client_api",
+    "source": "codex/codex-rs/exec-server/src/client_api.rs",
+    "anchors": [
+      "DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT",
+      "DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT",
+      "ExecServerClientConnectOptions",
+      "ExecServerTransportParams",
+      "HttpClient",
+      "RemoteExecServerConnectArgs",
+      "StdioExecServerCommand",
+      "StdioExecServerConnectArgs",
+      "websocket_url",
+      "http_request",
+      "http_request_stream"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/client_api.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec_server/client_api.py"
+    ],
+    "anchors": [
+      "DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT",
+      "DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT",
+      "ExecServerClientConnectOptions",
+      "ExecServerTransportParams",
+      "HttpClient",
+      "RemoteExecServerConnectArgs",
+      "StdioExecServerCommand",
+      "StdioExecServerConnectArgs",
+      "websocket_url",
+      "http_request",
+      "http_request_stream"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_client_api_rs.py"
+  ]
+}

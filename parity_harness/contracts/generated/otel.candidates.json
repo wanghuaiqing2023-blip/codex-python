@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 19,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 19,
+    "modules_with_candidates": 19,
+    "modules_with_anchors": 19
   },
   "contracts": [
     {
@@ -57,7 +57,23 @@
         "source": "codex/codex-rs/otel/src/config.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/config.py",
+          "anchor_candidates": [
+            "OtelExporter",
+            "OtelHttpProtocol",
+            "OtelSettings",
+            "OtelTlsConfig",
+            "STATSIG_API_KEY",
+            "STATSIG_API_KEY_HEADER",
+            "STATSIG_OTLP_HTTP_ENDPOINT",
+            "StatsigMetricsSettings",
+            "resolve_exporter",
+            "validate_span_attributes"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +89,15 @@
         "source": "codex/codex-rs/otel/src/events/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/events/__init__.py",
+          "anchor_candidates": [
+            "module:session_telemetry",
+            "module:shared"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +113,25 @@
         "source": "codex/codex-rs/otel/src/events/session_telemetry.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/events/session_telemetry.py",
+          "anchor_candidates": [
+            "AuthEnvTelemetryMetadata",
+            "SessionTelemetry",
+            "SessionTelemetryMetadata",
+            "conversation_starts",
+            "counter",
+            "histogram",
+            "log_sse_event",
+            "new",
+            "record_api_request",
+            "record_auth_recovery",
+            "record_duration",
+            "record_plugin_install_elicitation_sent"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +147,14 @@
         "source": "codex/codex-rs/otel/src/events/shared.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/events/shared.py",
+          "anchor_candidates": [
+            "timestamp"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +170,21 @@
         "source": "codex/codex-rs/otel/src/metrics/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/__init__.py",
+          "anchor_candidates": [
+            "MetricsClient",
+            "MetricsConfig",
+            "MetricsError",
+            "MetricsExporter",
+            "ORIGINATOR_TAG",
+            "SessionMetricTagValues",
+            "bounded_originator_tag_value",
+            "record_process_start_once"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +200,22 @@
         "source": "codex/codex-rs/otel/src/metrics/client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/client.py",
+          "anchor_candidates": [
+            "MetricsClient",
+            "counter",
+            "histogram",
+            "new",
+            "record_duration",
+            "shutdown",
+            "snapshot",
+            "start_timer",
+            "ENV_ATTRIBUTE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +231,20 @@
         "source": "codex/codex-rs/otel/src/metrics/config.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/config.py",
+          "anchor_candidates": [
+            "MetricsConfig",
+            "MetricsExporter",
+            "in_memory",
+            "otlp",
+            "with_export_interval",
+            "with_runtime_reader",
+            "with_tag"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +260,14 @@
         "source": "codex/codex-rs/otel/src/metrics/error.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/error.py",
+          "anchor_candidates": [
+            "MetricsError"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +283,25 @@
         "source": "codex/codex-rs/otel/src/metrics/names.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/names.py",
+          "anchor_candidates": [
+            "API_CALL_COUNT_METRIC",
+            "API_CALL_DURATION_METRIC",
+            "CURATED_PLUGINS_STARTUP_SYNC_FINAL_METRIC",
+            "CURATED_PLUGINS_STARTUP_SYNC_METRIC",
+            "GOAL_BLOCKED_METRIC",
+            "GOAL_BUDGET_LIMITED_METRIC",
+            "GOAL_COMPLETED_METRIC",
+            "GOAL_CREATED_METRIC",
+            "GOAL_DURATION_SECONDS_METRIC",
+            "GOAL_RESUMED_METRIC",
+            "GOAL_TOKEN_COUNT_METRIC",
+            "GOAL_USAGE_LIMITED_METRIC"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -201,7 +317,14 @@
         "source": "codex/codex-rs/otel/src/metrics/process.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/process.py",
+          "anchor_candidates": [
+            "record_process_start_once"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -217,7 +340,21 @@
         "source": "codex/codex-rs/otel/src/metrics/runtime_metrics.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/runtime_metrics.py",
+          "anchor_candidates": [
+            "RuntimeMetricTotals",
+            "RuntimeMetricsSummary",
+            "from_snapshot",
+            "is_empty",
+            "merge",
+            "responses_api_summary",
+            "sum_counter",
+            "sum_histogram_ms"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -233,7 +370,23 @@
         "source": "codex/codex-rs/otel/src/metrics/tags.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/tags.py",
+          "anchor_candidates": [
+            "APP_VERSION_TAG",
+            "AUTH_MODE_TAG",
+            "MODEL_TAG",
+            "ORIGINATOR_TAG",
+            "SERVICE_NAME_TAG",
+            "SESSION_SOURCE_TAG",
+            "SessionMetricTagValues",
+            "bounded_originator_tag_value",
+            "into_tags",
+            "KNOWN_ORIGINATOR_TAG_VALUES"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -249,7 +402,15 @@
         "source": "codex/codex-rs/otel/src/metrics/timer.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/timer.py",
+          "anchor_candidates": [
+            "Timer",
+            "record"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -265,7 +426,17 @@
         "source": "codex/codex-rs/otel/src/metrics/validation.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/metrics/validation.py",
+          "anchor_candidates": [
+            "validate_metric_name",
+            "validate_tag_key",
+            "validate_tag_value",
+            "validate_tags"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -281,7 +452,15 @@
         "source": "codex/codex-rs/otel/src/otlp.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/otlp.py",
+          "anchor_candidates": [
+            "build_header_map",
+            "resolve_otlp_timeout"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -297,7 +476,25 @@
         "source": "codex/codex-rs/otel/src/provider.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/provider.py",
+          "anchor_candidates": [
+            "OtelProvider",
+            "codex_export_filter",
+            "log_export_filter",
+            "logger_layer",
+            "metrics",
+            "shutdown",
+            "trace_export_filter",
+            "tracing_layer",
+            "ENV_ATTRIBUTE",
+            "HOST_NAME_ATTRIBUTE",
+            "ResourceKind",
+            "normalize_host_name"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -313,7 +510,18 @@
         "source": "codex/codex-rs/otel/src/targets.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/targets.py",
+          "anchor_candidates": [
+            "OTEL_LOG_ONLY_TARGET",
+            "OTEL_TARGET_PREFIX",
+            "OTEL_TRACE_SAFE_TARGET",
+            "is_log_export_target",
+            "is_trace_safe_target"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -329,7 +537,24 @@
         "source": "codex/codex-rs/otel/src/trace_context.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/otel/trace_context.py",
+          "anchor_candidates": [
+            "context_from_w3c_trace_context",
+            "current_span_trace_id",
+            "current_span_w3c_trace_context",
+            "set_parent_from_context",
+            "set_parent_from_w3c_trace_context",
+            "set_tracestate_entries",
+            "span_w3c_trace_context",
+            "traceparent_context_from_env",
+            "validate_tracestate_entries",
+            "validate_tracestate_member",
+            "merge_tracestate_entries"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

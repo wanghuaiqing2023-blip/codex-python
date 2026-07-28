@@ -1,0 +1,38 @@
+{
+    "contract_id":  "codex-utils-cli.shared_options",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-utils-cli",
+                 "module":  "shared_options",
+                 "source":  "codex/codex-rs/utils/cli/src/shared_options.rs",
+                 "anchors":  [
+                                 "SharedCliOptions",
+                                 "apply_subcommand_overrides",
+                                 "inherit_exec_root_options"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/utils/cli/shared_options.py",
+                   "layout":  "module-file",
+                   "implementation_files":  [
+                                                "pycodex/utils/cli/shared_options.py"
+                                            ],
+                   "anchors":  [
+                                   "SharedCliOptions",
+                                   "apply_subcommand_overrides",
+                                   "inherit_exec_root_options"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_utils_cli_crate.py",
+                         "tests/test_utils_cli_resume_command.py",
+                         "tests/test_utils_cli_module_ownership_rs.py"
+                     ]
+}

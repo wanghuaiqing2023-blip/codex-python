@@ -3,11 +3,11 @@ import os
 from pathlib import Path
 import sys
 
-from pycodex.hooks import CommandShell
-from pycodex.hooks import ConfiguredHandler
-from pycodex.hooks import build_command_argv
-from pycodex.hooks import default_shell_command_argv
-from pycodex.hooks import run_command
+from pycodex.hooks.engine import CommandShell
+from pycodex.hooks.engine import ConfiguredHandler
+from pycodex.hooks.engine.command_runner import build_command_argv
+from pycodex.hooks.engine.command_runner import default_shell_command_argv
+from pycodex.hooks.engine.command_runner import run_command
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookSource
 

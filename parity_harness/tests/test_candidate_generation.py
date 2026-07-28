@@ -97,6 +97,15 @@ class CandidateGenerationTests(unittest.TestCase):
             "pycodex/windows_sandbox/bin/command_runner/win/cwd_junction.py",
         )
 
+    def test_root_cargo_binary_main_maps_to_python_package_entrypoint(self) -> None:
+        catalog = generate_candidate_catalog("stdio-to-uds")
+        by_module = {item["rust"]["module"]: item for item in catalog["contracts"]}
+
+        self.assertEqual(
+            by_module["bin::codex-stdio-to-uds"]["python_candidates"][0]["owner"],
+            "pycodex/stdio_to_uds/__main__.py",
+        )
+
     def test_deferred_scope_cannot_fabricate_candidates(self) -> None:
         with self.assertRaisesRegex(ValueError, "deferred scope"):
             generate_candidate_catalog("chatgpt")

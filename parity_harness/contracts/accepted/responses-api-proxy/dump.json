@@ -1,0 +1,43 @@
+{
+  "contract_id": "codex-responses-api-proxy.dump",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-responses-api-proxy",
+    "module": "dump",
+    "source": "codex/codex-rs/responses-api-proxy/src/dump.rs",
+    "anchors": [
+      "ExchangeDump",
+      "ExchangeDumper",
+      "ResponseBodyDump",
+      "REDACTED_HEADER_VALUE",
+      "should_redact_header",
+      "write_json_dump"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/responses_api_proxy/dump.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/responses_api_proxy/dump.py"
+    ],
+    "anchors": [
+      "ExchangeDump",
+      "ExchangeDumper",
+      "ResponseBodyDump",
+      "REDACTED_HEADER_VALUE",
+      "should_redact_header",
+      "write_json_dump"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_responses_api_proxy_module_ownership_rs.py",
+    "tests/test_responses_api_proxy_dump_rs.py"
+  ]
+}

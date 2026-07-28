@@ -1,6 +1,29 @@
 from __future__ import annotations
 
 import pycodex.utils.sleep_inhibitor as si
+from pycodex.utils.sleep_inhibitor.dummy import SleepInhibitor as DummySleepInhibitor
+from pycodex.utils.sleep_inhibitor.linux_inhibitor import (
+    APP_ID,
+    ASSERTION_REASON as LINUX_ASSERTION_REASON,
+    LinuxBackend,
+    LinuxSleepInhibitor,
+    _backend_command,
+)
+from pycodex.utils.sleep_inhibitor.macos import (
+    ASSERTION_REASON as MACOS_ASSERTION_REASON,
+    ASSERTION_TYPE_PREVENT_USER_IDLE_SYSTEM_SLEEP,
+    MacSleepInhibitor,
+)
+from pycodex.utils.sleep_inhibitor.macos.iokit import (
+    kIOPMAssertionLevelOff,
+    kIOPMAssertionLevelOn,
+    kIOReturnSuccess,
+)
+from pycodex.utils.sleep_inhibitor.windows_inhibitor import (
+    ASSERTION_REASON as WINDOWS_ASSERTION_REASON,
+    POWER_REQUEST_SYSTEM_REQUIRED,
+    WindowsSleepInhibitor,
+)
 
 
 class FakeBackend:
@@ -26,7 +49,7 @@ class FakeAssertion:
 class FakePowerRequest:
     def __init__(self) -> None:
         self.release_calls = 0
-        self.request_type = si.POWER_REQUEST_SYSTEM_REQUIRED
+        self.request_type = POWER_REQUEST_SYSTEM_REQUIRED
 
     def release(self) -> None:
         self.release_calls += 1
@@ -76,24 +99,24 @@ def test_sleep_inhibitor_multiple_true_calls_delegate_to_backend() -> None:
 
 def test_linux_backend_commands_match_rust_arguments() -> None:
     # Rust: codex-utils-sleep-inhibitor src/linux_inhibitor.rs command builders.
-    assert si._linux_backend_command(si.LinuxBackend.SYSTEMD_INHIBIT) == [
+    assert _backend_command(LinuxBackend.SYSTEMD_INHIBIT) == [
         "systemd-inhibit",
         "--what=idle",
         "--mode=block",
         "--who",
-        si.APP_ID,
+        APP_ID,
         "--why",
-        si.ASSERTION_REASON,
+        LINUX_ASSERTION_REASON,
         "--",
         "sleep",
         str(2**31 - 1),
     ]
-    assert si._linux_backend_command(si.LinuxBackend.GNOME_SESSION_INHIBIT) == [
+    assert _backend_command(LinuxBackend.GNOME_SESSION_INHIBIT) == [
         "gnome-session-inhibit",
         "--inhibit",
         "idle",
         "--reason",
-        si.ASSERTION_REASON,
+        LINUX_ASSERTION_REASON,
         "sleep",
         str(2**31 - 1),
     ]
@@ -108,10 +131,10 @@ def test_macos_backend_is_idempotent_and_records_errors() -> None:
         created.append(reason)
         return assertion
 
-    backend = si.MacSleepInhibitor(factory)
+    backend = MacSleepInhibitor(factory)
     backend.acquire()
     backend.acquire()
-    assert created == [si.ASSERTION_REASON]
+    assert created == [MACOS_ASSERTION_REASON]
     assert backend.assertion is assertion
 
     backend.release()
@@ -119,7 +142,7 @@ def test_macos_backend_is_idempotent_and_records_errors() -> None:
     assert assertion.release_calls == 1
 
     error = OSError("boom")
-    backend = si.MacSleepInhibitor(lambda _reason: (_ for _ in ()).throw(error))
+    backend = MacSleepInhibitor(lambda _reason: (_ for _ in ()).throw(error))
     backend.acquire()
     assert backend.assertion is None
     assert backend.last_error is error
@@ -134,19 +157,19 @@ def test_windows_backend_is_idempotent_and_records_errors() -> None:
         created.append(reason)
         return request
 
-    backend = si.WindowsSleepInhibitor(factory)
+    backend = WindowsSleepInhibitor(factory)
     backend.acquire()
     backend.acquire()
-    assert created == [si.ASSERTION_REASON]
+    assert created == [WINDOWS_ASSERTION_REASON]
     assert backend.request is request
-    assert request.request_type == si.POWER_REQUEST_SYSTEM_REQUIRED
+    assert request.request_type == POWER_REQUEST_SYSTEM_REQUIRED
 
     backend.release()
     assert backend.request is None
     assert request.release_calls == 1
 
     error = OSError("PowerCreateRequest failed")
-    backend = si.WindowsSleepInhibitor(lambda _reason: (_ for _ in ()).throw(error))
+    backend = WindowsSleepInhibitor(lambda _reason: (_ for _ in ()).throw(error))
     backend.acquire()
     assert backend.request is None
     assert backend.last_error is error
@@ -154,25 +177,25 @@ def test_windows_backend_is_idempotent_and_records_errors() -> None:
 
 def test_default_platform_backend_selection(monkeypatch) -> None:
     monkeypatch.setattr(si.sys, "platform", "linux")
-    assert isinstance(si.default_platform_backend(), si.LinuxSleepInhibitor)
+    assert isinstance(si._default_platform_backend(), LinuxSleepInhibitor)
 
     monkeypatch.setattr(si.sys, "platform", "darwin")
-    assert isinstance(si.default_platform_backend(), si.MacSleepInhibitor)
+    assert isinstance(si._default_platform_backend(), MacSleepInhibitor)
 
     monkeypatch.setattr(si.sys, "platform", "win32")
-    assert isinstance(si.default_platform_backend(), si.WindowsSleepInhibitor)
+    assert isinstance(si._default_platform_backend(), WindowsSleepInhibitor)
 
     monkeypatch.setattr(si.sys, "platform", "plan9")
-    assert isinstance(si.default_platform_backend(), si.DummySleepInhibitor)
+    assert isinstance(si._default_platform_backend(), DummySleepInhibitor)
 
 
 def test_iokit_and_dummy_constants() -> None:
     # Rust: codex-utils-sleep-inhibitor src/iokit_bindings.rs and src/dummy.rs.
-    assert si.ASSERTION_TYPE_PREVENT_USER_IDLE_SYSTEM_SLEEP == "PreventUserIdleSystemSleep"
-    assert si.K_IO_RETURN_SUCCESS == 0
-    assert si.K_IOPM_ASSERTION_LEVEL_OFF == 0
-    assert si.K_IOPM_ASSERTION_LEVEL_ON == 255
+    assert ASSERTION_TYPE_PREVENT_USER_IDLE_SYSTEM_SLEEP == "PreventUserIdleSystemSleep"
+    assert kIOReturnSuccess == 0
+    assert kIOPMAssertionLevelOff == 0
+    assert kIOPMAssertionLevelOn == 255
 
-    dummy = si.DummySleepInhibitor()
+    dummy = DummySleepInhibitor()
     assert dummy.acquire() is None
     assert dummy.release() is None

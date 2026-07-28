@@ -254,7 +254,7 @@ class ExecCommandHandler:
             from pycodex.core.tools.orchestrator import OrchestratorRunResult, ToolOrchestrator
             from pycodex.core.tools.runtimes import UnifiedExecRequest, UnifiedExecRuntime
             from pycodex.core.tools.sandboxing import ToolCtx, ToolError
-            from pycodex.execpolicy import (
+            from pycodex.core.exec_policy import (
                 ExecApprovalRequest,
                 create_exec_approval_requirement_for_command,
             )

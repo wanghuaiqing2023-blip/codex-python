@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from pycodex.execpolicy import Decision, ExecPolicyPrefixRule
+from pycodex.execpolicy import Decision, PrefixRule
 
 
 class RequirementsExecPolicyDecisionToml(str, Enum):
@@ -74,13 +74,13 @@ class RequirementsExecPolicyPrefixRuleToml:
 
 @dataclass(frozen=True)
 class RequirementsExecPolicy:
-    prefix_rules: tuple[ExecPolicyPrefixRule, ...]
+    prefix_rules: tuple[PrefixRule, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "prefix_rules", tuple(self.prefix_rules))
 
     @property
-    def policy(self) -> Mapping[str, tuple[ExecPolicyPrefixRule, ...]]:
+    def policy(self) -> Mapping[str, tuple[PrefixRule, ...]]:
         return {"prefix_rules": self.prefix_rules}
 
     def as_ref(self) -> "RequirementsExecPolicy":
@@ -114,14 +114,14 @@ class RequirementsExecPolicyToml:
     def from_mapping(cls, data: Mapping[str, Any]) -> "RequirementsExecPolicyToml":
         return cls(prefix_rules=tuple(data.get("prefix_rules", ())))
 
-    def to_policy(self) -> Mapping[str, tuple[ExecPolicyPrefixRule, ...]]:
+    def to_policy(self) -> Mapping[str, tuple[PrefixRule, ...]]:
         return self.to_requirements_policy().policy
 
     def to_requirements_policy(self) -> RequirementsExecPolicy:
         if not self.prefix_rules:
             raise RequirementsExecPolicyParseError.empty_prefix_rules()
 
-        rules: list[ExecPolicyPrefixRule] = []
+        rules: list[PrefixRule] = []
         for rule_index, rule in enumerate(self.prefix_rules):
             if rule.justification is not None and not rule.justification.strip():
                 raise RequirementsExecPolicyParseError.empty_justification(rule_index)
@@ -140,7 +140,7 @@ class RequirementsExecPolicyToml:
             first_token, *remaining_tokens = pattern_tokens
             for head in _alternatives(first_token):
                 rules.append(
-                    ExecPolicyPrefixRule.new(
+                    PrefixRule.new(
                         (head, *remaining_tokens),
                         rule.decision.as_decision().value,
                         rule.justification,
@@ -267,11 +267,11 @@ def _alternatives(token: str | tuple[str, ...]) -> tuple[str, ...]:
     return (token,)
 
 
-def _policy_fingerprint(rules: tuple[ExecPolicyPrefixRule, ...]) -> tuple[str, ...]:
+def _policy_fingerprint(rules: tuple[PrefixRule, ...]) -> tuple[str, ...]:
     return tuple(sorted(f"{_rule_program(rule)}:{rule!r}" for rule in rules))
 
 
-def _rule_program(rule: ExecPolicyPrefixRule) -> str:
+def _rule_program(rule: PrefixRule) -> str:
     first = rule.pattern[0] if rule.pattern else ""
     if isinstance(first, tuple):
         return "|".join(first)

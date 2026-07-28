@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pycodex.execpolicy_legacy import ArgMatcher
-from pycodex.execpolicy_legacy import ArgType
-from pycodex.execpolicy_legacy import Opt
-from pycodex.execpolicy_legacy import OptMeta
+from pycodex.execpolicy_legacy.arg_matcher import ArgMatcher
+from pycodex.execpolicy_legacy.arg_type import ArgType
+from pycodex.execpolicy_legacy.opt import Opt
+from pycodex.execpolicy_legacy.opt import OptMeta
 
 
 def test_opt_new_stores_name_meta_and_required_flag() -> None:

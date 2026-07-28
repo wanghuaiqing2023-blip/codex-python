@@ -4,13 +4,8 @@
   "python_root": "pycodex/config",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::loader::layer_io",
-    "crate::loader::macos",
-    "crate::mcp_types::option_duration_secs",
-    "crate::thread_config::remote"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": [
     {

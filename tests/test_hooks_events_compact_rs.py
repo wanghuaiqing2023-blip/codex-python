@@ -20,14 +20,14 @@ from pathlib import Path
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 
-from pycodex.hooks import CompactHandlerData
+from pycodex.hooks.events.compact import CompactHandlerData
 from pycodex.hooks import PostCompactRequest
 from pycodex.hooks import PreCompactRequest
 from pycodex.hooks import SubagentHookContext
-from pycodex.hooks import parse_post_compact_completed
-from pycodex.hooks import parse_pre_compact_completed
-from pycodex.hooks import post_compact_command_input_json
-from pycodex.hooks import pre_compact_command_input_json
+from pycodex.hooks.events.compact import parse_post_compact_completed
+from pycodex.hooks.events.compact import parse_pre_compact_completed
+from pycodex.hooks.events.compact import post_compact_command_input_json
+from pycodex.hooks.events.compact import pre_compact_command_input_json
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookOutputEntry
 from pycodex.protocol import HookOutputEntryKind

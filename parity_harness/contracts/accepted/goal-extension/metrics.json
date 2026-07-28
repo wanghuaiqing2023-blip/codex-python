@@ -1,0 +1,41 @@
+{
+  "contract_id": "codex-goal-extension.metrics",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-goal-extension",
+    "module": "metrics",
+    "source": "codex/codex-rs/ext/goal/src/metrics.rs",
+    "anchors": [
+      "GoalMetrics",
+      "record_created",
+      "record_resumed",
+      "record_resumed_if_status_changed",
+      "record_terminal_if_status_changed"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ext/goal/metrics.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/ext/goal/metrics.py"
+    ],
+    "anchors": [
+      "GoalMetrics",
+      "record_created",
+      "record_resumed",
+      "record_resumed_if_status_changed",
+      "record_terminal_if_status_changed"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_goal_extension_metrics_rs.py",
+    "tests/test_goal_extension_rs.py"
+  ]
+}

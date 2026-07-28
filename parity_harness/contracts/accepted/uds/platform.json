@@ -1,0 +1,53 @@
+{
+  "contract_id": "codex-uds.platform",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-uds",
+    "module": "platform",
+    "source": "codex/codex-rs/uds/src/lib.rs",
+    "anchors": [
+      "Listener",
+      "Stream",
+      "accept",
+      "bind_listener",
+      "connect_stream",
+      "is_stale_socket_path",
+      "prepare_private_socket_directory",
+      "SOCKET_DIR_MODE",
+      "SOCKET_DIR_PERMISSION_BITS",
+      "read",
+      "write"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/uds/platform.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/uds/platform.py"
+    ],
+    "anchors": [
+      "Listener",
+      "Stream",
+      "accept",
+      "bind_listener",
+      "connect_stream",
+      "is_stale_socket_path",
+      "prepare_private_socket_directory",
+      "SOCKET_DIR_MODE",
+      "SOCKET_DIR_PERMISSION_BITS",
+      "read",
+      "write"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_uds_lib_rs.py",
+    "tests/test_uds_module_ownership_rs.py"
+  ]
+}

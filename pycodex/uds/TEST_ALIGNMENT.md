@@ -2,7 +2,10 @@
 
 Rust crate: `codex-uds`
 
-Python module: `pycodex/uds/__init__.py`
+Python modules:
+
+- `pycodex/uds/__init__.py`
+- `pycodex/uds/platform.py`
 
 Status: `complete`
 

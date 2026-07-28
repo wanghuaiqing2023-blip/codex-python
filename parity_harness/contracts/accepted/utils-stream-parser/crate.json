@@ -1,52 +1,55 @@
 {
-  "contract_id": "codex-utils-stream-parser.crate",
-  "evidence_status": "mapped",
-  "rust": {
-    "workspace": "codex/codex-rs",
-    "crate": "codex-utils-stream-parser",
-    "module": "crate",
-    "source": "codex/codex-rs/utils/stream-parser/src/lib.rs",
-    "anchors": [
-      "AssistantTextChunk",
-      "AssistantTextStreamParser",
-      "CitationStreamParser",
-      "ExtractedInlineTag",
-      "InlineHiddenTagParser",
-      "InlineTagSpec",
-      "ProposedPlanParser",
-      "ProposedPlanSegment",
-      "StreamTextChunk",
-      "StreamTextParser",
-      "Utf8StreamParser",
-      "Utf8StreamParserError"
-    ],
-    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
-  },
-  "python": {
-    "owner": "pycodex/utils/stream_parser/__init__.py",
-    "layout": "module-file",
-    "implementation_files": [
-      "pycodex/utils/stream_parser/__init__.py"
-    ],
-    "anchors": [
-      "AssistantTextChunk",
-      "AssistantTextStreamParser",
-      "CitationStreamParser",
-      "ExtractedInlineTag",
-      "InlineHiddenTagParser",
-      "InlineTagSpec",
-      "ProposedPlanParser",
-      "ProposedPlanSegment",
-      "StreamTextChunk",
-      "StreamTextParser",
-      "Utf8StreamParser",
-      "Utf8StreamParserError"
-    ]
-  },
-  "checks": {
-    "structure": {
-      "checker": "structure.owner-and-coordinate"
-    }
-  },
-  "fixture_refs": []
+    "contract_id":  "codex-utils-stream-parser.crate",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-utils-stream-parser",
+                 "module":  "crate",
+                 "source":  "codex/codex-rs/utils/stream-parser/src/lib.rs",
+                 "anchors":  [
+                                 "AssistantTextChunk",
+                                 "AssistantTextStreamParser",
+                                 "CitationStreamParser",
+                                 "ExtractedInlineTag",
+                                 "InlineHiddenTagParser",
+                                 "InlineTagSpec",
+                                 "ProposedPlanParser",
+                                 "ProposedPlanSegment",
+                                 "StreamTextChunk",
+                                 "StreamTextParser",
+                                 "Utf8StreamParser",
+                                 "Utf8StreamParserError"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/utils/stream_parser/__init__.py",
+                   "layout":  "module-package",
+                   "implementation_files":  [
+                                                "pycodex/utils/stream_parser/__init__.py"
+                                            ],
+                   "anchors":  [
+                                   "AssistantTextChunk",
+                                   "AssistantTextStreamParser",
+                                   "CitationStreamParser",
+                                   "ExtractedInlineTag",
+                                   "InlineHiddenTagParser",
+                                   "InlineTagSpec",
+                                   "ProposedPlanParser",
+                                   "ProposedPlanSegment",
+                                   "StreamTextChunk",
+                                   "StreamTextParser",
+                                   "Utf8StreamParser",
+                                   "Utf8StreamParserError"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_utils_stream_parser.py",
+                         "tests/test_utils_stream_parser_module_ownership_rs.py"
+                     ]
 }

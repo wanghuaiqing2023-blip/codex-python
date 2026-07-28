@@ -4,19 +4,8 @@
   "python_root": "pycodex/app_server_transport",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::outgoing_message",
-    "crate::transport::auth",
-    "crate::transport::remote_control",
-    "crate::transport::remote_control::client_tracker",
-    "crate::transport::remote_control::enroll",
-    "crate::transport::remote_control::protocol",
-    "crate::transport::remote_control::segment",
-    "crate::transport::remote_control::websocket",
-    "crate::transport::unix_socket",
-    "crate::transport::websocket"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

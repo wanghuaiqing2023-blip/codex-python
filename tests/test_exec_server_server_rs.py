@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-import pycodex.exec_server as exec_server
+import pycodex.exec_server.server as exec_server
 from pycodex.exec_server import (
     DEFAULT_LISTEN_URL,
     ExecServerListenUrlParseError,

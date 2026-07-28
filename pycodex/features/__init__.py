@@ -11,6 +11,16 @@ from typing import Any
 
 from pycodex.protocol import Event, EventMsg, WarningEvent
 
+from .feature_configs import AppsMcpPathOverrideConfigToml
+from .feature_configs import MultiAgentV2ConfigToml
+from .feature_configs import NetworkProxyConfigToml
+from .feature_configs import NetworkProxyDomainPermissionToml
+from .feature_configs import NetworkProxyModeToml
+from .feature_configs import NetworkProxyUnixSocketPermissionToml
+from .legacy import LegacyFeatureToggles
+from .legacy import feature_for_key as _legacy_feature_for_key
+from .legacy import legacy_feature_keys
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -177,79 +187,6 @@ class FeatureSpec:
     key: str
     stage: Stage
     default_enabled: bool
-
-
-@dataclass
-class MultiAgentV2ConfigToml:
-    enabled: bool | None = None
-    max_concurrent_threads_per_session: int | None = None
-    min_wait_timeout_ms: int | None = None
-    max_wait_timeout_ms: int | None = None
-    default_wait_timeout_ms: int | None = None
-    usage_hint_enabled: bool | None = None
-    usage_hint_text: str | None = None
-    root_agent_usage_hint_text: str | None = None
-    subagent_usage_hint_text: str | None = None
-    tool_namespace: str | None = None
-    hide_spawn_agent_metadata: bool | None = None
-    non_code_mode_only: bool | None = None
-
-    def feature_enabled(self) -> bool | None:
-        return self.enabled
-
-    def set_enabled(self, enabled: bool) -> None:
-        self.enabled = enabled
-
-
-@dataclass
-class AppsMcpPathOverrideConfigToml:
-    enabled: bool | None = None
-    path: str | None = None
-
-    def feature_enabled(self) -> bool | None:
-        if self.enabled is not None:
-            return self.enabled
-        return True if self.path is not None else None
-
-    def set_enabled(self, enabled: bool) -> None:
-        self.enabled = enabled
-
-
-class NetworkProxyModeToml(str, Enum):
-    LIMITED = "limited"
-    FULL = "full"
-
-
-class NetworkProxyDomainPermissionToml(str, Enum):
-    ALLOW = "allow"
-    DENY = "deny"
-
-
-class NetworkProxyUnixSocketPermissionToml(str, Enum):
-    ALLOW = "allow"
-    NONE = "none"
-
-
-@dataclass
-class NetworkProxyConfigToml:
-    enabled: bool | None = None
-    proxy_url: str | None = None
-    enable_socks5: bool | None = None
-    socks_url: str | None = None
-    enable_socks5_udp: bool | None = None
-    allow_upstream_proxy: bool | None = None
-    dangerously_allow_non_loopback_proxy: bool | None = None
-    dangerously_allow_all_unix_sockets: bool | None = None
-    mode: NetworkProxyModeToml | None = None
-    domains: Mapping[str, NetworkProxyDomainPermissionToml] | None = None
-    unix_sockets: Mapping[str, NetworkProxyUnixSocketPermissionToml] | None = None
-    allow_local_binding: bool | None = None
-
-    def feature_enabled(self) -> bool | None:
-        return self.enabled
-
-    def set_enabled(self, enabled: bool) -> None:
-        self.enabled = enabled
 
 
 FeatureConfig = MultiAgentV2ConfigToml | AppsMcpPathOverrideConfigToml | NetworkProxyConfigToml
@@ -535,18 +472,11 @@ def web_search_details() -> str:
     )
 
 
-def legacy_feature_keys() -> tuple[str, ...]:
-    return tuple(_LEGACY_ALIASES)
-
-
 def feature_for_key(key: str) -> Feature | None:
     spec = _FEATURE_SPECS_BY_KEY.get(key)
     if spec is not None:
         return spec.id
-    feature = _LEGACY_ALIASES.get(key)
-    if feature is not None:
-        _log_alias(key, feature)
-    return feature
+    return _legacy_feature_for_key(key)
 
 
 def canonical_feature_for_key(key: str) -> Feature | None:
@@ -638,22 +568,9 @@ def _apply_legacy_feature_toggles(
     features: Features,
     experimental_use_unified_exec_tool: bool | None,
 ) -> None:
-    if experimental_use_unified_exec_tool is None:
-        return
-    features.set_enabled(Feature.UNIFIED_EXEC, experimental_use_unified_exec_tool)
-    _log_alias("experimental_use_unified_exec_tool", Feature.UNIFIED_EXEC)
-    features.record_legacy_usage("experimental_use_unified_exec_tool", Feature.UNIFIED_EXEC)
-
-
-def _log_alias(alias: str, feature: Feature) -> None:
-    canonical = feature.key()
-    if alias == canonical:
-        return
-    LOGGER.info(
-        "legacy feature toggle detected; prefer `[features].%s`",
-        canonical,
-        extra={"alias": alias, "canonical": canonical},
-    )
+    LegacyFeatureToggles(
+        experimental_use_unified_exec_tool=experimental_use_unified_exec_tool
+    ).apply(features)
 
 
 def _prevent_idle_sleep_stage() -> Stage:
@@ -802,18 +719,6 @@ FEATURES: tuple[FeatureSpec, ...] = (
 
 _FEATURE_SPECS_BY_ID = {spec.id: spec for spec in FEATURES}
 _FEATURE_SPECS_BY_KEY = {spec.key: spec for spec in FEATURES}
-
-_LEGACY_ALIASES: dict[str, Feature] = {
-    "connectors": Feature.APPS,
-    "enable_experimental_windows_sandbox": Feature.WINDOWS_SANDBOX,
-    "experimental_use_unified_exec_tool": Feature.UNIFIED_EXEC,
-    "request_permissions": Feature.EXEC_PERMISSION_APPROVALS,
-    "web_search": Feature.WEB_SEARCH_REQUEST,
-    "collab": Feature.COLLAB,
-    "memory_tool": Feature.MEMORY_TOOL,
-    "telepathy": Feature.CHRONICLE,
-    "codex_hooks": Feature.CODEX_HOOKS,
-}
 
 _IGNORED_REMOVED_FEATURE_KEYS = {
     "tui_app_server",

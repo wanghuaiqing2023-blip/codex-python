@@ -1,4 +1,4 @@
-from pycodex import rollout_trace as rt
+from pycodex.rollout_trace import writer as rt
 from pycodex.rollout_trace import (
     AgentOrigin,
     AgentThread,

@@ -19,7 +19,7 @@ from pycodex.protocol import (
     image_close_tag_text,
     local_image_open_tag_text,
 )
-from pycodex.rollout import append_turn_to_rollout, read_response_items_from_rollout
+from pycodex.rollout.recorder import append_turn_to_rollout, read_response_items_from_rollout
 
 
 PNG_1X1_RGBA = (

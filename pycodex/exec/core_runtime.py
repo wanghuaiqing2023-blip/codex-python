@@ -14,7 +14,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any, TextIO
 
-from pycodex.exec.event_processor import JsonEventProcessor
+from pycodex.exec.event_processor_with_jsonl_output import EventProcessorWithJsonOutput
 from pycodex.exec.session import direct_resume_thread_id
 from pycodex.exec.local_runtime import (
     align_local_http_exec_resume_model_client as align_core_exec_resume_model_client,
@@ -458,7 +458,7 @@ def emit_core_exec_config_summary(
         ),
         rollout_path=rollout_path,
     )
-    if isinstance(processor, JsonEventProcessor):
+    if isinstance(processor, EventProcessorWithJsonOutput):
         processor.print_config_summary(
             summary_config,
             plan.prompt_summary,

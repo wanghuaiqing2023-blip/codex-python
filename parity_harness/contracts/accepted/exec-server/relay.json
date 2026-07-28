@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-exec-server.relay",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "relay",
+    "source": "codex/codex-rs/exec-server/src/relay.rs",
+    "anchors": [
+      "harness_connection_from_websocket",
+      "run_multiplexed_environment",
+      "RELAY_MESSAGE_FRAME_VERSION",
+      "RelayFrameBodyKind",
+      "decode_relay_message_frame",
+      "disconnect",
+      "encode_relay_message_frame",
+      "jsonrpc_payload"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/relay.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec_server/relay.py"
+    ],
+    "anchors": [
+      "harness_connection_from_websocket",
+      "run_multiplexed_environment",
+      "RELAY_MESSAGE_FRAME_VERSION",
+      "RelayFrameBodyKind",
+      "decode_relay_message_frame",
+      "disconnect",
+      "encode_relay_message_frame",
+      "jsonrpc_payload"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_relay_rs.py"
+  ]
+}

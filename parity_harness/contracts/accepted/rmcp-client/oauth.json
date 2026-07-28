@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-rmcp-client.oauth",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "oauth",
+    "source": "codex/codex-rs/rmcp-client/src/oauth.rs",
+    "anchors": [
+      "OAuthPersistor",
+      "StoredOAuthTokens",
+      "WrappedOAuthTokenResponse",
+      "compute_expires_at_millis",
+      "delete_oauth_tokens",
+      "has_oauth_tokens",
+      "load_oauth_tokens",
+      "persist_if_needed",
+      "refresh_if_needed",
+      "save_oauth_tokens",
+      "FALLBACK_FILENAME",
+      "KEYRING_SERVICE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/oauth.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rmcp_client/oauth.py"],
+    "anchors": [
+      "OAuthPersistor",
+      "StoredOAuthTokens",
+      "WrappedOAuthTokenResponse",
+      "compute_expires_at_millis",
+      "delete_oauth_tokens",
+      "has_oauth_tokens",
+      "load_oauth_tokens",
+      "persist_if_needed",
+      "refresh_if_needed",
+      "save_oauth_tokens",
+      "FALLBACK_FILENAME",
+      "KEYRING_SERVICE"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rmcp_client_oauth_rs.py"]
+}

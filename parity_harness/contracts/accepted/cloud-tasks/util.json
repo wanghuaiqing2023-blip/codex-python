@@ -1,0 +1,45 @@
+{
+  "contract_id": "codex-cloud-tasks.util",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-cloud-tasks",
+    "module": "util",
+    "source": "codex/codex-rs/cloud-tasks/src/util.rs",
+    "anchors": [
+      "append_error_log",
+      "build_chatgpt_headers",
+      "format_relative_time",
+      "load_auth_manager",
+      "normalize_base_url",
+      "set_user_agent_suffix",
+      "task_url"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/cloud_tasks/util.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/cloud_tasks/util.py"
+    ],
+    "anchors": [
+      "append_error_log",
+      "build_chatgpt_headers",
+      "format_relative_time",
+      "load_auth_manager",
+      "normalize_base_url",
+      "set_user_agent_suffix",
+      "task_url"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_cloud_tasks_lib_rs.py",
+    "tests/test_cloud_tasks_module_ownership_rs.py"
+  ]
+}

@@ -15,21 +15,22 @@ from typing import Any
 
 from pycodex import core_skills
 from pycodex.core_skills import config_rules, remote
-from pycodex.core_skills import injections as injection
+from pycodex.core_skills import injection
 from pycodex.core_skills import invocation_utils
-from pycodex.core_skills import mentions as mention_counts
+from pycodex.core_skills import mention_counts
 from pycodex.core_skills import model
 from pycodex.core_skills import rendering as render
 from pycodex.core_skills.model import SkillError, SkillMetadata
 from pycodex.core_skills.config_rules import SkillConfigRules
-from pycodex.core_skills.injections import SkillInjections, build_skill_injections
+from pycodex.core_skills.injection import SkillInjections, build_skill_injections
 from pycodex.core_skills.invocation_utils import (
     SkillLoadOutcome,
     SkillPolicy,
     detect_implicit_skill_invocation_for_command,
     filter_skill_load_outcome_for_product,
 )
-from pycodex.core_skills.mentions import build_skill_name_counts, collect_explicit_skill_mentions
+from pycodex.core_skills.injection import collect_explicit_skill_mentions
+from pycodex.core_skills.mention_counts import build_skill_name_counts
 from pycodex.core_skills.rendering import (
     SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS,
     SKILLS_HOW_TO_USE_WITH_ALIASES,

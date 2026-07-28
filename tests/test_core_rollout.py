@@ -104,6 +104,39 @@ def session_meta_payload(thread_id: str) -> dict:
         "memory_mode": None,
     }
 
+def state_thread_metadata(
+    *,
+    id: str,
+    rollout_path: Path,
+    created_at: datetime,
+    updated_at: datetime,
+    source: str,
+    model_provider: str,
+    cwd: Path,
+    cli_version: str,
+    first_user_message: str | None,
+    preview: str | None,
+    git_branch: str | None = None,
+    git_sha: str | None = None,
+    git_origin_url: str | None = None,
+) -> ThreadMetadata:
+    metadata = ThreadMetadataBuilder(
+        id=ThreadId.from_string(id),
+        rollout_path=rollout_path,
+        created_at=created_at,
+        updated_at=updated_at,
+        source=SessionSource.from_startup_arg(source),
+        model_provider=model_provider,
+        cwd=cwd,
+        cli_version=cli_version,
+        git_branch=git_branch,
+        git_sha=git_sha,
+        git_origin_url=git_origin_url,
+    ).build(model_provider)
+    metadata.first_user_message = first_user_message
+    metadata.preview = preview
+    return metadata
+
 
 def write_rollout(path: Path, thread_id: str, extra_lines: list[dict] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -490,7 +523,7 @@ class CoreRolloutTests(unittest.TestCase):
         thread_id = str(uuid.uuid4())
         old_path = root / "old.jsonl"
         new_path = root / SESSIONS_SUBDIR / "2025" / "01" / "01" / f"rollout-2025-01-01T00-00-00-{thread_id}.jsonl"
-        metadata = ThreadMetadata(
+        metadata = state_thread_metadata(
             id=thread_id,
             rollout_path=old_path,
             created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
@@ -547,7 +580,7 @@ class CoreRolloutTests(unittest.TestCase):
         read_repair_rollout_path(Runtime(), thread_id, False, rollout_path, default_provider="fallback-provider")
 
         self.assertEqual(len(upserts), 1)
-        self.assertEqual(upserts[0].id, thread_id)
+        self.assertEqual(upserts[0].id, ThreadId.from_string(thread_id))
         self.assertEqual(upserts[0].rollout_path, rollout_path)
         self.assertEqual(upserts[0].cwd, (root / "cwd").resolve(strict=False))
         self.assertIsNone(upserts[0].archived_at)
@@ -558,9 +591,10 @@ class CoreRolloutTests(unittest.TestCase):
         thread_id = str(uuid.uuid4())
         rollout_path = root / SESSIONS_SUBDIR / "2025" / "01" / "01" / f"rollout-2025-01-01T00-00-00-{thread_id}.jsonl"
         builder = ThreadMetadataBuilder(
-            id=thread_id,
+            id=ThreadId.from_string(thread_id),
             rollout_path=root / "old.jsonl",
             created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            source=SessionSource.default(),
             cwd=root / "cwd" / ".." / "cwd",
         )
         items = [{"type": "event_msg", "payload": {"type": "agent_message", "message": "hello"}}]
@@ -602,7 +636,7 @@ class CoreRolloutTests(unittest.TestCase):
         apply_rollout_items(Runtime(), inferred_path, "fallback-provider", None, [inferred_item], "inferred")
 
         inferred_builder = calls[1][0]
-        self.assertEqual(inferred_builder.id, inferred_id)
+        self.assertEqual(inferred_builder.id, ThreadId.from_string(inferred_id))
         self.assertEqual(inferred_builder.rollout_path, inferred_path)
         self.assertEqual(inferred_builder.model_provider, "test-provider")
 
@@ -995,7 +1029,7 @@ class CoreRolloutTests(unittest.TestCase):
         self.assertTrue(default_path.name.startswith(f"rollout-{expected_timestamp}-"))
         self.assertEqual(count_session_rollout_files(root), 1)
         self.assertIsNone(ephemeral_path)
-        self.assertEqual(read_session_meta_line(default_path).meta.id, default_id)
+        self.assertEqual(read_session_meta_line(default_path).meta.id, ThreadId.from_string(default_id))
 
     def test_materialized_fractional_timestamp_is_visible_to_thread_listing(self):
         root = workspace_tempdir()
@@ -2743,7 +2777,7 @@ class CoreRolloutTests(unittest.TestCase):
             cwd=str(root),
         )
         filesystem_item = get_threads(root, page_size=10, allowed_sources=("cli",), default_provider="test-provider").items[0]
-        state_metadata = ThreadMetadata(
+        state_metadata = state_thread_metadata(
             id=thread_id,
             rollout_path=rollout_path,
             created_at=datetime(2025, 1, 3, 16, 0, 0, tzinfo=timezone.utc),
@@ -2762,7 +2796,7 @@ class CoreRolloutTests(unittest.TestCase):
         overlaid = fill_missing_thread_item_metadata(filesystem_item, thread_item_from_state_metadata(state_metadata))
 
         self.assertEqual(overlaid.path, rollout_path)
-        self.assertEqual(overlaid.thread_id, thread_id)
+        self.assertEqual(overlaid.thread_id, ThreadId.from_string(thread_id))
         self.assertEqual(overlaid.git_branch, "sqlite-branch")
         self.assertEqual(overlaid.git_sha, "sqlite-sha")
         self.assertEqual(overlaid.git_origin_url, "https://example.com/repo.git")
@@ -2841,8 +2875,8 @@ class CoreRolloutTests(unittest.TestCase):
 
         meta_line = read_session_meta_line(path)
 
-        self.assertEqual(meta_line.meta.id, thread_id)
-        self.assertEqual(meta_line.meta.source, "cli")
+        self.assertEqual(meta_line.meta.id, ThreadId.from_string(thread_id))
+        self.assertEqual(str(meta_line.meta.source), "cli")
         self.assertIsNotNone(meta_line.git)
         self.assertEqual(meta_line.git.branch, "main")
 
@@ -2860,7 +2894,7 @@ class CoreRolloutTests(unittest.TestCase):
         item = read_thread_item_from_rollout(path)
 
         self.assertIsNotNone(item)
-        self.assertEqual(item.thread_id, thread_id)
+        self.assertEqual(item.thread_id, ThreadId.from_string(thread_id))
         self.assertEqual(item.preview, "inspect this")
         self.assertEqual(item.first_user_message, "inspect this")
         self.assertEqual(item.cwd, Path("."))
@@ -2973,7 +3007,7 @@ class CoreRolloutTests(unittest.TestCase):
 
         self.assertIsNotNone(found)
         self.assertEqual(found[0], saved_rollout)
-        self.assertEqual(found[1].meta.id, saved_id)
+        self.assertEqual(found[1].meta.id, ThreadId.from_string(saved_id))
 
     def test_get_threads_returns_empty_page_for_missing_root(self):
         root = workspace_tempdir()
@@ -2996,11 +3030,14 @@ class CoreRolloutTests(unittest.TestCase):
         page1 = get_threads(root, page_size=2, allowed_sources=("cli",), model_providers=("test-provider",))
         page2 = get_threads(root, page_size=2, cursor=page1.next_cursor)
 
-        self.assertEqual([item.thread_id for item in page1.items], [id3, id2])
+        self.assertEqual(
+            [item.thread_id for item in page1.items],
+            [ThreadId.from_string(id3), ThreadId.from_string(id2)],
+        )
         self.assertEqual([item.preview for item in page1.items], ["third", "second"])
         self.assertIsNotNone(page1.next_cursor)
         self.assertEqual(page1.num_scanned_files, 3)
-        self.assertEqual([item.thread_id for item in page2.items], [id1])
+        self.assertEqual([item.thread_id for item in page2.items], [ThreadId.from_string(id1)])
         self.assertIsNone(page2.next_cursor)
 
     def test_get_threads_db_disabled_does_not_skip_paginated_items(self):
@@ -3045,7 +3082,7 @@ class CoreRolloutTests(unittest.TestCase):
             default_provider="test-provider",
         )
         repaired_page = get_threads(root, page_size=10, cwd_filters=cwd_filters, default_provider="test-provider")
-        state_metadata = ThreadMetadata(
+        state_metadata = state_thread_metadata(
             id=thread_id,
             rollout_path=rollout_path,
             created_at=datetime(2025, 1, 3, 14, 0, 0, tzinfo=timezone.utc),
@@ -3074,7 +3111,7 @@ class CoreRolloutTests(unittest.TestCase):
         root = workspace_tempdir()
         thread_id = str(uuid.UUID(int=9010))
         stale_path = root / SESSIONS_SUBDIR / "2099" / "01" / "01" / f"rollout-2099-01-01T00-00-00-{thread_id}.jsonl"
-        state_metadata = ThreadMetadata(
+        state_metadata = state_thread_metadata(
             id=thread_id,
             rollout_path=stale_path,
             created_at=datetime(2025, 1, 3, 13, 0, 0, tzinfo=timezone.utc),
@@ -3101,7 +3138,7 @@ class CoreRolloutTests(unittest.TestCase):
         )
 
         self.assertEqual(page.items, [])
-        self.assertEqual(deleted, [thread_id])
+        self.assertEqual(deleted, [ThreadId.from_string(thread_id)])
 
     def test_list_threads_db_enabled_repairs_stale_rollout_paths(self):
         # Rust parity: codex-rollout/src/recorder_tests.rs
@@ -3118,7 +3155,7 @@ class CoreRolloutTests(unittest.TestCase):
             cwd=str(root),
         )
         stale_path = root / SESSIONS_SUBDIR / "2099" / "01" / "01" / f"rollout-2099-01-01T00-00-00-{thread_id}.jsonl"
-        state_metadata = ThreadMetadata(
+        state_metadata = state_thread_metadata(
             id=thread_id,
             rollout_path=stale_path,
             created_at=datetime(2025, 1, 3, 13, 0, 0, tzinfo=timezone.utc),
@@ -3146,7 +3183,7 @@ class CoreRolloutTests(unittest.TestCase):
         )
 
         self.assertEqual([item.path for item in page.items], [real_path])
-        self.assertEqual(repaired, {thread_id: real_path})
+        self.assertEqual(repaired, {ThreadId.from_string(thread_id): real_path})
 
     def test_get_threads_filters_source_provider_and_cwd(self):
         root = workspace_tempdir()
@@ -3166,7 +3203,7 @@ class CoreRolloutTests(unittest.TestCase):
             default_provider="test-provider",
         )
 
-        self.assertEqual([item.thread_id for item in page.items], [allowed_id])
+        self.assertEqual([item.thread_id for item in page.items], [ThreadId.from_string(allowed_id)])
 
     def test_get_threads_default_filter_returns_filesystem_scan_results(self):
         # Rust parity: codex-rollout/src/recorder_tests.rs
@@ -3244,7 +3281,10 @@ class CoreRolloutTests(unittest.TestCase):
 
         page = get_threads(root, page_size=10, sort_key=ThreadSortKey.UPDATED_AT)
 
-        self.assertEqual([item.thread_id for item in page.items], [older_id, newer_id])
+        self.assertEqual(
+            [item.thread_id for item in page.items],
+            [ThreadId.from_string(older_id), ThreadId.from_string(newer_id)],
+        )
 
     def test_get_threads_in_root_flat_layout_only_scans_root_files(self):
         # Rust source: codex-rs/rollout/src/list.rs ThreadListLayout::Flat.
@@ -3278,7 +3318,7 @@ class CoreRolloutTests(unittest.TestCase):
 
         page = get_threads_in_root(root, page_size=10, layout=ThreadListLayout.FLAT)
 
-        self.assertEqual([item.thread_id for item in page.items], [top_id])
+        self.assertEqual([item.thread_id for item in page.items], [ThreadId.from_string(top_id)])
         self.assertEqual(page.items[0].path, top_path)
 
 

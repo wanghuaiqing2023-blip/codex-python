@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 299,
-    "python_files": 588,
-    "modules_with_candidates": 295,
-    "modules_with_anchors": 295
+    "python_files": 581,
+    "modules_with_candidates": 296,
+    "modules_with_anchors": 296
   },
   "contracts": [
     {
@@ -23,7 +23,16 @@
         "source": "codex/codex-rs/tui/src/main.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/tui/main.py",
+          "anchor_candidates": [
+            "TopCli",
+            "format_exit_messages",
+            "main"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -191,9 +200,9 @@
             "has_non_primary_thread",
             "is_empty",
             "mark_closed",
-            "ordered_thread_ids",
             "ordered_threads",
-            "picker_subtitle"
+            "picker_subtitle",
+            "remove"
           ]
         }
       ],
@@ -5522,8 +5531,8 @@
             "new",
             "new_active_mcp_tool_call",
             "new_mcp_inventory_loading",
-            "new_mcp_tools_output",
-            "new_mcp_tools_output_from_statuses"
+            "new_mcp_tools_output_from_statuses",
+            "CompletedMcpToolCallWithImageOutput"
           ]
         }
       ],
@@ -6067,8 +6076,8 @@
             "build_keymap_action_menu_params",
             "build_keymap_capture_view",
             "build_keymap_conflict_params",
-            "build_keymap_replace_binding_menu_params",
-            "keymap_with_edit"
+            "build_keymap_debug_view",
+            "build_keymap_replace_binding_menu_params"
           ]
         }
       ],

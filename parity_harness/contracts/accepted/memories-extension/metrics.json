@@ -1,0 +1,42 @@
+{
+    "contract_id":  "codex-memories-extension.metrics",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-memories-extension",
+                 "module":  "metrics",
+                 "source":  "codex/codex-rs/ext/memories/src/metrics.rs",
+                 "anchors":  [
+                                 "MEMORIES_TOOL_CALL_METRIC",
+                                 "record_tool_call",
+                                 "scope_from_optional_path",
+                                 "scope_from_path",
+                                 "truncated_tag",
+                                 "status_tag"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/ext/memories/metrics.py",
+                   "layout":  "module-file",
+                   "implementation_files":  [
+                                                "pycodex/ext/memories/metrics.py"
+                                            ],
+                   "anchors":  [
+                                   "MEMORIES_TOOL_CALL_METRIC",
+                                   "record_tool_call",
+                                   "scope_from_optional_path",
+                                   "scope_from_path",
+                                   "truncated_tag",
+                                   "status_tag"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_memories_extension_module_ownership_rs.py"
+                     ]
+}

@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-memories-write.start",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "start",
+    "source": "codex/codex-rs/memories/write/src/start.rs",
+    "anchors": [
+      "start_memories_startup_task"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/start.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/write/start.py"
+    ],
+    "anchors": [
+      "start_memories_startup_task"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_start_rs.py"
+  ]
+}

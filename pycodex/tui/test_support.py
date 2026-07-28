@@ -12,10 +12,10 @@ __test__ = False
 
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
-from pathlib import PurePosixPath
 from typing import Any, Callable, Optional, Type, TypeVar, Union
 
 from pycodex.protocol import SessionSource
+from pycodex.utils.absolute_path.test_support import PathBufExt, test_path_buf
 
 from ._porting import RustTuiModule
 
@@ -35,52 +35,6 @@ class SkillScope(str, Enum):
     REPO = "repo"
     SYSTEM = "system"
     ADMIN = "admin"
-
-
-@dataclass(frozen=True)
-class TestPathBuf:
-    """Small semantic stand-in for codex_utils_absolute_path test paths."""
-
-    path: str
-
-    def __post_init__(self) -> None:
-        if not self.path:
-            raise ValueError("test path must not be empty")
-
-    def abs(self) -> "TestPathBuf":
-        return self
-
-    def display(self) -> str:
-        return str(self)
-
-    def as_posix(self) -> str:
-        return str(self)
-
-    def __fspath__(self) -> str:
-        return str(self)
-
-    def __str__(self) -> str:
-        text = self.path.replace("\\", "/")
-        if len(text) >= 2 and text[1] == ":":
-            return text
-        if text.startswith("/"):
-            return str(PurePosixPath(text))
-        return str(PurePosixPath("/", text))
-
-
-TestPathBuf.__test__ = False
-
-
-class PathBufExt:
-    """Compatibility wrapper mirroring the Rust test helper trait shape."""
-
-    @staticmethod
-    def abs(path: Union[str, TestPathBuf]) -> TestPathBuf:
-        return path if isinstance(path, TestPathBuf) else test_path_buf(str(path))
-
-
-def test_path_buf(path: str) -> TestPathBuf:
-    return TestPathBuf(path)
 
 
 def test_path_display(path: str) -> str:
@@ -148,7 +102,6 @@ __all__ = [
     "PathBufExt",
     "RUST_MODULE",
     "SkillScope",
-    "TestPathBuf",
     "from_app_server_wire",
     "session_source_cli",
     "skill_scope_repo",

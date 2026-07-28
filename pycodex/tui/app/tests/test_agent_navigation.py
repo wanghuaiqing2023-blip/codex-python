@@ -44,7 +44,7 @@ def test_mark_closed_remove_clear_and_non_primary_semantics() -> None:
     missing = "00000000-0000-0000-0000-000000000104"
     state.mark_closed(missing)
     assert state.get(missing).is_closed is True
-    assert state.ordered_thread_ids()[-1] == missing
+    assert state.tracked_thread_ids()[-1] == missing
 
     assert state.has_non_primary_thread(main_thread_id)
     state.remove(second_agent_id)
@@ -52,7 +52,7 @@ def test_mark_closed_remove_clear_and_non_primary_semantics() -> None:
 
     state.clear()
     assert state.is_empty()
-    assert state.ordered_thread_ids() == []
+    assert state.tracked_thread_ids() == []
 
 
 def test_adjacent_thread_id_requires_current_and_two_entries() -> None:
@@ -80,7 +80,7 @@ def test_ordered_threads_filters_order_entries_missing_metadata() -> None:
     state, main_thread_id, first_agent_id, second_agent_id = populated_state()
     state.threads.pop(first_agent_id)
 
-    assert state.ordered_thread_ids() == [main_thread_id, second_agent_id]
+    assert state.tracked_thread_ids() == [main_thread_id, second_agent_id]
     assert state.tracked_thread_ids() == [main_thread_id, second_agent_id]
     assert state.adjacent_thread_id(main_thread_id, AgentNavigationDirection.Next) == second_agent_id
 

@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
+from pycodex.config.types import DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION
 from pycodex.memories.write import (
-    DEFAULT_MEMORIES_MAX_RAW_MEMORIES_FOR_CONSOLIDATION,
-    Stage1Output,
     ensure_layout,
     raw_memories_file,
     rebuild_raw_memories_file_from_memories,
@@ -14,13 +14,15 @@ from pycodex.memories.write import (
     rollout_summary_file_stem,
     sync_rollout_summaries_from_memories,
 )
+from pycodex.state import Stage1Output
+from pycodex.protocol import ThreadId
 
 FIXED_PREFIX = "2025-02-11T15-35-19-jqmb"
 
 
 def stage1_output_with_slug(thread_id: str, rollout_slug: str | None) -> Stage1Output:
     return Stage1Output(
-        thread_id=thread_id,
+        thread_id=ThreadId(UUID(thread_id)),
         source_updated_at=datetime.fromtimestamp(123, tz=UTC),
         raw_memory="raw memory",
         rollout_summary="summary",
@@ -85,8 +87,8 @@ def test_sync_rollout_summaries_and_raw_memories_file_keeps_latest_memories_only
     drop_path.write_text("drop", encoding="utf-8")
 
     memories = [
-        Stage1Output(
-            thread_id=keep_id,
+            Stage1Output(
+                thread_id=ThreadId(UUID(keep_id)),
             source_updated_at=datetime.fromtimestamp(100, tz=UTC),
             raw_memory="raw memory",
             rollout_summary="short summary",

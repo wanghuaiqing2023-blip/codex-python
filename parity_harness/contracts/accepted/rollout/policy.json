@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-rollout.policy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rollout",
+    "module": "policy",
+    "source": "codex/codex-rs/rollout/src/policy.rs",
+    "anchors": ["EventPersistenceMode", "is_persisted_rollout_item", "persisted_rollout_items", "should_persist_event_msg", "should_persist_response_item", "should_persist_response_item_for_memories"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rollout/policy.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rollout/policy.py"],
+    "anchors": ["EventPersistenceMode", "is_persisted_rollout_item", "persisted_rollout_items", "should_persist_event_msg", "should_persist_response_item", "should_persist_response_item_for_memories"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rollout_module_ownership_rs.py", "tests/test_core_rollout.py"]
+}

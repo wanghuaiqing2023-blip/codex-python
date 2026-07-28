@@ -24,9 +24,15 @@
   },
   "python": {
     "owner": "pycodex/exec/__init__.py",
-    "layout": "module-file",
+    "layout": "module-package",
     "implementation_files": [
-      "pycodex/exec/__init__.py"
+      "pycodex/exec/__init__.py",
+      "pycodex/exec/config_plan.py",
+      "pycodex/exec/core_runtime.py",
+      "pycodex/exec/local_runtime.py",
+      "pycodex/exec/run.py",
+      "pycodex/exec/session.py",
+      "pycodex/exec/websocket.py"
     ],
     "anchors": [
       "CodexStatus",

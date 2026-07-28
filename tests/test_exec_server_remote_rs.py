@@ -6,13 +6,16 @@ import hashlib
 
 import pytest
 
-import pycodex.exec_server as exec_server
+import pycodex.exec_server.server.transport as exec_server
 from pycodex.exec_server import (
-    EnvironmentRegistryClient,
-    EnvironmentRegistryRegistrationResponse,
     ExecServerError,
     ExecServerRuntimePaths,
     RemoteEnvironmentConfig,
+    run_remote_environment,
+)
+from pycodex.exec_server.remote import (
+    EnvironmentRegistryClient,
+    EnvironmentRegistryRegistrationResponse,
     endpoint_url,
     environment_registry_auth_error,
     environment_registry_http_error,
@@ -20,7 +23,6 @@ from pycodex.exec_server import (
     normalize_environment_id,
     preview_error_body,
     registry_error_message,
-    run_remote_environment,
 )
 
 

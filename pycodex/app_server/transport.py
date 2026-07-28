@@ -6,7 +6,27 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping
 
-from pycodex.app_server_transport import start_stdio_connection
+from pycodex.app_server_transport import (
+    AppServerTransport,
+    CHANNEL_CAPACITY,
+    ConnectionId,
+    ConnectionOrigin,
+    OutgoingMessage,
+    QueuedOutgoingMessage,
+    RemoteControlHandle,
+    RemoteControlStartConfig,
+    RemoteControlUnavailable,
+    TransportEvent,
+    acquire_app_server_startup_lock,
+    app_server_control_socket_path,
+    app_server_startup_lock_path,
+    auth,
+    prepare_control_socket_path,
+    start_control_socket_acceptor,
+    start_remote_control,
+    start_stdio_connection,
+    start_websocket_acceptor,
+)
 
 TRANSPORT_PUBLIC_REEXPORTS: tuple[str, ...] = (
     "AppServerTransport",
@@ -373,20 +393,38 @@ def _replace_params(message: Any, params: Any) -> Any:
 
 
 __all__ = [
+    "AppServerTransport",
+    "CHANNEL_CAPACITY",
+    "ConnectionId",
     "ConnectionStateProjection",
+    "ConnectionOrigin",
     "DisconnectConnectionProjection",
+    "OutgoingMessage",
     "OutgoingEnvelopeKind",
     "OutgoingEnvelopeProjection",
     "OutboundConnectionStateProjection",
+    "QueuedOutgoingMessage",
+    "RemoteControlHandle",
+    "RemoteControlStartConfig",
+    "RemoteControlUnavailable",
     "RouteOutgoingEnvelopeProjection",
     "TRANSPORT_CRATE_REEXPORTS",
     "TRANSPORT_PUBLIC_REEXPORTS",
+    "TransportEvent",
     "TransportReexportSurfaceProjection",
+    "acquire_app_server_startup_lock",
+    "app_server_control_socket_path",
+    "app_server_startup_lock_path",
+    "auth",
     "connection_state_projection",
     "disconnect_connection_projection",
     "filter_outgoing_message_for_connection",
+    "prepare_control_socket_path",
     "route_outgoing_envelope_projection",
     "should_skip_notification_for_connection",
+    "start_control_socket_acceptor",
+    "start_remote_control",
     "start_stdio_connection",
+    "start_websocket_acceptor",
     "transport_reexport_surface_projection",
 ]

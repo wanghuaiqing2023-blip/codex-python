@@ -1,0 +1,51 @@
+{
+  "contract_id": "codex-otel.config",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-otel",
+    "module": "config",
+    "source": "codex/codex-rs/otel/src/config.rs",
+    "anchors": [
+      "OtelExporter",
+      "OtelHttpProtocol",
+      "OtelSettings",
+      "OtelTlsConfig",
+      "STATSIG_API_KEY",
+      "STATSIG_API_KEY_HEADER",
+      "STATSIG_OTLP_HTTP_ENDPOINT",
+      "StatsigMetricsSettings",
+      "resolve_exporter",
+      "validate_span_attributes"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/otel/config.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/otel/config.py"
+    ],
+    "anchors": [
+      "OtelExporter",
+      "OtelHttpProtocol",
+      "OtelSettings",
+      "OtelTlsConfig",
+      "STATSIG_API_KEY",
+      "STATSIG_API_KEY_HEADER",
+      "STATSIG_OTLP_HTTP_ENDPOINT",
+      "StatsigMetricsSettings",
+      "resolve_exporter",
+      "validate_span_attributes"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_otel_module_ownership_rs.py",
+    "tests/test_otel_metrics_rs.py"
+  ]
+}

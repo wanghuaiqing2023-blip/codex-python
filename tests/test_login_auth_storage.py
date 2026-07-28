@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from pycodex.keyring_store import CredentialStoreError, MockKeyringStore
+from pycodex.keyring_store import CredentialStoreError
+from pycodex.keyring_store.tests import MockKeyringStore
 from pycodex.login.auth.storage import (
     KEYRING_SERVICE,
     AuthDotJson,

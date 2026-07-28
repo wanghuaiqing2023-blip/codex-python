@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-hooks.events.permission_request",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "events::permission_request",
+    "source": "codex/codex-rs/hooks/src/events/permission_request.rs",
+    "anchors": [
+      "PermissionRequestDecision",
+      "PermissionRequestOutcome",
+      "PermissionRequestRequest",
+      "PermissionRequestHandlerData",
+      "resolve_permission_request_decision"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/events/permission_request.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/events/permission_request.py"
+    ],
+    "anchors": [
+      "PermissionRequestDecision",
+      "PermissionRequestOutcome",
+      "PermissionRequestRequest",
+      "PermissionRequestHandlerData",
+      "resolve_permission_request_decision"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_events_permission_request_rs.py"
+  ]
+}

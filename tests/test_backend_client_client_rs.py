@@ -7,17 +7,17 @@ from pathlib import Path
 
 import pytest
 
-import pycodex.backend_client as backend_client
+import pycodex.backend_client.client as backend_client
 from pycodex.app_server_protocol.account import CreditsSnapshot
 from pycodex.app_server_protocol.account import RateLimitReachedType
 from pycodex.app_server_protocol.account import RateLimitSnapshot
 from pycodex.app_server_protocol.account import RateLimitWindow
 from pycodex.backend_client import AddCreditsNudgeCreditType
-from pycodex.backend_client import BackendRequest
-from pycodex.backend_client import BackendResponse
 from pycodex.backend_client import Client
-from pycodex.backend_client import PathStyle
 from pycodex.backend_client import RequestError
+from pycodex.backend_client.client import BackendRequest
+from pycodex.backend_client.client import BackendResponse
+from pycodex.backend_client.client import PathStyle
 from pycodex.codex_client.chatgpt_cloudflare_cookies import ChatGptCloudflareCookieStore
 from pycodex.codex_backend_openapi_models.models import AdditionalRateLimitDetails
 from pycodex.codex_backend_openapi_models.models import CreditStatusDetails

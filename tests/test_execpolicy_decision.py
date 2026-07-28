@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.execpolicy import Decision, InvalidDecisionError, strongest_decision
+from pycodex.execpolicy import Decision
+from pycodex.execpolicy.error import InvalidDecisionError
 
 
 def test_decision_parse_accepts_rust_policy_strings():
@@ -31,5 +32,5 @@ def test_decision_string_values_match_rust_camel_case_serialization():
 
 def test_decision_ordering_contract_is_allow_prompt_forbidden():
     """Rust: derived Ord orders enum variants Allow < Prompt < Forbidden."""
-    assert strongest_decision([Decision.ALLOW, Decision.PROMPT]) is Decision.PROMPT
-    assert strongest_decision([Decision.ALLOW, Decision.PROMPT, Decision.FORBIDDEN]) is Decision.FORBIDDEN
+    assert max([Decision.ALLOW, Decision.PROMPT]) is Decision.PROMPT
+    assert max([Decision.ALLOW, Decision.PROMPT, Decision.FORBIDDEN]) is Decision.FORBIDDEN

@@ -30,5 +30,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_responses_api_proxy_module_ownership_rs.py",
+    "tests/test_responses_api_proxy_lib_rs.py"
+  ]
 }

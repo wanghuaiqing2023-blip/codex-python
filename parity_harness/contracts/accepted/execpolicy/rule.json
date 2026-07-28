@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-execpolicy.rule",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy",
+    "module": "rule",
+    "source": "codex/codex-rs/execpolicy/src/rule.rs",
+    "anchors": ["NetworkRule", "NetworkRuleProtocol", "PatternToken", "PrefixPattern", "PrefixRule", "Rule", "RuleMatch", "RuleRef", "alternatives", "as_policy_string", "matches_prefix"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy/rule.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/execpolicy/rule.py"],
+    "anchors": ["NetworkRule", "NetworkRuleProtocol", "PatternToken", "PrefixPattern", "PrefixRule", "Rule", "RuleMatch", "RuleRef", "alternatives", "as_policy_string", "matches_prefix"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_execpolicy_rule.py", "tests/test_execpolicy_module_ownership_rs.py"]
+}

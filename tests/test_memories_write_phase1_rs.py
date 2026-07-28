@@ -8,30 +8,38 @@ from types import SimpleNamespace
 
 import pytest
 
-from pycodex.memories.write import (
-    INTERACTIVE_SESSION_SOURCES,
-    MemoryStartupContext,
+from pycodex.memories.write.phase1 import (
     PhaseOneJobResult,
     StageOneOutput,
-    STAGE_ONE_JOB_LEASE_SECONDS,
-    STAGE_ONE_JOB_RETRY_DELAY_SECONDS,
-    STAGE_ONE_MODEL,
-    STAGE_ONE_REASONING_EFFORT,
-    STAGE_ONE_THREAD_SCAN_LIMIT,
-    aggregate_phase_one_stats,
-    emit_phase_one_metrics,
+    aggregate_stats as aggregate_phase_one_stats,
+    claim_startup_jobs as phase_one_claim_startup_jobs,
+    emit_metrics as emit_phase_one_metrics,
+    output_schema as phase_one_output_schema,
+    prune as phase_one_prune,
+    run as phase_one_run,
+)
+from pycodex.memories.write.phase1.job import (
     is_memory_excluded_contextual_user_fragment,
-    phase_one_claim_startup_jobs,
-    phase_one_job_run,
-    phase_one_mark_failed,
-    phase_one_mark_succeeded,
-    phase_one_mark_succeeded_no_output,
-    phase_one_output_schema,
-    phase_one_run,
-    phase_one_sample,
+    run as phase_one_job_run,
+    sample as phase_one_sample,
     serialize_filtered_rollout_response_items,
 )
+from pycodex.memories.write.phase1.job.result import (
+    failed as phase_one_mark_failed,
+    no_output as phase_one_mark_succeeded_no_output,
+    success as phase_one_mark_succeeded,
+)
+from pycodex.memories.write.runtime import MemoryStartupContext
+from pycodex.memories.write.stage_one import (
+    JOB_LEASE_SECONDS as STAGE_ONE_JOB_LEASE_SECONDS,
+    JOB_RETRY_DELAY_SECONDS as STAGE_ONE_JOB_RETRY_DELAY_SECONDS,
+    MODEL as STAGE_ONE_MODEL,
+    PRUNE_BATCH_SIZE as STAGE_ONE_PRUNE_BATCH_SIZE,
+    REASONING_EFFORT as STAGE_ONE_REASONING_EFFORT,
+    THREAD_SCAN_LIMIT as STAGE_ONE_THREAD_SCAN_LIMIT,
+)
 from pycodex.protocol import TokenUsage
+from pycodex.rollout import INTERACTIVE_SESSION_SOURCES
 
 
 def input_text(text: str) -> dict[str, str]:
@@ -56,6 +64,7 @@ class Store:
         self.claims = ["claim-a"]
         self.succeeded_no_output = True
         self.succeeded = True
+        self.pruned = 0
 
     async def claim_stage1_jobs_for_startup(self, thread_id, params):
         self.calls.append(("claim", thread_id, params))
@@ -90,6 +99,10 @@ class Store:
             )
         )
         return self.succeeded
+
+    async def prune_stage1_outputs_for_retention(self, max_unused_days, batch_size):
+        self.calls.append(("prune", max_unused_days, batch_size))
+        return self.pruned
 
 
 def runtime_context(store=None) -> MemoryStartupContext:
@@ -513,7 +526,7 @@ def test_phase_one_claim_startup_jobs_builds_rust_params_and_returns_claims() ->
     assert params.max_claimed == 7
     assert params.max_age_days == 30
     assert params.min_rollout_idle_hours == 6
-    assert params.allowed_sources == INTERACTIVE_SESSION_SOURCES
+    assert params.allowed_sources == tuple(str(source) for source in INTERACTIVE_SESSION_SOURCES)
     assert params.lease_seconds == STAGE_ONE_JOB_LEASE_SECONDS
 
     missing_db = MemoryStartupContext(
@@ -724,3 +737,23 @@ def test_phase_one_result_markers_match_rust_db_calls_and_outcomes() -> None:
     assert store.calls[-1] == ("success", "thread-a", "lease-a", 123, "raw", "summary", "slug")
     store.succeeded = False
     assert asyncio.run(phase_one_mark_succeeded(ctx, "thread-a", "lease-a", 123, "raw", "summary", None)) == "failed"
+
+
+def test_phase_one_prune_uses_retention_days_and_rust_batch_size() -> None:
+    # Rust crate: codex-memories-write
+    # Rust module/source: src/phase1.rs::prune
+    # Contract: startup pruning delegates to state runtime with configured age
+    # and the stage-one PRUNE_BATCH_SIZE.
+    store = Store()
+    store.pruned = 3
+    ctx = runtime_context(store)
+
+    result = asyncio.run(
+        phase_one_prune(
+            ctx,
+            SimpleNamespace(memories=SimpleNamespace(max_unused_days=45)),
+        )
+    )
+
+    assert result is None
+    assert store.calls == [("prune", 45, STAGE_ONE_PRUNE_BATCH_SIZE)]

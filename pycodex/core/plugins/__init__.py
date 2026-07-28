@@ -63,7 +63,7 @@ __all__ = [
 
 def __getattr__(name: str):
     if name == "build_skill_name_counts":
-        from pycodex.core_skills.mentions import build_skill_name_counts
+        from pycodex.core_skills.mention_counts import build_skill_name_counts
 
         return build_skill_name_counts
     raise AttributeError(name)

@@ -15,23 +15,23 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pycodex.hooks import GENERATED_SCHEMA_DIR
-from pycodex.hooks import PERMISSION_REQUEST_INPUT_FIXTURE
-from pycodex.hooks import POST_COMPACT_INPUT_FIXTURE
-from pycodex.hooks import POST_TOOL_USE_INPUT_FIXTURE
-from pycodex.hooks import PRE_COMPACT_INPUT_FIXTURE
-from pycodex.hooks import PRE_TOOL_USE_INPUT_FIXTURE
-from pycodex.hooks import SCHEMA_FIXTURE_NAMES
-from pycodex.hooks import STOP_INPUT_FIXTURE
-from pycodex.hooks import SUBAGENT_START_INPUT_FIXTURE
-from pycodex.hooks import SUBAGENT_STOP_INPUT_FIXTURE
-from pycodex.hooks import USER_PROMPT_SUBMIT_INPUT_FIXTURE
-from pycodex.hooks import SubagentCommandInputFields
+from pycodex.hooks.schema import GENERATED_SCHEMA_DIR
+from pycodex.hooks.schema import PERMISSION_REQUEST_INPUT_FIXTURE
+from pycodex.hooks.schema import POST_COMPACT_INPUT_FIXTURE
+from pycodex.hooks.schema import POST_TOOL_USE_INPUT_FIXTURE
+from pycodex.hooks.schema import PRE_COMPACT_INPUT_FIXTURE
+from pycodex.hooks.schema import PRE_TOOL_USE_INPUT_FIXTURE
+from pycodex.hooks.schema import SCHEMA_FIXTURE_NAMES
+from pycodex.hooks.schema import STOP_INPUT_FIXTURE
+from pycodex.hooks.schema import SUBAGENT_START_INPUT_FIXTURE
+from pycodex.hooks.schema import SUBAGENT_STOP_INPUT_FIXTURE
+from pycodex.hooks.schema import USER_PROMPT_SUBMIT_INPUT_FIXTURE
+from pycodex.hooks.schema import SubagentCommandInputFields
 from pycodex.hooks import SubagentHookContext
-from pycodex.hooks import canonicalize_json
-from pycodex.hooks import nullable_string_from_path
-from pycodex.hooks import schema_for_fixture
-from pycodex.hooks import schema_json
+from pycodex.hooks.schema import canonicalize_json
+from pycodex.hooks.schema import nullable_string_from_path
+from pycodex.hooks.schema import schema_for_fixture
+from pycodex.hooks.schema import schema_json
 from pycodex.hooks import write_schema_fixtures
 
 

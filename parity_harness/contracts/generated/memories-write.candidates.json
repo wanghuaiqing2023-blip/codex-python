@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 25,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 25,
+    "modules_with_candidates": 25,
+    "modules_with_anchors": 25
   },
   "contracts": [
     {
@@ -27,10 +27,6 @@
         {
           "owner": "pycodex/memories/write/__init__.py",
           "anchor_candidates": [
-            "CODEX_LIMIT_ID",
-            "EXTENSIONS_SUBDIR",
-            "RAW_MEMORIES_FILENAME",
-            "ROLLOUT_SUMMARIES_SUBDIR",
             "build_consolidation_prompt",
             "build_stage_one_input_message",
             "clear_memory_roots_contents",
@@ -38,7 +34,11 @@
             "memory_extensions_root",
             "memory_root",
             "prune_old_extension_resources",
-            "raw_memories_file"
+            "raw_memories_file",
+            "rebuild_raw_memories_file_from_memories",
+            "rollout_summaries_dir",
+            "rollout_summary_file_stem",
+            "start_memories_startup_task"
           ]
         }
       ],
@@ -57,7 +57,16 @@
         "source": "codex/codex-rs/memories/write/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/artifacts.py",
+          "anchor_candidates": [
+            "EXTENSIONS_SUBDIR",
+            "RAW_MEMORIES_FILENAME",
+            "ROLLOUT_SUMMARIES_SUBDIR"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +82,15 @@
         "source": "codex/codex-rs/memories/write/src/control.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/control.py",
+          "anchor_candidates": [
+            "clear_memory_root_contents",
+            "clear_memory_roots_contents"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +106,15 @@
         "source": "codex/codex-rs/memories/write/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/extension_resources.py",
+          "anchor_candidates": [
+            "FILENAME_TS_FORMAT",
+            "RETENTION_DAYS"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +130,15 @@
         "source": "codex/codex-rs/memories/write/src/extensions/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/extensions/__init__.py",
+          "anchor_candidates": [
+            "prune_old_extension_resources",
+            "seed_extension_instructions"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +154,15 @@
         "source": "codex/codex-rs/memories/write/src/extensions/ad_hoc.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/extensions/ad_hoc.py",
+          "anchor_candidates": [
+            "INSTRUCTIONS",
+            "seed_instructions"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +178,16 @@
         "source": "codex/codex-rs/memories/write/src/extensions/prune.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/extensions/prune.py",
+          "anchor_candidates": [
+            "prune_old_extension_resources",
+            "prune_old_extension_resources_with_now",
+            "resource_timestamp"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +203,17 @@
         "source": "codex/codex-rs/memories/write/src/guard.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/guard.py",
+          "anchor_candidates": [
+            "rate_limits_ok",
+            "rate_limits_check",
+            "snapshot_allows_startup",
+            "window_allows_startup"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +229,14 @@
         "source": "codex/codex-rs/memories/write/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/guard_limits.py",
+          "anchor_candidates": [
+            "CODEX_LIMIT_ID"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +252,21 @@
         "source": "codex/codex-rs/memories/write/src/metrics.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/metrics.py",
+          "anchor_candidates": [
+            "MEMORY_PHASE_ONE_E2E_MS",
+            "MEMORY_PHASE_ONE_JOBS",
+            "MEMORY_PHASE_ONE_OUTPUT",
+            "MEMORY_PHASE_ONE_TOKEN_USAGE",
+            "MEMORY_PHASE_TWO_E2E_MS",
+            "MEMORY_PHASE_TWO_INPUT",
+            "MEMORY_PHASE_TWO_JOBS",
+            "MEMORY_PHASE_TWO_TOKEN_USAGE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -201,7 +282,21 @@
         "source": "codex/codex-rs/memories/write/src/phase1.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/phase1/__init__.py",
+          "anchor_candidates": [
+            "failed",
+            "output_schema",
+            "prune",
+            "run",
+            "StageOneOutput",
+            "aggregate_stats",
+            "claim_startup_jobs",
+            "emit_metrics"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -217,7 +312,18 @@
         "source": "codex/codex-rs/memories/write/src/phase1.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/phase1/job/__init__.py",
+          "anchor_candidates": [
+            "run",
+            "serialize_filtered_rollout_response_items",
+            "is_memory_excluded_contextual_user_fragment",
+            "sample",
+            "sanitize_response_item_for_memories"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -233,7 +339,16 @@
         "source": "codex/codex-rs/memories/write/src/phase1.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/phase1/job/result.py",
+          "anchor_candidates": [
+            "failed",
+            "no_output",
+            "success"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -249,7 +364,20 @@
         "source": "codex/codex-rs/memories/write/src/phase2.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/phase2/__init__.py",
+          "anchor_candidates": [
+            "claim",
+            "get_watermark",
+            "run",
+            "emit_metrics",
+            "emit_token_usage_metrics",
+            "is_final_agent_status",
+            "sync_phase2_workspace_inputs"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -265,7 +393,17 @@
         "source": "codex/codex-rs/memories/write/src/phase2.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/phase2/agent.py",
+          "anchor_candidates": [
+            "get_config",
+            "get_prompt",
+            "handle",
+            "loop_agent"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -281,7 +419,16 @@
         "source": "codex/codex-rs/memories/write/src/phase2.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/phase2/job.py",
+          "anchor_candidates": [
+            "claim",
+            "failed",
+            "succeed"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -297,7 +444,15 @@
         "source": "codex/codex-rs/memories/write/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/prompt_blocks.py",
+          "anchor_candidates": [
+            "EXTENSIONS_FOLDER_STRUCTURE",
+            "EXTENSIONS_PRIMARY_INPUTS"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -313,7 +468,15 @@
         "source": "codex/codex-rs/memories/write/src/prompts.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/prompts.py",
+          "anchor_candidates": [
+            "build_consolidation_prompt",
+            "build_stage_one_input_message"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -329,7 +492,25 @@
         "source": "codex/codex-rs/memories/write/src/runtime.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/runtime.py",
+          "anchor_candidates": [
+            "MemoryStartupContext",
+            "SpawnedConsolidationAgent",
+            "StageOneRequestContext",
+            "counter",
+            "histogram",
+            "shutdown_consolidation_agent",
+            "spawn_consolidation_agent",
+            "stage_one_request_context",
+            "start_timer",
+            "state_db",
+            "stream_stage_one_prompt",
+            "thread_id"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -345,7 +526,23 @@
         "source": "codex/codex-rs/memories/write/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/stage_one.py",
+          "anchor_candidates": [
+            "CONCURRENCY_LIMIT",
+            "CONTEXT_WINDOW_PERCENT",
+            "DEFAULT_ROLLOUT_TOKEN_LIMIT",
+            "JOB_LEASE_SECONDS",
+            "JOB_RETRY_DELAY_SECONDS",
+            "MODEL",
+            "PROMPT",
+            "PRUNE_BATCH_SIZE",
+            "REASONING_EFFORT",
+            "THREAD_SCAN_LIMIT"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -361,7 +558,18 @@
         "source": "codex/codex-rs/memories/write/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/stage_two.py",
+          "anchor_candidates": [
+            "JOB_HEARTBEAT_SECONDS",
+            "JOB_LEASE_SECONDS",
+            "JOB_RETRY_DELAY_SECONDS",
+            "MODEL",
+            "REASONING_EFFORT"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -377,7 +585,14 @@
         "source": "codex/codex-rs/memories/write/src/start.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/start.py",
+          "anchor_candidates": [
+            "start_memories_startup_task"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -393,7 +608,16 @@
         "source": "codex/codex-rs/memories/write/src/storage.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/storage.py",
+          "anchor_candidates": [
+            "rebuild_raw_memories_file_from_memories",
+            "rollout_summary_file_stem",
+            "sync_rollout_summaries_from_memories"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -409,7 +633,20 @@
         "source": "codex/codex-rs/memories/write/src/workspace.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/workspace.py",
+          "anchor_candidates": [
+            "memory_workspace_diff",
+            "prepare_memory_workspace",
+            "remove_workspace_diff",
+            "reset_memory_workspace_baseline",
+            "write_workspace_diff",
+            "previous_char_boundary",
+            "render_workspace_diff_file"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -425,7 +662,15 @@
         "source": "codex/codex-rs/memories/write/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/memories/write/workspace_diff.py",
+          "anchor_candidates": [
+            "FILENAME",
+            "MAX_BYTES"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

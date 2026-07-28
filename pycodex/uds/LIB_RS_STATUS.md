@@ -2,7 +2,10 @@
 
 Rust coordinate: `codex/codex-rs/uds/src/lib.rs`
 
-Python coordinate: `pycodex/uds/__init__.py`
+Python coordinates:
+
+- `pycodex/uds/__init__.py`
+- `pycodex/uds/platform.py` for Rust's inline `platform` module
 
 Status: complete.
 

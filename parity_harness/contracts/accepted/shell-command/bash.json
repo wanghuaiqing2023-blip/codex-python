@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-shell-command.bash",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-command",
+    "module": "bash",
+    "source": "codex/codex-rs/shell-command/src/bash.rs",
+    "anchors": [
+      "extract_bash_command",
+      "parse_shell_lc_plain_commands",
+      "parse_shell_lc_single_command_prefix",
+      "try_parse_shell",
+      "try_parse_word_only_commands_sequence"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_command/bash.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_command/bash.py"
+    ],
+    "anchors": [
+      "extract_bash_command",
+      "parse_shell_lc_plain_commands",
+      "parse_shell_lc_single_command_prefix",
+      "try_parse_shell",
+      "try_parse_word_only_commands_sequence"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_shell_command_module_ownership_rs.py",
+    "tests/test_shell_command_parse_command.py",
+    "tests/test_shell_command_safety.py"
+  ]
+}

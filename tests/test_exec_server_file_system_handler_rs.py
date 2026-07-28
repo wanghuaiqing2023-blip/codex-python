@@ -12,7 +12,6 @@ from pycodex.exec_server import (
     CreateDirectoryOptions,
     ExecServerRuntimePaths,
     FileMetadata,
-    FileSystemHandler,
     FileSystemSandboxContext,
     FsCopyParams,
     FsCopyResponse,
@@ -32,6 +31,9 @@ from pycodex.exec_server import (
     LocalFileSystem,
     ReadDirectoryEntry,
     RemoveOptions,
+)
+from pycodex.exec_server.server.file_system_handler import (
+    FileSystemHandler,
 )
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile
 from pycodex.utils.absolute_path import AbsolutePathBuf

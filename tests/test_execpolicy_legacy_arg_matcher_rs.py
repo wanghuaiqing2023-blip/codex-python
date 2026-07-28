@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.execpolicy_legacy import ArgMatcher
-from pycodex.execpolicy_legacy import ArgMatcherCardinality
-from pycodex.execpolicy_legacy import ArgType
+from pycodex.execpolicy_legacy.arg_matcher import ArgMatcher
+from pycodex.execpolicy_legacy.arg_matcher import ArgMatcherCardinality
+from pycodex.execpolicy_legacy.arg_type import ArgType
 
 
 @pytest.mark.parametrize(

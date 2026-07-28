@@ -1,0 +1,37 @@
+{
+  "contract_id": "codex-utils-pty.pty",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-pty",
+    "module": "pty",
+    "source": "codex/codex-rs/utils/pty/src/pty.rs",
+    "anchors": [
+      "conpty_supported",
+      "spawn_process",
+      "spawn_process_with_inherited_fds"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/pty/pty.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/pty/pty.py"
+    ],
+    "anchors": [
+      "conpty_supported",
+      "spawn_process",
+      "spawn_process_with_inherited_fds"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_pty_pty_rs.py",
+    "tests/test_utils_pty_win_rs.py"
+  ]
+}
