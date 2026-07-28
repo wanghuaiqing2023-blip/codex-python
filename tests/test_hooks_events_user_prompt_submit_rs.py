@@ -15,9 +15,9 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 
-from pycodex.hooks import ParsedUserPromptSubmitHandler
-from pycodex.hooks import UserPromptSubmitHandlerData
-from pycodex.hooks import parse_user_prompt_submit_completed
+from pycodex.hooks.events.user_prompt_submit import ParsedUserPromptSubmitHandler
+from pycodex.hooks.events.user_prompt_submit import UserPromptSubmitHandlerData
+from pycodex.hooks.events.user_prompt_submit import parse_user_prompt_submit_completed
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookOutputEntry
 from pycodex.protocol import HookOutputEntryKind

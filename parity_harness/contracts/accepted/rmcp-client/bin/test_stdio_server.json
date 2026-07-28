@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-rmcp-client.bin.test_stdio_server",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "bin::test_stdio_server",
+    "source": "codex/codex-rs/rmcp-client/src/bin/test_stdio_server.rs",
+    "anchors": [
+      "stdio",
+      "DEFAULT_SYNC_TIMEOUT_MS",
+      "MEMO_CONTENT",
+      "MEMO_URI",
+      "SANDBOX_STATE_META_CAPABILITY",
+      "SMALL_PNG_BASE64",
+      "TestToolServer",
+      "call_tool",
+      "image_scenario_result",
+      "main",
+      "parse_data_url",
+      "structured_result"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/bin/test_stdio_server.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rmcp_client/bin/test_stdio_server.py"],
+    "anchors": [
+      "stdio",
+      "DEFAULT_SYNC_TIMEOUT_MS",
+      "MEMO_CONTENT",
+      "MEMO_URI",
+      "SANDBOX_STATE_META_CAPABILITY",
+      "SMALL_PNG_BASE64",
+      "TestToolServer",
+      "call_tool",
+      "image_scenario_result",
+      "main",
+      "parse_data_url",
+      "structured_result"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rmcp_client_bin_servers_rs.py"]
+}

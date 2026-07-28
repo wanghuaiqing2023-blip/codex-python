@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-external-agent-sessions.ledger",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-external-agent-sessions",
+    "module": "ledger",
+    "source": "codex/codex-rs/external-agent-sessions/src/ledger.rs",
+    "anchors": [
+      "has_current_session_been_imported",
+      "record_imported_session",
+      "SESSION_IMPORT_LEDGER_FILE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/external_agent_sessions/ledger.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/external_agent_sessions/ledger.py"
+    ],
+    "anchors": [
+      "has_current_session_been_imported",
+      "record_imported_session",
+      "SESSION_IMPORT_LEDGER_FILE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_external_agent_sessions_module_ownership_rs.py"
+  ]
+}

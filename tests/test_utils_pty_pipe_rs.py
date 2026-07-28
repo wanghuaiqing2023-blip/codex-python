@@ -10,12 +10,14 @@ from typing import Any
 
 import pytest
 
-import pycodex.utils.pty as pty
+import pycodex.utils.pty.pipe as pipe
 from pycodex.utils.pty import (
     SpawnedProcess,
     spawn_pipe_process,
     spawn_pipe_process_no_stdin,
-    spawn_pipe_process_no_stdin_with_inherited_fds,
+)
+from pycodex.utils.pty.pipe import (
+    spawn_process_no_stdin_with_inherited_fds as spawn_pipe_process_no_stdin_with_inherited_fds,
 )
 
 
@@ -213,14 +215,14 @@ def test_pipe_linux_preexec_detaches_then_sets_parent_death_signal(monkeypatch: 
         captured.update(kwargs)
         return FakeProcess()
 
-    monkeypatch.setattr(pty.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(pty.os, "name", "posix")
-    monkeypatch.setattr(pty.sys, "platform", "linux")
-    monkeypatch.setattr(pty.os, "getpid", lambda: 1234)
-    monkeypatch.setattr(pty, "Path", lambda value: value)
-    monkeypatch.setattr(pty.process_group, "detach_from_tty", lambda: calls.append(("detach", None)))
+    monkeypatch.setattr(pipe.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(pipe.os, "name", "posix")
+    monkeypatch.setattr(pipe.sys, "platform", "linux")
+    monkeypatch.setattr(pipe.os, "getpid", lambda: 1234)
+    monkeypatch.setattr(pipe, "Path", lambda value: value)
+    monkeypatch.setattr(pipe.process_group, "detach_from_tty", lambda: calls.append(("detach", None)))
     monkeypatch.setattr(
-        pty.process_group,
+        pipe.process_group,
         "set_parent_death_signal",
         lambda parent_pid: calls.append(("pdeath", int(parent_pid))),
     )
@@ -240,7 +242,7 @@ def test_pipe_linux_preexec_detaches_then_sets_parent_death_signal(monkeypatch: 
 
     assert spawned.session.exit_code() == 0
     assert captured["argv"] == ("python", "-c", "pass")
-    assert captured["stdin"] is pty.asyncio.subprocess.DEVNULL
+    assert captured["stdin"] is pipe.asyncio.subprocess.DEVNULL
     assert captured["pass_fds"] == (9,)
     assert captured["preexec_fn"] is not None
 

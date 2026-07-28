@@ -2,7 +2,7 @@
 
 Rust coordinate: `codex/codex-rs/realtime-webrtc/src/native.rs`
 
-Python coordinate: `pycodex/realtime_webrtc/__init__.py`
+Python coordinate: `pycodex/realtime_webrtc/native.py`
 
 Status: `complete`
 
@@ -27,8 +27,8 @@ Python adaptation:
 
 Evidence:
 
-- `pycodex/realtime_webrtc/__init__.py` exposes the unsupported native boundary
-  and deterministic helper behavior.
+- `pycodex/realtime_webrtc/native.py` owns the deterministic native helper
+  behavior; the crate root owns the unsupported public boundary.
 - `tests/test_realtime_webrtc_crate.py` covers public crate-root behavior plus
   native helper contracts.
 

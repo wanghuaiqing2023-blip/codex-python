@@ -163,7 +163,7 @@ from .telemetry import (  # noqa: E402
     record_init_result,
     resolve_telemetry,
 )
-from .state_runtime import (  # noqa: E402
+from .runtime import (  # noqa: E402
     GOALS_DB,
     LOGS_DB,
     MEMORIES_DB,

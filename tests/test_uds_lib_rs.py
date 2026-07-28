@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from pycodex import uds
+from pycodex.uds import platform
 
 
 def test_prepare_private_socket_directory_creates_directory(tmp_path):
@@ -44,7 +45,10 @@ def test_regular_file_path_is_not_stale_socket_path(tmp_path):
     assert asyncio.run(uds.is_stale_socket_path(regular_file)) is False
 
 
-@pytest.mark.skipif(not uds.unix_socket_support_available(), reason="asyncio Unix sockets unavailable")
+@pytest.mark.skipif(
+    not platform.unix_socket_support_available(),
+    reason="asyncio Unix sockets unavailable",
+)
 def test_bound_listener_path_is_stale_socket_path(tmp_path):
     # Rust crate/module: codex-uds src/lib.rs. Rust test:
     # bound_listener_path_is_stale_socket_path.
@@ -61,7 +65,10 @@ def test_bound_listener_path_is_stale_socket_path(tmp_path):
     asyncio.run(run())
 
 
-@pytest.mark.skipif(not uds.unix_socket_support_available(), reason="asyncio Unix sockets unavailable")
+@pytest.mark.skipif(
+    not platform.unix_socket_support_available(),
+    reason="asyncio Unix sockets unavailable",
+)
 def test_stream_round_trips_data_between_listener_and_client(tmp_path):
     # Rust crate/module: codex-uds src/lib.rs. Rust test:
     # stream_round_trips_data_between_listener_and_client.
@@ -79,7 +86,26 @@ def test_stream_round_trips_data_between_listener_and_client(tmp_path):
         response = await client_stream.read_exactly(8)
         assert response == b"response"
 
-    asyncio.run(uds.run_connected_pair(socket_path, server_task, client_task))
+    async def run_connected_pair() -> None:
+        listener = await uds.UnixListener.bind(socket_path)
+        try:
+            async def serve_once() -> None:
+                server_stream = await listener.accept()
+                await server_task(server_stream)
+
+            server = asyncio.create_task(serve_once())
+            client_stream = await uds.UnixStream.connect(socket_path)
+            try:
+                await client_task(client_stream)
+            finally:
+                client_stream.close()
+                await client_stream.wait_closed()
+            await server
+        finally:
+            listener.close()
+            await listener.wait_closed()
+
+    asyncio.run(run_connected_pair())
 
 
 def test_prepare_private_socket_directory_rejects_existing_file(tmp_path):
@@ -98,7 +124,7 @@ def test_windows_stale_socket_path_uses_existence(monkeypatch, tmp_path):
     # the stale-path signal.
     socket_path = tmp_path / "socket"
     socket_path.write_text("rendezvous")
-    monkeypatch.setattr(uds.sys, "platform", "win32")
+    monkeypatch.setattr(platform, "_is_windows", lambda: True)
 
     assert asyncio.run(uds.is_stale_socket_path(socket_path)) is True
     assert asyncio.run(uds.is_stale_socket_path(tmp_path / "missing")) is False

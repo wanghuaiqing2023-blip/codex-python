@@ -4,20 +4,8 @@
   "python_root": "pycodex/utils/pty",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate",
-    "crate::pipe",
-    "crate::process",
-    "crate::process_group",
-    "crate::pty",
-    "crate::win",
-    "crate::win::conpty",
-    "crate::win::procthreadattr",
-    "crate::win::psuedocon"
-  ],
-  "uncovered_python_files": [
-    "pycodex/utils/pty/__init__.py"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
   "allowed_unowned": []
 }

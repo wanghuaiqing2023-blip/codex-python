@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 26,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 26,
+    "modules_with_candidates": 26,
+    "modules_with_anchors": 26
   },
   "contracts": [
     {
@@ -57,7 +57,17 @@
         "source": "codex/codex-rs/core-plugins/src/installed_marketplaces.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/installed_marketplaces.py",
+          "anchor_candidates": [
+            "INSTALLED_MARKETPLACES_DIR",
+            "installed_marketplace_roots_from_layer_stack",
+            "marketplace_install_root",
+            "resolve_configured_marketplace_root"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +83,16 @@
         "source": "codex/codex-rs/core-plugins/src/loader.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/loader.py",
+          "anchor_candidates": [
+            "configured_curated_plugin_ids_from_codex_home",
+            "curated_plugin_cache_version",
+            "load_plugins_from_layer_stack"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +108,25 @@
         "source": "codex/codex-rs/core-plugins/src/manager.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/manager.py",
+          "anchor_candidates": [
+            "ConfiguredMarketplace",
+            "ConfiguredMarketplaceListOutcome",
+            "ConfiguredMarketplacePlugin",
+            "PluginDetail",
+            "PluginDetailsUnavailableReason",
+            "PluginHookSummary",
+            "PluginInstallError",
+            "PluginInstallOutcome",
+            "PluginInstallRequest",
+            "PluginReadOutcome",
+            "PluginReadRequest",
+            "PluginRemoteSyncError"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +142,20 @@
         "source": "codex/codex-rs/core-plugins/src/manifest.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/manifest.py",
+          "anchor_candidates": [
+            "PluginManifest",
+            "PluginManifestHooks",
+            "PluginManifestInterface",
+            "PluginManifestPaths",
+            "load_plugin_manifest",
+            "MAX_DEFAULT_PROMPT_COUNT",
+            "MAX_DEFAULT_PROMPT_LEN"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +171,25 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace.py",
+          "anchor_candidates": [
+            "Marketplace",
+            "MarketplaceError",
+            "MarketplaceInterface",
+            "MarketplaceListError",
+            "MarketplaceListOutcome",
+            "MarketplacePlugin",
+            "MarketplacePluginAuthPolicy",
+            "MarketplacePluginInstallPolicy",
+            "MarketplacePluginPolicy",
+            "MarketplacePluginSource",
+            "ResolvedMarketplacePlugin",
+            "find_installable_marketplace_plugin"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +205,19 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_add.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_add/__init__.py",
+          "anchor_candidates": [
+            "MarketplaceAddError",
+            "MarketplaceAddOutcome",
+            "MarketplaceAddRequest",
+            "add_marketplace",
+            "is_local_marketplace_source",
+            "parse_marketplace_source"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +233,18 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_add/install.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_add/install.py",
+          "anchor_candidates": [
+            "clone_git_source",
+            "ensure_marketplace_destination_is_inside_install_root",
+            "marketplace_staging_root",
+            "replace_marketplace_root",
+            "safe_marketplace_dir_name"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +260,20 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_add/metadata.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_add/metadata.py",
+          "anchor_candidates": [
+            "MarketplaceInstallMetadata",
+            "find_marketplace_root_by_name",
+            "from_source",
+            "installed_marketplace_root_for_source",
+            "record_added_marketplace_entry",
+            "ref_name",
+            "sparse_paths"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +289,17 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_add/source.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_add/source.py",
+          "anchor_candidates": [
+            "MarketplaceSource",
+            "display",
+            "parse_marketplace_source",
+            "validate_marketplace_source_root"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -201,7 +315,17 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_remove.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_remove.py",
+          "anchor_candidates": [
+            "MarketplaceRemoveError",
+            "MarketplaceRemoveOutcome",
+            "MarketplaceRemoveRequest",
+            "remove_marketplace"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -217,7 +341,19 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_upgrade.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_upgrade/__init__.py",
+          "anchor_candidates": [
+            "ConfiguredMarketplaceUpgradeError",
+            "ConfiguredMarketplaceUpgradeOutcome",
+            "all_succeeded",
+            "configured_git_marketplace_names",
+            "upgrade_configured_git_marketplaces",
+            "marketplace_install_root"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -233,7 +369,16 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_upgrade/activation.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_upgrade/activation.py",
+          "anchor_candidates": [
+            "activate_marketplace_root",
+            "installed_marketplace_metadata_matches",
+            "write_installed_marketplace_metadata"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -249,7 +394,15 @@
         "source": "codex/codex-rs/core-plugins/src/marketplace_upgrade/git.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/marketplace_upgrade/git.py",
+          "anchor_candidates": [
+            "clone_git_source",
+            "git_remote_revision"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -265,7 +418,18 @@
         "source": "codex/codex-rs/core-plugins/src/plugin_bundle_archive.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/plugin_bundle_archive.py",
+          "anchor_candidates": [
+            "PluginBundlePackError",
+            "PluginBundleUnpackError",
+            "pack_plugin_bundle_tar_gz",
+            "unpack_plugin_bundle_tar_gz",
+            "io"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -281,7 +445,25 @@
         "source": "codex/codex-rs/core-plugins/src/remote.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/remote/__init__.py",
+          "anchor_candidates": [
+            "REMOTE_GLOBAL_MARKETPLACE_DISPLAY_NAME",
+            "REMOTE_GLOBAL_MARKETPLACE_NAME",
+            "REMOTE_WORKSPACE_MARKETPLACE_DISPLAY_NAME",
+            "REMOTE_WORKSPACE_MARKETPLACE_NAME",
+            "REMOTE_WORKSPACE_SHARED_WITH_ME_MARKETPLACE_NAME",
+            "REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_DISPLAY_NAME",
+            "REMOTE_WORKSPACE_SHARED_WITH_ME_PRIVATE_MARKETPLACE_NAME",
+            "REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_DISPLAY_NAME",
+            "REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_NAME",
+            "RemoteInstalledPlugin",
+            "RemoteInstalledPluginBundleSyncError",
+            "RemoteInstalledPluginBundleSyncOutcome"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -297,7 +479,21 @@
         "source": "codex/codex-rs/core-plugins/src/remote/remote_installed_plugin_sync.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/remote/remote_installed_plugin_sync.py",
+          "anchor_candidates": [
+            "RemoteInstalledPluginBundleSyncError",
+            "RemoteInstalledPluginBundleSyncOutcome",
+            "RemotePluginCacheMutationGuard",
+            "changed_local_cache",
+            "mark_remote_plugin_cache_mutation_in_flight",
+            "maybe_start_remote_installed_plugin_bundle_sync",
+            "sync_remote_installed_plugin_bundles_once",
+            "remove_stale_remote_plugin_caches"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -313,7 +509,25 @@
         "source": "codex/codex-rs/core-plugins/src/remote/share.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/remote/share/__init__.py",
+          "anchor_candidates": [
+            "RemotePluginShareAccessPolicy",
+            "RemotePluginShareDiscoverability",
+            "RemotePluginSharePrincipal",
+            "RemotePluginSharePrincipalRole",
+            "RemotePluginSharePrincipalType",
+            "RemotePluginShareSaveResult",
+            "RemotePluginShareTarget",
+            "RemotePluginShareTargetRole",
+            "RemotePluginShareUpdateDiscoverability",
+            "RemotePluginShareUpdateTargetsResult",
+            "checkout_remote_plugin_share",
+            "delete_remote_plugin_share"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -329,7 +543,21 @@
         "source": "codex/codex-rs/core-plugins/src/remote/share/checkout.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/remote/share/checkout.py",
+          "anchor_candidates": [
+            "RemotePluginShareCheckoutResult",
+            "checkout_remote_plugin_share",
+            "PERSONAL_MARKETPLACE_DISPLAY_NAME",
+            "PERSONAL_MARKETPLACE_NAME",
+            "PERSONAL_MARKETPLACE_RELATIVE_PATH",
+            "PersonalMarketplaceUpdate",
+            "personal_marketplace_relative_plugin_path",
+            "update_personal_marketplace"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -345,7 +573,17 @@
         "source": "codex/codex-rs/core-plugins/src/remote/share/local_paths.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/remote/share/local_paths.py",
+          "anchor_candidates": [
+            "load_plugin_share_local_paths",
+            "record_plugin_share_local_path",
+            "remove_plugin_share_local_path",
+            "PLUGIN_SHARE_LOCAL_PATHS_FILE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -361,7 +599,24 @@
         "source": "codex/codex-rs/core-plugins/src/remote_bundle.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/remote_bundle.py",
+          "anchor_candidates": [
+            "RemotePluginBundleInstallError",
+            "ValidatedRemotePluginBundle",
+            "download_and_extract_remote_plugin_bundle_to_path",
+            "download_and_install_remote_plugin_bundle",
+            "validate_remote_plugin_bundle",
+            "REMOTE_PLUGIN_BUNDLE_DOWNLOAD_TIMEOUT",
+            "REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES",
+            "REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES",
+            "REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES",
+            "REMOTE_PLUGIN_INSTALL_STAGING_DIR",
+            "TEST_ALLOW_LOOPBACK_HTTP_REMOTE_PLUGIN_BUNDLES_ENV"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -377,7 +632,25 @@
         "source": "codex/codex-rs/core-plugins/src/remote_legacy.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/remote_legacy.py",
+          "anchor_candidates": [
+            "RemotePluginFetchError",
+            "RemotePluginMutationError",
+            "RemotePluginStatusSummary",
+            "enable_remote_plugin",
+            "fetch_remote_featured_plugin_ids",
+            "fetch_remote_plugin_status",
+            "uninstall_remote_plugin",
+            "DEFAULT_REMOTE_MARKETPLACE_NAME",
+            "REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT",
+            "REMOTE_PLUGIN_FETCH_TIMEOUT",
+            "REMOTE_PLUGIN_MUTATION_TIMEOUT",
+            "remote_plugin_mutation_url"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -393,7 +666,16 @@
         "source": "codex/codex-rs/core-plugins/src/startup_remote_sync.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/startup_remote_sync.py",
+          "anchor_candidates": [
+            "start_startup_remote_plugin_sync_once",
+            "STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE",
+            "STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -409,7 +691,25 @@
         "source": "codex/codex-rs/core-plugins/src/startup_sync.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/startup_sync.py",
+          "anchor_candidates": [
+            "curated_plugins_repo_path",
+            "has_local_curated_plugins_snapshot",
+            "read_curated_plugins_sha",
+            "sync_openai_plugins_repo",
+            "CURATED_PLUGINS_BACKUP_ARCHIVE_API_URL",
+            "CURATED_PLUGINS_BACKUP_ARCHIVE_FALLBACK_VERSION",
+            "CURATED_PLUGINS_BACKUP_ARCHIVE_TIMEOUT",
+            "CURATED_PLUGINS_GIT_TIMEOUT",
+            "CURATED_PLUGINS_HTTP_TIMEOUT",
+            "CURATED_PLUGINS_RELATIVE_DIR",
+            "CURATED_PLUGINS_SHA_FILE",
+            "CURATED_PLUGINS_STALE_TEMP_DIR_MAX_AGE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -425,7 +725,25 @@
         "source": "codex/codex-rs/core-plugins/src/store.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/store.py",
+          "anchor_candidates": [
+            "DEFAULT_PLUGIN_VERSION",
+            "PLUGINS_CACHE_DIR",
+            "PLUGINS_DATA_DIR",
+            "PluginInstallResult",
+            "PluginStore",
+            "PluginStoreError",
+            "active_plugin_root",
+            "active_plugin_version",
+            "install",
+            "install_with_version",
+            "is_installed",
+            "new"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -441,7 +759,14 @@
         "source": "codex/codex-rs/core-plugins/src/toggles.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/core_plugins/toggles.py",
+          "anchor_candidates": [
+            "collect_plugin_enabled_candidates"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

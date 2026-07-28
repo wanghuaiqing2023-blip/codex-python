@@ -4,30 +4,30 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pycodex.execpolicy_legacy import ArgMatcher
-from pycodex.execpolicy_legacy import CannotCanonicalizePath
-from pycodex.execpolicy_legacy import CannotCheckRelativePath
-from pycodex.execpolicy_legacy import DoubleDashNotSupportedYet
-from pycodex.execpolicy_legacy import EmptyFileName
-from pycodex.execpolicy_legacy import InternalInvariantViolation
-from pycodex.execpolicy_legacy import InvalidPositiveInteger
-from pycodex.execpolicy_legacy import LiteralValueDidNotMatch
-from pycodex.execpolicy_legacy import MissingRequiredOptions
-from pycodex.execpolicy_legacy import MultipleVarargPatterns
-from pycodex.execpolicy_legacy import NoSpecForProgram
-from pycodex.execpolicy_legacy import NotEnoughArgs
-from pycodex.execpolicy_legacy import OptionFollowedByOptionInsteadOfValue
-from pycodex.execpolicy_legacy import OptionMissingValue
-from pycodex.execpolicy_legacy import PositionalArg
-from pycodex.execpolicy_legacy import PrefixOverlapsSuffix
-from pycodex.execpolicy_legacy import RangeEndOutOfBounds
-from pycodex.execpolicy_legacy import RangeStartExceedsEnd
-from pycodex.execpolicy_legacy import ReadablePathNotInReadableFolders
-from pycodex.execpolicy_legacy import SedCommandNotProvablySafe
-from pycodex.execpolicy_legacy import UnexpectedArguments
-from pycodex.execpolicy_legacy import UnknownOption
-from pycodex.execpolicy_legacy import VarargMatcherDidNotMatchAnything
-from pycodex.execpolicy_legacy import WriteablePathNotInWriteableFolders
+from pycodex.execpolicy_legacy.arg_matcher import ArgMatcher
+from pycodex.execpolicy_legacy.error import CannotCanonicalizePath
+from pycodex.execpolicy_legacy.error import CannotCheckRelativePath
+from pycodex.execpolicy_legacy.error import DoubleDashNotSupportedYet
+from pycodex.execpolicy_legacy.error import EmptyFileName
+from pycodex.execpolicy_legacy.error import InternalInvariantViolation
+from pycodex.execpolicy_legacy.error import InvalidPositiveInteger
+from pycodex.execpolicy_legacy.error import LiteralValueDidNotMatch
+from pycodex.execpolicy_legacy.error import MissingRequiredOptions
+from pycodex.execpolicy_legacy.error import MultipleVarargPatterns
+from pycodex.execpolicy_legacy.error import NoSpecForProgram
+from pycodex.execpolicy_legacy.error import NotEnoughArgs
+from pycodex.execpolicy_legacy.error import OptionFollowedByOptionInsteadOfValue
+from pycodex.execpolicy_legacy.error import OptionMissingValue
+from pycodex.execpolicy_legacy.arg_resolver import PositionalArg
+from pycodex.execpolicy_legacy.error import PrefixOverlapsSuffix
+from pycodex.execpolicy_legacy.error import RangeEndOutOfBounds
+from pycodex.execpolicy_legacy.error import RangeStartExceedsEnd
+from pycodex.execpolicy_legacy.error import ReadablePathNotInReadableFolders
+from pycodex.execpolicy_legacy.error import SedCommandNotProvablySafe
+from pycodex.execpolicy_legacy.error import UnexpectedArguments
+from pycodex.execpolicy_legacy.error import UnknownOption
+from pycodex.execpolicy_legacy.error import VarargMatcherDidNotMatchAnything
+from pycodex.execpolicy_legacy.error import WriteablePathNotInWriteableFolders
 
 
 def test_error_rs_variants_have_rust_tagged_mapping_shapes() -> None:

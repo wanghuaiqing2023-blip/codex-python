@@ -4,14 +4,8 @@
   "python_root": "pycodex/ext/web_search",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::extension",
-    "crate::history",
-    "crate::output",
-    "crate::schema",
-    "crate::tool"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-hooks.schema",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "schema",
+    "source": "codex/codex-rs/hooks/src/schema.rs",
+    "anchors": [
+      "SubagentCommandInputFields",
+      "write_schema_fixtures",
+      "PERMISSION_REQUEST_INPUT_FIXTURE",
+      "PERMISSION_REQUEST_OUTPUT_FIXTURE",
+      "POST_COMPACT_INPUT_FIXTURE",
+      "POST_COMPACT_OUTPUT_FIXTURE",
+      "POST_TOOL_USE_INPUT_FIXTURE",
+      "POST_TOOL_USE_OUTPUT_FIXTURE",
+      "PRE_COMPACT_INPUT_FIXTURE",
+      "PRE_COMPACT_OUTPUT_FIXTURE",
+      "PRE_TOOL_USE_INPUT_FIXTURE",
+      "PRE_TOOL_USE_OUTPUT_FIXTURE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/schema.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/schema.py"
+    ],
+    "anchors": [
+      "SubagentCommandInputFields",
+      "write_schema_fixtures",
+      "PERMISSION_REQUEST_INPUT_FIXTURE",
+      "PERMISSION_REQUEST_OUTPUT_FIXTURE",
+      "POST_COMPACT_INPUT_FIXTURE",
+      "POST_COMPACT_OUTPUT_FIXTURE",
+      "POST_TOOL_USE_INPUT_FIXTURE",
+      "POST_TOOL_USE_OUTPUT_FIXTURE",
+      "PRE_COMPACT_INPUT_FIXTURE",
+      "PRE_COMPACT_OUTPUT_FIXTURE",
+      "PRE_TOOL_USE_INPUT_FIXTURE",
+      "PRE_TOOL_USE_OUTPUT_FIXTURE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_schema_rs.py"
+  ]
+}

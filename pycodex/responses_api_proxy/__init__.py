@@ -10,18 +10,14 @@ import json
 import os
 import sys
 import threading
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Iterable, TextIO
+from typing import Iterable, TextIO
 from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-BUFFER_SIZE = 1024
-AUTH_HEADER_PREFIX = b"Bearer "
-REDACTED_HEADER_VALUE = "[REDACTED]"
 DEFAULT_UPSTREAM_URL = "https://api.openai.com/v1/responses"
 ALLOWED_RESPONSES_PATH = "/v1/responses"
 SHUTDOWN_PATH = "/shutdown"
@@ -37,6 +33,10 @@ RESPONSE_HEADERS_MANAGED_BY_SERVER = {
 
 class ResponsesApiProxyError(RuntimeError):
     """User-facing proxy helper error."""
+
+
+from . import dump as _dump
+from . import read_api_key as _read_api_key
 
 
 @dataclass(frozen=True)
@@ -110,225 +110,6 @@ def write_server_info(path: Path, port: int, *, pid: int | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(server_info_payload(port, pid=pid), handle, separators=(",", ":"))
-        handle.write("\n")
-
-
-def validate_auth_header_bytes(key_bytes: bytes) -> None:
-    if all(byte in b"-_" or 48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122 for byte in key_bytes):
-        return
-    raise ResponsesApiProxyError("API key may only contain ASCII letters, numbers, '-' or '_'")
-
-
-def read_auth_header_with(read_fn: Callable[[bytearray], int]) -> str:
-    buf = bytearray(BUFFER_SIZE)
-    buf[: len(AUTH_HEADER_PREFIX)] = AUTH_HEADER_PREFIX
-    prefix_len = len(AUTH_HEADER_PREFIX)
-    capacity = len(buf) - prefix_len
-    total_read = 0
-    saw_newline = False
-    saw_eof = False
-
-    while total_read < capacity:
-        scratch = bytearray(capacity - total_read)
-        try:
-            read = read_fn(scratch)
-        except OSError:
-            _zeroize(buf)
-            raise
-
-        if read < 0:
-            _zeroize(buf)
-            raise ResponsesApiProxyError("read function returned a negative byte count")
-        if read > len(scratch):
-            _zeroize(buf)
-            raise ResponsesApiProxyError("read function returned more bytes than the supplied buffer")
-        if read == 0:
-            saw_eof = True
-            break
-
-        newly_written = bytes(scratch[:read])
-        newline_pos = newly_written.find(b"\n")
-        if newline_pos >= 0:
-            copy_len = newline_pos + 1
-            buf[prefix_len + total_read : prefix_len + total_read + copy_len] = newly_written[:copy_len]
-            total_read += copy_len
-            saw_newline = True
-            break
-
-        buf[prefix_len + total_read : prefix_len + total_read + read] = newly_written
-        total_read += read
-
-    if total_read == capacity and not saw_newline and not saw_eof:
-        _zeroize(buf)
-        raise ResponsesApiProxyError(f"API key is too large to fit in the {BUFFER_SIZE}-byte buffer")
-
-    total = prefix_len + total_read
-    while total > prefix_len and buf[total - 1] in (ord("\n"), ord("\r")):
-        total -= 1
-
-    if total == prefix_len:
-        _zeroize(buf)
-        raise ResponsesApiProxyError(
-            "API key must be provided via stdin (e.g. printenv OPENAI_API_KEY | codex responses-api-proxy)"
-        )
-
-    key = bytes(buf[prefix_len:total])
-    try:
-        validate_auth_header_bytes(key)
-        header = bytes(buf[:total]).decode("utf-8")
-    except UnicodeDecodeError as exc:
-        _zeroize(buf)
-        raise ResponsesApiProxyError("reading Authorization header from stdin as UTF-8") from exc
-    except ResponsesApiProxyError:
-        _zeroize(buf)
-        raise
-
-    _zeroize(buf)
-    return header
-
-
-def read_auth_header_from_text(text: str | bytes | None) -> str:
-    if text is None:
-        data = b""
-    elif isinstance(text, bytes):
-        data = text
-    else:
-        data = text.encode("utf-8")
-    sent = False
-
-    def read_once(buffer: bytearray) -> int:
-        nonlocal sent
-        if sent:
-            return 0
-        sent = True
-        count = min(len(buffer), len(data))
-        buffer[:count] = data[:count]
-        return count
-
-    return read_auth_header_with(read_once)
-
-
-def sanitize_dump_body(body: bytes) -> object:
-    if not body:
-        return ""
-    try:
-        return json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return body.decode("utf-8", errors="replace")
-
-
-def should_redact_header(name: str) -> bool:
-    lower = name.lower()
-    return lower == "authorization" or "cookie" in lower
-
-
-def normalize_headers_for_dump(headers: Iterable[tuple[str, str]]) -> list[dict[str, str]]:
-    return [
-        {
-            "name": name,
-            "value": REDACTED_HEADER_VALUE if should_redact_header(name) else value,
-        }
-        for name, value in headers
-    ]
-
-
-@dataclass
-class ExchangeDumper:
-    dump_dir: Path
-    _sequence: int = 1
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def __post_init__(self) -> None:
-        self.dump_dir = Path(self.dump_dir)
-        self.dump_dir.mkdir(parents=True, exist_ok=True)
-
-    def _next_prefix(self) -> str:
-        with self._lock:
-            value = self._sequence
-            self._sequence += 1
-        timestamp_ms = int(time.time() * 1000)
-        return f"{value:06d}-{timestamp_ms}"
-
-    def dump_request(
-        self,
-        method: str,
-        url: str,
-        headers: Iterable[tuple[str, str]],
-        body: bytes,
-    ) -> "ExchangeDump":
-        prefix = self._next_prefix()
-        request_path = self.dump_dir / f"{prefix}-request.json"
-        response_path = self.dump_dir / f"{prefix}-response.json"
-        request_dump = {
-            "method": method,
-            "url": url,
-            "headers": normalize_headers_for_dump(list(headers)),
-            "body": sanitize_dump_body(body),
-        }
-        write_json_dump(request_path, request_dump)
-        return ExchangeDump(response_path)
-
-
-@dataclass(frozen=True)
-class ExchangeDump:
-    response_path: Path
-
-    def tee_response_body(
-        self,
-        status: int,
-        headers: Iterable[tuple[str, str]],
-        response_body: object,
-    ) -> "ResponseBodyDump":
-        return ResponseBodyDump(status, list(headers), response_body, self.response_path)
-
-
-class ResponseBodyDump:
-    def __init__(
-        self,
-        status: int,
-        headers: list[tuple[str, str]],
-        response_body: object,
-        response_path: Path,
-    ) -> None:
-        self.status = int(status)
-        self.headers = headers
-        self.response_body = response_body
-        self.response_path = Path(response_path)
-        self.body = bytearray()
-        self.dump_written = False
-
-    def read(self, size: int = -1) -> bytes:
-        chunk = self.response_body.read(size)  # type: ignore[attr-defined]
-        if isinstance(chunk, str):
-            chunk = chunk.encode("utf-8")
-        if not chunk:
-            self.write_dump_if_needed()
-            return b""
-        chunk = bytes(chunk)
-        self.body.extend(chunk)
-        return chunk
-
-    def write_dump_if_needed(self) -> None:
-        if self.dump_written:
-            return
-        self.dump_written = True
-        response_dump = {
-            "status": self.status,
-            "headers": normalize_headers_for_dump(self.headers),
-            "body": sanitize_dump_body(bytes(self.body)),
-        }
-        write_json_dump(self.response_path, response_dump)
-
-    def __del__(self) -> None:
-        try:
-            self.write_dump_if_needed()
-        except Exception:
-            pass
-
-
-def write_json_dump(path: Path, dump: object) -> None:
-    with Path(path).open("w", encoding="utf-8") as handle:
-        json.dump(dump, handle, indent=2, ensure_ascii=False)
         handle.write("\n")
 
 
@@ -453,7 +234,7 @@ def read_auth_header_for_main(stdin: object | None) -> str:
         raw = stdin.read()
     else:
         raw = b""
-    return read_auth_header_from_text(raw)
+    return _read_api_key.read_auth_header_from_text(raw)
 
 
 def _serve_proxy(
@@ -464,10 +245,10 @@ def _serve_proxy(
     stderr: TextIO,
 ) -> int:
     del stdout
-    exchange_dumper: ExchangeDumper | None = None
+    exchange_dumper: _dump.ExchangeDumper | None = None
     if args.dump_dir is not None:
         try:
-            exchange_dumper = ExchangeDumper(args.dump_dir)
+            exchange_dumper = _dump.ExchangeDumper(args.dump_dir)
         except OSError as exc:
             print(f"pycodex: creating --dump-dir: {exc}", file=stderr)
             return 2
@@ -555,7 +336,7 @@ def _serve_proxy(
                         self.wfile.write(chunk)
                     return
 
-                response_dump = ResponseBodyDump(
+                response_dump = _dump.ResponseBodyDump(
                     status,
                     forwarded_response_headers,
                     response,
@@ -615,43 +396,25 @@ def _serve_proxy(
 
 
 
-def _zeroize(buf: bytearray) -> None:
-    for index in range(len(buf)):
-        buf[index] = 0
-
-
 __all__ = [
-    "AUTH_HEADER_PREFIX",
     "ALLOWED_RESPONSES_PATH",
-    "BUFFER_SIZE",
     "DEFAULT_UPSTREAM_URL",
-    "ExchangeDump",
-    "ExchangeDumper",
     "ForwardConfig",
-    "REDACTED_HEADER_VALUE",
     "REQUEST_HEADER_REPLACED_BY_PROXY",
     "RESPONSE_HEADERS_MANAGED_BY_SERVER",
     "ResponsesApiProxyError",
     "ResponsesApiProxyArgs",
-    "ResponseBodyDump",
     "SHUTDOWN_PATH",
     "build_forward_config",
     "is_allowed_proxy_request",
     "is_allowed_shutdown_request",
     "main",
-    "normalize_headers_for_dump",
     "parse_main_args",
-    "read_auth_header_from_text",
     "read_auth_header_for_main",
-    "read_auth_header_with",
     "response_headers_for_downstream",
-    "sanitize_dump_body",
     "server_info_payload",
-    "should_redact_header",
     "help_text",
     "run_main",
     "upstream_headers_from_request",
-    "validate_auth_header_bytes",
-    "write_json_dump",
     "write_server_info",
 ]

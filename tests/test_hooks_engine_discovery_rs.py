@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import pycodex.hooks as hooks_mod
+import pycodex.hooks.engine.discovery as hooks_mod
 from pycodex.config import ConfigLayerEntry
 from pycodex.config import ConfigLayerSource
 from pycodex.config import HookHandlerConfig

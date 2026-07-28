@@ -8,64 +8,19 @@ import base64
 from collections import OrderedDict
 import hashlib
 import io
-import mimetypes
 from pathlib import Path
 import struct
+
+from .error import DecodeImageError
+from .error import EncodeImageError
+from .error import ImageProcessingError
+from .error import ReadImageError
+from .error import UnsupportedImageFormatError
 
 
 MAX_DIMENSION = 2048
 _IMAGE_CACHE_SIZE = 32
 _IMAGE_CACHE: "OrderedDict[tuple[bytes, PromptImageMode], EncodedImage]" = OrderedDict()
-
-
-class ImageProcessingError(Exception):
-    kind = "image"
-
-    @staticmethod
-    def decode_error(path: str | Path, source: BaseException) -> "ImageProcessingError":
-        if isinstance(source, DecodeImageError):
-            return source
-        if getattr(source, "is_decoding", False):
-            return DecodeImageError(path, source)
-        return UnsupportedImageFormatError(_guess_mime(path))
-
-    def is_invalid_image(self) -> bool:
-        return isinstance(self, DecodeImageError)
-
-
-class ReadImageError(ImageProcessingError):
-    kind = "read"
-
-    def __init__(self, path: str | Path, source: BaseException) -> None:
-        self.path = Path(path)
-        self.source = source
-        super().__init__(f"failed to read image at {self.path}: {source}")
-
-
-class DecodeImageError(ImageProcessingError):
-    kind = "decode"
-
-    def __init__(self, path: str | Path, source: BaseException) -> None:
-        self.path = Path(path)
-        self.source = source
-        super().__init__(f"failed to decode image at {self.path}: {source}")
-
-
-class EncodeImageError(ImageProcessingError):
-    kind = "encode"
-
-    def __init__(self, image_format: str, source: BaseException) -> None:
-        self.format = image_format
-        self.source = source
-        super().__init__(f"failed to encode image as {image_format!r}: {source}")
-
-
-class UnsupportedImageFormatError(ImageProcessingError):
-    kind = "unsupported"
-
-    def __init__(self, mime: str) -> None:
-        self.mime = mime
-        super().__init__(f"unsupported image `{mime}`")
 
 
 @dataclass(frozen=True)
@@ -229,11 +184,6 @@ def _parse_image_header(data: bytes) -> tuple[str, int, int] | None:
         width, height = struct.unpack("<HH", data[6:10])
         return "image/gif", width, height
     return None
-
-
-def _guess_mime(path: str | Path) -> str:
-    mime, _encoding = mimetypes.guess_type(Path(path).name)
-    return mime or "unknown"
 
 
 def _jpeg_size(data: bytes) -> tuple[int, int] | None:

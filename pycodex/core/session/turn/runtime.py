@@ -55,7 +55,7 @@ from pycodex.core.plugins.mentions import (
 )
 from pycodex.utils.string import truncate_middle_with_token_budget
 from pycodex.core.original_image_detail import can_request_original_image_detail
-from pycodex.core_skills.mentions import build_skill_name_counts
+from pycodex.core_skills.mention_counts import build_skill_name_counts
 from pycodex.core.skills import build_skill_injections, collect_explicit_skill_mentions
 from pycodex.core.responses_retry import (
     ResponsesStreamRequest,

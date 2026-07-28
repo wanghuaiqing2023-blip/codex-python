@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-shell-command.command_safety.is_dangerous_command.windows_dangerous_commands",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-command",
+    "module": "command_safety::is_dangerous_command::windows_dangerous_commands",
+    "source": "codex/codex-rs/shell-command/src/command_safety/windows_dangerous_commands.rs",
+    "anchors": [
+      "is_dangerous_command_windows",
+      "is_dangerous_powershell_words",
+      "args_have_url",
+      "executable_basename",
+      "has_force_delete_cmdlet",
+      "has_force_flag_cmd",
+      "has_quiet_flag_cmd",
+      "has_recursive_flag_cmd",
+      "is_dangerous_cmd",
+      "is_dangerous_powershell",
+      "is_direct_gui_launch",
+      "looks_like_url"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_command/command_safety/is_dangerous_command/windows_dangerous_commands.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_command/command_safety/is_dangerous_command/windows_dangerous_commands.py"
+    ],
+    "anchors": [
+      "is_dangerous_command_windows",
+      "is_dangerous_powershell_words",
+      "args_have_url",
+      "executable_basename",
+      "has_force_delete_cmdlet",
+      "has_force_flag_cmd",
+      "has_quiet_flag_cmd",
+      "has_recursive_flag_cmd",
+      "is_dangerous_cmd",
+      "is_dangerous_powershell",
+      "is_direct_gui_launch",
+      "looks_like_url"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_shell_command_module_ownership_rs.py",
+    "tests/test_shell_command_safety.py"
+  ]
+}

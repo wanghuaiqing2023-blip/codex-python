@@ -5,7 +5,27 @@ import asyncio
 import pytest
 
 import pycodex.utils.readiness as readiness
-from pycodex.utils.readiness import FlagAlreadyReady, ReadinessFlag, Token, TokenLockFailed
+from pycodex.utils.readiness import Readiness, ReadinessFlag, Token
+from pycodex.utils.readiness.errors import FlagAlreadyReady, ReadinessError, TokenLockFailed
+
+
+def test_errors_are_owned_by_inline_errors_module() -> None:
+    # Rust module: codex-utils-readiness crate::errors. The private inline
+    # module is not re-exported from the crate root.
+    assert issubclass(FlagAlreadyReady, ReadinessError)
+    assert issubclass(TokenLockFailed, ReadinessError)
+    assert not hasattr(readiness, "ReadinessError")
+    assert not hasattr(readiness, "FlagAlreadyReady")
+    assert not hasattr(readiness, "TokenLockFailed")
+
+
+def test_readiness_flag_implements_readiness_protocol() -> None:
+    # Rust public API: `pub trait Readiness`.
+    flag: Readiness = ReadinessFlag()
+    assert callable(flag.is_ready)
+    assert callable(flag.subscribe)
+    assert callable(flag.mark_ready)
+    assert callable(flag.wait_ready)
 
 
 @pytest.mark.asyncio

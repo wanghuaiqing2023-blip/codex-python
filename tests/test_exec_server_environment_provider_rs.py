@@ -4,6 +4,8 @@ from pycodex.exec_server import (
     LOCAL_ENVIRONMENT_ID,
     REMOTE_ENVIRONMENT_ID,
     DefaultEnvironmentProvider,
+)
+from pycodex.exec_server.environment_provider import (
     EnvironmentDefault,
     normalize_exec_server_url,
 )

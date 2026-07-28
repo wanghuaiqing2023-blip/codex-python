@@ -102,8 +102,9 @@ def test_windows_conpty_native_and_python_question_mark_after_text_is_literal_wh
     rust, python = build_rust_python_inline_pair(repo_root=repo_root, native_exe=native_exe, extra_args=extra_args)
     input_steps = (
         ConptyInputStep("", ready_pattern=READY_COMPOSER_PATTERN, ready_timeout=30.0, ready_quiet_period=0.5),
-        ConptyInputStep("h?", ready_timeout=0.1, chunk_delay=0.02),
-        ConptyInputStep("\x15", ready_text="h?", ready_timeout=10.0, chunk_delay=0.02),
+        ConptyInputStep("literal", ready_timeout=0.1, chunk_delay=0.02),
+        ConptyInputStep("?", ready_screen_text="literal", ready_timeout=10.0, chunk_delay=0.02),
+        ConptyInputStep("\x15", ready_screen_text="literal?", ready_timeout=10.0, chunk_delay=0.02),
         ConptyInputStep("/quit\r", ready_timeout=0.2, chunk_delay=0.02),
         ConptyInputStep("", ready_text="Shutting down", ready_timeout=10.0),
     )
@@ -130,7 +131,7 @@ def test_windows_conpty_native_and_python_question_mark_after_text_is_literal_wh
     for transcript in (rust_transcript, python_transcript):
         output = transcript.normalized_stdout()
         assert "OpenAI Codex" in output
-        assert any("h?" in observed for observed in transcript.observed_ready_sequences)
+        assert any("literal?" in observed for observed in transcript.observed_ready_sequences)
         assert "ctrl + t to view transcript" not in output
         assert "customize shortcuts with /keymap" not in output
 

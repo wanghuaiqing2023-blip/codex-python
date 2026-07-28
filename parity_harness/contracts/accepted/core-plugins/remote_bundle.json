@@ -1,0 +1,53 @@
+{
+  "contract_id": "codex-core-plugins.remote_bundle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "remote_bundle",
+    "source": "codex/codex-rs/core-plugins/src/remote_bundle.rs",
+    "anchors": [
+      "RemotePluginBundleInstallError",
+      "ValidatedRemotePluginBundle",
+      "download_and_extract_remote_plugin_bundle_to_path",
+      "download_and_install_remote_plugin_bundle",
+      "validate_remote_plugin_bundle",
+      "REMOTE_PLUGIN_BUNDLE_DOWNLOAD_TIMEOUT",
+      "REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES",
+      "REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES",
+      "REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES",
+      "REMOTE_PLUGIN_INSTALL_STAGING_DIR",
+      "TEST_ALLOW_LOOPBACK_HTTP_REMOTE_PLUGIN_BUNDLES_ENV"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/remote_bundle.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/remote_bundle.py"
+    ],
+    "anchors": [
+      "RemotePluginBundleInstallError",
+      "ValidatedRemotePluginBundle",
+      "download_and_extract_remote_plugin_bundle_to_path",
+      "download_and_install_remote_plugin_bundle",
+      "validate_remote_plugin_bundle",
+      "REMOTE_PLUGIN_BUNDLE_DOWNLOAD_TIMEOUT",
+      "REMOTE_PLUGIN_BUNDLE_ERROR_BODY_MAX_BYTES",
+      "REMOTE_PLUGIN_BUNDLE_MAX_DOWNLOAD_BYTES",
+      "REMOTE_PLUGIN_BUNDLE_MAX_EXTRACTED_BYTES",
+      "REMOTE_PLUGIN_INSTALL_STAGING_DIR",
+      "TEST_ALLOW_LOOPBACK_HTTP_REMOTE_PLUGIN_BUNDLES_ENV"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_remote_bundle_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

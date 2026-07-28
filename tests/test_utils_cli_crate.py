@@ -7,9 +7,11 @@ from pycodex.utils.cli import (
     CliConfigOverrides,
     SandboxModeCliArg,
     SharedCliOptions,
+    format_env_display,
+)
+from pycodex.utils.cli.config_override import (
     apply_single_override,
     canonicalize_override_key,
-    format_env_display,
 )
 
 

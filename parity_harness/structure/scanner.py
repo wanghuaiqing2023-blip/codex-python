@@ -34,6 +34,11 @@ _MOD_RE = re.compile(
 _INLINE_MOD_RE = re.compile(
     r"(?m)^(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
 )
+_PATH_MOD_RE = re.compile(
+    r'(?m)^\s*#\s*\[\s*path\s*=\s*"([^"]+)"\s*\]\s*'
+    r"\r?\n\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
 _USE_RE = re.compile(
     r"(?m)^(pub(?:\([^)]*\))?\s+)?use\s+([^;]+);"
 )
@@ -79,6 +84,10 @@ def _inline_modules(text: str) -> tuple[tuple[str, str], ...]:
                     modules.append((match.group(1), text[start + 1 : index]))
                     break
     return tuple(modules)
+
+
+def _path_modules(text: str) -> dict[str, str]:
+    return {name: source for source, name in _PATH_MOD_RE.findall(text)}
 
 
 def discover_workspace_crates(workspace: Path) -> tuple[Path, ...]:
@@ -176,10 +185,17 @@ def discover_rust_modules(
             package_parent = path.parent / path.stem
         else:
             package_parent = module_parent
+        path_modules = _path_modules(text)
         for child in _MOD_RE.findall(text):
             if child == "tests" or child.endswith("_tests"):
                 continue
-            child_path = _module_file(package_parent, child) or _module_file(module_parent, child)
+            explicit_source = path_modules.get(child)
+            child_path = (
+                (path.parent / explicit_source)
+                if explicit_source is not None
+                else _module_file(package_parent, child)
+                or _module_file(module_parent, child)
+            )
             if child_path is not None:
                 visit(child_path, f"{coordinate}::{child}")
         if include_inline_modules:
@@ -299,11 +315,28 @@ def _contains_module_anchor_text(
         return name in _MOD_RE.findall(
             production_rust_text(text)
         )
-    if path.name != "__init__.py":
-        return False
-    return (path.parent / f"{name}.py").is_file() or (
+    sibling_exists = (path.parent / f"{name}.py").is_file() or (
         path.parent / name / "__init__.py"
     ).is_file()
+    if not sibling_exists:
+        return False
+    if path.name == "__init__.py":
+        return True
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    return any(
+        (
+            isinstance(node, ast.ImportFrom)
+            and node.level > 0
+            and (
+                (node.module or "").rsplit(".", 1)[-1] == name
+                or any((alias.asname or alias.name) == name for alias in node.names)
+            )
+        )
+        for node in ast.walk(tree)
+    )
 
 
 def _defined_python_symbols(paths: Iterable[Path]) -> set[str]:

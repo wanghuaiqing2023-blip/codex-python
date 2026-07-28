@@ -7,18 +7,8 @@
     "module": "crate",
     "source": "codex/codex-rs/analytics/src/lib.rs",
     "anchors": [
-      "AcceptedLineFingerprint",
-      "AnalyticsEventsClient",
-      "AnalyticsJsonRpcError",
-      "AppInvocation",
-      "AppServerRpcTransport",
-      "CodexCompactionEvent",
-      "CodexTurnSteerEvent",
-      "CompactionImplementation",
-      "CompactionPhase",
-      "CompactionReason",
-      "CompactionStatus",
-      "CompactionStrategy"
+      "now_unix_millis",
+      "now_unix_seconds"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
@@ -29,18 +19,8 @@
       "pycodex/analytics/__init__.py"
     ],
     "anchors": [
-      "AcceptedLineFingerprint",
-      "AnalyticsEventsClient",
-      "AnalyticsJsonRpcError",
-      "AppInvocation",
-      "AppServerRpcTransport",
-      "CodexCompactionEvent",
-      "CodexTurnSteerEvent",
-      "CompactionImplementation",
-      "CompactionPhase",
-      "CompactionReason",
-      "CompactionStatus",
-      "CompactionStrategy"
+      "now_unix_millis",
+      "now_unix_seconds"
     ]
   },
   "checks": {
@@ -48,5 +28,7 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_analytics_module_ownership_rs.py"
+  ]
 }

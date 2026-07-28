@@ -4,15 +4,8 @@
   "python_root": "pycodex/bwrap",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "bin::bwrap"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
-  "allowed_unowned": [
-    {
-      "path": "pycodex/bwrap/__init__.py",
-      "reason": "Python cfg/platform adapter for the Rust-only bubblewrap binary entrypoint; no Rust production symbol can serve as a shared owner anchor."
-    }
-  ]
+  "allowed_unowned": []
 }

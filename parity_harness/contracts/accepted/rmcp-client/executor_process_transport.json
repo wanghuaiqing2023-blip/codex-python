@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-rmcp-client.executor_process_transport",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "executor_process_transport",
+    "source": "codex/codex-rs/rmcp-client/src/executor_process_transport.rs",
+    "anchors": [
+      "ExecutorProcessTransport",
+      "next_process_id",
+      "close",
+      "receive",
+      "send"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/executor_process_transport.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/rmcp_client/executor_process_transport.py"
+    ],
+    "anchors": [
+      "ExecutorProcessTransport",
+      "next_process_id",
+      "close",
+      "receive",
+      "send"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_rmcp_client_executor_process_transport_rs.py"
+  ]
+}

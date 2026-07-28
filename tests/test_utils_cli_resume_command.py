@@ -1,6 +1,6 @@
 import unittest
 
-from pycodex.utils_cli import resume_command, resume_hint
+from pycodex.utils.cli import resume_command, resume_hint
 
 
 THREAD_ID = "123e4567-e89b-12d3-a456-426614174000"

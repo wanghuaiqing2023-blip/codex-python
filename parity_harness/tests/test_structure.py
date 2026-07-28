@@ -98,6 +98,32 @@ class StructureTests(unittest.TestCase):
 
         self.assertEqual(anchors, ("run",))
 
+    def test_inline_module_include_uses_symbols_from_relative_binding_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rust = root / "rust/macos.rs"
+            bindings = root / "rust/iokit_bindings.rs"
+            python = root / "python/iokit.py"
+            rust.parent.mkdir(parents=True)
+            python.parent.mkdir(parents=True)
+            rust.write_text(
+                'mod iokit {\n    include!("iokit_bindings.rs");\n}\n',
+                encoding="utf-8",
+            )
+            bindings.write_text(
+                "pub const kIOReturnSuccess: u32 = 0;\n",
+                encoding="utf-8",
+            )
+            python.write_text("kIOReturnSuccess = 0\n", encoding="utf-8")
+
+            anchors = anchor_candidates(
+                rust,
+                (python,),
+                rust_module="macos::iokit",
+            )
+
+        self.assertEqual(anchors, ("kIOReturnSuccess",))
+
     def test_inline_wildcard_reexport_uses_its_imported_source_module(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -170,6 +196,30 @@ class StructureTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("", encoding="utf-8")
+            result = StructureAuditor(root=root).check((contract,))[0]
+
+        self.assertEqual(result.verdict, Verdict.VERIFIED)
+
+    def test_module_file_anchor_accepts_imported_sibling_module(self) -> None:
+        contract = replace(example_contract(), fixture_refs=())
+        rust = dict(contract.rust)
+        rust["anchors"] = ("module:child",)
+        python = dict(contract.python)
+        python["owner"] = "python/parent.py"
+        python["layout"] = "module-file"
+        python["implementation_files"] = ("python/parent.py",)
+        python["anchors"] = ("module:child",)
+        contract = replace(contract, rust=rust, python=python)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rust_path = root / contract.rust["source"]
+            rust_path.parent.mkdir(parents=True, exist_ok=True)
+            rust_path.write_text("pub mod child;\n", encoding="utf-8")
+            python_path = root / contract.python["owner"]
+            python_path.parent.mkdir(parents=True, exist_ok=True)
+            python_path.write_text("from . import child\n", encoding="utf-8")
+            (python_path.parent / "child.py").write_text("", encoding="utf-8")
             result = StructureAuditor(root=root).check((contract,))[0]
 
         self.assertEqual(result.verdict, Verdict.VERIFIED)
@@ -577,6 +627,38 @@ class StructureTests(unittest.TestCase):
             ],
         )
 
+    def test_path_module_uses_declared_coordinate_and_custom_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src" / "client").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                "[package]\nname='sample'\nversion='0.0.0'\n",
+                encoding="utf-8",
+            )
+            (root / "src" / "lib.rs").write_text(
+                "mod client;\n",
+                encoding="utf-8",
+            )
+            (root / "src" / "client.rs").write_text(
+                '#[path = "client/http_response_body_stream.rs"]\n'
+                "pub(crate) mod response_body_stream;\n",
+                encoding="utf-8",
+            )
+            custom_source = root / "src" / "client" / "http_response_body_stream.rs"
+            custom_source.write_text(
+                "pub struct HttpResponseBodyStream;\n",
+                encoding="utf-8",
+            )
+
+            modules = {item.name: item for item in discover_rust_modules(root)}
+
+        child = modules["crate::client::response_body_stream"]
+        self.assertEqual(
+            Path(child.source).resolve(),
+            custom_source.resolve(),
+        )
+        self.assertIn("HttpResponseBodyStream", child.items)
+
     def test_test_only_module_container_is_not_a_production_coordinate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -609,6 +691,27 @@ class StructureTests(unittest.TestCase):
         self.assertNotIn("crate::apps::render", modules)
         self.assertNotIn("crate::windows_tests", modules)
         self.assertIn("crate::release_or_test", modules)
+
+    def test_cfg_test_inline_module_with_attributes_and_docs_is_not_production(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "src").mkdir(parents=True)
+            (root / "Cargo.toml").write_text(
+                "[package]\nname='sample'\nversion='0.0.0'\n",
+                encoding="utf-8",
+            )
+            (root / "src/lib.rs").write_text(
+                "pub fn production_api() {}\n"
+                "#[cfg(test)]\n"
+                "#[allow(clippy::items_after_test_module)]\n"
+                "/// Test-only helpers.\n"
+                "mod tests { fn helper() {} }\n",
+                encoding="utf-8",
+            )
+
+            modules = {item.name for item in discover_rust_modules(root)}
+
+        self.assertEqual(modules, {"crate"})
 
     def test_cfg_test_symbol_cannot_be_used_as_a_production_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

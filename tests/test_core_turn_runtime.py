@@ -2868,7 +2868,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         emitted = result.stream_runtime_state_summary["emitted_stream_events"]
         self.assertEqual(
-            emitted,
+            emitted[:3],
             (
                 {
                     "type": "reasoning_summary_delta",
@@ -2893,6 +2893,20 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 },
             ),
         )
+        self.assertEqual(emitted[3]["type"], "item_completed")
+        self.assertEqual(emitted[3]["thread_id"], "00000000-0000-0000-0000-000000000011")
+        self.assertEqual(emitted[3]["turn_id"], "turn-1")
+        self.assertEqual(
+            emitted[3]["item"],
+            {
+                "type": "Reasoning",
+                "id": "reason-1",
+                "summary_text": [],
+                "raw_content": [],
+            },
+        )
+        self.assertEqual(emitted[3]["started_at_ms"], 0)
+        self.assertGreater(emitted[3]["completed_at_ms"], 0)
         self.assertEqual(EventMsg.from_mapping(emitted[0]).payload.thread_id, "00000000-0000-0000-0000-000000000011")
         self.assertEqual(EventMsg.from_mapping(emitted[1]).payload.turn_id, "turn-1")
         self.assertEqual(EventMsg.from_mapping(emitted[2]).payload.summary_index, 2)
@@ -2902,6 +2916,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "reasoning_summary_delta",
                 "reasoning_raw_content_delta",
                 "agent_reasoning_section_break",
+                "item_completed",
             ),
         )
         reasoning_events = non_lifecycle_events(session)

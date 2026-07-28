@@ -1,0 +1,45 @@
+{
+  "contract_id": "codex-features.feature_configs",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-features",
+    "module": "feature_configs",
+    "source": "codex/codex-rs/features/src/feature_configs.rs",
+    "anchors": [
+      "AppsMcpPathOverrideConfigToml",
+      "MultiAgentV2ConfigToml",
+      "NetworkProxyConfigToml",
+      "NetworkProxyDomainPermissionToml",
+      "NetworkProxyModeToml",
+      "NetworkProxyUnixSocketPermissionToml",
+      "set_enabled"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/features/feature_configs.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/features/feature_configs.py"
+    ],
+    "anchors": [
+      "AppsMcpPathOverrideConfigToml",
+      "MultiAgentV2ConfigToml",
+      "NetworkProxyConfigToml",
+      "NetworkProxyDomainPermissionToml",
+      "NetworkProxyModeToml",
+      "NetworkProxyUnixSocketPermissionToml",
+      "set_enabled"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_codex_features_module_ownership_rs.py",
+    "tests/test_core_features.py"
+  ]
+}

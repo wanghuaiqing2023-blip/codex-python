@@ -7,14 +7,18 @@ import pytest
 
 from pycodex.app_server_protocol import JSONRPCMessage, JSONRPCNotification
 from pycodex.exec_server import (
-    HTTP_REQUEST_BODY_DELTA_METHOD,
-    ByteChunk,
     ExecServerClient,
     ExecServerClientConnectOptions,
     ExecServerError,
     HttpRequestBodyDeltaNotification,
     HttpResponseBodyStream,
+)
+from pycodex.exec_server.connection import (
     JsonRpcConnection,
+)
+from pycodex.exec_server.protocol import (
+    HTTP_REQUEST_BODY_DELTA_METHOD,
+    ByteChunk,
     encode_http_request_body_delta_notification,
 )
 
@@ -183,7 +187,7 @@ def test_reader_loop_routes_http_body_delta_notifications() -> None:
 
 
 def JsonRpcConnectionEvent_message(method: str, params: dict[str, object]):
-    from pycodex.exec_server import JsonRpcConnectionEvent
+    from pycodex.exec_server.connection import JsonRpcConnectionEvent
 
     return JsonRpcConnectionEvent.message_event(
         JSONRPCMessage(JSONRPCNotification(method=method, params=params))

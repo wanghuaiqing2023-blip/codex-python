@@ -6,6 +6,7 @@ import pytest
 
 import pycodex.utils.absolute_path as absolute_path
 from pycodex.utils.absolute_path import AbsolutePathBuf, AbsolutePathBufGuard
+from pycodex.utils.absolute_path import absolutize
 
 
 def test_lib_resolve_with_absolute_path_ignores_base_path(tmp_path: Path) -> None:
@@ -121,13 +122,13 @@ def test_absolute_path_without_dots_is_unchanged() -> None:
     # Rust test: tests::absolute_path_without_dots_is_unchanged
     path = _test_absolute_path("path/to/123/456")
 
-    assert absolute_path._absolutize(path) == path
+    assert absolutize.absolutize(path) == path
 
 
 def test_absolute_path_dots_are_removed() -> None:
     # Source: codex/codex-rs/utils/absolute-path/src/absolutize.rs
     # Rust test: tests::absolute_path_dots_are_removed
-    assert absolute_path._absolutize(_test_absolute_path("path/to/./123/../456")) == _test_absolute_path("path/to/456")
+    assert absolutize.absolutize(_test_absolute_path("path/to/./123/../456")) == _test_absolute_path("path/to/456")
 
 
 def test_relative_path_without_dot_uses_current_dir(monkeypatch) -> None:
@@ -136,15 +137,15 @@ def test_relative_path_without_dot_uses_current_dir(monkeypatch) -> None:
     monkeypatch.chdir(Path("/base") if Path("/base").exists() else Path.cwd())
     cwd = Path.cwd()
 
-    assert absolute_path._absolutize(Path("path/to/123/456")) == cwd / "path/to/123/456"
+    assert absolutize.absolutize(Path("path/to/123/456")) == cwd / "path/to/123/456"
 
 
 def test_normalized_parts_remove_current_dir_and_parent_segments() -> None:
     # Source: codex/codex-rs/utils/absolute-path/src/absolutize.rs
     # Rust tests: relative_path_with_current_dir_uses_base,
     # relative_path_with_parent_dir_uses_base_parent.
-    assert Path(*absolute_path._normalized_parts(Path("./path/to/123/456"))) == Path("path/to/123/456")
-    assert Path(*absolute_path._normalized_parts(Path("cwd/../path/to/123/456"))) == Path("path/to/123/456")
+    assert absolutize.normalize_path(Path("./path/to/123/456")) == Path("path/to/123/456")
+    assert absolutize.normalize_path(Path("cwd/../path/to/123/456")) == Path("path/to/123/456")
 
 
 def test_parent_dir_above_root_stays_at_root() -> None:

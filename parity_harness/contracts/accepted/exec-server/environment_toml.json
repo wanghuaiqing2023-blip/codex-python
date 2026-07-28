@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-exec-server.environment_toml",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "environment_toml",
+    "source": "codex/codex-rs/exec-server/src/environment_toml.rs",
+    "anchors": [
+      "environment_provider_from_codex_home",
+      "ENVIRONMENTS_TOML_FILE",
+      "EnvironmentToml",
+      "EnvironmentsToml",
+      "MAX_ENVIRONMENT_ID_LEN",
+      "TomlEnvironmentProvider",
+      "load_environments_toml",
+      "new_with_config_dir",
+      "normalize_default_environment_id",
+      "normalize_stdio_cwd",
+      "parse_environment_toml",
+      "snapshot"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/environment_toml/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/exec_server/environment_toml/__init__.py"
+    ],
+    "anchors": [
+      "environment_provider_from_codex_home",
+      "ENVIRONMENTS_TOML_FILE",
+      "EnvironmentToml",
+      "EnvironmentsToml",
+      "MAX_ENVIRONMENT_ID_LEN",
+      "TomlEnvironmentProvider",
+      "load_environments_toml",
+      "new_with_config_dir",
+      "normalize_default_environment_id",
+      "normalize_stdio_cwd",
+      "parse_environment_toml",
+      "snapshot"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_environment_toml_rs.py"
+  ]
+}

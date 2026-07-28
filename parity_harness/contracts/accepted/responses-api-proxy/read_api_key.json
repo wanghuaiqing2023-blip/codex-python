@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-responses-api-proxy.read-api-key",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-responses-api-proxy",
+    "module": "read_api_key",
+    "source": "codex/codex-rs/responses-api-proxy/src/read_api_key.rs",
+    "anchors": [
+      "AUTH_HEADER_PREFIX",
+      "BUFFER_SIZE",
+      "read_auth_header_with",
+      "validate_auth_header_bytes"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/responses_api_proxy/read_api_key.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/responses_api_proxy/read_api_key.py"
+    ],
+    "anchors": [
+      "AUTH_HEADER_PREFIX",
+      "BUFFER_SIZE",
+      "read_auth_header_with",
+      "validate_auth_header_bytes"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_responses_api_proxy_module_ownership_rs.py",
+    "tests/test_responses_api_proxy_read_api_key_rs.py"
+  ]
+}

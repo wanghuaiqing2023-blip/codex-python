@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-shell-escalation.unix.escalate_protocol",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-escalation",
+    "module": "unix::escalate_protocol",
+    "source": "codex/codex-rs/shell-escalation/src/unix/escalate_protocol.rs",
+    "anchors": [
+      "ESCALATE_SOCKET_ENV_VAR",
+      "EXEC_WRAPPER_ENV_VAR",
+      "EscalateAction",
+      "EscalateRequest",
+      "EscalateResponse",
+      "EscalationDecision",
+      "EscalationExecution",
+      "SuperExecMessage",
+      "SuperExecResult",
+      "deny",
+      "escalate",
+      "run"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_escalation/unix/escalate_protocol.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_escalation/unix/escalate_protocol.py"
+    ],
+    "anchors": [
+      "ESCALATE_SOCKET_ENV_VAR",
+      "EXEC_WRAPPER_ENV_VAR",
+      "EscalateAction",
+      "EscalateRequest",
+      "EscalateResponse",
+      "EscalationDecision",
+      "EscalationExecution",
+      "SuperExecMessage",
+      "SuperExecResult",
+      "deny",
+      "escalate",
+      "run"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": ["tests/test_shell_escalation_crate.py"]
+}

@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-client.bin.custom_ca_probe",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-client",
+    "module": "bin::custom_ca_probe",
+    "source": "codex/codex-rs/codex-client/src/bin/custom_ca_probe.rs",
+    "anchors": [
+      "PROBE_PROXY_ENV",
+      "PROBE_TLS13_ENV",
+      "PROBE_URL_ENV",
+      "build_probe_client",
+      "main",
+      "post_probe_request",
+      "run_probe"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_client/bin/custom_ca_probe.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/codex_client/bin/custom_ca_probe.py"
+    ],
+    "anchors": [
+      "PROBE_PROXY_ENV",
+      "PROBE_TLS13_ENV",
+      "PROBE_URL_ENV",
+      "build_probe_client",
+      "main",
+      "post_probe_request",
+      "run_probe"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_codex_client_custom_ca_probe_rs.py"
+  ]
+}

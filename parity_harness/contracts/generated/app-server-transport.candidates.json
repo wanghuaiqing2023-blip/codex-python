@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 13,
-    "python_files": 3,
-    "modules_with_candidates": 3,
-    "modules_with_anchors": 3
+    "python_files": 13,
+    "modules_with_candidates": 13,
+    "modules_with_anchors": 13
   },
   "contracts": [
     {
@@ -27,7 +27,18 @@
         {
           "owner": "pycodex/app_server_transport/__init__.py",
           "anchor_candidates": [
-            "start_stdio_connection"
+            "AppServerStartupLock",
+            "AppServerTransport",
+            "AppServerTransportParseError",
+            "CHANNEL_CAPACITY",
+            "ConnectionId",
+            "ConnectionOrigin",
+            "OutgoingError",
+            "OutgoingMessage",
+            "OutgoingResponse",
+            "QueuedOutgoingMessage",
+            "RemoteControlHandle",
+            "RemoteControlStartConfig"
           ]
         }
       ],
@@ -42,11 +53,23 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::outgoing_message",
+        "module": "outgoing_message",
         "source": "codex/codex-rs/app-server-transport/src/outgoing_message.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/outgoing_message.py",
+          "anchor_candidates": [
+            "ConnectionId",
+            "OutgoingError",
+            "OutgoingMessage",
+            "OutgoingResponse",
+            "QueuedOutgoingMessage",
+            "new"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -58,7 +81,7 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport",
+        "module": "transport",
         "source": "codex/codex-rs/app-server-transport/src/transport/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
@@ -66,7 +89,18 @@
         {
           "owner": "pycodex/app_server_transport/transport/__init__.py",
           "anchor_candidates": [
-            "start_stdio_connection"
+            "AppServerStartupLock",
+            "AppServerTransport",
+            "AppServerTransportParseError",
+            "CHANNEL_CAPACITY",
+            "ConnectionOrigin",
+            "DEFAULT_LISTEN_URL",
+            "RemoteControlHandle",
+            "RemoteControlStartConfig",
+            "RemoteControlUnavailable",
+            "TransportEvent",
+            "acquire_app_server_startup_lock",
+            "app_server_control_socket_path"
           ]
         }
       ],
@@ -81,11 +115,29 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::auth",
+        "module": "transport::auth",
         "source": "codex/codex-rs/app-server-transport/src/transport/auth.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/auth.py",
+          "anchor_candidates": [
+            "AppServerWebsocketAuthArgs",
+            "AppServerWebsocketAuthConfig",
+            "AppServerWebsocketAuthSettings",
+            "AppServerWebsocketCapabilityTokenSource",
+            "WebsocketAuthCliMode",
+            "WebsocketAuthError",
+            "WebsocketAuthMode",
+            "WebsocketAuthPolicy",
+            "authorize_upgrade",
+            "is_unauthenticated_non_loopback_listener",
+            "policy_from_settings",
+            "try_into_settings"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -97,11 +149,28 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::remote_control",
+        "module": "transport::remote_control",
         "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/remote_control/__init__.py",
+          "anchor_candidates": [
+            "ClientId",
+            "QueuedServerEnvelope",
+            "RemoteControlHandle",
+            "RemoteControlStartConfig",
+            "RemoteControlUnavailable",
+            "disable",
+            "enable",
+            "start_remote_control",
+            "status",
+            "status_receiver",
+            "publish_status"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -113,11 +182,26 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::remote_control::client_tracker",
+        "module": "transport::remote_control::client_tracker",
         "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/client_tracker.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/remote_control/client_tracker.py",
+          "anchor_candidates": [
+            "ClientEvent",
+            "ClientId",
+            "ClientTracker",
+            "Stopped",
+            "bookkeep_join_set",
+            "close_client",
+            "close_expired_clients",
+            "handle_message",
+            "shutdown"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -129,11 +213,27 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::remote_control::enroll",
+        "module": "transport::remote_control::enroll",
         "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/enroll.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/remote_control/enroll.py",
+          "anchor_candidates": [
+            "REMOTE_CONTROL_ACCOUNT_ID_HEADER",
+            "REMOTE_CONTROL_INSTALLATION_ID_HEADER",
+            "RemoteControlConnectionAuth",
+            "RemoteControlEnrollment",
+            "enroll_remote_control_server",
+            "format_headers",
+            "load_persisted_remote_control_enrollment",
+            "preview_remote_control_response_body",
+            "update_persisted_remote_control_enrollment",
+            "REMOTE_CONTROL_RESPONSE_BODY_MAX_BYTES"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -145,11 +245,29 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::remote_control::protocol",
+        "module": "transport::remote_control::protocol",
         "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/protocol.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/remote_control/protocol.py",
+          "anchor_candidates": [
+            "ClientEnvelope",
+            "ClientEvent",
+            "ClientId",
+            "EnrollRemoteServerRequest",
+            "EnrollRemoteServerResponse",
+            "PongStatus",
+            "RemoteControlTarget",
+            "ServerEnvelope",
+            "ServerEvent",
+            "StreamId",
+            "new_random",
+            "normalize_remote_control_url"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -161,11 +279,28 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::remote_control::segment",
+        "module": "transport::remote_control::segment",
         "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/segment.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/remote_control/segment.py",
+          "anchor_candidates": [
+            "ClientSegmentObservation",
+            "ClientSegmentReassembler",
+            "REMOTE_CONTROL_REASSEMBLED_MAX_BYTES",
+            "REMOTE_CONTROL_SEGMENT_COUNT_MAX",
+            "REMOTE_CONTROL_SEGMENT_MAX_BYTES",
+            "REMOTE_CONTROL_SEGMENT_TARGET_BYTES",
+            "invalidate_client",
+            "invalidate_stream",
+            "observe",
+            "should_ignore_chunk",
+            "split_server_envelope_for_transport"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -177,11 +312,29 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::remote_control::websocket",
+        "module": "transport::remote_control::websocket",
         "source": "codex/codex-rs/app-server-transport/src/transport/remote_control/websocket.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/remote_control/websocket.py",
+          "anchor_candidates": [
+            "REMOTE_CONTROL_ACCOUNT_ID_HEADER",
+            "REMOTE_CONTROL_INSTALLATION_ID_HEADER",
+            "REMOTE_CONTROL_PROTOCOL_VERSION",
+            "RemoteControlChannels",
+            "RemoteControlConnectOptions",
+            "RemoteControlStatusPublisher",
+            "RemoteControlWebsocket",
+            "RemoteControlWebsocketConfig",
+            "connect_remote_control_websocket",
+            "load_remote_control_auth",
+            "run",
+            "BoundedOutboundBuffer"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -193,7 +346,7 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::stdio",
+        "module": "transport::stdio",
         "source": "codex/codex-rs/app-server-transport/src/transport/stdio.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
@@ -216,11 +369,21 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::unix_socket",
+        "module": "transport::unix_socket",
         "source": "codex/codex-rs/app-server-transport/src/transport/unix_socket.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/unix_socket.py",
+          "anchor_candidates": [
+            "AppServerStartupLock",
+            "acquire_app_server_startup_lock",
+            "prepare_control_socket_path",
+            "start_control_socket_acceptor"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -232,11 +395,20 @@
     {
       "rust": {
         "crate": "codex-app-server-transport",
-        "module": "crate::transport::websocket",
+        "module": "transport::websocket",
         "source": "codex/codex-rs/app-server-transport/src/transport/websocket.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_transport/transport/websocket.py",
+          "anchor_candidates": [
+            "run_websocket_connection",
+            "start_websocket_acceptor",
+            "WEBSOCKET_OUTBOUND_CHANNEL_CAPACITY"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

@@ -10,11 +10,8 @@
       "ModelsCache",
       "ModelsCacheManager",
       "load_fresh",
-      "manipulate_cache_for_test",
-      "mutate_cache_for_test",
       "persist_cache",
       "renew_cache_ttl",
-      "set_ttl",
       "is_fresh",
       "load",
       "save_internal"
@@ -31,11 +28,8 @@
       "ModelsCache",
       "ModelsCacheManager",
       "load_fresh",
-      "manipulate_cache_for_test",
-      "mutate_cache_for_test",
       "persist_cache",
       "renew_cache_ttl",
-      "set_ttl",
       "is_fresh",
       "load",
       "save_internal"

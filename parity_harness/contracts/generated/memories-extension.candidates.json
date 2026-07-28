@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 17,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 17,
+    "modules_with_candidates": 17,
+    "modules_with_anchors": 17
   },
   "contracts": [
     {
@@ -46,7 +46,25 @@
         "source": "codex/codex-rs/ext/memories/src/backend.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/backend.py",
+          "anchor_candidates": [
+            "AddAdHocMemoryNoteRequest",
+            "AddAdHocMemoryNoteResponse",
+            "ListMemoriesRequest",
+            "ListMemoriesResponse",
+            "MemoriesBackend",
+            "MemoriesBackendError",
+            "MemoryEntry",
+            "MemoryEntryType",
+            "MemorySearchMatch",
+            "ReadMemoryRequest",
+            "ReadMemoryResponse",
+            "SearchMatchMode"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -62,7 +80,21 @@
         "source": "codex/codex-rs/ext/memories/src/extension.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/extension.py",
+          "anchor_candidates": [
+            "MemoriesExtension",
+            "MemoriesExtensionConfig",
+            "install",
+            "contribute",
+            "from_config",
+            "on_config_changed",
+            "on_thread_start",
+            "tools"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -78,7 +110,21 @@
         "source": "codex/codex-rs/ext/memories/src/local.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/local/__init__.py",
+          "anchor_candidates": [
+            "LocalMemoriesBackend",
+            "from_codex_home",
+            "from_memory_root",
+            "add_ad_hoc_note",
+            "list",
+            "read",
+            "resolve_scoped_path",
+            "search"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -94,7 +140,20 @@
         "source": "codex/codex-rs/ext/memories/src/local/ad_hoc_note.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/local/ad_hoc_note.py",
+          "anchor_candidates": [
+            "add_ad_hoc_note",
+            "AD_HOC_NOTE_FILENAME_MAX_BYTES",
+            "AD_HOC_NOTE_SLUG_MAX_BYTES",
+            "TIMESTAMP_PREFIX_LEN",
+            "are_digits",
+            "has_valid_timestamp_prefix",
+            "validate_filename"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -110,7 +169,14 @@
         "source": "codex/codex-rs/ext/memories/src/local/list.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/local/list.py",
+          "anchor_candidates": [
+            "list"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -126,7 +192,18 @@
         "source": "codex/codex-rs/ext/memories/src/local/path.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/local/path.py",
+          "anchor_candidates": [
+            "display_relative_path",
+            "is_hidden_component",
+            "is_hidden_path",
+            "read_sorted_dir_paths",
+            "reject_symlink"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -142,7 +219,16 @@
         "source": "codex/codex-rs/ext/memories/src/local/read.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/local/read.py",
+          "anchor_candidates": [
+            "read",
+            "line_end_byte_offset",
+            "line_start_byte_offset"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -158,7 +244,21 @@
         "source": "codex/codex-rs/ext/memories/src/local/search.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/local/search.py",
+          "anchor_candidates": [
+            "search",
+            "SearchComparison",
+            "SearchMatcher",
+            "build_search_match",
+            "matched_queries",
+            "matched_query_flags",
+            "new",
+            "prepare"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -174,7 +274,19 @@
         "source": "codex/codex-rs/ext/memories/src/metrics.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/metrics.py",
+          "anchor_candidates": [
+            "MEMORIES_TOOL_CALL_METRIC",
+            "record_tool_call",
+            "scope_from_optional_path",
+            "scope_from_path",
+            "truncated_tag",
+            "status_tag"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -190,7 +302,15 @@
         "source": "codex/codex-rs/ext/memories/src/prompts.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/prompts.py",
+          "anchor_candidates": [
+            "build_memory_tool_developer_instructions",
+            "parse_embedded_template"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -206,7 +326,16 @@
         "source": "codex/codex-rs/ext/memories/src/schema.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/schema.py",
+          "anchor_candidates": [
+            "input_schema_for",
+            "output_schema_for",
+            "schema_for"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -222,7 +351,19 @@
         "source": "codex/codex-rs/ext/memories/src/tools/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/tools/__init__.py",
+          "anchor_candidates": [
+            "memory_function_tool",
+            "memory_tool_name",
+            "memory_tools",
+            "backend_error_to_function_call",
+            "clamp_max_results",
+            "parse_args"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -238,7 +379,18 @@
         "source": "codex/codex-rs/ext/memories/src/tools/ad_hoc_note.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/tools/ad_hoc_note.py",
+          "anchor_candidates": [
+            "AddAdHocNoteTool",
+            "AddAdHocNoteArgs",
+            "handle",
+            "spec",
+            "tool_name"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -254,7 +406,18 @@
         "source": "codex/codex-rs/ext/memories/src/tools/list.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/tools/list.py",
+          "anchor_candidates": [
+            "ListTool",
+            "ListArgs",
+            "handle",
+            "spec",
+            "tool_name"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -270,7 +433,18 @@
         "source": "codex/codex-rs/ext/memories/src/tools/read.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/tools/read.py",
+          "anchor_candidates": [
+            "ReadTool",
+            "ReadArgs",
+            "handle",
+            "spec",
+            "tool_name"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -286,7 +460,18 @@
         "source": "codex/codex-rs/ext/memories/src/tools/search.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/ext/memories/tools/search.py",
+          "anchor_candidates": [
+            "SearchTool",
+            "SearchArgs",
+            "handle",
+            "spec",
+            "tool_name"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

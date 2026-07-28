@@ -14,11 +14,8 @@ from pycodex.protocol import (
     ThreadId,
     UserMessageEvent,
 )
-from pycodex.rollout import (
-    SessionMeta as RolloutSessionMeta,
-    materialize_session_rollout,
-    read_session_meta_line,
-)
+from pycodex.rollout import SessionMeta as RolloutSessionMeta, read_session_meta_line
+from pycodex.rollout.recorder import materialize_session_rollout
 from pycodex.state import state_db_path
 
 
@@ -40,7 +37,7 @@ class _InMemoryStateDb:
         return self.threads.get(str(thread_id))
 
     def upsert_thread(self, metadata: _ThreadMetadata) -> None:
-        self.threads[metadata.id] = metadata
+        self.threads[str(metadata.id)] = metadata
 
     def set_memory_mode(self, thread_id: str, mode: str) -> None:
         metadata = self.threads[str(thread_id)]
@@ -173,7 +170,7 @@ def test_backfill_scans_existing_rollouts(tmp_path):
     metadata = db.get_thread(thread_id)
 
     assert metadata is not None
-    assert metadata.id == thread_id
+    assert metadata.id == ThreadId.from_string(thread_id)
     assert metadata.rollout_path == rollout_path
     assert metadata.model_provider == "test-provider"
     assert metadata.first_user_message == "hello from backfill"

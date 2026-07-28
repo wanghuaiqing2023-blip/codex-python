@@ -10,11 +10,13 @@ import pytest
 from pycodex.exec_server import (
     CopyOptions,
     CreateDirectoryOptions,
-    DirectFileSystem,
     FileMetadata,
     LocalFileSystem,
     ReadDirectoryEntry,
     RemoveOptions,
+)
+from pycodex.exec_server.local_file_system import (
+    DirectFileSystem,
     UnsandboxedFileSystem,
     current_sandbox_cwd,
     resolve_existing_path,

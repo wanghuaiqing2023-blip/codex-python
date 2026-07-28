@@ -31,13 +31,13 @@ from pycodex.rollout import (
     first_rollout_content_match_snippet,
     get_threads,
     get_threads_in_root,
-    list_threads_from_state_metadata,
     parse_cursor,
     read_thread_item_from_rollout,
     read_session_meta_line,
     rollout_date_parts,
     search_rollout_paths,
 )
+from pycodex.rollout.list import list_threads_from_state_metadata
 
 from ..error import ThreadStoreError
 from ..in_memory import InMemoryThreadStore

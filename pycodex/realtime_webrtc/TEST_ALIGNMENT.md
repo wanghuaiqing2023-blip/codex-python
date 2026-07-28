@@ -9,7 +9,7 @@ Status: `complete`
 Certified modules:
 
 - `codex/codex-rs/realtime-webrtc/src/lib.rs` -> `pycodex/realtime_webrtc/__init__.py`
-- `codex/codex-rs/realtime-webrtc/src/native.rs` -> `pycodex/realtime_webrtc/__init__.py`
+- `codex/codex-rs/realtime-webrtc/src/native.rs` -> `pycodex/realtime_webrtc/native.py`
 
 Remaining Rust modules: none.
 

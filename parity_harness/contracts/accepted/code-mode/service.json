@@ -1,0 +1,50 @@
+{
+  "contract_id": "codex-code-mode.service",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-code-mode",
+    "module": "service",
+    "source": "codex/codex-rs/code-mode/src/service.rs",
+    "anchors": [
+      "CodeModeService",
+      "CodeModeTurnHost",
+      "CodeModeTurnWorker",
+      "allocate_cell_id",
+      "execute",
+      "execute_to_pending",
+      "wait",
+      "wait_to_pending",
+      "PendingResult",
+      "invoke_tool",
+      "missing_cell_response",
+      "notify"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/code_mode/service.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/code_mode/service.py"],
+    "anchors": [
+      "CodeModeService",
+      "CodeModeTurnHost",
+      "CodeModeTurnWorker",
+      "allocate_cell_id",
+      "execute",
+      "execute_to_pending",
+      "wait",
+      "wait_to_pending",
+      "PendingResult",
+      "invoke_tool",
+      "missing_cell_response",
+      "notify"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_codex_code_mode_lib_rs.py",
+    "tests/test_codex_code_mode_modules_rs.py",
+    "tests/test_core_code_mode.py"
+  ]
+}

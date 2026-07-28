@@ -5,18 +5,24 @@ from pathlib import Path
 import pytest
 
 from pycodex.exec_server import (
-    DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
-    DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
-    ENVIRONMENTS_TOML_FILE,
     LOCAL_ENVIRONMENT_ID,
     DefaultEnvironmentProvider,
-    EnvironmentDefault,
-    EnvironmentToml,
-    EnvironmentsToml,
     ExecServerError,
+)
+from pycodex.exec_server.client_api import (
+    DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
+    DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
     ExecServerTransportKind,
     ExecServerTransportParams,
     StdioExecServerCommand,
+)
+from pycodex.exec_server.environment_provider import (
+    EnvironmentDefault,
+)
+from pycodex.exec_server.environment_toml import (
+    ENVIRONMENTS_TOML_FILE,
+    EnvironmentToml,
+    EnvironmentsToml,
     TomlEnvironmentProvider,
     environment_provider_from_codex_home,
     load_environments_toml,

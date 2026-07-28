@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-rmcp-client.perform_oauth_login",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "perform_oauth_login",
+    "source": "codex/codex-rs/rmcp-client/src/perform_oauth_login.rs",
+    "anchors": [
+      "OAuthProviderError",
+      "OauthLoginHandle",
+      "into_parts",
+      "perform_oauth_login",
+      "perform_oauth_login_return_url",
+      "perform_oauth_login_silent",
+      "wait",
+      "CallbackOutcome",
+      "OauthLoginFlow",
+      "append_callback_id_to_redirect_uri",
+      "append_query_param",
+      "authorization_url"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/perform_oauth_login.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rmcp_client/perform_oauth_login.py"],
+    "anchors": [
+      "OAuthProviderError",
+      "OauthLoginHandle",
+      "into_parts",
+      "perform_oauth_login",
+      "perform_oauth_login_return_url",
+      "perform_oauth_login_silent",
+      "wait",
+      "CallbackOutcome",
+      "OauthLoginFlow",
+      "append_callback_id_to_redirect_uri",
+      "append_query_param",
+      "authorization_url"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rmcp_client_perform_oauth_login_rs.py"]
+}

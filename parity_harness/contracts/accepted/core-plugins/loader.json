@@ -1,0 +1,37 @@
+{
+  "contract_id": "codex-core-plugins.loader",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "loader",
+    "source": "codex/codex-rs/core-plugins/src/loader.rs",
+    "anchors": [
+      "configured_curated_plugin_ids_from_codex_home",
+      "curated_plugin_cache_version",
+      "load_plugins_from_layer_stack"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/loader.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/loader.py"
+    ],
+    "anchors": [
+      "configured_curated_plugin_ids_from_codex_home",
+      "curated_plugin_cache_version",
+      "load_plugins_from_layer_stack"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_manager_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

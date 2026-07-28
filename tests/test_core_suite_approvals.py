@@ -1,14 +1,13 @@
 import json
 from pathlib import Path
 
-from pycodex.execpolicy import (
-    Decision,
+from pycodex.core.exec_policy import (
     ExecApprovalRequest,
-    ExecPolicyPrefixRule,
     create_exec_approval_requirement_for_command,
     match_exec_policy_rules_for_command,
     prefix_rule_would_approve_all_commands,
 )
+from pycodex.execpolicy import Decision, PrefixRule
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.exec.local_runtime import ExecSessionConfig, shell_tool_outputs_from_local_http_exec_result
 from pycodex.protocol import (
@@ -216,7 +215,7 @@ def test_approving_execpolicy_amendment_persists_policy_and_skips_future_prompts
     # Rust test: approving_execpolicy_amendment_persists_policy_and_skips_future_prompts.
     amendment = ExecPolicyAmendment.new(["touch", "allow-prefix.txt"])
     decision = ReviewDecision.approved_execpolicy_amendment(amendment)
-    rules = (ExecPolicyPrefixRule.new(["touch", "allow-prefix.txt"], "allow"),)
+    rules = (PrefixRule.new(["touch", "allow-prefix.txt"], "allow"),)
     matched = match_exec_policy_rules_for_command(("touch", "allow-prefix.txt"), rules)
 
     assert decision.to_opaque_string() == "approved_with_amendment"
@@ -229,7 +228,7 @@ def test_approving_execpolicy_amendment_persists_policy_and_skips_future_prompts
 def test_spawned_subagent_execpolicy_amendment_propagates_to_parent_session():
     # Rust source: codex/codex-rs/core/tests/suite/approvals.rs
     # Rust test: spawned_subagent_execpolicy_amendment_propagates_to_parent_session.
-    parent_policy_rules = (ExecPolicyPrefixRule.new(["python", "safe.py"], "allow"),)
+    parent_policy_rules = (PrefixRule.new(["python", "safe.py"], "allow"),)
     child_command = ("python", "safe.py")
 
     assert match_exec_policy_rules_for_command(child_command, parent_policy_rules)
@@ -243,7 +242,7 @@ def test_matched_prefix_rule_runs_unsandboxed_under_zsh_fork():
     # fork/runtime sandbox path, which is outside this helper-level slice.
     matched_rules = match_exec_policy_rules_for_command(
         ("touch", "allow-prefix.txt"),
-        (ExecPolicyPrefixRule.new(["touch", "allow-prefix.txt"], "allow"),),
+        (PrefixRule.new(["touch", "allow-prefix.txt"], "allow"),),
     )
     requirement = create_exec_approval_requirement_for_command(
         _approval_request(
@@ -328,7 +327,7 @@ def test_network_approval_flow_survives_danger_full_access_session_start():
 def test_compound_command_with_one_safe_command_still_requires_approval():
     # Rust source: codex/codex-rs/core/tests/suite/approvals.rs
     # Rust test: compound_command_with_one_safe_command_still_requires_approval.
-    rules = (ExecPolicyPrefixRule.new(["touch", "allow-prefix.txt"], "allow"),)
+    rules = (PrefixRule.new(["touch", "allow-prefix.txt"], "allow"),)
     matched = match_exec_policy_rules_for_command(("bash", "-lc", "touch ./test.txt && rm ./test.txt"), rules)
     requirement = create_exec_approval_requirement_for_command(
         _approval_request(

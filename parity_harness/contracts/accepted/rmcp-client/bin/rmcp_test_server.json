@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-rmcp-client.bin.rmcp_test_server",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "bin::rmcp_test_server",
+    "source": "codex/codex-rs/rmcp-client/src/bin/rmcp_test_server.rs",
+    "anchors": ["stdio", "TestToolServer", "echo_tool", "main"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/bin/rmcp_test_server.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rmcp_client/bin/rmcp_test_server.py"],
+    "anchors": ["stdio", "TestToolServer", "echo_tool", "main"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rmcp_client_bin_servers_rs.py"]
+}

@@ -48,5 +48,9 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_utils_absolute_path_absolutize.py",
+    "tests/test_utils_absolute_path_module_ownership_rs.py",
+    "tests/test_external_crate_interfaces.py"
+  ]
 }

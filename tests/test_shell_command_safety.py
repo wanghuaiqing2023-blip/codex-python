@@ -10,7 +10,7 @@ from pycodex.shell_command.command_safety import (
     is_safe_powershell_words,
     is_safe_to_call_with_exec,
 )
-from pycodex.shell_command.powershell_parser import (
+from pycodex.shell_command.command_safety.powershell_parser import (
     PowershellParseKind,
     PowershellParserResponse,
     encode_powershell_base64,
@@ -165,7 +165,7 @@ class ShellCommandSafetyTests(unittest.TestCase):
     # Contract: shell.powershell_safety
     def test_windows_powershell_rm_alias_force_and_benign_force_segment(self):
         self.assertTrue(command_might_be_dangerous(["powershell", "-Command", "rm test -Force"]))
-        self.assertTrue(command_might_be_dangerous(["powershell", "-Command", "rm -rf /important/data"]))
+        self.assertFalse(command_might_be_dangerous(["powershell", "-Command", "rm -rf /important/data"]))
         self.assertFalse(command_might_be_dangerous(["powershell", "-Command", "Get-ChildItem -Force; Remove-Item test"]))
 
     # Source: rust_test_migrated

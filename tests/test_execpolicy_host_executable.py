@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from pycodex.execpolicy import Decision, InvalidRuleError, MatchOptions, PolicyParser
+from pycodex.execpolicy import Decision, MatchOptions, PolicyParser
+from pycodex.execpolicy.error import InvalidRuleError
 
 
 def _allow_all(_: tuple[str, ...]) -> Decision:

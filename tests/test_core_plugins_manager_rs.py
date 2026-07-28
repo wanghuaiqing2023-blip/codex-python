@@ -1,9 +1,15 @@
 from pathlib import Path
+import json
 
 import pytest
 
 from pycodex.config import ConfigLayerEntry, ConfigLayerSource, ConfigLayerStack
-from pycodex.core_plugins import PluginsConfigInput, PluginsManager
+from pycodex.core_plugins import (
+    PluginInstallRequest,
+    PluginsConfigInput,
+    PluginsManager,
+)
+from pycodex.plugin import PluginId
 
 
 def _write(path: Path, text: str) -> None:
@@ -80,3 +86,57 @@ async def test_plugins_feature_gate_returns_empty_outcome(tmp_path: Path) -> Non
     )
     assert outcome.plugins() == ()
     assert outcome.capability_summaries() == ()
+
+
+@pytest.mark.asyncio
+async def test_install_and_uninstall_update_store_and_user_config(
+    tmp_path: Path,
+) -> None:
+    # Rust: core-plugins/src/manager_tests.rs install/uninstall contracts.
+    codex_home = (tmp_path / "home").resolve()
+    marketplace_root = tmp_path / "marketplace"
+    plugin_root = marketplace_root / "plugins" / "sample"
+    _write(
+        plugin_root / ".codex-plugin" / "plugin.json",
+        '{"name":"sample","version":"1.2.3"}',
+    )
+    marketplace_path = (
+        marketplace_root / ".agents" / "plugins" / "marketplace.json"
+    )
+    _write(
+        marketplace_path,
+        json.dumps(
+            {
+                "name": "local-market",
+                "plugins": [
+                    {
+                        "name": "sample",
+                        "source": {
+                            "source": "local",
+                            "path": "./plugins/sample",
+                        },
+                    }
+                ],
+            }
+        ),
+    )
+    manager = PluginsManager.new(codex_home)
+
+    outcome = await manager.install_plugin(
+        PluginInstallRequest("sample", marketplace_path)
+    )
+    plugin_id = PluginId.parse("sample@local-market")
+    assert outcome.plugin_version == "1.2.3"
+    assert manager.store.is_installed(plugin_id)
+    assert '["sample@local-market"]' not in (
+        codex_home / "config.toml"
+    ).read_text(encoding="utf-8")
+    assert '[plugins."sample@local-market"]' in (
+        codex_home / "config.toml"
+    ).read_text(encoding="utf-8")
+
+    await manager.uninstall_plugin("sample@local-market")
+    assert not manager.store.is_installed(plugin_id)
+    assert "sample@local-market" not in (
+        codex_home / "config.toml"
+    ).read_text(encoding="utf-8")

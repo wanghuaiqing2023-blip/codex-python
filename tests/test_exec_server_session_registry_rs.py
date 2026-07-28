@@ -7,11 +7,15 @@ import time
 
 from pycodex.app_server.error_code import INVALID_REQUEST_ERROR_CODE
 from pycodex.app_server_protocol import JSONRPCErrorError
-from pycodex.exec_server import (
-    ConnectionId,
-    ProcessHandler,
-    SessionEntry,
+from pycodex.exec_server.server.handler import (
     SessionHandle,
+)
+from pycodex.exec_server.server.process_handler import (
+    ProcessHandler,
+)
+from pycodex.exec_server.server.session_registry import (
+    ConnectionId,
+    SessionEntry,
     SessionRegistry,
 )
 

@@ -1,0 +1,46 @@
+{
+    "contract_id":  "codex-memories-extension.local",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-memories-extension",
+                 "module":  "local",
+                 "source":  "codex/codex-rs/ext/memories/src/local.rs",
+                 "anchors":  [
+                                 "LocalMemoriesBackend",
+                                 "from_codex_home",
+                                 "from_memory_root",
+                                 "add_ad_hoc_note",
+                                 "list",
+                                 "read",
+                                 "resolve_scoped_path",
+                                 "search"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/ext/memories/local/__init__.py",
+                   "layout":  "module-package",
+                   "implementation_files":  [
+                                                "pycodex/ext/memories/local/__init__.py"
+                                            ],
+                   "anchors":  [
+                                   "LocalMemoriesBackend",
+                                   "from_codex_home",
+                                   "from_memory_root",
+                                   "add_ad_hoc_note",
+                                   "list",
+                                   "read",
+                                   "resolve_scoped_path",
+                                   "search"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_memories_extension_module_ownership_rs.py"
+                     ]
+}

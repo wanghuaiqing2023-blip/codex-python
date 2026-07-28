@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-execpolicy-legacy.policy_parser",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy-legacy",
+    "module": "policy_parser",
+    "source": "codex/codex-rs/execpolicy-legacy/src/policy_parser.rs",
+    "anchors": [
+      "ForbiddenProgramRegex",
+      "PolicyParser",
+      "parse",
+      "add_forbidden_program_regex",
+      "add_forbidden_substrings",
+      "add_program_spec",
+      "build",
+      "define_program",
+      "flag",
+      "forbid_program_regex",
+      "forbid_substrings",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy_legacy/policy_parser.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/execpolicy_legacy/policy_parser.py"
+    ],
+    "anchors": [
+      "ForbiddenProgramRegex",
+      "PolicyParser",
+      "parse",
+      "add_forbidden_program_regex",
+      "add_forbidden_substrings",
+      "add_program_spec",
+      "build",
+      "define_program",
+      "flag",
+      "forbid_program_regex",
+      "forbid_substrings",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_execpolicy_legacy_policy_parser_rs.py",
+    "tests/test_execpolicy_legacy_module_ownership_rs.py"
+  ]
+}

@@ -18,7 +18,11 @@
       "ExecParams",
       "ExecResult",
       "PreparedExec",
-      "ResolvedPermissionProfile"
+      "ResolvedPermissionProfile",
+      "ShellCommandExecutor",
+      "Stopwatch",
+      "main_execve_wrapper",
+      "run_shell_escalation_execve_wrapper"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
@@ -40,7 +44,11 @@
       "ExecParams",
       "ExecResult",
       "PreparedExec",
-      "ResolvedPermissionProfile"
+      "ResolvedPermissionProfile",
+      "ShellCommandExecutor",
+      "Stopwatch",
+      "main_execve_wrapper",
+      "run_shell_escalation_execve_wrapper"
     ]
   },
   "checks": {
@@ -48,5 +56,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_shell_escalation_crate.py",
+    "tests/test_shell_escalation_module_ownership_rs.py"
+  ]
 }

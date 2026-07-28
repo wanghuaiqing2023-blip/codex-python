@@ -79,12 +79,18 @@ def test_windows_conpty_python_quit_smoke_when_enabled() -> None:
     command = build_inline_tui_command("python", repo_root=repo_root, python_executable=sys.executable)
     transcript = run_windows_conpty_tui_command(
         command,
-        input_text="/quit\r",
+        input_steps=(
+            ConptyInputStep(
+                "",
+                ready_pattern=READY_COMPOSER_PATTERN,
+                ready_timeout=30.0,
+                ready_quiet_period=0.5,
+            ),
+            ConptyInputStep("/quit\r", ready_timeout=0.2, chunk_delay=0.02),
+            ConptyInputStep("", ready_text="Shutting down", ready_timeout=10.0),
+        ),
         env=_conpty_tui_env(),
         timeout=25,
-        input_delay=8.0,
-        input_chunk_delay=0.2,
-        input_ready_pattern=READY_COMPOSER_PATTERN,
     )
 
     assert transcript.returncode == 0, transcript.normalized_combined()

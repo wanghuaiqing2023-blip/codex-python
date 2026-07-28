@@ -25,7 +25,9 @@
   "python": {
     "owner": "pycodex/core_plugins/__init__.py",
     "layout": "module-file",
-    "implementation_files": ["pycodex/core_plugins/__init__.py"],
+    "implementation_files": [
+      "pycodex/core_plugins/__init__.py"
+    ],
     "anchors": [
       "ConfiguredMarketplace",
       "ConfiguredMarketplaceListOutcome",
@@ -41,6 +43,14 @@
       "PluginLoadOutcome"
     ]
   },
-  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
-  "fixture_refs": []
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_manager_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
 }

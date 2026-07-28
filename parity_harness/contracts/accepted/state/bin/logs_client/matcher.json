@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-state.bin.logs_client.matcher",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-state",
+    "module": "bin::logs_client::matcher",
+    "source": "codex/codex-rs/state/src/bin/logs_client.rs",
+    "anchors": [
+      "apply_patch"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/state/bin/logs_client/matcher.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/state/bin/logs_client/matcher.py"
+    ],
+    "anchors": [
+      "apply_patch"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_state_logs_client_rs.py"
+  ]
+}

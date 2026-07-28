@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 8,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 8,
+    "modules_with_candidates": 8,
+    "modules_with_anchors": 8
   },
   "contracts": [
     {
@@ -57,7 +57,19 @@
         "source": "codex/codex-rs/git-utils/src/apply.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/git_utils/apply.py",
+          "anchor_candidates": [
+            "ApplyGitRequest",
+            "ApplyGitResult",
+            "apply_git_patch",
+            "extract_paths_from_patch",
+            "parse_git_apply_output",
+            "stage_paths"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +85,22 @@
         "source": "codex/codex-rs/git-utils/src/baseline.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/git_utils/baseline.py",
+          "anchor_candidates": [
+            "GitBaselineChange",
+            "GitBaselineChangeStatus",
+            "GitBaselineDiff",
+            "diff_since_latest_init",
+            "ensure_git_baseline_repository",
+            "has_changes",
+            "label",
+            "reset_git_repository",
+            "BASELINE_COMMIT_MESSAGE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +116,14 @@
         "source": "codex/codex-rs/git-utils/src/branch.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/git_utils/branch.py",
+          "anchor_candidates": [
+            "merge_base_with_head"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +139,14 @@
         "source": "codex/codex-rs/git-utils/src/errors.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/git_utils/errors.py",
+          "anchor_candidates": [
+            "GitToolingError"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +162,25 @@
         "source": "codex/codex-rs/git-utils/src/info.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/git_utils/info.py",
+          "anchor_candidates": [
+            "CommitLogEntry",
+            "GitDiffToRemote",
+            "GitInfo",
+            "canonicalize_git_remote_url",
+            "collect_git_info",
+            "current_branch_name",
+            "default_branch_name",
+            "get_git_remote_urls",
+            "get_git_remote_urls_assume_git_repo",
+            "get_git_repo_root",
+            "get_git_repo_root_with_fs",
+            "get_has_changes"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +196,19 @@
         "source": "codex/codex-rs/git-utils/src/operations.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/git_utils/operations.py",
+          "anchor_candidates": [
+            "ensure_git_repository",
+            "resolve_head",
+            "resolve_repository_root",
+            "run_git_for_status",
+            "run_git_for_stdout",
+            "run_git"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +224,14 @@
         "source": "codex/codex-rs/git-utils/src/platform.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/git_utils/platform.py",
+          "anchor_candidates": [
+            "create_symlink"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-core-plugins.manager",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "manager",
+    "source": "codex/codex-rs/core-plugins/src/manager.rs",
+    "anchors": [
+      "ConfiguredMarketplace",
+      "ConfiguredMarketplaceListOutcome",
+      "ConfiguredMarketplacePlugin",
+      "PluginDetail",
+      "PluginDetailsUnavailableReason",
+      "PluginHookSummary",
+      "PluginInstallError",
+      "PluginInstallOutcome",
+      "PluginInstallRequest",
+      "PluginReadOutcome",
+      "PluginReadRequest",
+      "PluginRemoteSyncError"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/manager.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/manager.py"
+    ],
+    "anchors": [
+      "ConfiguredMarketplace",
+      "ConfiguredMarketplaceListOutcome",
+      "ConfiguredMarketplacePlugin",
+      "PluginDetail",
+      "PluginDetailsUnavailableReason",
+      "PluginHookSummary",
+      "PluginInstallError",
+      "PluginInstallOutcome",
+      "PluginInstallRequest",
+      "PluginReadOutcome",
+      "PluginReadRequest",
+      "PluginRemoteSyncError"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_manager_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

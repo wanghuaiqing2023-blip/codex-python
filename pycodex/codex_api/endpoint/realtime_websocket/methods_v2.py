@@ -7,7 +7,7 @@ from typing import Any
 from pycodex.protocol import RealtimeOutputModality
 from pycodex.protocol import RealtimeVoice
 
-from .methods_common_constants import REALTIME_AUDIO_SAMPLE_RATE
+from .methods_common import REALTIME_AUDIO_SAMPLE_RATE
 from .protocol import RealtimeSessionMode
 
 REALTIME_V2_OUTPUT_MODALITY_AUDIO = "audio"

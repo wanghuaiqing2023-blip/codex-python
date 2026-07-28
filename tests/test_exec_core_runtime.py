@@ -7,7 +7,7 @@ from unittest.mock import ANY, patch
 
 from pycodex.exec import core_runtime
 from pycodex.exec import local_runtime
-from pycodex.exec.event_processor import JsonEventProcessor
+from pycodex.exec.event_processor_with_jsonl_output import EventProcessorWithJsonOutput
 
 
 class ExecCoreRuntimeTests(unittest.TestCase):
@@ -379,7 +379,7 @@ class ExecCoreRuntimeTests(unittest.TestCase):
     def test_emit_core_exec_config_summary_uses_json_output_kwarg(self) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         config = SimpleNamespace(model_provider_id="custom")
         plan = SimpleNamespace(prompt_summary="hello")
         model_client = SimpleNamespace(state=SimpleNamespace(session_id="session", thread_id="thread"))
@@ -389,7 +389,7 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             "pycodex.exec.core_runtime.core_exec_config_summary",
             return_value=("summary-config", "summary-session"),
         ):
-            with patch.object(JsonEventProcessor, "print_config_summary") as print_summary:
+            with patch.object(EventProcessorWithJsonOutput, "print_config_summary") as print_summary:
                 core_runtime.emit_core_exec_config_summary(
                     processor,
                     config,

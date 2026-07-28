@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from pycodex.exec_server import (
-    ByteChunk,
     ExecClosedNotification,
     ExecEnvPolicy,
     ExecExitedNotification,
@@ -19,6 +18,11 @@ from pycodex.exec_server import (
     ProcessId,
     ProcessOutputChunk,
     ReadResponse,
+    WriteResponse,
+    WriteStatus,
+)
+from pycodex.exec_server.protocol import (
+    ByteChunk,
     decode_exec_params,
     decode_http_request_params,
     decode_read_params,
@@ -31,8 +35,6 @@ from pycodex.exec_server import (
     encode_http_request_response,
     encode_read_response,
     encode_write_response,
-    WriteResponse,
-    WriteStatus,
 )
 from pycodex.protocol import ShellEnvironmentPolicyInherit
 

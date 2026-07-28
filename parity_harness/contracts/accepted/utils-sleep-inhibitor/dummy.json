@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-utils-sleep-inhibitor.dummy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-sleep-inhibitor",
+    "module": "dummy",
+    "source": "codex/codex-rs/utils/sleep-inhibitor/src/dummy.rs",
+    "anchors": ["SleepInhibitor", "acquire", "release"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/sleep_inhibitor/dummy.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/utils/sleep_inhibitor/dummy.py"],
+    "anchors": ["SleepInhibitor", "acquire", "release"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_utils_sleep_inhibitor_module_ownership_rs.py"]
+}

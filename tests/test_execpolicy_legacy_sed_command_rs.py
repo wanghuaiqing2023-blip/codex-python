@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.execpolicy_legacy import SedCommandNotProvablySafe
-from pycodex.execpolicy_legacy import parse_sed_command
+from pycodex.execpolicy_legacy.error import SedCommandNotProvablySafe
+from pycodex.execpolicy_legacy.sed_command import parse_sed_command
 
 
 def test_parses_simple_print_command() -> None:

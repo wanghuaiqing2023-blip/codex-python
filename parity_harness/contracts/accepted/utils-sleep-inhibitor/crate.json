@@ -34,5 +34,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_utils_sleep_inhibitor.py",
+    "tests/test_utils_sleep_inhibitor_module_ownership_rs.py"
+  ]
 }

@@ -26,5 +26,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_stdio_to_uds_crate.py",
+    "tests/test_stdio_to_uds_module_ownership_rs.py"
+  ]
 }

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from pycodex.apply_patch import (
-    EOF_MARKER,
     ApplyPatchAction,
     ApplyPatchArgs,
     ApplyPatchParseError,
@@ -20,6 +19,7 @@ from pycodex.apply_patch import (
     parse_patch,
     verify_apply_patch_args,
 )
+from pycodex.apply_patch.parser import EOF_MARKER
 from pycodex.core.apply_patch import convert_apply_patch_to_protocol
 from pycodex.core.tools.context import ApplyPatchToolOutput, ToolPayload
 from pycodex.core.tools.handlers import apply_patch_spec

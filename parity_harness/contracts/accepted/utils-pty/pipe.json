@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-utils-pty.pipe",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-pty",
+    "module": "pipe",
+    "source": "codex/codex-rs/utils/pty/src/pipe.rs",
+    "anchors": [
+      "spawn_process",
+      "spawn_process_no_stdin",
+      "spawn_process_no_stdin_with_inherited_fds"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/pty/pipe.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/pty/pipe.py"
+    ],
+    "anchors": [
+      "spawn_process",
+      "spawn_process_no_stdin",
+      "spawn_process_no_stdin_with_inherited_fds"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_pty_pipe_rs.py"
+  ]
+}

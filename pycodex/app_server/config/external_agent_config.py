@@ -13,7 +13,15 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
+
+from pycodex.external_agent_sessions import (
+    ExternalAgentSessionMigration,
+    PendingSessionImport,
+    detect_recent_sessions,
+    prepare_validated_session_imports as prepare_external_session_imports,
+    record_imported_session as record_external_session_import,
+)
 
 EXTERNAL_AGENT_CONFIG_DETECT_METRIC = "codex.external_agent_config.detect"
 EXTERNAL_AGENT_CONFIG_IMPORT_METRIC = "codex.external_agent_config.import"
@@ -118,11 +126,59 @@ class ExternalAgentConfigService:
             return None
         return resolved if _is_relative_to(resolved, projects_root) else None
 
-    async def detect(self, _params: ExternalAgentConfigDetectOptions) -> list[ExternalAgentConfigMigrationItem]:
-        raise NotImplementedError("real external-agent detection is a runtime boundary")
+    async def detect(self, params: ExternalAgentConfigDetectOptions) -> list[ExternalAgentConfigMigrationItem]:
+        items: list[ExternalAgentConfigMigrationItem] = []
+        if params.include_home:
+            sessions = detect_recent_sessions(self.external_agent_home, self.codex_home)
+            if sessions:
+                items.append(
+                    ExternalAgentConfigMigrationItem(
+                        item_type=ExternalAgentConfigMigrationItemType.SESSIONS,
+                        description=(
+                            "Migrate recent sessions from "
+                            f"{self.external_agent_home / 'projects'}"
+                        ),
+                        details=MigrationDetails(sessions=tuple(sessions)),
+                    )
+                )
+        return items
 
-    async def import_(self, _migration_items: list[ExternalAgentConfigMigrationItem]) -> list[PendingPluginImport]:
-        raise NotImplementedError("real external-agent import is a runtime boundary")
+    async def import_(self, migration_items: list[ExternalAgentConfigMigrationItem]) -> list[PendingPluginImport]:
+        unsupported = [
+            item.item_type
+            for item in migration_items
+            if item.item_type is not ExternalAgentConfigMigrationItemType.SESSIONS
+        ]
+        if unsupported:
+            raise NotImplementedError(
+                "non-session external-agent config import remains an app-server parity boundary"
+            )
+        return []
+
+    def prepare_validated_session_imports(
+        self,
+        sessions: Sequence[Any],
+    ) -> list[PendingSessionImport]:
+        requested = [
+            ExternalAgentSessionMigration(
+                path=Path(session.path),
+                cwd=Path(session.cwd),
+                title=session.title,
+            )
+            for session in sessions
+        ]
+        return prepare_external_session_imports(self.codex_home, requested)
+
+    def record_imported_session(
+        self,
+        source_path: Path | str,
+        imported_thread_id: Any,
+    ) -> None:
+        record_external_session_import(
+            self.codex_home,
+            Path(source_path),
+            str(imported_thread_id),
+        )
 
 
 def default_external_agent_home(env: Mapping[str, str] | None = None) -> Path:

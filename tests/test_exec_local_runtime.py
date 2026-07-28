@@ -17,7 +17,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from pycodex.execpolicy import (
-    ExecPolicyPrefixRule,
+    PrefixRule,
 )
 from pycodex.core import (
     ExecApprovalRequirement,
@@ -38,7 +38,8 @@ from pycodex.core.client_common import REVIEW_PROMPT
 from pycodex.core.context import GoalContext
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
-from pycodex.exec.event_processor import HumanEventProcessor, JsonEventProcessor
+from pycodex.exec.event_processor_with_human_output import EventProcessorWithHumanOutput
+from pycodex.exec.event_processor_with_jsonl_output import EventProcessorWithJsonOutput
 from pycodex.exec.local_runtime import (
     build_default_local_http_exec_runtime,
     default_local_http_exec_auth,
@@ -2133,7 +2134,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("http core exec output", output_items[0]["output"])
         self.assertEqual(result.last_agent_message, "done after core exec")
 
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput(), config=config)
         self.assertEqual(
             [(item.id, item.type, item.payload["status"]) for item in timeline_items],
             [
@@ -2145,7 +2146,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(timeline_items[0].payload["source"], "agent")
         self.assertIn("http core exec output", timeline_items[1].payload["aggregated_output"])
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, config=config, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, config=config, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         command_events = [
             line["item"]
@@ -2163,7 +2164,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         human_stdout = io.StringIO()
         human_stderr = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             config=config,
             stdout=human_stdout,
@@ -2667,7 +2668,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Rust parity: codex-core/src/goals.rs external active goals continue as
         # hidden turns and may complete only through the update_goal tool.
         from pycodex.state.model.thread_goal import ThreadGoalStatus as StateThreadGoalStatus
-        from pycodex.state.state_runtime import StateRuntime
+        from pycodex.state.runtime import StateRuntime
 
         thread_id = str(uuid4())
         requests = []
@@ -2752,7 +2753,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Assistant text beside a tool call does not replace the required model
         # follow-up that receives the final update_goal accounting output.
         from pycodex.state.model.thread_goal import ThreadGoalStatus as StateThreadGoalStatus
-        from pycodex.state.state_runtime import StateRuntime
+        from pycodex.state.runtime import StateRuntime
 
         thread_id = str(uuid4())
         requests = []
@@ -3239,7 +3240,11 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 Path(tmpdir),
                 config,
                 result,
-                ModelClient(session_id="session", thread_id="review-interrupted", installation_id="install"),
+                ModelClient(
+                    session_id="session",
+                    thread_id="44444444-4444-4444-4444-444444444444",
+                    installation_id="install",
+                ),
                 input_items=rollout_input,
             )
             self.assertIsNotNone(rollout_path)
@@ -3314,7 +3319,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         stdout = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=stdout,
             stderr=io.StringIO(),
@@ -3324,7 +3329,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stdout.getvalue(), "done\n")
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual([line["type"] for line in json_lines], ["turn.started", "item.completed", "turn.completed"])
         self.assertEqual(json_lines[1]["item"]["type"], "agent_message")
@@ -3342,7 +3347,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         stdout = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=stdout,
             stderr=io.StringIO(),
@@ -3352,7 +3357,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stdout.getvalue(), "streamed answer\n")
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual([line["type"] for line in json_lines], ["turn.started", "item.completed", "turn.completed"])
         self.assertEqual(json_lines[1]["item"]["type"], "agent_message")
@@ -3503,7 +3508,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
 
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual([line["type"] for line in json_lines], ["turn.started", "item.completed", "turn.completed"])
@@ -3512,14 +3517,14 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         error_stderr = io.StringIO()
         emit_local_http_exec_error(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             "boom",
             stderr=error_stderr,
         )
         self.assertIn("ERROR: boom", error_stderr.getvalue())
 
         error_stdout = io.StringIO()
-        emit_local_http_exec_error(JsonEventProcessor(), "boom", stdout=error_stdout)
+        emit_local_http_exec_error(EventProcessorWithJsonOutput(), "boom", stdout=error_stdout)
         error_lines = [json.loads(line) for line in error_stdout.getvalue().splitlines()]
         self.assertEqual([line["type"] for line in error_lines], ["turn.started", "turn.failed"])
         self.assertEqual(error_lines[1]["error"]["message"], "boom")
@@ -3550,7 +3555,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
         ))
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         stdout = io.StringIO()
 
         emit_local_http_exec_error(processor, error, stdout=stdout)
@@ -3574,7 +3579,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ModelVerificationEvent((ModelVerification.TRUSTED_ACCESS_FOR_CYBER,)),
             ),
         ))
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         stdout = io.StringIO()
 
         emit_local_http_exec_error(processor, error, stdout=stdout)
@@ -3606,7 +3611,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         json_stdout = io.StringIO()
-        json_processor = JsonEventProcessor()
+        json_processor = EventProcessorWithJsonOutput()
         emit_local_http_exec_result(json_processor, result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(json_lines[0]["type"], "turn.started")
@@ -3616,7 +3621,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         stderr = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=io.StringIO(),
             stderr=stderr,
@@ -3645,7 +3650,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(json_lines[0]["type"], "turn.started")
         self.assertEqual(json_lines[1]["type"], "error")
@@ -3654,7 +3659,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         stderr = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=io.StringIO(),
             stderr=stderr,
@@ -3671,14 +3676,14 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         json_stdout = io.StringIO()
-        final_text = emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        final_text = emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(final_text, "")
         self.assertEqual([line["type"] for line in json_lines], ["turn.started"])
 
         stderr = io.StringIO()
         final_text = emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=io.StringIO(),
             stderr=stderr,
@@ -3696,7 +3701,11 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             turn_status="interrupted",
         )
         config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
-        client = ModelClient(session_id="session", thread_id="thread-interrupted", installation_id="install")
+        client = ModelClient(
+            session_id="session",
+            thread_id="33333333-3333-3333-3333-333333333333",
+            installation_id="install",
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             rollout_path = persist_local_http_exec_rollout(Path(tmp), config, result, client)
@@ -3827,14 +3836,14 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ))
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_error(JsonEventProcessor(), error, stdout=json_stdout)
+        emit_local_http_exec_error(EventProcessorWithJsonOutput(), error, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual([line["type"] for line in json_lines], ["turn.started", "error", "turn.failed"])
         self.assertEqual(json_lines[1]["message"], "too much context")
         self.assertEqual(json_lines[2]["error"]["message"], str(error))
 
         stderr = io.StringIO()
-        emit_local_http_exec_error(HumanEventProcessor(), error, stderr=stderr)
+        emit_local_http_exec_error(EventProcessorWithHumanOutput(), error, stderr=stderr)
         self.assertEqual(stderr.getvalue().count("ERROR:"), 1)
         self.assertIn("ERROR: too much context", stderr.getvalue())
 
@@ -4484,7 +4493,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertEqual(aligned, rollout_path)
-            self.assertEqual(client.state.thread_id, thread_id)
+            self.assertEqual(client.state.thread_id, ThreadId.from_string(thread_id))
 
     async def test_local_http_resume_runner_uses_pre_resolved_rollout_path(self) -> None:
         request_headers = []
@@ -4536,7 +4545,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 resolved_rollout_path=rollout_path,
             )
 
-            self.assertEqual(client.state.thread_id, thread_id)
+            self.assertEqual(client.state.thread_id, ThreadId.from_string(thread_id))
             self.assertEqual(request_headers[0]["session-id"], thread_id)
             self.assertEqual(request_headers[0]["thread-id"], thread_id)
 
@@ -4802,14 +4811,14 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(token_count.payload.info.total_token_usage.input_tokens, 10)
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(json_lines[-1]["usage"]["input_tokens"], 10)
         self.assertEqual(json_lines[-1]["usage"]["cached_input_tokens"], 3)
 
         stderr = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=io.StringIO(),
             stderr=stderr,
@@ -4850,7 +4859,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(json_lines[-1]["type"], "turn.completed")
         self.assertEqual(json_lines[-1]["usage"]["input_tokens"], 12)
@@ -4860,7 +4869,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         stderr = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=io.StringIO(),
             stderr=stderr,
@@ -5016,7 +5025,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         timeline_items = tool_timeline_items_from_local_http_exec_result(
             result,
-            JsonEventProcessor(),
+            EventProcessorWithJsonOutput(),
             config=ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project")),
         )
         self.assertEqual(
@@ -5167,11 +5176,11 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         output_call_ids = [item["call_id"] for item in third_input if item["type"] == "function_call_output"]
         self.assertIn("call-1", output_call_ids)
         self.assertIn("call-2", output_call_ids)
-        tool_call_items = tool_call_items_from_local_http_exec_result(result, JsonEventProcessor())
-        tool_output_items = tool_output_items_from_local_http_exec_result(result, JsonEventProcessor())
+        tool_call_items = tool_call_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
+        tool_output_items = tool_output_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
         self.assertEqual(len(tool_call_items), 2)
         self.assertEqual(len(tool_output_items), 2)
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput(), config=config)
         self.assertEqual(
             [(item.id, item.type, item.payload["command"], item.payload["cwd"], item.payload["status"]) for item in timeline_items],
             [
@@ -5192,7 +5201,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, config=config, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, config=config, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         tool_events = [
             line["item"]
@@ -5233,11 +5242,11 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
 
-        tool_call_items = tool_call_items_from_local_http_exec_result(result, JsonEventProcessor())
+        tool_call_items = tool_call_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
         self.assertEqual(len(tool_call_items), 1)
         self.assertEqual(tool_call_items[0].payload["tool"], "exec_command")
 
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput(), config=config)
         self.assertEqual(
             [(item.id, item.type, item.payload["command"], item.payload["status"]) for item in timeline_items],
             [
@@ -5261,12 +5270,12 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
 
-        tool_output_items = tool_output_items_from_local_http_exec_result(result, JsonEventProcessor())
+        tool_output_items = tool_output_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
         self.assertEqual(len(tool_output_items), 1)
         self.assertEqual(tool_output_items[0].payload["result"], "C:/work/project\n")
         self.assertEqual(tool_output_items[0].payload["status"], "completed")
 
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput(), config=config)
         self.assertEqual(
             [(item.id, item.type, item.payload["command"], item.payload["status"]) for item in timeline_items],
             [
@@ -5301,7 +5310,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor())
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
 
         self.assertEqual(len(timeline_items), 1)
         self.assertEqual(timeline_items[0].type, "mcp_tool_call")
@@ -5330,10 +5339,10 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/fallback"))
 
-        tool_call_items = tool_call_items_from_local_http_exec_result(result, JsonEventProcessor())
+        tool_call_items = tool_call_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
         self.assertEqual(tool_call_items, ())
 
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput(), config=config)
         self.assertEqual(
             [(item.id, item.type, item.payload["command"], item.payload["cwd"], item.payload["status"]) for item in timeline_items],
             [
@@ -5422,7 +5431,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reasoning_texts_from_local_http_exec_result(result), ("thinking summary",))
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(
             [line["type"] for line in json_lines],
@@ -5524,7 +5533,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         default_stderr = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             stdout=io.StringIO(),
             stderr=default_stderr,
@@ -5535,7 +5544,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("hidden raw chain", default_stderr.getvalue())
         self.assertNotIn("visible raw note", default_stderr.getvalue())
 
-        raw_processor = HumanEventProcessor()
+        raw_processor = EventProcessorWithHumanOutput()
         raw_processor.show_raw_agent_reasoning = True
         raw_stderr = io.StringIO()
         emit_local_http_exec_result(
@@ -5552,7 +5561,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         config_stderr = io.StringIO()
         emit_local_http_exec_result(
-            HumanEventProcessor(),
+            EventProcessorWithHumanOutput(),
             result,
             config=ExecSessionConfig(
                 model=None,
@@ -5595,7 +5604,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             built_tools=lambda _sess, _turn: Router(),
         )
 
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         tool_items = tool_call_items_from_local_http_exec_result(result, processor)
         self.assertEqual(len(tool_items), 1)
         self.assertEqual(tool_items[0].type, "mcp_tool_call")
@@ -5605,7 +5614,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_items[0].payload["status"], "in_progress")
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, config=config, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, config=config, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(
             [line["type"] for line in json_lines],
@@ -5797,7 +5806,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             tool_response_items=response_items_from_local_http_tool_outputs(outputs),
             raw_tool_output_items=outputs,
         )
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, EventProcessorWithJsonOutput())
         self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
 
     async def test_local_http_exec_shell_tool_nonzero_exit_marks_timeline_failed(self) -> None:
@@ -5842,12 +5851,12 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             runner=fake_runner,
         )
 
-        tool_outputs = tool_output_items_from_local_http_exec_result(result, JsonEventProcessor())
+        tool_outputs = tool_output_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
         self.assertEqual(tool_outputs[0].payload["status"], "failed")
         self.assertIn("Process exited with code 7", tool_outputs[0].payload["result"])
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         completed_tools = [
             line["item"]
@@ -6269,7 +6278,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("rm -rf /important/data", outputs[0]["output"])
         timeline_items = tool_timeline_items_from_local_http_exec_result(
             replace(result, raw_tool_output_items=outputs),
-            JsonEventProcessor(),
+            EventProcessorWithJsonOutput(),
         )
         self.assertEqual([(item.type, item.payload["status"]) for item in timeline_items], [
             ("command_execution", "in_progress"),
@@ -6386,7 +6395,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
-            exec_policy_rules=(ExecPolicyPrefixRule.new(["pwd"], "prompt", "inspect cwd first"),),
+            exec_policy_rules=(PrefixRule.new(["pwd"], "prompt", "inspect cwd first"),),
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -7021,7 +7030,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
             timeline_items = tool_timeline_items_from_local_http_exec_result(
                 result_with_outputs,
-                JsonEventProcessor(),
+                EventProcessorWithJsonOutput(),
             )
             self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
             self.assertEqual(
@@ -7036,7 +7045,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("created.txt", timeline_items[1].payload["stdout"])
             self.assertEqual(timeline_items[1].payload["stderr"], "")
             json_stdout = io.StringIO()
-            emit_local_http_exec_result(JsonEventProcessor(), result_with_outputs, stdout=json_stdout)
+            emit_local_http_exec_result(EventProcessorWithJsonOutput(), result_with_outputs, stdout=json_stdout)
             patch_events = [
                 line["item"]
                 for line in (json.loads(raw) for raw in json_stdout.getvalue().splitlines())
@@ -7091,7 +7100,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             tool_response_items=response_items_from_local_http_tool_outputs(outputs),
             raw_tool_output_items=outputs,
         )
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, EventProcessorWithJsonOutput())
         self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
 
     async def test_local_http_exec_apply_patch_tool_invalid_patch_returns_verification_error(self) -> None:
@@ -7122,7 +7131,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             tool_response_items=response_items_from_local_http_tool_outputs(outputs),
             raw_tool_output_items=outputs,
         )
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, EventProcessorWithJsonOutput())
         self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
 
     def test_local_http_exec_function_apply_patch_payload_is_not_executed(self) -> None:
@@ -7158,7 +7167,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 tool_response_items=response_items_from_local_http_tool_outputs(outputs),
                 raw_tool_output_items=outputs,
             )
-            timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+            timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, EventProcessorWithJsonOutput())
             self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
 
     async def test_local_http_exec_command_intercepts_apply_patch_heredoc_before_runner(self) -> None:
@@ -7229,7 +7238,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
             timeline_items = tool_timeline_items_from_local_http_exec_result(
                 result_with_outputs,
-                JsonEventProcessor(),
+                EventProcessorWithJsonOutput(),
             )
             self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
             self.assertEqual([item.payload["status"] for item in timeline_items], ["in_progress", "completed"])
@@ -7296,7 +7305,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
             timeline_items = tool_timeline_items_from_local_http_exec_result(
                 result_with_outputs,
-                JsonEventProcessor(),
+                EventProcessorWithJsonOutput(),
             )
             self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
             self.assertEqual(
@@ -7345,7 +7354,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
             timeline_items = tool_timeline_items_from_local_http_exec_result(
                 result_with_outputs,
-                JsonEventProcessor(),
+                EventProcessorWithJsonOutput(),
             )
             self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
             self.assertEqual(
@@ -7360,7 +7369,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(timeline_items[1].payload["stdout"], "")
             self.assertIn("approval_required", timeline_items[1].payload["stderr"])
             json_stdout = io.StringIO()
-            emit_local_http_exec_result(JsonEventProcessor(), result_with_outputs, stdout=json_stdout)
+            emit_local_http_exec_result(EventProcessorWithJsonOutput(), result_with_outputs, stdout=json_stdout)
             patch_events = [
                 line["item"]
                 for line in (json.loads(raw) for raw in json_stdout.getvalue().splitlines())
@@ -7767,7 +7776,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output_items[0]["call_id"], "call-1")
         self.assertNotIn("success", output_items[0])
         self.assertIn("C:/work/project", output_items[0]["output"])
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         emitted_tool_calls = tool_call_items_from_local_http_exec_result(result, processor)
         emitted_tool_outputs = tool_output_items_from_local_http_exec_result(result, processor)
         self.assertIn(emitted_tool_calls[0].payload["tool"], {"exec_command", "shell"})
@@ -8153,7 +8162,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.raw_tool_output_items), 1)
         changes = result.raw_tool_output_items[0]["internal_output"]["changes"]
         self.assertIn("-before\n+after\n", changes[Path("edit.txt")].unified_diff)
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor())
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
         self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
         self.assertEqual(
             [item.payload["status"] for item in timeline_items],
@@ -8217,7 +8226,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.raw_tool_output_items), 1)
         changes = result.raw_tool_output_items[0]["internal_output"]["changes"]
         self.assertIn(Path("created.txt"), changes)
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor())
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput())
         self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
         self.assertEqual(
             [item.payload["status"] for item in timeline_items],
@@ -10233,7 +10242,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             built_tools=lambda _sess, _turn: Router(),
         )
 
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         output_items = tool_output_items_from_local_http_exec_result(result, processor)
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0].type, "mcp_tool_call")
@@ -10243,7 +10252,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output_items[0].payload["status"], "completed")
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(EventProcessorWithJsonOutput(), result, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(
             [line["type"] for line in json_lines],
@@ -10680,7 +10689,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary_session["model_provider_id"], "openai")
 
         stderr = io.StringIO()
-        HumanEventProcessor().print_config_summary(
+        EventProcessorWithHumanOutput().print_config_summary(
             summary_config,
             "hello",
             summary_session,

@@ -1,0 +1,23 @@
+{
+  "contract_id": "codex-realtime-webrtc.native",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-realtime-webrtc",
+    "module": "native",
+    "source": "codex/codex-rs/realtime-webrtc/src/native.rs",
+    "anchors": ["message_error", "audio_level_to_peak"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/realtime_webrtc/native.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/realtime_webrtc/native.py"],
+    "anchors": ["message_error", "audio_level_to_peak"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_realtime_webrtc_crate.py",
+    "tests/test_realtime_webrtc_module_ownership_rs.py"
+  ]
+}

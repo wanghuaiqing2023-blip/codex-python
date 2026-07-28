@@ -1,0 +1,39 @@
+{
+  "contract_id": "codex-core-plugins.remote.share.local_paths",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "remote::share::local_paths",
+    "source": "codex/codex-rs/core-plugins/src/remote/share/local_paths.rs",
+    "anchors": [
+      "load_plugin_share_local_paths",
+      "record_plugin_share_local_path",
+      "remove_plugin_share_local_path",
+      "PLUGIN_SHARE_LOCAL_PATHS_FILE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/remote/share/local_paths.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/remote/share/local_paths.py"
+    ],
+    "anchors": [
+      "load_plugin_share_local_paths",
+      "record_plugin_share_local_path",
+      "remove_plugin_share_local_path",
+      "PLUGIN_SHARE_LOCAL_PATHS_FILE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_remote_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

@@ -15,6 +15,7 @@ from pycodex.core import (
     find_thread_path_by_id_str,
     materialize_session_rollout,
 )
+from pycodex.protocol import ThreadId
 
 
 def write_minimal_rollout_with_id_at_path(path: Path, thread_id: str) -> None:
@@ -142,7 +143,7 @@ class RolloutListFindSuiteParityTests(unittest.TestCase):
             self.assertIsNotNone(found)
             assert found is not None
             self.assertEqual(found[0], path)
-            self.assertEqual(found[1].meta.id, thread_id)
+            self.assertEqual(found[1].meta.id, ThreadId.from_string(thread_id))
             self.assertIn(thread_id, path.read_text(encoding="utf-8"))
 
     def test_find_archived_locates_rollout_file_by_id(self) -> None:

@@ -15,14 +15,16 @@ from pycodex.config import (
     UserThreadConfig,
 )
 from pycodex.config.thread_config import (
+    session_thread_config_to_toml,
+    thread_config_source_to_layer,
+)
+from pycodex.config.thread_config.remote import (
     load_thread_config_request,
     model_provider_auth_from_proto,
     model_provider_from_proto,
     remote_status_to_error,
     session_thread_config_from_proto,
-    session_thread_config_to_toml,
     thread_config_source_from_proto,
-    thread_config_source_to_layer,
 )
 from pycodex.config.state import ConfigLayerEntry
 

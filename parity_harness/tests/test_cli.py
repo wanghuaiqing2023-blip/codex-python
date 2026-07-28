@@ -53,7 +53,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(report["ownership_verdict"], "verified")
         self.assertEqual(report["coverage_verdict"], "verified")
 
-    def test_protected_app_server_scopes_preserve_their_existing_results(self) -> None:
+    def test_protected_app_server_scopes_preserve_verified_results(self) -> None:
         status, app_server = self.invoke_json(
             "structure", "--scope", "app-server", "--gate", "ownership"
         )
@@ -70,10 +70,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(app_server["ownership_verdict"], "verified")
         self.assertEqual(app_server["coverage_verdict"], "verified")
         self.assertEqual(transport_status, 0)
-        self.assertEqual(transport["contracts"], 3)
+        self.assertEqual(transport["contracts"], 13)
         self.assertEqual(transport["ownership_verdict"], "verified")
-        self.assertEqual(transport["coverage_verdict"], "partial")
-        self.assertEqual(transport["finding_counts"], {"STR015": 10})
+        self.assertEqual(transport["coverage_verdict"], "verified")
+        self.assertEqual(transport["finding_counts"], {})
 
     def test_structure_command_persists_detailed_machine_report(self) -> None:
         status, report = self.invoke_json(
@@ -114,80 +114,34 @@ class CliTests(unittest.TestCase):
             len(load_workspace_contract().crates),
         )
 
-    def test_failed_scope_machine_report_groups_rust_owned_migrations(self) -> None:
+    def test_aligned_analytics_scope_has_no_pending_migrations(self) -> None:
         status, report = self.invoke_json(
             "structure", "--scope", "analytics", "--gate", "ownership"
         )
 
-        self.assertEqual(status, 1)
+        self.assertEqual(status, 0)
+        self.assertEqual(report["contracts"], 6)
+        self.assertEqual(report["ownership_verdict"], "verified")
+        self.assertEqual(report["coverage_verdict"], "verified")
+        self.assertEqual(report["finding_counts"], {})
         detail = json.loads(Path(report["machine_report"]).read_text(encoding="utf-8"))
         plan = detail["scope_reports"]["analytics"]["migration_plan"]
-        groups = {
-            (item["rust_module"], item["rust_source"]): item
-            for item in plan["foreign_item_moves"]
-        }
-        accepted_lines = groups[
-            (
-                "crate::accepted_lines",
-                "codex/codex-rs/analytics/src/accepted_lines.rs",
-            )
-        ]
-        self.assertEqual(accepted_lines["python_owner"], "pycodex/analytics/__init__.py")
-        self.assertFalse(accepted_lines["requires_disambiguation"])
-        self.assertEqual(accepted_lines["ambiguous_symbols"], [])
-        self.assertIn("AcceptedLineFingerprintEventInput", accepted_lines["symbols"])
-        self.assertIn("AcceptedLineFingerprintSummary", accepted_lines["symbols"])
+        self.assertEqual(plan, {"foreign_item_moves": [], "unowned_python_files": []})
 
-    def test_unowned_file_plan_reports_symbol_based_rust_navigation(self) -> None:
+    def test_aligned_exec_server_scope_has_no_ambiguous_foreign_symbols(self) -> None:
         status, report = self.invoke_json(
-            "structure", "--scope", "api", "--gate", "ownership"
+            "structure", "--scope", "exec-server", "--gate", "ownership"
         )
 
-        self.assertEqual(status, 1)
+        self.assertEqual(status, 0)
+        self.assertEqual(report["contracts"], 40)
+        self.assertEqual(report["ownership_verdict"], "verified")
+        self.assertEqual(report["coverage_verdict"], "verified")
+        self.assertEqual(report["finding_counts"], {})
         detail = json.loads(Path(report["machine_report"]).read_text(encoding="utf-8"))
-        files = detail["scope_reports"]["api"]["migration_plan"][
-            "unowned_python_files"
-        ]
-        methods_common = next(
-            item
-            for item in files
-            if item["path"].endswith("methods_common_constants.py")
-        )
-        self.assertEqual(methods_common["python_symbols"], ["REALTIME_AUDIO_SAMPLE_RATE"])
         self.assertEqual(
-            methods_common["rust_symbol_matches"],
-            [
-                {
-                    "module": "crate::endpoint::realtime_websocket::methods_common",
-                    "source": (
-                        "codex/codex-rs/codex-api/src/endpoint/"
-                        "realtime_websocket/methods_common.rs"
-                    ),
-                    "symbols": ["REALTIME_AUDIO_SAMPLE_RATE"],
-                }
-            ],
-        )
-
-    def test_ambiguous_foreign_symbol_is_not_assigned_automatically(self) -> None:
-        status, report = self.invoke_json(
-            "structure", "--scope", "git-utils", "--gate", "ownership"
-        )
-
-        self.assertEqual(status, 1)
-        detail = json.loads(Path(report["machine_report"]).read_text(encoding="utf-8"))
-        groups = detail["scope_reports"]["git-utils"]["migration_plan"][
-            "foreign_item_moves"
-        ]
-        run_git_groups = [
-            item for item in groups if "run_git" in item["ambiguous_symbols"]
-        ]
-        self.assertEqual(
-            {item["rust_module"] for item in run_git_groups},
-            {"crate::apply", "crate::operations"},
-        )
-        self.assertTrue(all(item["requires_disambiguation"] for item in run_git_groups))
-        self.assertTrue(
-            all("Do not assign ambiguous_symbols" in item["recommendation"] for item in run_git_groups)
+            detail["scope_reports"]["exec-server"]["migration_plan"],
+            {"foreign_item_moves": [], "unowned_python_files": []},
         )
 
     def test_generic_candidate_generation_never_claims_acceptance(self) -> None:

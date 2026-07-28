@@ -12,11 +12,10 @@ from pycodex.core import (
     truncate_middle_with_token_budget,
 )
 from pycodex.utils.string import (
-    _split_string,
     approx_token_count,
     sanitize_metric_tag_value,
-    truncate_to_char_boundary,
 )
+from pycodex.utils.string.truncate import _split_string
 
 
 class CoreStringUtilsTests(unittest.TestCase):
@@ -185,20 +184,6 @@ class CoreStringUtilsTests(unittest.TestCase):
         self.assertIsNone(normalize_markdown_hash_location_suffix("#74C3"))
         with self.assertRaisesRegex(TypeError, "suffix must be a string"):
             normalize_markdown_hash_location_suffix(123)  # type: ignore[arg-type]
-
-    # Source: rust_source_inferred
-    # Rust crate: codex-utils-string
-    # Rust module: src/lib.rs
-    # Rust item: take_bytes_at_char_boundary
-    # Contract: utils.string.char_boundary_truncation
-    def test_truncate_to_char_boundary_uses_character_count(self) -> None:
-        self.assertEqual(truncate_to_char_boundary("\u00e1" * 4 + "tail", 4), "\u00e1" * 4)
-        self.assertEqual(truncate_to_char_boundary("short", 50), "short")
-        self.assertEqual(truncate_to_char_boundary("short", 0), "")
-        with self.assertRaisesRegex(TypeError, "value must be a string"):
-            truncate_to_char_boundary(123, 4)  # type: ignore[arg-type]
-        with self.assertRaisesRegex(ValueError, "max_chars must be non-negative"):
-            truncate_to_char_boundary("short", -1)
 
     # Source: rust_test_migrated
     # Rust crate: codex-utils-string

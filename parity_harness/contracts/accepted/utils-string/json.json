@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-utils-string.json",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-string",
+    "module": "json",
+    "source": "codex/codex-rs/utils/string/src/json.rs",
+    "anchors": [
+      "to_ascii_json_string"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/string/json.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/string/json.py"
+    ],
+    "anchors": [
+      "to_ascii_json_string"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_string_utils.py"
+  ]
+}

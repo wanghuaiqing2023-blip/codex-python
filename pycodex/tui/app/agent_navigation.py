@@ -178,10 +178,6 @@ class AgentNavigationState:
             f"{previous_agent_shortcut()} previous, {next_agent_shortcut()} next."
         )
 
-    def ordered_thread_ids(self) -> list[str]:
-        return self.tracked_thread_ids()
-
-
 def populated_state() -> tuple[AgentNavigationState, str, str, str]:
     state = AgentNavigationState()
     main_thread_id = "00000000-0000-0000-0000-000000000101"
@@ -197,7 +193,7 @@ def populated_state() -> tuple[AgentNavigationState, str, str, str]:
 def upsert_preserves_first_seen_order() -> bool:
     state, main_thread_id, first_agent_id, second_agent_id = populated_state()
     state.upsert(first_agent_id, "Robie", "worker", True)
-    return state.ordered_thread_ids() == [
+    return state.tracked_thread_ids() == [
         main_thread_id,
         first_agent_id,
         second_agent_id,

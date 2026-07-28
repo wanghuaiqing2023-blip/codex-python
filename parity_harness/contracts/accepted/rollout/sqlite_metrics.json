@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-rollout.sqlite_metrics",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rollout",
+    "module": "sqlite_metrics",
+    "source": "codex/codex-rs/rollout/src/sqlite_metrics.rs",
+    "anchors": ["counter", "record_duration", "with_originator"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rollout/sqlite_metrics.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rollout/sqlite_metrics.py"],
+    "anchors": ["counter", "record_duration", "with_originator"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rollout_module_ownership_rs.py", "tests/test_rollout_public_api_rs.py"]
+}

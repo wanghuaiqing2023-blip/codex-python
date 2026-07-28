@@ -7,16 +7,14 @@ import os
 import sys
 import textwrap
 
-import pycodex.exec_server as exec_server
+import pycodex.exec_server.local_process as exec_server
 from pycodex.app_server.error_code import INVALID_PARAMS_ERROR_CODE, INVALID_REQUEST_ERROR_CODE
 from pycodex.exec_server import (
-    ByteChunk,
     ExecEnvPolicy,
     ExecOutputStream,
     ExecParams,
     ExecProcessEvent,
     ExecResponse,
-    LocalProcess,
     ProcessId,
     ProcessOutputChunk,
     ReadParams,
@@ -26,8 +24,14 @@ from pycodex.exec_server import (
     WriteParams,
     WriteResponse,
     WriteStatus,
+)
+from pycodex.exec_server.local_process import (
+    LocalProcess,
     _LocalPipeChildProcess,
     _local_process_maybe_mark_closed,
+)
+from pycodex.exec_server.protocol import (
+    ByteChunk,
     child_env,
     shell_environment_policy,
 )

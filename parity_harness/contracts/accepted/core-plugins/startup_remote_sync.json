@@ -1,0 +1,37 @@
+{
+  "contract_id": "codex-core-plugins.startup_remote_sync",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "startup_remote_sync",
+    "source": "codex/codex-rs/core-plugins/src/startup_remote_sync.rs",
+    "anchors": [
+      "start_startup_remote_plugin_sync_once",
+      "STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE",
+      "STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/startup_remote_sync.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/startup_remote_sync.py"
+    ],
+    "anchors": [
+      "start_startup_remote_plugin_sync_once",
+      "STARTUP_REMOTE_PLUGIN_SYNC_MARKER_FILE",
+      "STARTUP_REMOTE_PLUGIN_SYNC_PREREQUISITE_TIMEOUT"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_startup_remote_sync_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

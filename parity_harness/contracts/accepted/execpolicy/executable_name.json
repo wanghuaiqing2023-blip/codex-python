@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-execpolicy.executable_name",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy",
+    "module": "executable_name",
+    "source": "codex/codex-rs/execpolicy/src/executable_name.rs",
+    "anchors": ["executable_lookup_key", "executable_path_lookup_key"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy/executable_name.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/execpolicy/executable_name.py"],
+    "anchors": ["executable_lookup_key", "executable_path_lookup_key"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_execpolicy_executable_name.py", "tests/test_execpolicy_module_ownership_rs.py"]
+}

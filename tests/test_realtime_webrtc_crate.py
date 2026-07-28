@@ -12,9 +12,8 @@ from pycodex.realtime_webrtc import (
     RealtimeWebrtcSessionHandle,
     StartedRealtimeWebrtcSession,
     UnsupportedPlatform,
-    audio_level_to_peak,
-    message_error,
 )
+from pycodex.realtime_webrtc.native import audio_level_to_peak, message_error
 
 
 def test_public_event_shapes_and_started_session() -> None:
@@ -69,3 +68,4 @@ def test_audio_level_to_peak_clamps_and_rounds_like_rust() -> None:
     assert audio_level_to_peak(0.5) == 16384
     assert audio_level_to_peak(1.0) == 32767
     assert audio_level_to_peak(1.5) == 32767
+    assert audio_level_to_peak(2.5 / 32767) == 3

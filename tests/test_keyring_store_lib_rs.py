@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.keyring_store import (
-    CredentialStoreError,
-    KeyringNoEntryError,
-    MockKeyringStore,
-)
+import pycodex.keyring_store as keyring_store
+from pycodex.keyring_store import CredentialStoreError
+from pycodex.keyring_store.tests import KeyringNoEntryError, MockKeyringStore
+
+
+def test_mock_keyring_store_is_owned_by_public_tests_module() -> None:
+    # Rust crate/module: codex-keyring-store src/lib.rs `pub mod tests`.
+    # The mock is available through that child module and is not re-exported
+    # from the crate root.
+    assert not hasattr(keyring_store, "MockKeyringStore")
 
 
 def test_credential_store_error_wraps_underlying_error() -> None:
@@ -50,6 +55,21 @@ def test_mock_keyring_store_load_no_entry_error_returns_none() -> None:
     store.set_error("alice", KeyringNoEntryError())
 
     assert store.load("service", "alice") is None
+    assert store.load("service", "alice") == "token"
+
+
+def test_mock_keyring_store_injected_error_is_consumed_once() -> None:
+    # Rust dependency contract: keyring::mock::MockCredential clears an
+    # injected error after the next credential operation.
+    store = MockKeyringStore()
+    store.set_error("alice", RuntimeError("backend failed"))
+
+    assert store.contains("alice") is True
+    with pytest.raises(CredentialStoreError, match="backend failed"):
+        store.save("service", "alice", "token")
+
+    store.save("service", "alice", "token")
+    assert store.saved_value("alice") == "token"
 
 
 def test_mock_keyring_store_delete_no_entry_removes_cached_credential() -> None:

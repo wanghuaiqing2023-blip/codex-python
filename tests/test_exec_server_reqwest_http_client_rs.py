@@ -9,12 +9,16 @@ import pytest
 from pycodex.app_server.error_code import INVALID_PARAMS_ERROR_CODE
 from pycodex.app_server_protocol import JSONRPCErrorError
 from pycodex.exec_server import (
-    ByteChunk,
     HttpHeader,
     HttpRequestBodyDeltaNotification,
     HttpRequestParams,
     ReqwestHttpClient,
+)
+from pycodex.exec_server.client.http_client.reqwest_http_client import (
     ReqwestHttpRequestRunner,
+)
+from pycodex.exec_server.protocol import (
+    ByteChunk,
 )
 
 

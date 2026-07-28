@@ -2,11 +2,9 @@ import dataclasses
 
 import pytest
 
-from pycodex.hooks import GeneratedHookSchemas
-from pycodex.hooks import generated_hook_schemas
-from pycodex.hooks import parse_json_schema
-
-
+from pycodex.hooks.engine.schema_loader import GeneratedHookSchemas
+from pycodex.hooks.engine.schema_loader import generated_hook_schemas
+from pycodex.hooks.engine.schema_loader import parse_json_schema
 def test_loads_generated_hook_schemas():
     # Rust crate/module/test:
     # codex-hooks/src/engine/schema_loader.rs::tests::loads_generated_hook_schemas.

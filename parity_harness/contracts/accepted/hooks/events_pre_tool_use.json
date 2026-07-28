@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-hooks.events.pre_tool_use",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "events::pre_tool_use",
+    "source": "codex/codex-rs/hooks/src/events/pre_tool_use.rs",
+    "anchors": [
+      "PreToolUseOutcome",
+      "PreToolUseRequest",
+      "PreToolUseHandlerData"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/events/pre_tool_use.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/events/pre_tool_use.py"
+    ],
+    "anchors": [
+      "PreToolUseOutcome",
+      "PreToolUseRequest",
+      "PreToolUseHandlerData"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_events_pre_tool_use_rs.py"
+  ]
+}

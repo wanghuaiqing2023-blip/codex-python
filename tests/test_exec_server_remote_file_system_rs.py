@@ -11,7 +11,6 @@ from pycodex.exec_server import (
     CopyOptions,
     CreateDirectoryOptions,
     ExecServerError,
-    ExecServerTransportParams,
     FileMetadata,
     FileSystemSandboxContext,
     FsCopyParams,
@@ -29,10 +28,17 @@ from pycodex.exec_server import (
     FsRemoveResponse,
     FsWriteFileParams,
     FsWriteFileResponse,
-    LazyRemoteExecServerClient,
     ReadDirectoryEntry,
-    RemoteFileSystemBoundary,
     RemoveOptions,
+)
+from pycodex.exec_server.client import (
+    LazyRemoteExecServerClient,
+)
+from pycodex.exec_server.client_api import (
+    ExecServerTransportParams,
+)
+from pycodex.exec_server.remote_file_system import (
+    RemoteFileSystemBoundary,
     map_remote_error,
     remote_sandbox_context,
 )

@@ -48,5 +48,8 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_execpolicy_lib.py",
+    "tests/test_execpolicy_module_ownership_rs.py"
+  ]
 }

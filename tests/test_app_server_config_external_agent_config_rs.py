@@ -1,3 +1,6 @@
+import asyncio
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -92,6 +95,65 @@ def test_external_agent_session_source_path_accepts_only_existing_jsonl_under_pr
         assert service.external_agent_session_source_path(non_jsonl) is None
         assert service.external_agent_session_source_path(outside) is None
         assert service.external_agent_session_source_path(projects / "repo" / "missing.jsonl") is None
+
+
+def test_external_agent_config_service_detects_prepares_and_records_sessions():
+    # Rust contract: app-server/config/external_agent_config.rs delegates home
+    # session detection, preparation, and ledger recording to the
+    # codex-external-agent-sessions crate.
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        codex_home = root / ".codex"
+        external_home = root / ".claude"
+        cwd = root / "repo"
+        session = external_home / "projects" / "repo" / "session.jsonl"
+        cwd.mkdir(parents=True)
+        session.parent.mkdir(parents=True)
+        session.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "message": {"role": "user", "content": "hello"},
+                            "cwd": str(cwd),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "assistant",
+                            "message": {"role": "assistant", "content": "hi"},
+                            "cwd": str(cwd),
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                    ),
+                ]
+            ),
+            encoding="utf-8",
+        )
+        service = ExternalAgentConfigService.new_for_test(codex_home, external_home)
+
+        detected = asyncio.run(
+            service.detect(ExternalAgentConfigDetectOptions(include_home=True))
+        )
+
+        assert len(detected) == 1
+        assert detected[0].item_type is ExternalAgentConfigMigrationItemType.SESSIONS
+        assert detected[0].details is not None
+        assert [item.path for item in detected[0].details.sessions] == [session]
+
+        pending = service.prepare_validated_session_imports(
+            detected[0].details.sessions
+        )
+        assert len(pending) == 1
+        assert pending[0].source_path == session
+        assert pending[0].session.cwd == cwd
+
+        service.record_imported_session(session, "thread-1")
+        assert asyncio.run(
+            service.detect(ExternalAgentConfigDetectOptions(include_home=True))
+        ) == []
 
 
 def test_default_external_agent_home_prefers_home_then_userprofile_then_relative():

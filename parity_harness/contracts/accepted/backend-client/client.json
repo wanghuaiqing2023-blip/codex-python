@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-backend-client.client",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-backend-client",
+    "module": "client",
+    "source": "codex/codex-rs/backend-client/src/client.rs",
+    "anchors": [
+      "AddCreditsNudgeCreditType",
+      "Client",
+      "PathStyle",
+      "RequestError",
+      "create_task",
+      "from_base_url",
+      "get_config_requirements_file",
+      "get_rate_limits",
+      "get_rate_limits_many",
+      "get_task_details",
+      "get_task_details_with_body",
+      "is_unauthorized"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/backend_client/client.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/backend_client/client.py"
+    ],
+    "anchors": [
+      "AddCreditsNudgeCreditType",
+      "Client",
+      "PathStyle",
+      "RequestError",
+      "create_task",
+      "from_base_url",
+      "get_config_requirements_file",
+      "get_rate_limits",
+      "get_rate_limits_many",
+      "get_task_details",
+      "get_task_details_with_body",
+      "is_unauthorized"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_backend_client_client_rs.py",
+    "tests/test_backend_client_module_ownership_rs.py"
+  ]
+}

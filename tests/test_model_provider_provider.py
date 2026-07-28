@@ -1,12 +1,14 @@
 import asyncio
 
 from pycodex.model_provider import (
-    DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL,
-    ConfiguredModelProvider,
     ProviderAccountError,
     ProviderAccountState,
     ProviderCapabilities,
     create_model_provider,
+)
+from pycodex.model_provider.provider import (
+    DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL,
+    ConfiguredModelProvider,
 )
 from pycodex.model_provider.amazon_bedrock import AmazonBedrockModelProvider
 from pycodex.model_provider.models_endpoint import OpenAiModelsEndpoint

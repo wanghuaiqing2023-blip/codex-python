@@ -9,7 +9,7 @@
       "rust_root": "codex/codex-rs/agent-graph-store",
       "cargo_toml": "codex/codex-rs/agent-graph-store/Cargo.toml",
       "python_root": "pycodex/agent_graph_store",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "agent-identity",
@@ -57,7 +57,7 @@
       "rust_root": "codex/codex-rs/app-server-client",
       "cargo_toml": "codex/codex-rs/app-server-client/Cargo.toml",
       "python_root": "pycodex/app_server_client",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "app-server-daemon",
@@ -90,7 +90,7 @@
       "rust_root": "codex/codex-rs/app-server-transport",
       "cargo_toml": "codex/codex-rs/app-server-transport/Cargo.toml",
       "python_root": "pycodex/app_server_transport",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "app_test_support",
@@ -180,7 +180,7 @@
       "rust_root": "codex/codex-rs/codex-client",
       "cargo_toml": "codex/codex-rs/codex-client/Cargo.toml",
       "python_root": "pycodex/codex_client",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "cloud-requirements",
@@ -196,7 +196,7 @@
       "rust_root": "codex/codex-rs/cloud-tasks",
       "cargo_toml": "codex/codex-rs/cloud-tasks/Cargo.toml",
       "python_root": "pycodex/cloud_tasks",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "cloud-tasks-client",
@@ -204,7 +204,7 @@
       "rust_root": "codex/codex-rs/cloud-tasks-client",
       "cargo_toml": "codex/codex-rs/cloud-tasks-client/Cargo.toml",
       "python_root": "pycodex/cloud_tasks_client",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "cloud-tasks-mock-client",
@@ -236,7 +236,7 @@
       "rust_root": "codex/codex-rs/config",
       "cargo_toml": "codex/codex-rs/config/Cargo.toml",
       "python_root": "pycodex/config",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "connectors",
@@ -309,7 +309,7 @@
       "rust_root": "codex/codex-rs/exec-server",
       "cargo_toml": "codex/codex-rs/exec-server/Cargo.toml",
       "python_root": "pycodex/exec_server",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "execpolicy",
@@ -430,7 +430,7 @@
       "rust_root": "codex/codex-rs/hooks",
       "cargo_toml": "codex/codex-rs/hooks/Cargo.toml",
       "python_root": "pycodex/hooks",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "install-context",
@@ -446,7 +446,7 @@
       "rust_root": "codex/codex-rs/keyring-store",
       "cargo_toml": "codex/codex-rs/keyring-store/Cargo.toml",
       "python_root": "pycodex/keyring_store",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "linux-sandbox",
@@ -521,7 +521,7 @@
       "rust_root": "codex/codex-rs/memories/write",
       "cargo_toml": "codex/codex-rs/memories/write/Cargo.toml",
       "python_root": "pycodex/memories/write",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "message-history",
@@ -577,7 +577,7 @@
       "rust_root": "codex/codex-rs/otel",
       "cargo_toml": "codex/codex-rs/otel/Cargo.toml",
       "python_root": "pycodex/otel",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "plugin",
@@ -641,7 +641,7 @@
       "rust_root": "codex/codex-rs/rollout",
       "cargo_toml": "codex/codex-rs/rollout/Cargo.toml",
       "python_root": "pycodex/rollout",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "rollout-trace",
@@ -649,7 +649,7 @@
       "rust_root": "codex/codex-rs/rollout-trace",
       "cargo_toml": "codex/codex-rs/rollout-trace/Cargo.toml",
       "python_root": "pycodex/rollout_trace",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "sandboxing",
@@ -673,7 +673,7 @@
       "rust_root": "codex/codex-rs/shell-command",
       "cargo_toml": "codex/codex-rs/shell-command/Cargo.toml",
       "python_root": "pycodex/shell_command",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "shell-escalation",
@@ -889,7 +889,7 @@
       "rust_root": "codex/codex-rs/utils/readiness",
       "cargo_toml": "codex/codex-rs/utils/readiness/Cargo.toml",
       "python_root": "pycodex/utils/readiness",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-rustls-provider",

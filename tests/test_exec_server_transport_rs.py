@@ -9,17 +9,23 @@ from typing import Any
 
 import pytest
 
-import pycodex.exec_server as exec_server
+import pycodex.exec_server.server.transport as exec_server
 from pycodex.exec_server import (
-    ConnectionProcessor,
     DEFAULT_LISTEN_URL,
     ExecServerRuntimePaths,
-    ExecServerListenTransport,
-    ExecServerListenTransportKind,
     ExecServerListenUrlParseError,
-    ExecServerListenUrlParseErrorKind,
+)
+from pycodex.exec_server.protocol import (
     INITIALIZED_METHOD,
     INITIALIZE_METHOD,
+)
+from pycodex.exec_server.server.processor import (
+    ConnectionProcessor,
+)
+from pycodex.exec_server.server.transport import (
+    ExecServerListenTransport,
+    ExecServerListenTransportKind,
+    ExecServerListenUrlParseErrorKind,
     parse_listen_url,
     run_stdio_connection_with_io,
 )

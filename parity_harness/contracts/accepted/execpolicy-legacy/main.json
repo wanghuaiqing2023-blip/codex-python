@@ -1,0 +1,37 @@
+{
+  "contract_id": "codex-execpolicy-legacy.bin.codex-execpolicy-legacy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy-legacy",
+    "module": "bin::codex-execpolicy-legacy",
+    "source": "codex/codex-rs/execpolicy-legacy/src/main.rs",
+    "anchors": [
+      "ExecArg",
+      "check_command",
+      "main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy_legacy/main.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/execpolicy_legacy/main.py"
+    ],
+    "anchors": [
+      "ExecArg",
+      "check_command",
+      "main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_execpolicy_legacy_main_rs.py",
+    "tests/test_execpolicy_legacy_module_ownership_rs.py"
+  ]
+}

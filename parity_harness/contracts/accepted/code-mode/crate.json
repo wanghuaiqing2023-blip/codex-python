@@ -48,5 +48,9 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_codex_code_mode_lib_rs.py",
+    "tests/test_codex_code_mode_modules_rs.py",
+    "tests/test_core_code_mode.py"
+  ]
 }

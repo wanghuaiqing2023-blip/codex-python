@@ -12,20 +12,17 @@ from __future__ import annotations
 import asyncio
 import ast
 import base64
-import errno
 from functools import cmp_to_key
 import ipaddress
 import json
 import shutil
 from datetime import datetime, timezone
 import io
-import socket
 import re
 import os
 import subprocess
 import sys
 import tokenize
-import threading
 import time
 import platform
 import tempfile
@@ -40,6 +37,7 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from pycodex import __version__
+from pycodex import stdio_to_uds
 from pycodex.config import CliConfigOverrides, ConfigOverride
 from pycodex.core import maybe_migrate_personality, PersonalityMigrationStatus
 from pycodex.exec import (
@@ -48,8 +46,7 @@ from pycodex.exec import (
     ExecConfigPlanError,
     ExecRunError,
     ExecSessionConfig,
-    HumanEventProcessor,
-    JsonEventProcessor,
+    EventProcessorWithJsonOutput,
     build_exec_config_bootstrap_plan,
     direct_resume_thread_id,
     ensure_exec_trusted_directory,
@@ -63,6 +60,7 @@ from pycodex.exec import (
     RemoteAppServerConnectArgs,
     RemoteAppServerEndpoint,
 )
+from pycodex.exec.event_processor_with_human_output import EventProcessorWithHumanOutput
 from pycodex.exec.local_runtime import (
     align_local_http_exec_resume_model_client,
     build_default_local_http_exec_runtime,
@@ -158,7 +156,7 @@ from pycodex.cli.doctor import (
 )
 from pycodex.tui import run_tui
 from pycodex.tui.app.runtime import CoreExecActiveThreadRuntime, TuiAppRuntime
-from pycodex.execpolicy import ExecPolicyPrefixRule
+from pycodex.execpolicy import PrefixRule
 from pycodex.git_utils import current_branch_name, default_branch_name
 from pycodex.utils.home_dir import find_codex_home
 from pycodex.core.config.edit import CONFIG_TOML_FILE, read_toml_mapping, write_toml_mapping
@@ -3324,18 +3322,7 @@ def _run_stdio_to_uds(
         print("failed to connect to socket: missing socket path.", file=stderr)
         return 2
 
-    if not hasattr(socket, "AF_UNIX"):
-        print("Unix domain sockets are not supported on this platform.", file=stderr)
-        return 2
-
     socket_path = command_args[0]
-
-    try:
-        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        stream.connect(socket_path)
-    except OSError as exc:
-        print(f"failed to connect to socket at {socket_path}: {exc}", file=stderr)
-        return 2
 
     if stdin is None:
         input_stream = sys.stdin
@@ -3346,53 +3333,17 @@ def _run_stdio_to_uds(
     else:
         input_stream = stdin
 
-    stdin_obj = input_stream.buffer if hasattr(input_stream, "buffer") else input_stream
-    stdout_obj = sys.stdout.buffer if hasattr(sys.stdout, "buffer") else sys.stdout
-
-    exceptions: list[BaseException] = []
-
-    def _copy_stdin_to_socket() -> None:
-        try:
-            while True:
-                chunk = stdin_obj.read(8192)
-                if not chunk:
-                    break
-                if isinstance(chunk, str):
-                    chunk = chunk.encode("utf-8")
-                if chunk:
-                    stream.sendall(chunk)
-            try:
-                stream.shutdown(socket.SHUT_WR)
-            except OSError as exc:
-                if exc.errno != errno.ENOTCONN:
-                    raise
-        except BaseException as exc:
-            exceptions.append(exc)
-
-    def _copy_socket_to_stdout() -> None:
-        try:
-            while True:
-                chunk = stream.recv(8192)
-                if not chunk:
-                    break
-                stdout_obj.write(chunk)
-                stdout_obj.flush()
-        except BaseException as exc:
-            exceptions.append(exc)
-
-    stdin_thread = threading.Thread(target=_copy_stdin_to_socket)
-    stdout_thread = threading.Thread(target=_copy_socket_to_stdout)
-    stdin_thread.start()
-    stdout_thread.start()
-    stdin_thread.join()
-    stdout_thread.join()
-
-    stream.close()
-
-    for exc in exceptions:
+    original_stdin = sys.stdin
+    if not hasattr(input_stream, "buffer"):
+        input_stream = SimpleNamespace(buffer=input_stream)
+    sys.stdin = input_stream
+    try:
+        asyncio.run(stdio_to_uds.run(socket_path))
+    except Exception as exc:
         print(f"failed to relay data between stdio and socket: {exc}", file=stderr)
         return 2
-
+    finally:
+        sys.stdin = original_stdin
     return 0
 
 
@@ -4721,7 +4672,7 @@ def _execpolicy_rules_for_local_http_exec(
     cwd: Path | str,
     *,
     ignore_rules: bool,
-) -> tuple[ExecPolicyPrefixRule, ...]:
+) -> tuple[PrefixRule, ...]:
     if ignore_rules:
         return ()
     rule_paths = _default_execpolicy_rule_paths(codex_home, cwd)
@@ -4729,7 +4680,7 @@ def _execpolicy_rules_for_local_http_exec(
         return ()
     rules_by_program, _host_executables = _load_execpolicy_rules(rule_paths)
     return tuple(
-        ExecPolicyPrefixRule.new(rule.pattern, rule.decision, rule.justification)
+        PrefixRule.new(rule.pattern, rule.decision, rule.justification)
         for rule in _iter_execpolicy_rules(rules_by_program)
     )
 
@@ -6268,7 +6219,7 @@ def _login_help_text() -> str:
 def _build_exec_session_config(
     bootstrap: ExecConfigBootstrapPlan,
     *,
-    exec_policy_rules: Iterable[ExecPolicyPrefixRule] = (),
+    exec_policy_rules: Iterable[PrefixRule] = (),
 ) -> ExecSessionConfig:
     """Build the minimal session config for remote execution startup."""
 
@@ -6292,10 +6243,10 @@ def _build_resume_args(exec_cli: ExecCli) -> tuple[dict[str, object] | None, str
     return resume_args, direct_resume_thread_id(exec_cli.resume.session_id)
 
 
-def _build_noninteractive_exec_event_processor(exec_cli: ExecCli) -> HumanEventProcessor | JsonEventProcessor:
+def _build_noninteractive_exec_event_processor(exec_cli: ExecCli) -> EventProcessorWithHumanOutput | EventProcessorWithJsonOutput:
     if exec_cli.json:
-        return JsonEventProcessor(last_message_path=exec_cli.last_message_file)
-    return HumanEventProcessor(last_message_path=exec_cli.last_message_file)
+        return EventProcessorWithJsonOutput(last_message_path=exec_cli.last_message_file)
+    return EventProcessorWithHumanOutput(last_message_path=exec_cli.last_message_file)
 
 
 def _resolve_exec_remote_endpoint(
@@ -6482,7 +6433,7 @@ def _run_noninteractive_exec(
                 bootstrap_plan,
                 exec_policy_rules=exec_policy_rules,
             )
-            if isinstance(processor, HumanEventProcessor):
+            if isinstance(processor, EventProcessorWithHumanOutput):
                 processor.configure_from_config(session_config)
             auth_json = read_auth_json()
             model_client, provider, model_info, resolved_auth = build_default_core_exec_runtime(
@@ -6558,7 +6509,7 @@ def _run_noninteractive_exec(
                 bootstrap_plan,
                 exec_policy_rules=exec_policy_rules,
             )
-            if isinstance(processor, HumanEventProcessor):
+            if isinstance(processor, EventProcessorWithHumanOutput):
                 processor.configure_from_config(session_config)
             auth_json = read_auth_json()
             model_client, provider, model_info, resolved_auth = build_default_local_http_exec_runtime(
@@ -6604,7 +6555,7 @@ def _run_noninteractive_exec(
                 ),
                 rollout_path=resolved_resume_rollout_path,
             )
-            if isinstance(processor, JsonEventProcessor):
+            if isinstance(processor, EventProcessorWithJsonOutput):
                 processor.print_config_summary(summary_config, plan.prompt_summary, summary_session, output=out)
             else:
                 processor.print_config_summary(
@@ -6717,7 +6668,7 @@ def _run_noninteractive_exec(
         session_config = _build_exec_session_config(bootstrap_plan)
         resume_args, resolved_thread_id = _build_resume_args(exec_cli)
         processor = _build_noninteractive_exec_event_processor(exec_cli)
-        if isinstance(processor, HumanEventProcessor):
+        if isinstance(processor, EventProcessorWithHumanOutput):
             processor.configure_from_config(session_config)
         result = remote_exec_session_connect_and_run(
             connect_args,

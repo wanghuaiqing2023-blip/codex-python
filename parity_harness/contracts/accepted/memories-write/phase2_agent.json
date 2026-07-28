@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-memories-write.phase2.agent",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "phase2::agent",
+    "source": "codex/codex-rs/memories/write/src/phase2.rs",
+    "anchors": [
+      "get_config",
+      "get_prompt",
+      "handle",
+      "loop_agent"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/phase2/agent.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/write/phase2/agent.py"
+    ],
+    "anchors": [
+      "get_config",
+      "get_prompt",
+      "handle",
+      "loop_agent"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_phase2_rs.py"
+  ]
+}

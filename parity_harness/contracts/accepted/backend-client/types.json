@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-backend-client.types",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-backend-client",
+    "module": "types",
+    "source": "codex/codex-rs/backend-client/src/types.rs",
+    "anchors": [
+      "CodeTaskDetailsResponse",
+      "CodeTaskDetailsResponseExt",
+      "ConfigFileResponse",
+      "ContentFragment",
+      "CreditStatusDetails",
+      "PaginatedListTaskListItem",
+      "PlanType",
+      "RateLimitReachedKind",
+      "RateLimitStatusDetails",
+      "RateLimitStatusPayload",
+      "RateLimitWindowSnapshot",
+      "TaskListItem"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/backend_client/types.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/backend_client/types.py"
+    ],
+    "anchors": [
+      "CodeTaskDetailsResponse",
+      "CodeTaskDetailsResponseExt",
+      "ConfigFileResponse",
+      "ContentFragment",
+      "CreditStatusDetails",
+      "PaginatedListTaskListItem",
+      "PlanType",
+      "RateLimitReachedKind",
+      "RateLimitStatusDetails",
+      "RateLimitStatusPayload",
+      "RateLimitWindowSnapshot",
+      "TaskListItem"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_backend_client_types_rs.py",
+    "tests/test_backend_client_module_ownership_rs.py"
+  ]
+}

@@ -12,6 +12,7 @@ from pycodex.state import GoalAccountingMode, ThreadGoalStatus as StateGoalStatu
 
 from .accounting import BudgetLimitedGoalDisposition
 from .events import GoalEventEmitter
+from .metrics import GoalMetrics
 from .runtime import GoalRuntimeHandle
 from .tool import GoalToolExecutor
 
@@ -28,11 +29,13 @@ class GoalExtension:
         event_emitter: GoalEventEmitter,
         goals_enabled: Callable[[Any], bool],
         host_session: Any = None,
+        metrics_client: Any = None,
     ) -> None:
         self.state_dbs = state_dbs
         self.event_emitter = event_emitter
         self.goals_enabled = goals_enabled
         self.host_session = host_session
+        self.metrics = GoalMetrics(metrics_client)
 
     async def on_thread_start(self, input: Any) -> None:
         enabled = bool(self.goals_enabled(input.config))
@@ -44,6 +47,7 @@ class GoalExtension:
                 self.state_dbs,
                 thread_id=input.thread_store.level_id(),
                 event_emitter=self.event_emitter,
+                metrics=self.metrics,
                 enabled=enabled,
             ),
         )
@@ -140,6 +144,7 @@ class GoalExtension:
             self.state_dbs,
             runtime.accounting_state,
             self.event_emitter,
+            self.metrics,
         )
         return [
             GoalToolExecutor.get(*args),
@@ -159,6 +164,7 @@ def install_with_backend(
         GoalEventEmitter(registry.event_sink()),
         goals_enabled,
         host_session=_host_capabilities.get("host_session"),
+        metrics_client=_host_capabilities.get("metrics_client"),
     )
     registry.thread_lifecycle_contributor(extension)
     registry.config_contributor(extension)

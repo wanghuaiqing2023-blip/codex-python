@@ -10,15 +10,12 @@
       "CredentialStoreError",
       "DefaultKeyringStore",
       "KeyringStore",
-      "MockKeyringStore",
-      "contains",
-      "credential",
       "into_error",
       "message",
       "new",
-      "saved_value",
-      "set_error",
-      "delete"
+      "delete",
+      "load",
+      "save"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
@@ -32,15 +29,12 @@
       "CredentialStoreError",
       "DefaultKeyringStore",
       "KeyringStore",
-      "MockKeyringStore",
-      "contains",
-      "credential",
       "into_error",
       "message",
       "new",
-      "saved_value",
-      "set_error",
-      "delete"
+      "delete",
+      "load",
+      "save"
     ]
   },
   "checks": {
@@ -48,5 +42,7 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_keyring_store_lib_rs.py"
+  ]
 }

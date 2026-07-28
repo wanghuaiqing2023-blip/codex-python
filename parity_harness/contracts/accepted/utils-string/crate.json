@@ -44,5 +44,7 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_core_string_utils.py"
+  ]
 }

@@ -10,19 +10,19 @@ Status: `complete`
 
 ## Module Mapping
 
-- `src/sed_command.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/arg_type.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/arg_matcher.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/valid_exec.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/arg_resolver.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/opt.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/program.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/policy.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/exec_call.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/policy_parser.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/execv_checker.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/main.rs` -> `pycodex/execpolicy_legacy/__init__.py`
-- `src/error.rs` -> `pycodex/execpolicy_legacy/__init__.py`
+- `src/sed_command.rs` -> `pycodex/execpolicy_legacy/sed_command.py`
+- `src/arg_type.rs` -> `pycodex/execpolicy_legacy/arg_type.py`
+- `src/arg_matcher.rs` -> `pycodex/execpolicy_legacy/arg_matcher.py`
+- `src/valid_exec.rs` -> `pycodex/execpolicy_legacy/valid_exec.py`
+- `src/arg_resolver.rs` -> `pycodex/execpolicy_legacy/arg_resolver.py`
+- `src/opt.rs` -> `pycodex/execpolicy_legacy/opt.py`
+- `src/program.rs` -> `pycodex/execpolicy_legacy/program.py`
+- `src/policy.rs` -> `pycodex/execpolicy_legacy/policy.py`
+- `src/exec_call.rs` -> `pycodex/execpolicy_legacy/exec_call.py`
+- `src/policy_parser.rs` -> `pycodex/execpolicy_legacy/policy_parser.py`
+- `src/execv_checker.rs` -> `pycodex/execpolicy_legacy/execv_checker.py`
+- `src/main.rs` -> `pycodex/execpolicy_legacy/main.py`
+- `src/error.rs` -> `pycodex/execpolicy_legacy/error.py`
 
 ## Rust Behavior Covered
 

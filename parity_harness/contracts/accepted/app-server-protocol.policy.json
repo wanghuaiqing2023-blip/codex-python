@@ -4,17 +4,8 @@
   "python_root": "pycodex/app_server_protocol",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "bin::export",
-    "bin::write_schema_fixtures",
-    "crate::protocol",
-    "crate::protocol::mappers",
-    "crate::protocol::serde_helpers",
-    "crate::protocol::v2"
-  ],
-  "uncovered_python_files": [
-    "pycodex/app_server_protocol/elicitation.py"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
   "allowed_unowned": []
 }

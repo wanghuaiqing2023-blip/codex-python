@@ -1,0 +1,49 @@
+{
+  "contract_id": "codex-code-mode.runtime",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-code-mode",
+    "module": "runtime",
+    "source": "codex/codex-rs/code-mode/src/runtime/mod.rs",
+    "anchors": [
+      "CodeModeNestedToolCall",
+      "CompletionState",
+      "DEFAULT_EXEC_YIELD_TIME_MS",
+      "DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL",
+      "DEFAULT_WAIT_YIELD_TIME_MS",
+      "ExecuteRequest",
+      "ExecuteToPendingOutcome",
+      "PendingRuntimeMode",
+      "RuntimeCommand",
+      "RuntimeControlCommand",
+      "RuntimeEvent",
+      "RuntimeResponse"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/code_mode/runtime/__init__.py",
+    "layout": "module-package",
+    "implementation_files": ["pycodex/code_mode/runtime/__init__.py"],
+    "anchors": [
+      "CodeModeNestedToolCall",
+      "CompletionState",
+      "DEFAULT_EXEC_YIELD_TIME_MS",
+      "DEFAULT_MAX_OUTPUT_TOKENS_PER_EXEC_CALL",
+      "DEFAULT_WAIT_YIELD_TIME_MS",
+      "ExecuteRequest",
+      "ExecuteToPendingOutcome",
+      "PendingRuntimeMode",
+      "RuntimeCommand",
+      "RuntimeControlCommand",
+      "RuntimeEvent",
+      "RuntimeResponse"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_codex_code_mode_modules_rs.py",
+    "tests/test_core_code_mode.py"
+  ]
+}

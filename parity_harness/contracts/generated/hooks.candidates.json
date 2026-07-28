@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 24,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 24,
+    "modules_with_candidates": 24,
+    "modules_with_anchors": 24
   },
   "contracts": [
     {
@@ -23,7 +23,14 @@
         "source": "codex/codex-rs/hooks/src/bin/write_hooks_schema_fixtures.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/bin/write_hooks_schema_fixtures.py",
+          "anchor_candidates": [
+            "main"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +80,14 @@
         "source": "codex/codex-rs/hooks/src/config_rules.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/config_rules.py",
+          "anchor_candidates": [
+            "hook_states_from_stack"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +103,15 @@
         "source": "codex/codex-rs/hooks/src/declarations.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/declarations.py",
+          "anchor_candidates": [
+            "PluginHookDeclaration",
+            "plugin_hook_declarations"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +127,25 @@
         "source": "codex/codex-rs/hooks/src/engine/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/engine/__init__.py",
+          "anchor_candidates": [
+            "CommandShell",
+            "ConfiguredHandler",
+            "HookListEntry",
+            "new",
+            "preview_permission_request",
+            "preview_post_compact",
+            "preview_post_tool_use",
+            "preview_pre_compact",
+            "preview_pre_tool_use",
+            "preview_session_start",
+            "preview_stop",
+            "preview_user_prompt_submit"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +161,15 @@
         "source": "codex/codex-rs/hooks/src/engine/command_runner.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/engine/command_runner.py",
+          "anchor_candidates": [
+            "CommandRunResult",
+            "run_command"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +185,16 @@
         "source": "codex/codex-rs/hooks/src/engine/discovery.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/engine/discovery.py",
+          "anchor_candidates": [
+            "DiscoveryResult",
+            "discover_handlers",
+            "allows"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +210,20 @@
         "source": "codex/codex-rs/hooks/src/engine/dispatcher.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/engine/dispatcher.py",
+          "anchor_candidates": [
+            "ParsedHandler",
+            "completed_summary",
+            "execute_handlers",
+            "running_summary",
+            "select_handlers",
+            "select_handlers_for_matcher_inputs",
+            "scope_for_event"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +239,25 @@
         "source": "codex/codex-rs/hooks/src/engine/output_parser.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/engine/output_parser.py",
+          "anchor_candidates": [
+            "PermissionRequestDecision",
+            "PermissionRequestOutput",
+            "PostToolUseOutput",
+            "PreCompactOutput",
+            "PreToolUseOutput",
+            "SessionStartOutput",
+            "StatelessHookOutput",
+            "StopOutput",
+            "UniversalOutput",
+            "UserPromptSubmitOutput",
+            "looks_like_json",
+            "parse_permission_request"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +273,16 @@
         "source": "codex/codex-rs/hooks/src/engine/schema_loader.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/engine/schema_loader.py",
+          "anchor_candidates": [
+            "GeneratedHookSchemas",
+            "generated_hook_schemas",
+            "parse_json_schema"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -201,7 +298,21 @@
         "source": "codex/codex-rs/hooks/src/events/mod.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/__init__.py",
+          "anchor_candidates": [
+            "module:common",
+            "module:compact",
+            "module:permission_request",
+            "module:post_tool_use",
+            "module:pre_tool_use",
+            "module:session_start",
+            "module:stop",
+            "module:user_prompt_submit"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -217,7 +328,25 @@
         "source": "codex/codex-rs/hooks/src/events/common.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/common.py",
+          "anchor_candidates": [
+            "SubagentHookContext",
+            "append_additional_context",
+            "flatten_additional_contexts",
+            "hook_completed_for_tool_use",
+            "hook_run_for_tool_use",
+            "join_text_chunks",
+            "matcher_inputs",
+            "matcher_pattern_for_event",
+            "matches_matcher",
+            "serialization_failure_hook_events",
+            "serialization_failure_hook_events_for_tool_use",
+            "trimmed_non_empty"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -233,7 +362,18 @@
         "source": "codex/codex-rs/hooks/src/events/compact.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/compact.py",
+          "anchor_candidates": [
+            "PostCompactRequest",
+            "PreCompactOutcome",
+            "PreCompactRequest",
+            "StatelessHookOutcome",
+            "CompactHandlerData"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -249,7 +389,18 @@
         "source": "codex/codex-rs/hooks/src/events/permission_request.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/permission_request.py",
+          "anchor_candidates": [
+            "PermissionRequestDecision",
+            "PermissionRequestOutcome",
+            "PermissionRequestRequest",
+            "PermissionRequestHandlerData",
+            "resolve_permission_request_decision"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -265,7 +416,16 @@
         "source": "codex/codex-rs/hooks/src/events/post_tool_use.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/post_tool_use.py",
+          "anchor_candidates": [
+            "PostToolUseOutcome",
+            "PostToolUseRequest",
+            "PostToolUseHandlerData"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -281,7 +441,16 @@
         "source": "codex/codex-rs/hooks/src/events/pre_tool_use.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/pre_tool_use.py",
+          "anchor_candidates": [
+            "PreToolUseOutcome",
+            "PreToolUseRequest",
+            "PreToolUseHandlerData"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -297,7 +466,21 @@
         "source": "codex/codex-rs/hooks/src/events/session_start.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/session_start.py",
+          "anchor_candidates": [
+            "SessionStartOutcome",
+            "SessionStartRequest",
+            "SessionStartSource",
+            "StartHookTarget",
+            "as_str",
+            "SessionStartHandlerData",
+            "event_name",
+            "matcher_input"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -313,7 +496,19 @@
         "source": "codex/codex-rs/hooks/src/events/stop.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/stop.py",
+          "anchor_candidates": [
+            "StopHookTarget",
+            "StopOutcome",
+            "StopRequest",
+            "StopHandlerData",
+            "event_name",
+            "matcher_input"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -329,7 +524,16 @@
         "source": "codex/codex-rs/hooks/src/events/user_prompt_submit.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/events/user_prompt_submit.py",
+          "anchor_candidates": [
+            "UserPromptSubmitOutcome",
+            "UserPromptSubmitRequest",
+            "UserPromptSubmitHandlerData"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -345,7 +549,15 @@
         "source": "codex/codex-rs/hooks/src/legacy_notify.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/legacy_notify.py",
+          "anchor_candidates": [
+            "legacy_notify_json",
+            "notify_hook"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -361,7 +573,20 @@
         "source": "codex/codex-rs/hooks/src/output_spill.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/output_spill.py",
+          "anchor_candidates": [
+            "HookOutputSpiller",
+            "maybe_spill_prompt_fragments",
+            "maybe_spill_text",
+            "maybe_spill_texts",
+            "new",
+            "HOOK_OUTPUTS_DIR",
+            "HOOK_OUTPUT_TOKEN_LIMIT"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -377,7 +602,25 @@
         "source": "codex/codex-rs/hooks/src/registry.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/registry.py",
+          "anchor_candidates": [
+            "HookListOutcome",
+            "Hooks",
+            "HooksConfig",
+            "command_from_argv",
+            "dispatch",
+            "list_hooks",
+            "new",
+            "preview_permission_request",
+            "preview_post_compact",
+            "preview_post_tool_use",
+            "preview_pre_compact",
+            "preview_pre_tool_use"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -393,7 +636,25 @@
         "source": "codex/codex-rs/hooks/src/schema.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/schema.py",
+          "anchor_candidates": [
+            "SubagentCommandInputFields",
+            "write_schema_fixtures",
+            "PERMISSION_REQUEST_INPUT_FIXTURE",
+            "PERMISSION_REQUEST_OUTPUT_FIXTURE",
+            "POST_COMPACT_INPUT_FIXTURE",
+            "POST_COMPACT_OUTPUT_FIXTURE",
+            "POST_TOOL_USE_INPUT_FIXTURE",
+            "POST_TOOL_USE_OUTPUT_FIXTURE",
+            "PRE_COMPACT_INPUT_FIXTURE",
+            "PRE_COMPACT_OUTPUT_FIXTURE",
+            "PRE_TOOL_USE_INPUT_FIXTURE",
+            "PRE_TOOL_USE_OUTPUT_FIXTURE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -409,7 +670,21 @@
         "source": "codex/codex-rs/hooks/src/types.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/hooks/types.py",
+          "anchor_candidates": [
+            "Hook",
+            "HookEvent",
+            "HookEventAfterAgent",
+            "HookPayload",
+            "HookResponse",
+            "HookResult",
+            "execute",
+            "should_abort_operation"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

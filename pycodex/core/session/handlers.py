@@ -37,7 +37,7 @@ from pycodex.protocol import (
     ThreadRolledBackEvent,
     WarningEvent,
 )
-from pycodex.rollout import (
+from pycodex.rollout.recorder import (
     append_event_msg_to_rollout,
     read_rollout_reconstruction_from_rollout,
 )

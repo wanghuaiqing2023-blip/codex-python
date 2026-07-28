@@ -2,12 +2,14 @@
 
 from . import remote
 from .config_rules import *  # noqa: F401,F403
-from .injections import *  # noqa: F401,F403
+from .injection import *  # noqa: F401,F403
 from .invocation_utils import *  # noqa: F401,F403
+from .loader import *  # noqa: F401,F403
 from .manager import *  # noqa: F401,F403
 from .mention_counts import build_skill_name_counts
 from .model import *  # noqa: F401,F403
 from .rendering import *  # noqa: F401,F403
+from .system import *  # noqa: F401,F403
 
 __all__ = [
     "SkillDependencies",
@@ -31,6 +33,7 @@ __all__ = [
     "SkillLoadOutcome",
     "SkillRoot",
     "SkillsManager",
+    "SkillsLoadInput",
     "build_implicit_skill_path_indexes",
     "canonicalize_if_exists",
     "command_basename",

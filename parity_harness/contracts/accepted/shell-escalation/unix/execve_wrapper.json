@@ -1,0 +1,26 @@
+{
+  "contract_id": "codex-shell-escalation.unix.execve_wrapper",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-escalation",
+    "module": "unix::execve_wrapper",
+    "source": "codex/codex-rs/shell-escalation/src/unix/execve_wrapper.rs",
+    "anchors": ["ExecveWrapperCli", "main_execve_wrapper"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_escalation/unix/execve_wrapper.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_escalation/unix/execve_wrapper.py"
+    ],
+    "anchors": ["ExecveWrapperCli", "main_execve_wrapper"]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": ["tests/test_shell_escalation_crate.py"]
+}

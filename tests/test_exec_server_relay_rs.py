@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 
@@ -7,21 +7,25 @@ import pytest
 from pycodex.app_server_protocol.jsonrpc_lite import JSONRPCMessage, JSONRPCRequest
 from pycodex.exec_server import (
     ExecServerError,
-    RelayData,
-    RelayFrameBodyKind,
-    RelayMessageFrame,
-    RelayReset,
-    RelayResume,
+)
+from pycodex.exec_server.connection import (
     JsonRpcConnectionEvent,
     JsonRpcWebSocketMessage,
+)
+from pycodex.exec_server.relay import (
+    RelayFrameBodyKind,
     decode_relay_message_frame,
     encode_relay_message_frame,
     harness_connection_from_websocket,
     jsonrpc_payload,
     run_multiplexed_environment,
 )
-
-
+from pycodex.exec_server.relay_proto.generated import (
+    RelayData,
+    RelayMessageFrame,
+    RelayReset,
+    RelayResume,
+)
 def test_relay_resume_frame_uses_rust_prost_wire_shape() -> None:
     # Rust crate/module:
     # codex-exec-server/src/relay.rs::RelayMessageFrame::resume and

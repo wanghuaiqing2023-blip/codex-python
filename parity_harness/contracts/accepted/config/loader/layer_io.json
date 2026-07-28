@@ -1,0 +1,43 @@
+{
+  "contract_id": "codex-config.loader.layer_io",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-config",
+    "module": "loader::layer_io",
+    "source": "codex/codex-rs/config/src/loader/layer_io.rs",
+    "anchors": [
+      "LoadedConfigLayers",
+      "ManagedConfigFromMdm",
+      "load_config_layers_internal",
+      "managed_config_default_path",
+      "read_config_from_path",
+      "CODEX_MANAGED_CONFIG_SYSTEM_PATH"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/config/loader/layer_io.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/config/loader/layer_io.py"
+    ],
+    "anchors": [
+      "LoadedConfigLayers",
+      "ManagedConfigFromMdm",
+      "load_config_layers_internal",
+      "managed_config_default_path",
+      "read_config_from_path",
+      "CODEX_MANAGED_CONFIG_SYSTEM_PATH"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_config_loader.py",
+    "tests/test_config_module_ownership_rs.py"
+  ]
+}

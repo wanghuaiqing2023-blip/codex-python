@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-shell-escalation.unix.socket",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-escalation",
+    "module": "unix::socket",
+    "source": "codex/codex-rs/shell-escalation/src/unix/socket.rs",
+    "anchors": [
+      "AsyncDatagramSocket",
+      "AsyncSocket",
+      "from_fd",
+      "from_raw_fd",
+      "into_inner",
+      "pair",
+      "receive",
+      "receive_with_fds",
+      "send",
+      "send_with_fds",
+      "LENGTH_PREFIX_SIZE",
+      "MAX_DATAGRAM_SIZE"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_escalation/unix/socket.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_escalation/unix/socket.py"
+    ],
+    "anchors": [
+      "AsyncDatagramSocket",
+      "AsyncSocket",
+      "from_fd",
+      "from_raw_fd",
+      "into_inner",
+      "pair",
+      "receive",
+      "receive_with_fds",
+      "send",
+      "send_with_fds",
+      "LENGTH_PREFIX_SIZE",
+      "MAX_DATAGRAM_SIZE"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": ["tests/test_shell_escalation_crate.py"]
+}

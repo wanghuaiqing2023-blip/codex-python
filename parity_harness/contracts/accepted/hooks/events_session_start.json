@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-hooks.events.session_start",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "events::session_start",
+    "source": "codex/codex-rs/hooks/src/events/session_start.rs",
+    "anchors": [
+      "SessionStartOutcome",
+      "SessionStartRequest",
+      "SessionStartSource",
+      "StartHookTarget",
+      "as_str",
+      "SessionStartHandlerData",
+      "event_name",
+      "matcher_input"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/events/session_start.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/events/session_start.py"
+    ],
+    "anchors": [
+      "SessionStartOutcome",
+      "SessionStartRequest",
+      "SessionStartSource",
+      "StartHookTarget",
+      "as_str",
+      "SessionStartHandlerData",
+      "event_name",
+      "matcher_input"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_events_session_start_rs.py"
+  ]
+}

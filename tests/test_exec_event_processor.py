@@ -10,33 +10,35 @@ from pycodex.exec import (
     CollabToolCallStatus,
     CodexStatus,
     ExecSessionConfig,
-    HumanEventProcessor,
-    JsonEventProcessor,
+    EventProcessorWithJsonOutput,
     ThreadEvent,
     Usage,
-    blended_total,
     collab_tool_call_item,
     command_execution_item,
-    config_summary_entries,
-    config_summary_lines,
     exec_item_from_turn_item,
     exec_item_from_app_server_item,
     exec_turn_completed_notification,
     exec_turn_started_notification,
-    format_with_separators,
     final_message_from_turn_items,
     handle_last_message,
-    human_item_completed_lines,
-    human_item_started_lines,
-    human_notification_lines,
     map_todo_items,
     notification_method,
     notification_params,
+    usage_from_notification,
+    web_search_item,
+)
+from pycodex.exec.event_processor_with_human_output import (
+    EventProcessorWithHumanOutput,
+    blended_total,
+    config_summary_entries,
+    config_summary_lines,
+    format_with_separators,
+    human_item_completed_lines,
+    human_item_started_lines,
+    human_notification_lines,
     should_print_final_message_to_stdout,
     should_print_final_message_to_tty,
     summarize_permission_profile,
-    usage_from_notification,
-    web_search_item,
 )
 from pycodex.protocol import (
     AgentMessageContent,
@@ -73,7 +75,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(json.loads(event.to_json_line()), event.to_mapping())
 
     def test_mcp_tool_call_result_preserves_meta_as_underscore_meta(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         item = TurnItem.mcp_tool_call(
             McpToolCallItem(
                 id="mcp-1",
@@ -100,7 +102,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertIsNone(serialized["item"]["result"]["structured_content"])
 
     def test_started_and_completed_tool_call_reuses_exec_item_id(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         started_item = TurnItem.mcp_tool_call(
             McpToolCallItem(
                 id="mcp-1",
@@ -128,7 +130,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed.events[0].to_mapping()["item"]["id"], "item_0")
 
     def test_json_processor_mcp_tool_call_begin_and_end_emit_item_events(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -195,7 +197,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_mcp_tool_call_failure_sets_failed_status(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         collected = processor.collect_thread_events(
             {
@@ -231,7 +233,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_mcp_tool_call_null_arguments_and_structured_content(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -284,7 +286,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "last-message.txt"
             output_path.write_text("keep existing contents", encoding="utf-8")
-            processor = JsonEventProcessor(output_path)
+            processor = EventProcessorWithJsonOutput(output_path)
             agent_item = TurnItem.agent_message(
                 AgentMessageItem("msg-1", (AgentMessageContent.text_content("partial answer"),))
             )
@@ -298,7 +300,7 @@ class ExecEventProcessorTests(unittest.TestCase):
             self.assertEqual(output_path.read_text(encoding="utf-8"), "keep existing contents")
 
     def test_interrupted_turn_clears_stale_final_message_state(self):
-        processor = HumanEventProcessor()
+        processor = EventProcessorWithHumanOutput()
         stderr = io.StringIO()
         agent_item = TurnItem.agent_message(
             AgentMessageItem("msg-1", (AgentMessageContent.text_content("partial answer"),))
@@ -314,7 +316,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "turn interrupted\n")
 
     def test_human_processor_typed_failed_turn_prints_error(self):
-        processor = HumanEventProcessor()
+        processor = EventProcessorWithHumanOutput()
         stderr = io.StringIO()
 
         status = processor.collect_turn_completed(status="Failed", error="turn failed", stderr=stderr)
@@ -323,7 +325,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "ERROR: turn failed\n")
 
     def test_json_processor_typed_turn_completed_normalizes_status_aliases(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         agent_item = TurnItem.agent_message(
             AgentMessageItem("msg-1", (AgentMessageContent.text_content("final answer"),))
         )
@@ -335,7 +337,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(processor.final_message, "final answer")
 
     def test_json_processor_typed_turn_completed_closes_running_todo_list(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         processor.collect_thread_events(
             {
                 "method": "turn/plan/updated",
@@ -353,7 +355,7 @@ class ExecEventProcessorTests(unittest.TestCase):
     def test_completed_turn_writes_last_agent_message_on_final_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "last-message.txt"
-            processor = JsonEventProcessor(output_path)
+            processor = EventProcessorWithJsonOutput(output_path)
             agent_item = TurnItem.agent_message(
                 AgentMessageItem("msg-1", (AgentMessageContent.text_content("final answer"),))
             )
@@ -387,7 +389,7 @@ class ExecEventProcessorTests(unittest.TestCase):
             self.assertIn("Warning: no last agent message; wrote empty content", stderr.getvalue())
 
     def test_warning_collects_error_item_and_json_lines_emit(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         output = io.StringIO()
 
         collected = processor.collect_warning("config warning")
@@ -399,13 +401,13 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(payload["item"]["message"], "config warning")
 
     def test_warning_notifications_fall_back_to_legacy_message_field(self):
-        json_processor = JsonEventProcessor()
+        json_processor = EventProcessorWithJsonOutput()
         human_stderr = io.StringIO()
 
         collected = json_processor.collect_thread_events(
             {"method": "configWarning", "params": {"message": "legacy warning"}}
         )
-        HumanEventProcessor().process_server_notification(
+        EventProcessorWithHumanOutput().process_server_notification(
             {"method": "deprecationNotice", "params": {"message": "legacy deprecated"}},
             stderr=human_stderr,
         )
@@ -414,7 +416,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(human_stderr.getvalue(), "deprecated: legacy deprecated\n")
 
     def test_json_processor_ignores_guardian_auto_approval_review_notifications(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -453,7 +455,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed.events, ())
 
     def test_json_processor_command_execution_declined_status_matches_upstream_enum(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         collected = processor.collect_thread_events(
             {
@@ -480,7 +482,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(item["status"], "declined")
 
     def test_json_processor_empty_reasoning_items_are_ignored(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         reasoning = TurnItem.reasoning(ReasoningItem("reasoning-1", (), ("raw reasoning",)))
 
         collected = processor.collect_thread_events(
@@ -491,7 +493,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(collected.events, ())
 
     def test_json_processor_unsupported_completed_items_do_not_consume_synthetic_ids(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         ignored = TurnItem.plan(PlanItem("plan-1", "ignored plan"))
         message = TurnItem.agent_message(AgentMessageItem("message-1", (AgentMessageContent.text_content("hello"),)))
 
@@ -508,7 +510,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(message_collected.events[0].to_mapping()["item"]["text"], "hello")
 
     def test_json_processor_agent_message_item_updates_final_message(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         message = TurnItem.agent_message(AgentMessageItem("msg-1", (AgentMessageContent.text_content("hello"),)))
 
         collected = processor.collect_thread_events(
@@ -523,7 +525,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(processor.final_message, "hello")
 
     def test_json_processor_agent_message_item_started_is_ignored(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         message = TurnItem.agent_message(AgentMessageItem("msg-1", (AgentMessageContent.text_content("hello"),)))
 
         collected = processor.collect_thread_events(
@@ -535,7 +537,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertIsNone(processor.final_message)
 
     def test_json_processor_reasoning_items_emit_summary_not_raw_content(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         reasoning = TurnItem.reasoning(ReasoningItem("reasoning-1", ("safe summary",), ("raw reasoning",)))
 
         collected = processor.collect_thread_events(
@@ -550,7 +552,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertNotIn("raw reasoning", json.dumps(item))
 
     def test_json_processor_reasoning_item_completed_uses_synthetic_id(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         reasoning = TurnItem.reasoning(ReasoningItem("rs-1", ("thinking...",), ("raw",)))
 
         collected = processor.collect_thread_events(
@@ -564,7 +566,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_warning_event_produces_error_item(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         message = (
             "Heads up: Long conversations and multiple compactions can cause the model "
             "to be less accurate. Start a new conversation when possible to keep "
@@ -583,7 +585,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_web_search_completion_preserves_query_and_search_action(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         web_search = TurnItem.web_search(
             WebSearchItem(
                 "search-1",
@@ -660,7 +662,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(declined_file_change.to_mapping()["status"], "failed")
 
     def test_json_processor_file_change_completion_maps_change_kinds(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         collected = processor.collect_thread_events(
             {
@@ -696,7 +698,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_file_change_declined_maps_to_failed_status_like_upstream_jsonl(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         collected = processor.collect_thread_events(
             {
@@ -747,7 +749,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(raw_app_server.to_mapping()["action"], {"type": "other"})
 
     def test_json_processor_web_search_notifications_keep_raw_app_server_action_boundary(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         started = processor.collect_thread_events(
             {
                 "method": "item/started",
@@ -780,7 +782,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed.events[0].to_mapping()["item"]["action"], {"type": "other"})
 
     def test_json_processor_web_search_start_and_completion_reuse_item_id(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -825,7 +827,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed_item["action"], {"type": "search", "query": "rust async await"})
 
     def test_json_processor_maps_typed_command_execution_turn_item(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         turn_item = TurnItem.command_execution(
             CommandExecutionItem(
                 id="cmd-1",
@@ -873,7 +875,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_dispatches_app_server_notifications(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         output = io.StringIO()
 
         status = processor.process_server_notification(
@@ -957,7 +959,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(processor.final_message, "done")
 
     def test_json_processor_config_warning_uses_additional_details_alias(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         output = io.StringIO()
 
         status = processor.process_server_notification(
@@ -973,7 +975,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(event["item"], {"id": "item_0", "type": "error", "message": "bad config (ignored key)"})
 
     def test_json_processor_token_usage_update_is_emitted_on_turn_completion(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         usage_update = processor.collect_thread_events(
             {
@@ -1020,7 +1022,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_tracks_plan_todo_lifecycle(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -1053,7 +1055,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed.events[-1].to_mapping()["type"], "turn.completed")
 
     def test_json_processor_plan_update_emits_started_then_updated_then_completed(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -1127,7 +1129,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed.events[-1].to_mapping()["type"], "turn.completed")
 
     def test_json_processor_plan_update_after_completion_starts_new_todo_list_with_new_id(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -1152,7 +1154,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(restarted.events[0].to_mapping()["item"]["id"], "item_1")
 
     def test_json_processor_turn_completion_reconciles_started_items_from_turn_items(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -1202,7 +1204,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed.events[-1].to_mapping()["type"], "turn.completed")
 
     def test_human_processor_dispatches_notifications_and_failed_turns(self):
-        processor = HumanEventProcessor()
+        processor = EventProcessorWithHumanOutput()
         stderr = io.StringIO()
 
         self.assertEqual(
@@ -1242,7 +1244,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertIn("ERROR: boom (retry later)\n", output)
 
     def test_human_deprecation_notice_uses_additional_details_alias(self):
-        processor = HumanEventProcessor()
+        processor = EventProcessorWithHumanOutput()
         stderr = io.StringIO()
 
         status = processor.process_server_notification(
@@ -1257,7 +1259,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "deprecated: old flag\nuse new flag\n")
 
     def test_json_processor_model_reroute_reason_matches_upstream_debug_name(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         collected = processor.collect_thread_events(
             {
@@ -1357,7 +1359,7 @@ class ExecEventProcessorTests(unittest.TestCase):
 
     def test_human_processor_configures_reasoning_visibility_from_exec_config(self):
         item = TurnItem.reasoning(ReasoningItem("reason-1", ("summary",), ("raw",)))
-        processor = HumanEventProcessor().configure_from_config(
+        processor = EventProcessorWithHumanOutput().configure_from_config(
             ExecSessionConfig(
                 model=None,
                 model_provider_id=None,
@@ -1371,7 +1373,7 @@ class ExecEventProcessorTests(unittest.TestCase):
 
         self.assertEqual(stderr.getvalue(), "raw\n")
 
-        hidden = HumanEventProcessor().configure_from_config({"hideAgentReasoning": True})
+        hidden = EventProcessorWithHumanOutput().configure_from_config({"hideAgentReasoning": True})
         hidden_stderr = io.StringIO()
         hidden.collect_item_completed(item, stderr=hidden_stderr)
         self.assertEqual(hidden_stderr.getvalue(), "")
@@ -1409,7 +1411,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_human_processor_renders_item_notifications(self):
-        processor = HumanEventProcessor()
+        processor = EventProcessorWithHumanOutput()
         stderr = io.StringIO()
 
         processor.process_server_notification(
@@ -1439,7 +1441,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "exec\npwd in C:/work\n succeeded in 3ms:\nC:/work\n")
 
     def test_human_processor_renders_typed_started_and_completed_items(self):
-        processor = HumanEventProcessor()
+        processor = EventProcessorWithHumanOutput()
         stderr = io.StringIO()
         command = TurnItem.command_execution(
             CommandExecutionItem(
@@ -1574,7 +1576,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_app_server_collab_tool_notifications_reuse_item_id(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         output = io.StringIO()
         started = {
             "method": "item/started",
@@ -1616,7 +1618,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(events[1]["item"]["agents_states"]["thread-worker"]["status"], "completed")
 
     def test_json_processor_collab_spawn_begin_and_end_emit_item_events(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         started = processor.collect_thread_events(
             {
@@ -1683,7 +1685,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
     def test_json_processor_unsupported_started_turn_items_do_not_consume_item_ids(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         dynamic = TurnItem.dynamic_tool_call(
             DynamicToolCallItem("dyn-1", None, "tool", {}, DynamicToolCallStatus.IN_PROGRESS)
         )
@@ -1889,8 +1891,8 @@ class ExecEventProcessorTests(unittest.TestCase):
         human_stderr = io.StringIO()
         json_stdout = io.StringIO()
 
-        HumanEventProcessor().print_config_summary(config, "hi", session, stderr=human_stderr, version="1.2.3")
-        JsonEventProcessor().print_config_summary(config, "hi", session, output=json_stdout)
+        EventProcessorWithHumanOutput().print_config_summary(config, "hi", session, stderr=human_stderr, version="1.2.3")
+        EventProcessorWithJsonOutput().print_config_summary(config, "hi", session, output=json_stdout)
 
         self.assertIn("OpenAI Codex v1.2.3\n--------\n", human_stderr.getvalue())
         self.assertIn("sandbox: read-only\n", human_stderr.getvalue())
@@ -1941,7 +1943,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(final_message_from_turn_items((first, plan, second)), "second")
 
     def test_json_processor_turn_completion_recovers_final_message_from_turn_items(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         final = TurnItem.agent_message(AgentMessageItem("msg-1", (AgentMessageContent.text_content("final answer"),)))
 
         completed = processor.collect_thread_events(
@@ -1967,7 +1969,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(processor.final_message, "final answer")
 
     def test_json_processor_turn_completion_overwrites_stale_final_message_from_turn_items(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         stale = TurnItem.agent_message(AgentMessageItem("msg-stale", (AgentMessageContent.text_content("stale answer"),)))
         final = TurnItem.agent_message(AgentMessageItem("msg-1", (AgentMessageContent.text_content("final answer"),)))
 
@@ -1986,7 +1988,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(processor.final_message, "final answer")
 
     def test_json_processor_turn_completion_preserves_streamed_final_message_when_turn_items_are_empty(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         streamed = TurnItem.agent_message(
             AgentMessageItem("msg-streamed", (AgentMessageContent.text_content("streamed answer"),))
         )
@@ -2003,7 +2005,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(processor.final_message, "streamed answer")
 
     def test_json_processor_failed_turn_clears_stale_final_message(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         partial = TurnItem.agent_message(
             AgentMessageItem("msg-1", (AgentMessageContent.text_content("partial answer"),))
         )
@@ -2029,7 +2031,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertIsNone(processor.final_message)
 
     def test_json_processor_turn_completion_falls_back_to_final_plan_text(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         plan = TurnItem.plan(PlanItem("plan-1", "ship the typed adapter"))
 
         completed = processor.collect_thread_events(
@@ -2044,7 +2046,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(processor.final_message, "ship the typed adapter")
 
     def test_json_processor_turn_failure_prefers_structured_error_message(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
 
         error = processor.collect_thread_events(
             {
@@ -2067,7 +2069,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertFalse(should_print_final_message_to_tty("answer", True, True, True))
 
     def test_human_processor_prints_final_message_to_stdout_when_not_tty(self):
-        processor = HumanEventProcessor()
+        processor = EventProcessorWithHumanOutput()
         stdout = io.StringIO()
         stderr = io.StringIO()
         agent_item = TurnItem.agent_message(
@@ -2085,7 +2087,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "final answer\n")
 
     def test_exec_turn_notifications_use_protocol_v2_envelopes(self):
-        processor = JsonEventProcessor()
+        processor = EventProcessorWithJsonOutput()
         output = io.StringIO()
         agent_item = TurnItem.agent_message(
             AgentMessageItem("msg-1", (AgentMessageContent.text_content("final answer"),))

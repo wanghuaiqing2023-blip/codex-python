@@ -1,0 +1,56 @@
+{
+  "contract_id": "codex-analytics.reducer",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-analytics",
+    "module": "reducer",
+    "source": "codex/codex-rs/analytics/src/reducer.rs",
+    "anchors": [
+      "AnalyticsReducer",
+      "CompletedTurnState",
+      "ConnectionState",
+      "PendingReviewState",
+      "PendingTurnStartState",
+      "PendingTurnSteerState",
+      "ThreadAnalyticsState",
+      "ThreadMetadataState",
+      "ToolItemKey",
+      "TurnState",
+      "normalize_path_for_skill_id",
+      "skill_id_for_local_skill"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/analytics/reducer.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/analytics/reducer.py"
+    ],
+    "anchors": [
+      "AnalyticsReducer",
+      "CompletedTurnState",
+      "ConnectionState",
+      "PendingReviewState",
+      "PendingTurnStartState",
+      "PendingTurnSteerState",
+      "ThreadAnalyticsState",
+      "ThreadMetadataState",
+      "ToolItemKey",
+      "TurnState",
+      "normalize_path_for_skill_id",
+      "skill_id_for_local_skill"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_analytics_reducer_rs.py",
+    "tests/test_analytics_review_rs.py",
+    "tests/test_analytics_tool_item_events_rs.py"
+  ]
+}

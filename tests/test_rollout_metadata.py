@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 import uuid
 
@@ -13,7 +14,7 @@ from pycodex.core import (
     parse_timestamp_to_utc,
 )
 import json
-from pycodex.rollout import GitInfo, SessionMeta, SessionMetaLine
+from pycodex.protocol import GitInfo, SessionMeta, SessionMetaLine, ThreadId
 
 
 class FakeBackfillRuntime:
@@ -67,13 +68,13 @@ def test_builder_from_items_falls_back_to_filename(tmp_path: Path):
     builder = builder_from_items([{"type": "compacted", "payload": {}}], path)
 
     assert builder is not None
-    assert builder.id == thread_id
+    assert builder.id == ThreadId.from_string(thread_id)
     assert builder.rollout_path == path
     assert builder.created_at == datetime(2026, 1, 27, 12, 34, 56, tzinfo=timezone.utc)
-    assert builder.source == "vscode"
+    assert str(builder.source) == "vscode"
     assert builder.cwd == Path()
-    assert builder.sandbox_policy == "read-only"
-    assert builder.approval_mode == "on-request"
+    assert builder.sandbox_policy.type == "read-only"
+    assert builder.approval_mode.value == "on-request"
 
 
 def test_builder_from_items_uses_session_meta_before_filename(tmp_path: Path):
@@ -100,9 +101,9 @@ def test_builder_from_items_uses_session_meta_before_filename(tmp_path: Path):
     builder = builder_from_items([{"type": "session_meta", "payload": payload}], path)
 
     assert builder is not None
-    assert builder.id == meta_id
+    assert builder.id == ThreadId.from_string(meta_id)
     assert builder.created_at == datetime(2026, 1, 28, 1, 2, 3, tzinfo=timezone.utc)
-    assert builder.source == "cli"
+    assert str(builder.source) == "cli"
     assert builder.thread_source == "user"
     assert builder.cwd == tmp_path
     assert builder.cli_version == "0.0.0"
@@ -137,8 +138,8 @@ def test_builder_from_items_finds_session_meta_after_non_metadata_item(tmp_path:
     )
 
     assert builder is not None
-    assert builder.id == meta_id
-    assert builder.source == "cli"
+    assert builder.id == ThreadId.from_string(meta_id)
+    assert str(builder.source) == "cli"
 
 
 def test_builder_from_session_meta_rejects_invalid_timestamp(tmp_path: Path):
@@ -176,7 +177,7 @@ def test_extract_metadata_from_rollout_uses_session_meta(tmp_path: Path):
 
     outcome = extract_metadata_from_rollout(path, "openai")
 
-    assert outcome.metadata.id == thread_id
+    assert outcome.metadata.id == ThreadId.from_string(thread_id)
     assert outcome.metadata.rollout_path == path
     assert outcome.metadata.created_at == datetime(2026, 1, 27, 12, 34, 56, tzinfo=timezone.utc)
     assert outcome.metadata.updated_at >= outcome.metadata.created_at
@@ -255,11 +256,11 @@ def test_backfill_sessions_resumes_from_watermark_and_marks_complete(tmp_path: P
     assert stats.scanned == 1
     assert stats.upserted == 1
     assert stats.failed == 0
-    assert first_id not in runtime.threads
-    assert second_id in runtime.threads
+    assert ThreadId.from_string(first_id) not in runtime.threads
+    assert ThreadId.from_string(second_id) in runtime.threads
     assert runtime.status == "complete"
     assert runtime.complete_watermark == backfill_watermark_for_path(codex_home, second_path)
-    assert runtime.memory_modes[second_id] == "enabled"
+    assert runtime.memory_modes[ThreadId.from_string(second_id)] == "enabled"
 
 
 def test_backfill_sessions_preserves_existing_git_branch_and_fills_missing_git_fields(tmp_path: Path):
@@ -285,16 +286,18 @@ def test_backfill_sessions_preserves_existing_git_branch_and_fills_missing_git_f
     }
     line = {"timestamp": "2026-01-27T12:34:56Z", "type": "session_meta", "payload": payload}
     path.write_text(json.dumps(line, separators=(",", ":")) + "\n", encoding="utf-8")
-    existing = extract_metadata_from_rollout(path, "test-provider").metadata
-    existing = existing.prefer_existing_git_info(
-        type("ExistingGit", (), {"git_sha": None, "git_branch": "sqlite-branch", "git_origin_url": None})()
+    existing = replace(
+        extract_metadata_from_rollout(path, "test-provider").metadata,
+        git_sha=None,
+        git_branch="sqlite-branch",
+        git_origin_url=None,
     )
     runtime = FakeBackfillRuntime()
-    runtime.threads[thread_id] = existing
+    runtime.threads[ThreadId.from_string(thread_id)] = existing
 
     stats = backfill_sessions(runtime, codex_home, "test-provider")
 
-    persisted = runtime.threads[thread_id]
+    persisted = runtime.threads[ThreadId.from_string(thread_id)]
     assert stats.upserted == 1
     assert persisted.git_sha == "rollout-sha"
     assert persisted.git_branch == "sqlite-branch"
@@ -324,7 +327,7 @@ def test_backfill_sessions_normalizes_cwd_before_upsert(tmp_path: Path):
 
     backfill_sessions(runtime, codex_home, "test-provider")
 
-    assert runtime.threads[thread_id].cwd == normalize_cwd_for_state_db(session_cwd)
+    assert runtime.threads[ThreadId.from_string(thread_id)].cwd == normalize_cwd_for_state_db(session_cwd)
 
 
 def test_backfill_sessions_marks_archived_rollout_metadata(tmp_path: Path):
@@ -350,8 +353,9 @@ def test_backfill_sessions_marks_archived_rollout_metadata(tmp_path: Path):
     stats = backfill_sessions(runtime, codex_home, "test-provider")
 
     assert stats.upserted == 1
-    assert runtime.threads[thread_id].archived_at is not None
-    assert runtime.threads[thread_id].archived_at == runtime.threads[thread_id].updated_at
+    metadata = runtime.threads[ThreadId.from_string(thread_id)]
+    assert metadata.archived_at is not None
+    assert metadata.archived_at == metadata.updated_at
 
 
 def test_state_db_init_backfills_before_returning(tmp_path: Path):
@@ -390,7 +394,7 @@ def test_state_db_init_backfills_before_returning(tmp_path: Path):
     returned = init_state_runtime_with_backfill(runtime, codex_home, "test-provider")
 
     assert returned is runtime
-    metadata = runtime.get_thread(thread_id)
+    metadata = runtime.get_thread(ThreadId.from_string(thread_id))
     assert metadata is not None
     assert metadata.rollout_path == rollout_path
     assert runtime.status == "complete"

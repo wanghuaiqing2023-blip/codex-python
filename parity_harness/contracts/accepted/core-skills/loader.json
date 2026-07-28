@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-core-skills.loader",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-skills",
+    "module": "loader",
+    "source": "codex/codex-rs/core-skills/src/loader.rs",
+    "anchors": ["SkillRoot", "load_skills_from_roots", "skill_roots"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_skills/loader.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/core_skills/loader.py"],
+    "anchors": ["SkillRoot", "load_skills_from_roots", "skill_roots"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_skills_manager_rs.py", "tests/test_core_skills_module_ownership_rs.py"]
+}

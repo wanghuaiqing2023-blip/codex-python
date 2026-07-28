@@ -8,14 +8,17 @@ from pycodex.app_server_protocol.jsonrpc_lite import JSONRPCErrorError
 from pycodex.exec_server import (
     CODEX_FS_HELPER_ARG1,
     ExecServerRuntimePaths,
-    FS_WRITE_FILE_METHOD,
     FileSystemSandboxContext,
-    FsSandboxCommandOutput,
-    FsHelperPayload,
-    FsHelperResponse,
     FsWriteFileParams,
     FsWriteFileResponse,
+)
+from pycodex.exec_server.fs_helper import (
+    FsHelperPayload,
+    FsHelperResponse,
     FsHelperRequest,
+)
+from pycodex.exec_server.fs_sandbox import (
+    FsSandboxCommandOutput,
     FsSandboxExecRequest,
     FileSystemSandboxRunner,
     add_helper_runtime_permissions,
@@ -23,6 +26,9 @@ from pycodex.exec_server import (
     helper_env_key_is_allowed,
     helper_read_roots,
     sandbox_cwd,
+)
+from pycodex.exec_server.protocol import (
+    FS_WRITE_FILE_METHOD,
 )
 from pycodex.protocol import (
     FileSystemAccessMode,

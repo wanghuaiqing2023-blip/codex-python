@@ -95,11 +95,15 @@ def test_crate_root_reexport_identity_for_cross_module_anchors() -> None:
     # Rust crate/module: codex-exec-server/src/lib.rs
     # Contract: public names are canonical crate-root exports, not alternate
     # compatibility aliases with different behavior.
-    assert exec_server.ExecServerClient.__module__ == "pycodex.exec_server"
-    assert exec_server.ExecServerRuntimePaths.__module__ == "pycodex.exec_server"
-    assert exec_server.ProcessId.__module__ == "pycodex.exec_server"
-    assert exec_server.ReqwestHttpClient.__module__ == "pycodex.exec_server"
-    assert exec_server.HttpResponseBodyStream.__module__ == "pycodex.exec_server"
+    assert exec_server.ExecServerClient.__module__ == "pycodex.exec_server.client"
+    assert exec_server.ExecServerRuntimePaths.__module__ == "pycodex.exec_server.runtime_paths"
+    assert exec_server.ProcessId.__module__ == "pycodex.exec_server.process_id"
+    assert exec_server.ReqwestHttpClient.__module__ == (
+        "pycodex.exec_server.client.http_client.reqwest_http_client"
+    )
+    assert exec_server.HttpResponseBodyStream.__module__ == (
+        "pycodex.exec_server.client.http_client.response_body_stream"
+    )
     assert isinstance(exec_server.LOCAL_FS, exec_server.LocalFileSystem)
 
 

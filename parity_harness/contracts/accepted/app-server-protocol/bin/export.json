@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-app-server-protocol.bin.export",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-protocol",
+    "module": "bin::export",
+    "source": "codex/codex-rs/app-server-protocol/src/bin/export.rs",
+    "anchors": [
+      "main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_protocol/bin/export.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/app_server_protocol/bin/export.py"
+    ],
+    "anchors": [
+      "main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_app_server_protocol_remaining_ownership_rs.py"
+  ]
+}

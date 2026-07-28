@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-execpolicy.parser",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy",
+    "module": "parser",
+    "source": "codex/codex-rs/execpolicy/src/parser.rs",
+    "anchors": ["PolicyParser", "build", "parse"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy/parser.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/execpolicy/parser.py"],
+    "anchors": ["PolicyParser", "build", "parse"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_execpolicy_parser.py", "tests/test_execpolicy_host_executable.py", "tests/test_execpolicy_module_ownership_rs.py"]
+}

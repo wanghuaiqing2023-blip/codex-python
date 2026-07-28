@@ -19,7 +19,7 @@ from pycodex.extension_api import (
     ExtensionRegistry,
     ExtensionRegistryBuilder,
 )
-from pycodex.otel import global_metrics
+from pycodex.otel.metrics import global_metrics
 from pycodex.protocol import CodexErr, ThreadGoalUpdatedEvent
 
 

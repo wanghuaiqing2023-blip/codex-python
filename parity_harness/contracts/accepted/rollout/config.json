@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-rollout.config",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rollout",
+    "module": "config",
+    "source": "codex/codex-rs/rollout/src/config.rs",
+    "anchors": ["Config", "RolloutConfig", "RolloutConfigView", "from_view"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rollout/config.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rollout/config.py"],
+    "anchors": ["Config", "RolloutConfig", "RolloutConfigView", "from_view"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_rollout_module_ownership_rs.py", "tests/test_rollout_public_api_rs.py"]
+}

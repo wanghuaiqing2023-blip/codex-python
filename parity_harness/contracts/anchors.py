@@ -25,6 +25,7 @@ _RUST_USE_RE = re.compile(
 _INLINE_MODULE_RE = re.compile(
     r"(?m)^(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{"
 )
+_INCLUDE_RE = re.compile(r'include!\(\s*"([^"]+)"\s*\)\s*;')
 
 
 def read_source(path: Path) -> str:
@@ -96,7 +97,7 @@ def production_rust_text(text: str) -> str:
             continue
         if pending_test_item:
             stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
+            if not stripped or stripped.startswith(("#", "//", "/*", "*")):
                 continue
             if "{" in line:
                 base_depth = depth
@@ -131,6 +132,21 @@ def _inline_module_bodies(text: str, name: str) -> tuple[str, ...]:
     return tuple(bodies)
 
 
+def _expand_relative_includes(text: str, source_dir: Path, seen: frozenset[Path]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        included = (source_dir / match.group(1)).resolve()
+        if included in seen or not included.is_file():
+            return match.group(0)
+        included_text = production_rust_text(read_source(included))
+        return _expand_relative_includes(
+            included_text,
+            included.parent,
+            seen | {included},
+        )
+
+    return _INCLUDE_RE.sub(replace, text)
+
+
 def rust_module_text(path: Path, module: str) -> str:
     """Return only the Rust body owned by ``module`` for a shared source file."""
     text = textwrap.dedent(production_rust_text(read_source(path)))
@@ -159,7 +175,7 @@ def rust_module_text(path: Path, module: str) -> str:
             return ""
         # Conditional cfg variants of one inline module share one coordinate.
         text = "\n".join(bodies)
-    return text
+    return _expand_relative_includes(text, path.parent, frozenset({path.resolve()}))
 
 
 def rust_symbols(path: Path) -> tuple[tuple[str, bool], ...]:
@@ -273,15 +289,20 @@ def fallback_module_anchors(
     if wildcard_targets and owner_module in python_modules:
         matched_reexports.append(owner_module)
     reexports = tuple(f"reexport:{name}" for name in dict.fromkeys(matched_reexports))
-    if owner_path.name != "__init__.py":
-        return reexports[:12]
     module_names = _MODULE_RE.findall(rust_text)
     package = root / owner_path.parent
+    imported_modules = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level > 0
+        for alias in node.names
+    }
     modules = tuple(
         f"module:{name}"
         for name in module_names
         if (package / f"{name}.py").is_file()
         or (package / name / "__init__.py").is_file()
+        if owner_path.name == "__init__.py" or name in imported_modules
     )
     return (*modules, *reexports)[:12]
 

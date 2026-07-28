@@ -1,0 +1,23 @@
+{
+  "contract_id": "codex-web-search-extension.schema",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-web-search-extension",
+    "module": "schema",
+    "source": "codex/codex-rs/ext/web-search/src/schema.rs",
+    "anchors": ["commands_schema"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ext/web_search/schema.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/ext/web_search/schema.py"],
+    "anchors": ["commands_schema"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_web_search_extension_rs.py",
+    "tests/test_web_search_extension_module_ownership_rs.py"
+  ]
+}

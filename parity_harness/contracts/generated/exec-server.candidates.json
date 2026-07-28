@@ -10,10 +10,10 @@
     "generated_candidates_cannot_claim_parity": true
   },
   "summary": {
-    "rust_modules": 37,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "rust_modules": 40,
+    "python_files": 40,
+    "modules_with_candidates": 40,
+    "modules_with_anchors": 38
   },
   "contracts": [
     {
@@ -57,7 +57,25 @@
         "source": "codex/codex-rs/exec-server/src/client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/client/__init__.py",
+          "anchor_candidates": [
+            "ExecServerClient",
+            "ExecServerError",
+            "LazyRemoteExecServerClient",
+            "connect",
+            "get",
+            "process_id",
+            "read",
+            "register_session",
+            "session_id",
+            "subscribe_events",
+            "subscribe_wake",
+            "terminate"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +91,17 @@
         "source": "codex/codex-rs/exec-server/src/client/http_client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/client/http_client/__init__.py",
+          "anchor_candidates": [
+            "HttpResponseBodyStream",
+            "PendingReqwestHttpBodyStream",
+            "ReqwestHttpClient",
+            "ReqwestHttpRequestRunner"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +117,50 @@
         "source": "codex/codex-rs/exec-server/src/client/reqwest_http_client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/client/http_client/reqwest_http_client.py",
+          "anchor_candidates": [
+            "PendingReqwestHttpBodyStream",
+            "ReqwestHttpClient",
+            "ReqwestHttpRequestRunner",
+            "new",
+            "run",
+            "stream_body",
+            "build_headers",
+            "http_request",
+            "http_request_stream",
+            "response_headers"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-exec-server",
+        "module": "client::http_client::response_body_stream",
+        "source": "codex/codex-rs/exec-server/src/client/http_response_body_stream.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/client/http_client/response_body_stream.py",
+          "anchor_candidates": [
+            "HttpResponseBodyStream",
+            "local",
+            "recv",
+            "remote",
+            "send_body_delta"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +176,14 @@
         "source": "codex/codex-rs/exec-server/src/client/rpc_http_client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/client/http_client/rpc_http_client.py",
+          "anchor_candidates": [
+            "HTTP_BODY_DELTA_CHANNEL_CAPACITY"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -121,7 +199,24 @@
         "source": "codex/codex-rs/exec-server/src/client_api.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/client_api.py",
+          "anchor_candidates": [
+            "DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT",
+            "DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT",
+            "ExecServerClientConnectOptions",
+            "ExecServerTransportParams",
+            "HttpClient",
+            "RemoteExecServerConnectArgs",
+            "StdioExecServerCommand",
+            "StdioExecServerConnectArgs",
+            "websocket_url",
+            "http_request",
+            "http_request_stream"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -137,7 +232,15 @@
         "source": "codex/codex-rs/exec-server/src/client_transport.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/client_transport.py",
+          "anchor_candidates": [
+            "ENVIRONMENT_CLIENT_NAME",
+            "is_rendezvous_harness_url"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -153,7 +256,25 @@
         "source": "codex/codex-rs/exec-server/src/connection.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/connection.py",
+          "anchor_candidates": [
+            "CHANNEL_CAPACITY",
+            "JsonRpcConnection",
+            "JsonRpcConnectionEvent",
+            "JsonRpcTransport",
+            "StdioTransport",
+            "from_stdio",
+            "from_websocket",
+            "with_child_process",
+            "JsonRpcWebSocketFrame",
+            "JsonRpcWebSocketMessage",
+            "STDIO_TERMINATION_GRACE_PERIOD",
+            "StdioTransportHandle"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -169,7 +290,25 @@
         "source": "codex/codex-rs/exec-server/src/environment.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/environment.py",
+          "anchor_candidates": [
+            "CODEX_EXEC_SERVER_URL_ENV_VAR",
+            "Environment",
+            "EnvironmentManager",
+            "LOCAL_ENVIRONMENT_ID",
+            "REMOTE_ENVIRONMENT_ID",
+            "create",
+            "create_for_tests",
+            "create_for_tests_with_local",
+            "default_environment",
+            "default_environment_id",
+            "default_environment_ids",
+            "default_for_tests"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -185,7 +324,22 @@
         "source": "codex/codex-rs/exec-server/src/environment_provider.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/environment_provider.py",
+          "anchor_candidates": [
+            "DefaultEnvironmentProvider",
+            "EnvironmentDefault",
+            "EnvironmentProvider",
+            "EnvironmentProviderSnapshot",
+            "from_env",
+            "new",
+            "normalize_exec_server_url",
+            "snapshot_inner",
+            "snapshot"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -201,7 +355,25 @@
         "source": "codex/codex-rs/exec-server/src/environment_toml.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/environment_toml/__init__.py",
+          "anchor_candidates": [
+            "environment_provider_from_codex_home",
+            "ENVIRONMENTS_TOML_FILE",
+            "EnvironmentToml",
+            "EnvironmentsToml",
+            "MAX_ENVIRONMENT_ID_LEN",
+            "TomlEnvironmentProvider",
+            "load_environments_toml",
+            "new_with_config_dir",
+            "normalize_default_environment_id",
+            "normalize_stdio_cwd",
+            "parse_environment_toml",
+            "snapshot"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -217,7 +389,14 @@
         "source": "codex/codex-rs/exec-server/src/environment_toml.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/environment_toml/option_duration_secs.py",
+          "anchor_candidates": [
+            "deserialize"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -233,7 +412,25 @@
         "source": "codex/codex-rs/exec-server/src/fs_helper.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/fs_helper.py",
+          "anchor_candidates": [
+            "CODEX_FS_HELPER_ARG1",
+            "FsHelperPayload",
+            "FsHelperRequest",
+            "FsHelperResponse",
+            "expect_copy",
+            "expect_create_directory",
+            "expect_get_metadata",
+            "expect_read_directory",
+            "expect_read_file",
+            "expect_remove",
+            "expect_write_file",
+            "run_direct_request"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -249,7 +446,12 @@
         "source": "codex/codex-rs/exec-server/src/fs_helper_main.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/fs_helper_main.py",
+          "anchor_candidates": []
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -265,7 +467,25 @@
         "source": "codex/codex-rs/exec-server/src/fs_sandbox.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/fs_sandbox.py",
+          "anchor_candidates": [
+            "FileSystemSandboxRunner",
+            "new",
+            "run",
+            "FS_HELPER_BAZEL_BWRAP_ENV_ALLOWLIST",
+            "FS_HELPER_ENV_ALLOWLIST",
+            "add_helper_runtime_permissions",
+            "bazel_bwrap_env_key_is_allowed",
+            "helper_env",
+            "helper_env_from_vars",
+            "helper_env_key_is_allowed",
+            "helper_read_roots",
+            "run_command"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -281,7 +501,25 @@
         "source": "codex/codex-rs/exec-server/src/local_file_system.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/local_file_system.py",
+          "anchor_candidates": [
+            "DirectFileSystem",
+            "LOCAL_FS",
+            "LocalFileSystem",
+            "UnsandboxedFileSystem",
+            "current_sandbox_cwd",
+            "resolve_existing_path",
+            "unsandboxed",
+            "with_runtime_paths",
+            "MAX_READ_FILE_BYTES",
+            "copy",
+            "create_directory",
+            "file_system_for"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -297,7 +535,25 @@
         "source": "codex/codex-rs/exec-server/src/local_process.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/local_process.py",
+          "anchor_candidates": [
+            "LocalProcess",
+            "exec",
+            "exec_read",
+            "exec_write",
+            "new",
+            "set_notification_sender",
+            "shutdown",
+            "terminate_process",
+            "LocalExecProcess",
+            "PROCESS_EVENT_CHANNEL_CAPACITY",
+            "RetainedOutputChunk",
+            "child_env"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -313,7 +569,25 @@
         "source": "codex/codex-rs/exec-server/src/process.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/process.py",
+          "anchor_candidates": [
+            "ExecBackend",
+            "ExecProcess",
+            "ExecProcessEvent",
+            "ExecProcessEventLog",
+            "ExecProcessEventReceiver",
+            "StartedExecProcess",
+            "empty",
+            "new",
+            "publish",
+            "recv",
+            "seq",
+            "subscribe"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -329,7 +603,17 @@
         "source": "codex/codex-rs/exec-server/src/process_id.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/process_id.py",
+          "anchor_candidates": [
+            "ProcessId",
+            "as_str",
+            "into_inner",
+            "new"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -345,7 +629,25 @@
         "source": "codex/codex-rs/exec-server/src/protocol.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/protocol/__init__.py",
+          "anchor_candidates": [
+            "ByteChunk",
+            "EXEC_CLOSED_METHOD",
+            "EXEC_EXITED_METHOD",
+            "EXEC_METHOD",
+            "EXEC_OUTPUT_DELTA_METHOD",
+            "EXEC_READ_METHOD",
+            "EXEC_TERMINATE_METHOD",
+            "EXEC_WRITE_METHOD",
+            "ExecClosedNotification",
+            "ExecEnvPolicy",
+            "ExecExitedNotification",
+            "ExecOutputDeltaNotification"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -361,7 +663,15 @@
         "source": "codex/codex-rs/exec-server/src/protocol.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/protocol/base64_bytes.py",
+          "anchor_candidates": [
+            "deserialize",
+            "serialize"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -377,7 +687,21 @@
         "source": "codex/codex-rs/exec-server/src/relay.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/relay.py",
+          "anchor_candidates": [
+            "harness_connection_from_websocket",
+            "run_multiplexed_environment",
+            "RELAY_MESSAGE_FRAME_VERSION",
+            "RelayFrameBodyKind",
+            "decode_relay_message_frame",
+            "disconnect",
+            "encode_relay_message_frame",
+            "jsonrpc_payload"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -393,7 +717,65 @@
         "source": "codex/codex-rs/exec-server/src/relay_proto.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/relay_proto/__init__.py",
+          "anchor_candidates": [
+            "RelayData",
+            "RelayMessageFrame",
+            "RelayResume"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-exec-server",
+        "module": "relay_proto::generated",
+        "source": "codex/codex-rs/exec-server/src/proto/codex.exec_server.relay.v1.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/relay_proto/generated/__init__.py",
+          "anchor_candidates": [
+            "RelayAck",
+            "RelayData",
+            "RelayHeartbeat",
+            "RelayMessageFrame",
+            "RelayReset",
+            "RelayResume"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-exec-server",
+        "module": "relay_proto::generated::relay_message_frame",
+        "source": "codex/codex-rs/exec-server/src/proto/codex.exec_server.relay.v1.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/relay_proto/generated/relay_message_frame.py",
+          "anchor_candidates": []
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -409,7 +791,25 @@
         "source": "codex/codex-rs/exec-server/src/remote.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/remote.py",
+          "anchor_candidates": [
+            "RemoteEnvironmentConfig",
+            "new",
+            "run_remote_environment",
+            "ERROR_BODY_PREVIEW_BYTES",
+            "EnvironmentRegistryClient",
+            "EnvironmentRegistryRegistrationResponse",
+            "endpoint_url",
+            "environment_registry_auth_error",
+            "environment_registry_http_error",
+            "normalize_base_url",
+            "normalize_environment_id",
+            "parse_json_response"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -425,7 +825,23 @@
         "source": "codex/codex-rs/exec-server/src/remote_file_system.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/remote_file_system.py",
+          "anchor_candidates": [
+            "new",
+            "copy",
+            "create_directory",
+            "get_metadata",
+            "map_remote_error",
+            "read_directory",
+            "read_file",
+            "remote_sandbox_context",
+            "remove",
+            "write_file"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -441,7 +857,22 @@
         "source": "codex/codex-rs/exec-server/src/remote_process.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/remote_process.py",
+          "anchor_candidates": [
+            "new",
+            "RemoteExecProcess",
+            "process_id",
+            "read",
+            "start",
+            "subscribe_events",
+            "subscribe_wake",
+            "terminate",
+            "write"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -457,7 +888,25 @@
         "source": "codex/codex-rs/exec-server/src/rpc.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/rpc.py",
+          "anchor_candidates": [
+            "RpcCallError",
+            "RpcClient",
+            "RpcClientEvent",
+            "RpcNotificationSender",
+            "RpcRouter",
+            "RpcServerOutboundMessage",
+            "call",
+            "encode_server_message",
+            "internal_error",
+            "invalid_params",
+            "invalid_request",
+            "is_disconnected"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -473,7 +922,16 @@
         "source": "codex/codex-rs/exec-server/src/runtime_paths.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/runtime_paths.py",
+          "anchor_candidates": [
+            "ExecServerRuntimePaths",
+            "from_optional_paths",
+            "new"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -489,7 +947,24 @@
         "source": "codex/codex-rs/exec-server/src/sandboxed_file_system.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/sandboxed_file_system.py",
+          "anchor_candidates": [
+            "SandboxedFileSystem",
+            "new",
+            "copy",
+            "create_directory",
+            "get_metadata",
+            "map_sandbox_error",
+            "read_directory",
+            "read_file",
+            "remove",
+            "run_sandboxed",
+            "write_file"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -505,7 +980,16 @@
         "source": "codex/codex-rs/exec-server/src/server.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/__init__.py",
+          "anchor_candidates": [
+            "DEFAULT_LISTEN_URL",
+            "ExecServerListenUrlParseError",
+            "run_main"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -521,7 +1005,23 @@
         "source": "codex/codex-rs/exec-server/src/server/file_system_handler.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/file_system_handler.py",
+          "anchor_candidates": [
+            "FileSystemHandler",
+            "copy",
+            "create_directory",
+            "get_metadata",
+            "new",
+            "read_directory",
+            "read_file",
+            "remove",
+            "write_file",
+            "map_fs_error"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -537,7 +1037,25 @@
         "source": "codex/codex-rs/exec-server/src/server/handler.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/handler.py",
+          "anchor_candidates": [
+            "ExecServerHandler",
+            "exec",
+            "exec_read",
+            "exec_write",
+            "fs_copy",
+            "fs_create_directory",
+            "fs_get_metadata",
+            "fs_read_directory",
+            "fs_read_file",
+            "fs_remove",
+            "fs_write_file",
+            "http_request"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -553,7 +1071,21 @@
         "source": "codex/codex-rs/exec-server/src/server/process_handler.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/process_handler.py",
+          "anchor_candidates": [
+            "ProcessHandler",
+            "exec",
+            "exec_read",
+            "exec_write",
+            "new",
+            "set_notification_sender",
+            "shutdown",
+            "terminate"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -569,7 +1101,16 @@
         "source": "codex/codex-rs/exec-server/src/server/processor.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/processor.py",
+          "anchor_candidates": [
+            "ConnectionProcessor",
+            "new",
+            "run_connection"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -585,7 +1126,14 @@
         "source": "codex/codex-rs/exec-server/src/server/registry.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/registry.py",
+          "anchor_candidates": [
+            "build_router"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -601,7 +1149,25 @@
         "source": "codex/codex-rs/exec-server/src/server/session_registry.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/session_registry.py",
+          "anchor_candidates": [
+            "SessionHandle",
+            "SessionRegistry",
+            "connection_id",
+            "detach",
+            "session_id",
+            "AttachmentState",
+            "ConnectionId",
+            "DETACHED_SESSION_TTL",
+            "SessionEntry",
+            "attach",
+            "expire_if_detached",
+            "has_active_connection"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -617,7 +1183,22 @@
         "source": "codex/codex-rs/exec-server/src/server/transport.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/exec_server/server/transport.py",
+          "anchor_candidates": [
+            "DEFAULT_LISTEN_URL",
+            "ExecServerListenTransport",
+            "ExecServerListenUrlParseError",
+            "parse_listen_url",
+            "run_transport",
+            "readiness_handler",
+            "run_stdio_connection",
+            "run_stdio_connection_with_io",
+            "run_websocket_listener"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 26,
-    "python_files": 25,
-    "modules_with_candidates": 23,
-    "modules_with_anchors": 23
+    "python_files": 28,
+    "modules_with_candidates": 26,
+    "modules_with_anchors": 26
   },
   "contracts": [
     {
@@ -23,7 +23,25 @@
         "source": "codex/codex-rs/state/src/bin/logs_client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/bin/logs_client/__init__.py",
+          "anchor_candidates": [
+            "level",
+            "LogFilter",
+            "LogLevelThreshold",
+            "build_filter",
+            "default_codex_home",
+            "fetch_backfill",
+            "fetch_max_id",
+            "fetch_new_rows",
+            "format_row",
+            "heuristic_formatting",
+            "levels_upper",
+            "main"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -39,7 +57,25 @@
         "source": "codex/codex-rs/state/src/bin/logs_client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/bin/logs_client/__init__.py",
+          "anchor_candidates": [
+            "level",
+            "LogFilter",
+            "LogLevelThreshold",
+            "build_filter",
+            "default_codex_home",
+            "fetch_backfill",
+            "fetch_max_id",
+            "fetch_new_rows",
+            "format_row",
+            "heuristic_formatting",
+            "levels_upper",
+            "main"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -55,7 +91,25 @@
         "source": "codex/codex-rs/state/src/bin/logs_client.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/state/bin/logs_client/__init__.py",
+          "anchor_candidates": [
+            "level",
+            "LogFilter",
+            "LogLevelThreshold",
+            "build_filter",
+            "default_codex_home",
+            "fetch_backfill",
+            "fetch_max_id",
+            "fetch_new_rows",
+            "format_row",
+            "heuristic_formatting",
+            "levels_upper",
+            "main"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -487,9 +541,12 @@
             "GoalUpdate",
             "MemoryStore",
             "RemoteControlEnrollmentRecord",
+            "RuntimeDbPath",
+            "StateRuntime",
             "ThreadFilterOptions",
-            "LOG_PARTITION_ROW_LIMIT",
-            "LOG_PARTITION_SIZE_LIMIT_BYTES"
+            "goals_db_path",
+            "logs_db_path",
+            "memories_db_path"
           ]
         }
       ],

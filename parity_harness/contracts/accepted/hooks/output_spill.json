@@ -1,0 +1,44 @@
+{
+  "contract_id": "codex-hooks.output_spill",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "output_spill",
+    "source": "codex/codex-rs/hooks/src/output_spill.rs",
+    "anchors": [
+      "HookOutputSpiller",
+      "maybe_spill_prompt_fragments",
+      "maybe_spill_text",
+      "maybe_spill_texts",
+      "new",
+      "HOOK_OUTPUTS_DIR",
+      "HOOK_OUTPUT_TOKEN_LIMIT"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/output_spill.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/output_spill.py"
+    ],
+    "anchors": [
+      "HookOutputSpiller",
+      "maybe_spill_prompt_fragments",
+      "maybe_spill_text",
+      "maybe_spill_texts",
+      "new",
+      "HOOK_OUTPUTS_DIR",
+      "HOOK_OUTPUT_TOKEN_LIMIT"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_output_spill_rs.py"
+  ]
+}

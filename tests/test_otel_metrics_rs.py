@@ -7,6 +7,15 @@ import pytest
 
 from pycodex import otel
 from pycodex.codex_api.common import ResponseEvent
+from pycodex.otel import metrics as otel_metrics
+from pycodex.otel import otlp, provider, targets, trace_context
+import pycodex.otel.config as otel_config
+from pycodex.otel.events import session_telemetry
+from pycodex.otel.metrics import error as metrics_error
+from pycodex.otel.metrics import client as metrics_client
+from pycodex.otel.metrics import process as metrics_process
+from pycodex.otel.metrics import runtime_metrics, tags as metric_tags, validation
+from pycodex.protocol import W3cTraceContext
 
 
 def test_metric_name_constants_match_rust_names_rs() -> None:
@@ -71,7 +80,7 @@ def test_statsig_default_metrics_exporter_is_disabled_in_debug_builds() -> None:
     # Rust module: src/config.rs
     # Rust test: tests::statsig_default_metrics_exporter_is_disabled_in_debug_builds
     # Contract: resolve_exporter maps built-in Statsig to None in debug/test builds.
-    resolved = otel.resolve_exporter(otel.OtelExporter.Statsig())
+    resolved = otel_config.resolve_exporter(otel.OtelExporter.Statsig())
 
     assert resolved.kind == "none"
 
@@ -90,15 +99,21 @@ def test_resolve_exporter_preserves_explicit_exporters_and_statsig_constants() -
         tls=tls,
     )
 
-    resolved = otel.resolve_exporter(exporter)
+    resolved = otel_config.resolve_exporter(exporter)
 
     assert resolved == exporter
     assert resolved is not exporter
     assert resolved.headers is not exporter.headers
     assert resolved.tls is not exporter.tls
-    assert otel.STATSIG_OTLP_HTTP_ENDPOINT == "https://ab.chatgpt.com/otlp/v1/metrics"
-    assert otel.STATSIG_API_KEY_HEADER == "statsig-api-key"
-    assert otel.STATSIG_API_KEY == "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO"
+    assert (
+        otel_config.STATSIG_OTLP_HTTP_ENDPOINT
+        == "https://ab.chatgpt.com/otlp/v1/metrics"
+    )
+    assert otel_config.STATSIG_API_KEY_HEADER == "statsig-api-key"
+    assert (
+        otel_config.STATSIG_API_KEY
+        == "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO"
+    )
 
 
 def _test_otel_settings() -> otel.OtelSettings:
@@ -120,13 +135,13 @@ def test_resource_attributes_include_host_name_when_present() -> None:
     # Rust module: src/provider.rs
     # Rust test: tests::resource_attributes_include_host_name_when_present
     # Contract: log resources include normalized host.name when a host name is present.
-    attrs = otel.resource_attributes(
+    attrs = provider.resource_attributes(
         _test_otel_settings(),
         host_name="opentelemetry-test",
-        kind=otel.ResourceKind.LOGS,
+        kind=provider.ResourceKind.LOGS,
     )
 
-    assert dict(attrs)[otel.HOST_NAME_ATTRIBUTE] == "opentelemetry-test"
+    assert dict(attrs)[provider.HOST_NAME_ATTRIBUTE] == "opentelemetry-test"
 
 
 def test_resource_attributes_omit_host_name_when_missing_empty_or_trace_resource() -> None:
@@ -137,17 +152,25 @@ def test_resource_attributes_omit_host_name_when_missing_empty_or_trace_resource
     # Contract: host.name is absent for missing/blank host names and trace resources.
     settings = _test_otel_settings()
 
-    missing = otel.resource_attributes(settings, host_name=None, kind=otel.ResourceKind.LOGS)
-    empty = otel.resource_attributes(settings, host_name="   ", kind=otel.ResourceKind.LOGS)
-    trace_attrs = otel.resource_attributes(
+    missing = provider.resource_attributes(
+        settings,
+        host_name=None,
+        kind=provider.ResourceKind.LOGS,
+    )
+    empty = provider.resource_attributes(
+        settings,
+        host_name="   ",
+        kind=provider.ResourceKind.LOGS,
+    )
+    trace_attrs = provider.resource_attributes(
         settings,
         host_name="opentelemetry-test",
-        kind=otel.ResourceKind.TRACES,
+        kind=provider.ResourceKind.TRACES,
     )
 
-    assert otel.HOST_NAME_ATTRIBUTE not in dict(missing)
-    assert otel.HOST_NAME_ATTRIBUTE not in dict(empty)
-    assert otel.HOST_NAME_ATTRIBUTE not in dict(trace_attrs)
+    assert provider.HOST_NAME_ATTRIBUTE not in dict(missing)
+    assert provider.HOST_NAME_ATTRIBUTE not in dict(empty)
+    assert provider.HOST_NAME_ATTRIBUTE not in dict(trace_attrs)
 
 
 def test_log_export_target_excludes_trace_safe_events() -> None:
@@ -156,10 +179,10 @@ def test_log_export_target_excludes_trace_safe_events() -> None:
     # Rust modules: src/provider.rs, src/targets.rs
     # Rust test: tests::log_export_target_excludes_trace_safe_events
     # Contract: log export targets include codex_otel targets except trace_safe targets.
-    assert otel.is_log_export_target("codex_otel.log_only")
-    assert otel.is_log_export_target("codex_otel.network_proxy")
-    assert not otel.is_log_export_target("codex_otel.trace_safe")
-    assert not otel.is_log_export_target("codex_otel.trace_safe.debug")
+    assert targets.is_log_export_target("codex_otel.log_only")
+    assert targets.is_log_export_target("codex_otel.network_proxy")
+    assert not targets.is_log_export_target("codex_otel.trace_safe")
+    assert not targets.is_log_export_target("codex_otel.trace_safe.debug")
 
 
 def test_trace_export_target_only_includes_trace_safe_prefix() -> None:
@@ -168,10 +191,10 @@ def test_trace_export_target_only_includes_trace_safe_prefix() -> None:
     # Rust modules: src/provider.rs, src/targets.rs
     # Rust test: tests::trace_export_target_only_includes_trace_safe_prefix
     # Contract: trace-safe target detection only accepts the codex_otel.trace_safe prefix.
-    assert otel.is_trace_safe_target("codex_otel.trace_safe")
-    assert otel.is_trace_safe_target("codex_otel.trace_safe.summary")
-    assert not otel.is_trace_safe_target("codex_otel.log_only")
-    assert not otel.is_trace_safe_target("codex_otel.network_proxy")
+    assert targets.is_trace_safe_target("codex_otel.trace_safe")
+    assert targets.is_trace_safe_target("codex_otel.trace_safe.summary")
+    assert not targets.is_trace_safe_target("codex_otel.log_only")
+    assert not targets.is_trace_safe_target("codex_otel.network_proxy")
 
 
 def test_provider_export_filters_project_rust_target_policy() -> None:
@@ -191,12 +214,12 @@ def test_provider_export_filters_project_rust_target_policy() -> None:
         def is_span(self) -> bool:
             return self._is_span
 
-    assert otel.codex_export_filter(Meta("codex_otel.log_only"))
-    assert otel.log_export_filter(Meta("codex_otel.network_proxy"))
-    assert not otel.log_export_filter(Meta("codex_otel.trace_safe"))
-    assert otel.trace_export_filter(Meta("ordinary_target", is_span=True))
-    assert otel.trace_export_filter(Meta("codex_otel.trace_safe.summary"))
-    assert not otel.trace_export_filter(Meta("codex_otel.log_only"))
+    assert provider.codex_export_filter(Meta("codex_otel.log_only"))
+    assert provider.log_export_filter(Meta("codex_otel.network_proxy"))
+    assert not provider.log_export_filter(Meta("codex_otel.trace_safe"))
+    assert provider.trace_export_filter(Meta("ordinary_target", is_span=True))
+    assert provider.trace_export_filter(Meta("codex_otel.trace_safe.summary"))
+    assert not provider.trace_export_filter(Meta("codex_otel.log_only"))
 
 
 def test_otlp_build_header_map_skips_invalid_names_and_values() -> None:
@@ -205,7 +228,7 @@ def test_otlp_build_header_map_skips_invalid_names_and_values() -> None:
     # Rust module: src/otlp.rs
     # Anchor: build_header_map uses HeaderName::from_bytes and HeaderValue::from_str.
     # Contract: invalid header names/values are ignored instead of failing the whole map.
-    headers = otel.build_header_map(
+    headers = otlp.build_header_map(
         {
             "Authorization": "Bearer token",
             "x-trace-id": "abc123",
@@ -231,14 +254,14 @@ def test_otlp_resolve_timeout_prefers_signal_then_global_then_default() -> None:
     # Contract: signal-specific timeout wins, then OTEL_EXPORTER_OTLP_TIMEOUT, then Rust default.
     env = {
         "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "1234",
-        otel.OTEL_EXPORTER_OTLP_TIMEOUT: "5678",
+        otlp.OTEL_EXPORTER_OTLP_TIMEOUT: "5678",
     }
 
-    assert otel.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", env) == 1234
-    assert otel.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", env) == 5678
+    assert otlp.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", env) == 1234
+    assert otlp.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", env) == 5678
     assert (
-        otel.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", {})
-        == otel.OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT_MS
+        otlp.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", {})
+        == otlp.OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT_MS
         == 10_000
     )
 
@@ -250,12 +273,12 @@ def test_otlp_timeout_ignores_negative_and_unparseable_env_values() -> None:
     # Anchor: read_timeout_env parses i64 and ignores negative/unparseable values.
     env = {
         "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT": "-1",
-        otel.OTEL_EXPORTER_OTLP_TIMEOUT: "not-a-number",
+        otlp.OTEL_EXPORTER_OTLP_TIMEOUT: "not-a-number",
     }
 
     assert (
-        otel.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", env)
-        == otel.OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT_MS
+        otlp.resolve_otlp_timeout("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT", env)
+        == otlp.OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT_MS
     )
 
 
@@ -267,15 +290,15 @@ def test_otel_provider_disabled_exporters_clear_tracestate_without_validating_it
     # Contract: when log, trace, and resolved metrics exporters are disabled,
     # Rust clears process-global tracestate and returns Ok(None) before
     # validating the configured tracestate map.
-    otel._reset_global_otel_state_for_tests()
-    otel.set_tracestate_entries({"example": {"alpha": "old"}})
+    otel_metrics._reset_global_otel_state_for_tests()
+    trace_context.set_tracestate_entries({"example": {"alpha": "old"}})
     settings = _test_otel_settings()
     settings.tracestate = {"BadKey": {"alpha": "one\ntwo"}}
 
     provider = otel.OtelProvider.from_settings(settings)
 
     assert provider is None
-    assert otel.configured_tracestate_entries() == {}
+    assert trace_context.configured_tracestate_entries() == {}
     assert otel.global_metrics() is None
     assert otel.global_statsig_metrics_settings() is None
 
@@ -287,7 +310,7 @@ def test_otel_provider_trace_path_validates_span_attributes_before_installing_st
     # Anchor: OtelProvider::from.
     # Contract: trace-enabled provider setup validates span attributes before
     # installing tracestate or mutating process-global provider state.
-    otel._reset_global_otel_state_for_tests()
+    otel_metrics._reset_global_otel_state_for_tests()
     settings = _test_otel_settings()
     settings.trace_exporter = otel.OtelExporter.OtlpHttp("http://127.0.0.1:1/v1/traces")
     settings.span_attributes = {"": "configured-value"}
@@ -296,7 +319,7 @@ def test_otel_provider_trace_path_validates_span_attributes_before_installing_st
     with pytest.raises(ValueError, match="span attribute key"):
         otel.OtelProvider.from_settings(settings)
 
-    assert otel.configured_tracestate_entries() == {}
+    assert trace_context.configured_tracestate_entries() == {}
     assert otel.global_metrics() is None
 
 
@@ -307,7 +330,7 @@ def test_otel_provider_rejects_header_unsafe_configured_tracestate_before_instal
     # Rust test: tests/suite/otlp_http_loopback.rs::otel_provider_rejects_header_unsafe_configured_tracestate
     # Contract: provider setup rejects header-unsafe configured tracestate
     # values and does not install the invalid entries globally.
-    otel._reset_global_otel_state_for_tests()
+    otel_metrics._reset_global_otel_state_for_tests()
     settings = _test_otel_settings()
     settings.trace_exporter = otel.OtelExporter.OtlpHttp("http://127.0.0.1:1/v1/traces")
     settings.tracestate = {"example": {"alpha": "one\ntwo"}}
@@ -315,7 +338,7 @@ def test_otel_provider_rejects_header_unsafe_configured_tracestate_before_instal
     with pytest.raises(ValueError, match="configured tracestate value"):
         otel.OtelProvider.from_settings(settings)
 
-    assert otel.configured_tracestate_entries() == {}
+    assert trace_context.configured_tracestate_entries() == {}
 
 
 def test_otel_provider_metrics_exporter_installs_global_metrics_client() -> None:
@@ -326,7 +349,7 @@ def test_otel_provider_metrics_exporter_installs_global_metrics_client() -> None
     # Contract: enabled metrics exporters create a MetricsConfig::otlp client,
     # preserve runtime-reader settings, install it globally, and install
     # configured tracestate after validation.
-    otel._reset_global_otel_state_for_tests()
+    otel_metrics._reset_global_otel_state_for_tests()
     settings = _test_otel_settings()
     settings.metrics_exporter = otel.OtelExporter.OtlpHttp(
         "http://127.0.0.1:1/v1/metrics",
@@ -347,7 +370,9 @@ def test_otel_provider_metrics_exporter_installs_global_metrics_client() -> None
     assert metrics.config.runtime_reader is True
     assert metrics.config.exporter.kind == "otlp"
     assert metrics.config.exporter.exporter == settings.metrics_exporter
-    assert otel.configured_tracestate_entries() == {"example": {"alpha": "one"}}
+    assert trace_context.configured_tracestate_entries() == {
+        "example": {"alpha": "one"}
+    }
     timer = otel.start_global_timer("codex.provider.test", [("source", "unit")])
     timer.record([("result", "ok")])
     assert metrics.duration_records[-1].name == "codex.provider.test"
@@ -382,11 +407,11 @@ def test_routing_policy_user_prompt_log_and_trace_shapes_match_rust() -> None:
         ]
     )
 
-    assert manager.log_events[0]["target"] == otel.OTEL_LOG_ONLY_TARGET
+    assert manager.log_events[0]["target"] == targets.OTEL_LOG_ONLY_TARGET
     assert manager.log_events[0]["event.name"] == "codex.user_prompt"
     assert manager.log_events[0]["prompt"] == "super secret prompt"
     assert manager.log_events[0]["user.email"] == "engineer@example.com"
-    assert manager.trace_events[0]["target"] == otel.OTEL_TRACE_SAFE_TARGET
+    assert manager.trace_events[0]["target"] == targets.OTEL_TRACE_SAFE_TARGET
     assert manager.trace_events[0]["event.name"] == "codex.user_prompt"
     assert manager.trace_events[0]["prompt_length"] == "19"
     assert manager.trace_events[0]["text_input_count"] == "1"
@@ -429,13 +454,13 @@ def test_routing_policy_tool_result_log_and_trace_shapes_match_rust() -> None:
         [("mcp_server", "internal-mcp"), ("mcp_server_origin", "stdio")],
     )
 
-    assert manager.log_events[0]["target"] == otel.OTEL_LOG_ONLY_TARGET
+    assert manager.log_events[0]["target"] == targets.OTEL_LOG_ONLY_TARGET
     assert manager.log_events[0]["event.name"] == "codex.tool_result"
     assert manager.log_events[0]["arguments"] == "secret arguments"
     assert manager.log_events[0]["output"] == "secret output\nsecond line"
     assert manager.log_events[0]["mcp_server"] == "internal-mcp"
     assert manager.log_events[0]["mcp_server_origin"] == "stdio"
-    assert manager.trace_events[0]["target"] == otel.OTEL_TRACE_SAFE_TARGET
+    assert manager.trace_events[0]["target"] == targets.OTEL_TRACE_SAFE_TARGET
     assert manager.trace_events[0]["event.name"] == "codex.tool_result"
     assert manager.trace_events[0]["arguments_length"] == "16"
     assert manager.trace_events[0]["output_length"] == "25"
@@ -447,7 +472,7 @@ def test_routing_policy_tool_result_log_and_trace_shapes_match_rust() -> None:
     assert "mcp_server" not in manager.trace_events[0]
     assert "mcp_server_origin" not in manager.trace_events[0]
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             otel.TOOL_CALL_COUNT_METRIC,
             1,
             [("success", "true"), ("tool", "shell")],
@@ -498,8 +523,8 @@ def test_routing_policy_auth_recovery_log_and_trace_shapes_match_rust() -> None:
         assert event["auth.state_changed"] == "true"
         assert "auth.recovery_reason" not in event
 
-    assert manager.log_events[0]["target"] == otel.OTEL_LOG_ONLY_TARGET
-    assert manager.trace_events[0]["target"] == otel.OTEL_TRACE_SAFE_TARGET
+    assert manager.log_events[0]["target"] == targets.OTEL_LOG_ONLY_TARGET
+    assert manager.trace_events[0]["target"] == targets.OTEL_TRACE_SAFE_TARGET
 
 
 def _auth_env_metadata() -> otel.AuthEnvTelemetryMetadata:
@@ -582,7 +607,7 @@ def test_routing_policy_api_request_auth_observability_matches_rust() -> None:
     assert request_trace["endpoint"] == "/responses"
     assert request_trace["auth.env_openai_api_key_present"] == "true"
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             otel.API_CALL_COUNT_METRIC,
             1,
             [("status", "401"), ("success", "false")],
@@ -671,7 +696,7 @@ def test_routing_policy_websocket_request_transport_observability_matches_rust()
     assert request_trace["auth.connection_reused"] == "true"
     assert request_trace["auth.env_provider_key_present"] == "true"
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             otel.WEBSOCKET_REQUEST_COUNT_METRIC,
             1,
             [("success", "false")],
@@ -795,12 +820,12 @@ def test_session_metric_tags_include_expected_tags_in_order() -> None:
     ).into_tags()
 
     assert tags == [
-        (otel.AUTH_MODE_TAG, "api_key"),
-        (otel.SESSION_SOURCE_TAG, "cli"),
-        (otel.ORIGINATOR_TAG, "codex_cli"),
-        (otel.SERVICE_NAME_TAG, "desktop_app"),
-        (otel.MODEL_TAG, "gpt-5.1"),
-        (otel.APP_VERSION_TAG, "1.2.3"),
+        (metric_tags.AUTH_MODE_TAG, "api_key"),
+        (metric_tags.SESSION_SOURCE_TAG, "cli"),
+        (metric_tags.ORIGINATOR_TAG, "codex_cli"),
+        (metric_tags.SERVICE_NAME_TAG, "desktop_app"),
+        (metric_tags.MODEL_TAG, "gpt-5.1"),
+        (metric_tags.APP_VERSION_TAG, "1.2.3"),
     ]
 
 
@@ -817,10 +842,10 @@ def test_session_metric_tags_skip_missing_optional_tags() -> None:
     ).into_tags()
 
     assert tags == [
-        (otel.SESSION_SOURCE_TAG, "exec"),
-        (otel.ORIGINATOR_TAG, "codex_exec"),
-        (otel.MODEL_TAG, "gpt-5.1"),
-        (otel.APP_VERSION_TAG, "1.2.3"),
+        (metric_tags.SESSION_SOURCE_TAG, "exec"),
+        (metric_tags.ORIGINATOR_TAG, "codex_exec"),
+        (metric_tags.MODEL_TAG, "gpt-5.1"),
+        (metric_tags.APP_VERSION_TAG, "1.2.3"),
     ]
 
 
@@ -837,17 +862,17 @@ def test_metrics_validation_rejects_invalid_names_and_tags() -> None:
     # tests/suite/validation.rs invalid_tag_component_is_rejected,
     # counter_rejects_invalid_tag_key, histogram_rejects_invalid_tag_value,
     # counter_rejects_invalid_metric_name.
-    with pytest.raises(otel.InvalidMetricName) as metric_err:
-        otel.validate_metric_name("bad name")
+    with pytest.raises(metrics_error.InvalidMetricName) as metric_err:
+        validation.validate_metric_name("bad name")
     assert metric_err.value.name == "bad name"
 
-    with pytest.raises(otel.InvalidTagComponent) as key_err:
-        otel.validate_tag_key("bad key")
+    with pytest.raises(metrics_error.InvalidTagComponent) as key_err:
+        validation.validate_tag_key("bad key")
     assert key_err.value.label == "tag key"
     assert key_err.value.value == "bad key"
 
-    with pytest.raises(otel.InvalidTagComponent) as value_err:
-        otel.validate_tag_value("bad value")
+    with pytest.raises(metrics_error.InvalidTagComponent) as value_err:
+        validation.validate_tag_value("bad value")
     assert value_err.value.label == "tag value"
     assert value_err.value.value == "bad value"
 
@@ -856,9 +881,9 @@ def test_metrics_validation_allows_rust_character_sets() -> None:
     # Rust crate/module: codex-otel src/metrics/validation.rs.
     # Contract: metric names accept ASCII alnum plus '.', '_', '-'; tag components
     # also accept '/'.
-    otel.validate_metric_name("codex.request_latency-1")
-    otel.validate_tag_key("service_name")
-    otel.validate_tag_value("codex/app-server-1.2.3")
+    validation.validate_metric_name("codex.request_latency-1")
+    validation.validate_tag_key("service_name")
+    validation.validate_tag_value("codex/app-server-1.2.3")
 
 
 def test_runtime_metric_totals_merge_saturates_and_empty_matches_rust() -> None:
@@ -872,9 +897,15 @@ def test_runtime_metric_totals_merge_saturates_and_empty_matches_rust() -> None:
     assert totals == otel.RuntimeMetricTotals(count=1, duration_ms=2)
     assert not totals.is_empty()
 
-    near_max = otel.RuntimeMetricTotals(count=otel.U64_MAX, duration_ms=otel.U64_MAX - 1)
+    near_max = otel.RuntimeMetricTotals(
+        count=runtime_metrics.U64_MAX,
+        duration_ms=runtime_metrics.U64_MAX - 1,
+    )
     near_max.merge(otel.RuntimeMetricTotals(count=1, duration_ms=10))
-    assert near_max == otel.RuntimeMetricTotals(count=otel.U64_MAX, duration_ms=otel.U64_MAX)
+    assert near_max == otel.RuntimeMetricTotals(
+        count=runtime_metrics.U64_MAX,
+        duration_ms=runtime_metrics.U64_MAX,
+    )
 
 
 def test_runtime_metrics_summary_merge_and_responses_api_summary_matches_rust() -> None:
@@ -968,14 +999,20 @@ def test_runtime_metrics_summary_from_snapshot_matches_rust_f64_to_u64_edges() -
         "metrics": [
             {"name": otel.TOOL_CALL_COUNT_METRIC, "values": [-1, float("nan"), float("inf"), 1.5]},
             {"name": otel.TOOL_CALL_DURATION_METRIC, "values": [0, -3, float("-inf"), 2.5]},
-            {"name": otel.API_CALL_DURATION_METRIC, "sum": float(otel.U64_MAX) * 2},
+            {
+                "name": otel.API_CALL_DURATION_METRIC,
+                "sum": float(runtime_metrics.U64_MAX) * 2,
+            },
         ]
     }
 
     summary = otel.RuntimeMetricsSummary.from_snapshot(snapshot)
 
     assert summary.tool_calls == otel.RuntimeMetricTotals(count=2, duration_ms=3)
-    assert summary.api_calls == otel.RuntimeMetricTotals(count=0, duration_ms=otel.U64_MAX)
+    assert summary.api_calls == otel.RuntimeMetricTotals(
+        count=0,
+        duration_ms=runtime_metrics.U64_MAX,
+    )
 
 
 def test_timer_record_adds_additional_tags_before_base_tags() -> None:
@@ -1016,7 +1053,7 @@ def test_metrics_client_start_timer_and_record_duration_match_timing_contract() 
     assert len(metrics.duration_records) == 2
     assert metrics.duration_records[0].name == "codex.request_latency"
     assert dict(metrics.duration_records[0].tags) == {"service": "codex-cli", "route": "chat"}
-    assert metrics.duration_records[1] == otel.MetricsDurationRecord(
+    assert metrics.duration_records[1] == metrics_client.MetricsDurationRecord(
         "codex.request_latency",
         15,
         [("route", "chat"), ("service", "codex-cli")],
@@ -1027,14 +1064,14 @@ def test_record_process_start_once_records_bounded_originator_once() -> None:
     # Rust crate/module: codex-otel src/metrics/process.rs.
     # Contract: record_process_start_once records PROCESS_START_METRIC with inc=1
     # and bounded originator on the first call only; later calls return false.
-    otel._reset_process_start_once_for_tests()
+    metrics_process._reset_process_start_once_for_tests()
     metrics = otel.MetricsClient()
 
     assert otel.record_process_start_once(metrics, "not a known originator!") is True
     assert otel.record_process_start_once(metrics, "codex_exec") is False
 
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             otel.PROCESS_START_METRIC,
             1,
             [(otel.ORIGINATOR_TAG, "other")],
@@ -1075,12 +1112,12 @@ def test_metrics_config_with_tag_rejects_invalid_components_from_rust_validation
     # invalid_tag_component_is_rejected.
     config = otel.MetricsConfig.in_memory("test", "codex-cli", "1.2.3")
 
-    with pytest.raises(otel.InvalidTagComponent) as key_err:
+    with pytest.raises(metrics_error.InvalidTagComponent) as key_err:
         config.with_tag("bad key", "value")
     assert key_err.value.label == "tag key"
     assert key_err.value.value == "bad key"
 
-    with pytest.raises(otel.InvalidTagComponent) as value_err:
+    with pytest.raises(metrics_error.InvalidTagComponent) as value_err:
         config.with_tag("route", "bad value")
     assert value_err.value.label == "tag value"
     assert value_err.value.value == "bad value"
@@ -1104,13 +1141,21 @@ def test_metrics_client_new_uses_config_default_tags_and_histogram_validation() 
 
     assert metrics.config == config
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord("codex.tool.call", 1, [("service", "codex-cli"), ("tool", "shell")])
+        metrics_client.MetricsCounterRecord(
+            "codex.tool.call",
+            1,
+            [("service", "codex-cli"), ("tool", "shell")],
+        )
     ]
     assert metrics.histogram_records == [
-        otel.MetricsHistogramRecord("codex.request_latency", 3, [("route", "chat"), ("service", "codex-cli")])
+        metrics_client.MetricsHistogramRecord(
+            "codex.request_latency",
+            3,
+            [("route", "chat"), ("service", "codex-cli")],
+        )
     ]
 
-    with pytest.raises(otel.InvalidTagComponent) as value_err:
+    with pytest.raises(metrics_error.InvalidTagComponent) as value_err:
         metrics.histogram("codex.request_latency", 3, [("route", "bad value")])
     assert value_err.value.label == "tag value"
     assert value_err.value.value == "bad value"
@@ -1127,14 +1172,14 @@ def test_metrics_client_merges_default_and_per_call_tags_like_send_suite() -> No
     metrics.histogram("codex.tool_latency", 25, [("tool", "shell")])
 
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             "codex.turns",
             1,
             [("env", "dev"), ("model", "gpt-5.1"), ("service", "codex-cli")],
         )
     ]
     assert metrics.histogram_records == [
-        otel.MetricsHistogramRecord(
+        metrics_client.MetricsHistogramRecord(
             "codex.tool_latency",
             25,
             [("env", "prod"), ("service", "codex-cli"), ("tool", "shell")],
@@ -1153,12 +1198,12 @@ def test_metrics_client_merges_default_tags_per_record_without_mutating_defaults
     metrics.counter("codex.beta", 2, [("service", "worker"), ("component", "beta")])
 
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             "codex.alpha",
             1,
             [("component", "alpha"), ("env", "dev"), ("region", "us"), ("service", "codex-cli")],
         ),
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             "codex.beta",
             2,
             [("component", "beta"), ("env", "prod"), ("region", "us"), ("service", "worker")],
@@ -1197,7 +1242,7 @@ def test_metrics_client_snapshot_requires_runtime_reader_and_collects_without_sh
     # Contract: snapshot requires with_runtime_reader and collects the current
     # metric records without calling shutdown.
     unavailable = otel.MetricsClient.new(otel.MetricsConfig.in_memory("test", "codex-cli", "1.2.3"))
-    with pytest.raises(otel.RuntimeSnapshotUnavailable):
+    with pytest.raises(metrics_error.RuntimeSnapshotUnavailable):
         unavailable.snapshot()
 
     config = (
@@ -1313,11 +1358,11 @@ def test_session_telemetry_attaches_metadata_tags_to_metrics() -> None:
 
     assert metrics.shutdown_called is True
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             "codex.session_started",
             1,
             [
-                ("app.version", otel.CODEX_OTEL_APP_VERSION),
+                ("app.version", session_telemetry.CODEX_OTEL_APP_VERSION),
                 ("auth_mode", "api_key"),
                 ("model", "gpt-5.1"),
                 ("originator", "test_originator"),
@@ -1349,7 +1394,11 @@ def test_session_telemetry_can_disable_metadata_tags_and_add_service_name() -> N
     manager_without_metadata.counter("codex.session_started", 1, [("source", "tui")])
 
     assert metrics_without_metadata.counter_records == [
-        otel.MetricsCounterRecord("codex.session_started", 1, [("source", "tui")])
+        metrics_client.MetricsCounterRecord(
+            "codex.session_started",
+            1,
+            [("source", "tui")],
+        )
     ]
 
     metrics = otel.MetricsClient()
@@ -1361,7 +1410,7 @@ def test_session_telemetry_can_disable_metadata_tags_and_add_service_name() -> N
 
     manager.counter("codex.session_started", 1, [])
 
-    assert dict(metrics.counter_records[0].tags)["service_name"] == "my_app_server_client"
+    assert dict(metrics.counter_records[0].tags)["service_name"] == "my_app/server_client"
     assert dict(metrics.counter_records[0].tags)["originator"] == "test_originator"
 
 
@@ -1394,12 +1443,12 @@ def test_session_telemetry_records_plugin_install_metrics_without_metadata_tags(
     manager.record_plugin_install_elicitation_sent("plugin", "slack@openai-curated", "Slack")
 
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             otel.PLUGIN_INSTALL_SUGGESTION_METRIC,
             1,
             [("completed", "false"), ("response_action", "accept"), ("tool_type", "connector")],
         ),
-        otel.MetricsCounterRecord(
+        metrics_client.MetricsCounterRecord(
             otel.PLUGIN_INSTALL_ELICITATION_SENT_METRIC,
             1,
             [("tool_type", "plugin")],
@@ -1438,7 +1487,7 @@ def test_session_telemetry_snapshot_and_runtime_summary_forward_to_metrics() -> 
 
     assert metrics.shutdown_called is False
     assert snapshot["metrics"][0]["tags"] == [
-        ("app.version", otel.CODEX_OTEL_APP_VERSION),
+        ("app.version", session_telemetry.CODEX_OTEL_APP_VERSION),
         ("auth_mode", "api_key"),
         ("model", "gpt-5.1"),
         ("originator", "test_originator"),
@@ -1473,18 +1522,18 @@ def test_session_telemetry_records_startup_phase_metric_log_and_trace() -> None:
     manager.record_startup_phase("load_config", 37, "ok")
 
     assert metrics.duration_records == [
-        otel.MetricsDurationRecord(
+        metrics_client.MetricsDurationRecord(
             otel.STARTUP_PHASE_DURATION_METRIC,
             37,
             [("phase", "load_config"), ("status", "ok")],
         )
     ]
-    assert manager.log_events[-1]["target"] == otel.OTEL_LOG_ONLY_TARGET
+    assert manager.log_events[-1]["target"] == targets.OTEL_LOG_ONLY_TARGET
     assert manager.log_events[-1]["event.name"] == "codex.startup_phase"
     assert manager.log_events[-1]["startup.phase"] == "load_config"
     assert manager.log_events[-1]["startup.status"] == "ok"
     assert manager.log_events[-1]["duration_ms"] == "37"
-    assert manager.trace_events[-1]["target"] == otel.OTEL_TRACE_SAFE_TARGET
+    assert manager.trace_events[-1]["target"] == targets.OTEL_TRACE_SAFE_TARGET
     assert manager.trace_events[-1]["event.name"] == "codex.startup_phase"
     assert manager.trace_events[-1]["startup.phase"] == "load_config"
     assert manager.trace_events[-1]["startup.status"] == "ok"
@@ -1562,10 +1611,26 @@ def test_session_telemetry_api_sse_and_websocket_failure_tags_match_rust() -> No
     manager.record_websocket_event("not json", 10)
 
     assert metrics.counter_records == [
-        otel.MetricsCounterRecord(otel.API_CALL_COUNT_METRIC, 1, [("status", "none"), ("success", "false")]),
-        otel.MetricsCounterRecord(otel.SSE_EVENT_COUNT_METRIC, 1, [("kind", "unknown"), ("success", "false")]),
-        otel.MetricsCounterRecord(otel.WEBSOCKET_REQUEST_COUNT_METRIC, 1, [("success", "false")]),
-        otel.MetricsCounterRecord(otel.WEBSOCKET_EVENT_COUNT_METRIC, 1, [("kind", "parse_error"), ("success", "false")]),
+        metrics_client.MetricsCounterRecord(
+            otel.API_CALL_COUNT_METRIC,
+            1,
+            [("status", "none"), ("success", "false")],
+        ),
+        metrics_client.MetricsCounterRecord(
+            otel.SSE_EVENT_COUNT_METRIC,
+            1,
+            [("kind", "unknown"), ("success", "false")],
+        ),
+        metrics_client.MetricsCounterRecord(
+            otel.WEBSOCKET_REQUEST_COUNT_METRIC,
+            1,
+            [("success", "false")],
+        ),
+        metrics_client.MetricsCounterRecord(
+            otel.WEBSOCKET_EVENT_COUNT_METRIC,
+            1,
+            [("kind", "parse_error"), ("success", "false")],
+        ),
     ]
     assert [record.duration_ms for record in metrics.duration_records] == [7, 8, 9, 10]
 
@@ -1574,26 +1639,26 @@ def test_trace_context_parses_valid_and_rejects_invalid_traceparent() -> None:
     # Rust crate/module/tests: codex-otel src/trace_context.rs
     # parses_valid_w3c_trace_context, invalid_traceparent_returns_none,
     # missing_traceparent_returns_none.
-    valid = otel.W3cTraceContext(
+    valid = W3cTraceContext(
         traceparent="00-00000000000000000000000000000001-0000000000000002-01",
         tracestate=None,
     )
     assert otel.context_from_w3c_trace_context(valid) == valid
 
     assert otel.context_from_w3c_trace_context(
-        otel.W3cTraceContext(traceparent="not-a-traceparent", tracestate=None)
+        W3cTraceContext(traceparent="not-a-traceparent", tracestate=None)
     ) is None
     assert otel.context_from_w3c_trace_context(
-        otel.W3cTraceContext(traceparent=None, tracestate="vendor=value")
+        W3cTraceContext(traceparent=None, tracestate="vendor=value")
     ) is None
     assert otel.context_from_w3c_trace_context(
-        otel.W3cTraceContext(
+        W3cTraceContext(
             traceparent="00-00000000000000000000000000000000-0000000000000002-01",
             tracestate=None,
         )
     ) is None
     assert otel.context_from_w3c_trace_context(
-        otel.W3cTraceContext(
+        W3cTraceContext(
             traceparent="00-00000000000000000000000000000001-0000000000000000-01",
             tracestate=None,
         )
@@ -1621,7 +1686,7 @@ def test_merge_tracestate_entries_upserts_configured_fields_like_rust() -> None:
     # tests/suite/otlp_http_loopback.rs::otlp_http_exporter_sends_traces_to_collector.
     # Contract: configured member fields upsert selected semicolon fields without
     # replacing unrelated fields, and configured members are placed at the front.
-    merged = otel.merge_tracestate_entries(
+    merged = trace_context.merge_tracestate_entries(
         "example=alpha:zero;keep:yes,other=value",
         {"example": {"alpha": "one", "beta": "two"}},
     )
@@ -1652,7 +1717,7 @@ def test_otlp_http_exporter_sends_traces_to_collector() -> None:
         def log_message(self, _format: str, *args: object) -> None:
             return
 
-    otel._reset_global_otel_state_for_tests()
+    otel_metrics._reset_global_otel_state_for_tests()
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.handle_request)
     thread.start()
@@ -1678,7 +1743,7 @@ def test_otlp_http_exporter_sends_traces_to_collector() -> None:
 
         assert otel.set_parent_from_w3c_trace_context(
             span,
-            otel.W3cTraceContext(
+            W3cTraceContext(
                 traceparent="00-00000000000000000000000000000001-0000000000000002-01",
                 tracestate="example=alpha:zero;keep:yes,other=value",
             ),
@@ -1730,7 +1795,7 @@ def test_otlp_http_log_exporter_sends_logs_to_collector() -> None:
         def log_message(self, _format: str, *args: object) -> None:
             return
 
-    otel._reset_global_otel_state_for_tests()
+    otel_metrics._reset_global_otel_state_for_tests()
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.handle_request)
     thread.start()
@@ -1751,7 +1816,7 @@ def test_otlp_http_log_exporter_sends_logs_to_collector() -> None:
 
         provider.emit_log_event(
             "codex.log_loopback",
-            {"target": otel.OTEL_LOG_ONLY_TARGET, "request_id": "req-123"},
+            {"target": targets.OTEL_LOG_ONLY_TARGET, "request_id": "req-123"},
             body="log-loopback-body",
         )
         provider.shutdown()
@@ -1777,8 +1842,23 @@ def test_merge_tracestate_entries_validates_existing_and_configured_state() -> N
     # Rust crate/module: codex-otel src/trace_context.rs.
     # Contract: invalid existing tracestate is ignored by Rust during propagation,
     # while invalid configured entries are rejected before installation.
-    assert otel.merge_tracestate_entries(None, {"example": {"alpha": "one"}}) == "example=alpha:one"
-    assert otel.merge_tracestate_entries("not a member", {"example": {"alpha": "one"}}) == "example=alpha:one"
+    assert (
+        trace_context.merge_tracestate_entries(
+            None,
+            {"example": {"alpha": "one"}},
+        )
+        == "example=alpha:one"
+    )
+    assert (
+        trace_context.merge_tracestate_entries(
+            "not a member",
+            {"example": {"alpha": "one"}},
+        )
+        == "example=alpha:one"
+    )
 
     with pytest.raises(ValueError, match="configured tracestate value"):
-        otel.merge_tracestate_entries("other=value", {"example": {"alpha": "bad,value"}})
+        trace_context.merge_tracestate_entries(
+            "other=value",
+            {"example": {"alpha": "bad,value"}},
+        )

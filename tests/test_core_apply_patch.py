@@ -15,17 +15,16 @@ from pycodex.apply_patch import (
     ApplyPatchFileUpdate,
     ApplyPatchParseError,
     Hunk,
-    MaybeApplyPatch,
     StreamingPatchParser,
     UpdateFileChunk,
     derive_new_contents_from_chunks,
-    maybe_parse_apply_patch,
     maybe_parse_apply_patch_verified,
     parse_patch,
-    run_apply_patch_standalone,
     unified_diff_from_chunks,
     verify_apply_patch_args,
 )
+from pycodex.apply_patch.invocation import MaybeApplyPatch, maybe_parse_apply_patch
+from pycodex.apply_patch.standalone_executable import run_main
 from pycodex.core.apply_patch import convert_apply_patch_to_protocol
 from pycodex.core.tools.handlers.apply_patch import (
     APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL,
@@ -102,28 +101,28 @@ class CoreApplyPatchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             patch = "*** Begin Patch\n*** Add File: arg.txt\n+from arg\n*** End Patch\n"
-            result = run_apply_patch_standalone([patch], cwd=root)
+            result = run_main([patch], cwd=root)
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(result.stderr, "")
             self.assertIn("Success. Updated the following files:", result.stdout)
             self.assertEqual((root / "arg.txt").read_text(encoding="utf-8"), "from arg\n")
 
             stdin_patch = "*** Begin Patch\n*** Add File: stdin.txt\n+from stdin\n*** End Patch\n"
-            stdin_result = run_apply_patch_standalone([], stdin_patch, cwd=root)
+            stdin_result = run_main([], stdin_patch, cwd=root)
             self.assertEqual(stdin_result.exit_code, 0)
             self.assertEqual(stdin_result.stderr, "")
             self.assertEqual((root / "stdin.txt").read_text(encoding="utf-8"), "from stdin\n")
 
-            usage = run_apply_patch_standalone([], "", cwd=root)
+            usage = run_main([], "", cwd=root)
             self.assertEqual(usage.exit_code, 2)
             self.assertEqual(usage.stdout, "")
             self.assertIn("Usage: apply_patch 'PATCH'", usage.stderr)
 
-            extra = run_apply_patch_standalone([patch, "extra"], cwd=root)
+            extra = run_main([patch, "extra"], cwd=root)
             self.assertEqual(extra.exit_code, 2)
             self.assertEqual(extra.stderr, "Error: apply_patch accepts exactly one argument.\n")
 
-            non_utf8 = run_apply_patch_standalone([b"patch"], cwd=root)
+            non_utf8 = run_main([b"patch"], cwd=root)
             self.assertEqual(non_utf8.exit_code, 1)
             self.assertEqual(non_utf8.stderr, "Error: apply_patch requires a UTF-8 PATCH argument.\n")
 

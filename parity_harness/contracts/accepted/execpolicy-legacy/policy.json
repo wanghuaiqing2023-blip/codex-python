@@ -1,0 +1,41 @@
+{
+  "contract_id": "codex-execpolicy-legacy.policy",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-execpolicy-legacy",
+    "module": "policy",
+    "source": "codex/codex-rs/execpolicy-legacy/src/policy.rs",
+    "anchors": [
+      "Policy",
+      "check",
+      "check_each_bad_list_individually",
+      "check_each_good_list_individually",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/execpolicy_legacy/policy.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/execpolicy_legacy/policy.py"
+    ],
+    "anchors": [
+      "Policy",
+      "check",
+      "check_each_bad_list_individually",
+      "check_each_good_list_individually",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_execpolicy_legacy_policy_rs.py",
+    "tests/test_execpolicy_legacy_module_ownership_rs.py"
+  ]
+}

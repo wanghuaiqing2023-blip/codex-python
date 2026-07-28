@@ -31,13 +31,13 @@ from pycodex.rollout import (
     first_rollout_content_match_snippet,
     get_threads,
     get_threads_in_root,
-    list_threads_from_state_metadata,
     parse_cursor,
     read_thread_item_from_rollout,
     read_session_meta_line,
     rollout_date_parts,
     search_rollout_paths,
 )
+from pycodex.rollout.list import list_threads_from_state_metadata
 
 from ..error import ThreadStoreError
 from ..in_memory import InMemoryThreadStore
@@ -50,6 +50,7 @@ from ..types import (
 )
 
 from .helpers import (
+    _coerce_session_source,
     _git_info_from_rollout_item,
     _maybe_await,
     distinct_thread_metadata_title,
@@ -175,7 +176,7 @@ def _stored_thread_from_session_meta(store: LocalThreadStore, rollout_path: Path
         archived_at=updated_at if archived else None,
         cwd=Path(meta.cwd),
         cli_version=meta.cli_version,
-        source=SessionSource.from_startup_arg(meta.source),
+        source=_coerce_session_source(meta.source),
         thread_source=ThreadSource.parse(meta.thread_source) if meta.thread_source else None,
         agent_nickname=meta.agent_nickname,
         agent_role=meta.agent_role,
@@ -266,7 +267,7 @@ def _stored_thread_from_state_metadata(store: LocalThreadStore, metadata: Any) -
         archived_at=getattr(metadata, "archived_at", None),
         cwd=Path(getattr(metadata, "cwd", Path())),
         cli_version=getattr(metadata, "cli_version", "") or "",
-        source=SessionSource.from_startup_arg(getattr(metadata, "source", "unknown") or "unknown"),
+        source=_coerce_session_source(getattr(metadata, "source", None)),
         thread_source=getattr(metadata, "thread_source", None),
         agent_nickname=getattr(metadata, "agent_nickname", None),
         agent_role=getattr(metadata, "agent_role", None),

@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-app-server-transport.outgoing_message",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-transport",
+    "module": "outgoing_message",
+    "source": "codex/codex-rs/app-server-transport/src/outgoing_message.rs",
+    "anchors": ["ConnectionId", "OutgoingMessage", "QueuedOutgoingMessage"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_transport/outgoing_message.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/app_server_transport/outgoing_message.py"],
+    "anchors": ["ConnectionId", "OutgoingMessage", "QueuedOutgoingMessage"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_server_transport_outgoing_message_rs.py"]
+}

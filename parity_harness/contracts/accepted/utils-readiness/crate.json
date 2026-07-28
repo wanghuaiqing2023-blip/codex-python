@@ -7,7 +7,7 @@
     "module": "crate",
     "source": "codex/codex-rs/utils/readiness/src/lib.rs",
     "anchors": [
-      "ReadinessError",
+      "Readiness",
       "ReadinessFlag",
       "Token",
       "is_ready",
@@ -24,7 +24,7 @@
       "pycodex/utils/readiness/__init__.py"
     ],
     "anchors": [
-      "ReadinessError",
+      "Readiness",
       "ReadinessFlag",
       "Token",
       "is_ready",
@@ -38,5 +38,7 @@
       "checker": "structure.owner-and-coordinate"
     }
   },
-  "fixture_refs": []
+  "fixture_refs": [
+    "tests/test_utils_readiness.py"
+  ]
 }

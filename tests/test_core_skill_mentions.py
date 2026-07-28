@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 from pycodex.core_skills.model import SkillMetadata
-from pycodex.core_skills.mentions import (
+from pycodex.core_skills.injection import (
     build_skill_name_counts,
     collect_explicit_skill_mentions,
     text_mentions_skill,

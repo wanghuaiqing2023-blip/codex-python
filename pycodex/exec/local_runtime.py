@@ -43,7 +43,7 @@ from pycodex.core.client import ModelClient
 from pycodex.core.client_common import REVIEW_EXIT_INTERRUPTED_TMPL, REVIEW_EXIT_SUCCESS_TMPL, REVIEW_PROMPT
 from pycodex.core.compact_remote import normalize_call_outputs
 from pycodex.core.context import TurnAborted
-from pycodex.execpolicy import (
+from pycodex.core.exec_policy import (
     ExecApprovalRequest,
     ExecPolicyCommandOrigin,
     commands_for_exec_policy,
@@ -73,19 +73,21 @@ from pycodex.core.review_prompts import resolve_review_request
 from pycodex.rollout import (
     SessionMeta,
     ThreadSortKey,
+    find_thread_meta_by_name_str,
+    find_thread_path_by_id_str,
+    get_threads,
+    read_thread_item_from_rollout,
+    read_session_meta_line,
+)
+from pycodex.rollout.recorder import (
     append_event_msg_to_rollout,
     append_rollout_item_to_path,
     append_turn_to_latest_thread_rollout,
     append_turn_to_thread_rollout,
     append_turn_to_rollout,
-    find_thread_meta_by_name_str,
-    find_thread_path_by_id_str,
-    get_threads,
     materialize_session_rollout,
     read_event_msgs_from_rollout,
     read_model_history_from_rollout,
-    read_thread_item_from_rollout,
-    read_session_meta_line,
 )
 from pycodex.core.session.session import Session
 from pycodex.core.mcp import McpManager
@@ -173,7 +175,9 @@ from pycodex.model_provider import create_model_provider
 from pycodex.model_provider_info import CHATGPT_CODEX_BASE_URL, ModelProviderInfo
 from pycodex.tools.tool_config import shell_type_for_model_and_features
 
-from .event_processor import HumanEventProcessor, JsonEventProcessor, exec_turn_completed_notification
+from .event_processor import exec_turn_completed_notification
+from .event_processor_with_human_output import EventProcessorWithHumanOutput
+from .event_processor_with_jsonl_output import EventProcessorWithJsonOutput
 from .events import (
     ExecThreadItem,
     ThreadErrorEvent,
@@ -2574,7 +2578,7 @@ async def _state_runtime_for_goal_tools(
 ) -> Any:
     if codex_home is None or bool(getattr(config, "ephemeral", False)):
         return None
-    from pycodex.state.state_runtime import StateRuntime
+    from pycodex.state.runtime import StateRuntime
 
     return await StateRuntime.init(Path(codex_home), _runtime_default_provider_id(config, provider))
 
@@ -3271,7 +3275,7 @@ def final_text_from_local_http_exec_result(result: UserTurnSamplingResult) -> st
 
 
 def emit_local_http_exec_result(
-    processor: HumanEventProcessor | JsonEventProcessor,
+    processor: EventProcessorWithHumanOutput | EventProcessorWithJsonOutput,
     result: UserTurnSamplingResult,
     *,
     config: ExecSessionConfig | Mapping[str, Any] | None = None,
@@ -3285,7 +3289,7 @@ def emit_local_http_exec_result(
     turn_status = _local_http_result_turn_status(result)
     final_text = final_text_from_local_http_exec_result(result)
     usage = usage_from_local_http_exec_result(result)
-    if isinstance(processor, JsonEventProcessor):
+    if isinstance(processor, EventProcessorWithJsonOutput):
         processor.emit_json_lines((ThreadEvent.turn_started(),), stdout)
         _replay_local_http_session_events(processor, result, stdout=stdout)
         if _usage_is_zero(usage) and processor.last_usage is not None:
@@ -3319,7 +3323,7 @@ def emit_local_http_exec_result(
     _replay_local_http_session_events(processor, result, stderr=stderr)
     for item in reasoning_turn_items_from_local_http_exec_result(result):
         processor.collect_item_completed(item, stderr=stderr)
-    for item in tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config):
+    for item in tool_timeline_items_from_local_http_exec_result(result, EventProcessorWithJsonOutput(), config=config):
         status = str(item.payload.get("status") or "").lower() if isinstance(item.payload, Mapping) else ""
         rendered_item = item.to_mapping()
         if item.type == "command_execution" and status == "in_progress":
@@ -3358,7 +3362,7 @@ def _local_http_result_turn_status(result: UserTurnSamplingResult) -> str:
 
 def tool_call_items_from_local_http_exec_result(
     result: UserTurnSamplingResult,
-    processor: JsonEventProcessor,
+    processor: EventProcessorWithJsonOutput,
 ) -> tuple[ExecThreadItem, ...]:
     """Extract read-only tool/function call items from a local HTTP Responses payload."""
 
@@ -3385,7 +3389,7 @@ def tool_call_items_from_local_http_exec_result(
 
 def tool_output_items_from_local_http_exec_result(
     result: UserTurnSamplingResult,
-    processor: JsonEventProcessor,
+    processor: EventProcessorWithJsonOutput,
 ) -> tuple[ExecThreadItem, ...]:
     """Extract read-only tool/function output items from a local HTTP Responses payload."""
 
@@ -3452,7 +3456,7 @@ def _request_permissions_response_from_tool_output(output: Mapping[str, Any]) ->
 
 def tool_timeline_items_from_local_http_exec_result(
     result: UserTurnSamplingResult,
-    processor: JsonEventProcessor,
+    processor: EventProcessorWithJsonOutput,
     *,
     config: ExecSessionConfig | Mapping[str, Any] | None = None,
 ) -> tuple[ExecThreadItem, ...]:
@@ -3602,7 +3606,7 @@ def _drop_orphan_tool_output_from_timeline(item: Mapping[str, Any]) -> bool:
     return bool(call_id) and not tool_name and item_type in {"function_call_output", "custom_tool_call_output"}
 
 
-def _tool_call_exec_thread_item(item: Mapping[str, Any], processor: JsonEventProcessor) -> ExecThreadItem:
+def _tool_call_exec_thread_item(item: Mapping[str, Any], processor: EventProcessorWithJsonOutput) -> ExecThreadItem:
     return ExecThreadItem(
         processor.next_item_id(),
         "mcp_tool_call",
@@ -3635,7 +3639,7 @@ def _local_http_timeline_default_cwd(config: ExecSessionConfig | Mapping[str, An
 def _local_shell_command_execution_exec_thread_item(
     call: Mapping[str, Any],
     output: Mapping[str, Any] | None,
-    processor: JsonEventProcessor,
+    processor: EventProcessorWithJsonOutput,
     *,
     default_cwd: Path | None = None,
 ) -> ExecThreadItem:
@@ -3680,7 +3684,7 @@ def _local_shell_command_cwd_from_call(item: Mapping[str, Any], default_cwd: Pat
 def _shell_command_execution_exec_thread_item(
     call: Mapping[str, Any],
     output: Mapping[str, Any] | None,
-    processor: JsonEventProcessor,
+    processor: EventProcessorWithJsonOutput,
     *,
     default_cwd: Path | None = None,
 ) -> ExecThreadItem:
@@ -3806,7 +3810,7 @@ def _shell_command_execution_duration_ms_from_tool_output(item: Mapping[str, Any
 def _apply_patch_file_change_exec_thread_item(
     call: Mapping[str, Any],
     output: Mapping[str, Any] | None,
-    processor: JsonEventProcessor,
+    processor: EventProcessorWithJsonOutput,
     *,
     changes_output: Mapping[str, Any] | None = None,
 ) -> ExecThreadItem:
@@ -3911,7 +3915,7 @@ def _apply_patch_internal_output_mapping(item: Mapping[str, Any] | None) -> Mapp
     return internal_output if isinstance(internal_output, Mapping) else None
 
 
-def _tool_output_exec_thread_item(item: Mapping[str, Any], processor: JsonEventProcessor) -> ExecThreadItem:
+def _tool_output_exec_thread_item(item: Mapping[str, Any], processor: EventProcessorWithJsonOutput) -> ExecThreadItem:
     return ExecThreadItem(
         processor.next_item_id(),
         "mcp_tool_call",
@@ -6117,7 +6121,7 @@ def _merge_local_http_sampling_result(
 
 
 def _replay_local_http_session_events(
-    processor: HumanEventProcessor | JsonEventProcessor,
+    processor: EventProcessorWithHumanOutput | EventProcessorWithJsonOutput,
     result: UserTurnSamplingResult,
     *,
     stdout: TextIO | None = None,
@@ -6127,7 +6131,7 @@ def _replay_local_http_session_events(
         notification = _local_http_session_event_notification(event)
         if notification is None:
             continue
-        if isinstance(processor, JsonEventProcessor):
+        if isinstance(processor, EventProcessorWithJsonOutput):
             processor.process_server_notification(notification, output=stdout)
         else:
             processor.process_server_notification(notification, stderr=stderr)
@@ -6288,7 +6292,7 @@ def _int_field(value: Any, *names: str) -> int:
 
 
 def emit_local_http_exec_error(
-    processor: HumanEventProcessor | JsonEventProcessor,
+    processor: EventProcessorWithHumanOutput | EventProcessorWithJsonOutput,
     message: str | BaseException,
     *,
     stdout: TextIO | None = None,
@@ -6298,7 +6302,7 @@ def emit_local_http_exec_error(
 
     error_message = str(message)
     session_events = tuple(getattr(message, "session_events", ()) or ())
-    if isinstance(processor, JsonEventProcessor):
+    if isinstance(processor, EventProcessorWithJsonOutput):
         processor.emit_json_lines((ThreadEvent.turn_started(),), stdout)
         if session_events:
             _replay_local_http_session_events(processor, _SessionEventsResult(session_events), stdout=stdout)

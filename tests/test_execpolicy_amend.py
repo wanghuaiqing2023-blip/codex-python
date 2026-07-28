@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.execpolicy import (
+from pycodex.execpolicy import Decision, NetworkRuleProtocol
+from pycodex.execpolicy.amend import (
     AmendError,
-    Decision,
-    NetworkRuleProtocol,
     blocking_append_allow_prefix_rule,
     blocking_append_network_rule,
-    normalize_network_rule_host,
 )
+from pycodex.execpolicy.rule import normalize_network_rule_host
 
 
 def test_appends_rule_and_creates_directories(tmp_path):

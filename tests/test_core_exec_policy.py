@@ -2,15 +2,13 @@ import os
 import unittest
 from pathlib import Path
 
-from pycodex.execpolicy import (
+from pycodex.core.exec_policy import (
     PROMPT_CONFLICT_REASON,
     REJECT_RULES_APPROVAL_REASON,
     REJECT_SANDBOX_APPROVAL_REASON,
-    Decision,
     ExecApprovalRequest,
     ExecPolicyCommandOrigin,
     ExecPolicyCommands,
-    ExecPolicyPrefixRule,
     UnmatchedCommandContext,
     commands_for_exec_policy,
     commands_for_intercepted_exec_policy,
@@ -28,6 +26,7 @@ from pycodex.execpolicy import (
     render_intercepted_exec_policy_decision,
     strongest_decision,
 )
+from pycodex.execpolicy import Decision, PrefixRule
 from pycodex.protocol import (
     AskForApproval,
     ExecPolicyAmendment,
@@ -361,8 +360,9 @@ class CoreExecPolicyTests(unittest.TestCase):
         # Behavior anchor: match_exec_policy_rules_for_command parses shell
         # wrappers and returns Rust-shaped prefixRuleMatch payloads.
         rules = (
-            ExecPolicyPrefixRule.new(["cargo", "install"], "prompt", "review installs"),
-            ExecPolicyPrefixRule.new([["npm", "pnpm"], "publish"], "forbidden"),
+            PrefixRule.new(["cargo", "install"], "prompt", "review installs"),
+            PrefixRule.new(["npm", "publish"], "forbidden"),
+            PrefixRule.new(["pnpm", "publish"], "forbidden"),
         )
 
         cargo_matches = match_exec_policy_rules_for_command(("bash", "-lc", "cargo install ripgrep"), rules)
@@ -588,7 +588,7 @@ class CoreExecPolicyTests(unittest.TestCase):
         command = ("powershell.exe", "-NoProfile", "-Command", "echo blocked")
         matched_rules = match_exec_policy_rules_for_command(
             command,
-            (ExecPolicyPrefixRule.new(["echo"], "prompt"),),
+            (PrefixRule.new(["echo"], "prompt"),),
         )
 
         requirement = create_exec_approval_requirement_for_command(
@@ -613,7 +613,7 @@ class CoreExecPolicyTests(unittest.TestCase):
         command = ("powershell.exe", "-NoProfile", "-Command", "echo blocked")
         matched_rules = match_exec_policy_rules_for_command(
             command,
-            (ExecPolicyPrefixRule.new(["echo"], "allow"),),
+            (PrefixRule.new(["echo"], "allow"),),
         )
 
         requirement = create_exec_approval_requirement_for_command(

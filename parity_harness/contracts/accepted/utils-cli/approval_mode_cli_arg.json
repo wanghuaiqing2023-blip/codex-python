@@ -1,0 +1,34 @@
+{
+    "contract_id":  "codex-utils-cli.approval_mode_cli_arg",
+    "evidence_status":  "mapped",
+    "rust":  {
+                 "workspace":  "codex/codex-rs",
+                 "crate":  "codex-utils-cli",
+                 "module":  "approval_mode_cli_arg",
+                 "source":  "codex/codex-rs/utils/cli/src/approval_mode_cli_arg.rs",
+                 "anchors":  [
+                                 "ApprovalModeCliArg"
+                             ],
+                 "baseline_commit":  "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+             },
+    "python":  {
+                   "owner":  "pycodex/utils/cli/approval_mode_cli_arg.py",
+                   "layout":  "module-file",
+                   "implementation_files":  [
+                                                "pycodex/utils/cli/approval_mode_cli_arg.py"
+                                            ],
+                   "anchors":  [
+                                   "ApprovalModeCliArg"
+                               ]
+               },
+    "checks":  {
+                   "structure":  {
+                                     "checker":  "structure.owner-and-coordinate"
+                                 }
+               },
+    "fixture_refs":  [
+                         "tests/test_utils_cli_crate.py",
+                         "tests/test_utils_cli_resume_command.py",
+                         "tests/test_utils_cli_module_ownership_rs.py"
+                     ]
+}

@@ -1,0 +1,23 @@
+{
+  "contract_id": "codex-rmcp-client.in_process_transport",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "in_process_transport",
+    "source": "codex/codex-rs/rmcp-client/src/in_process_transport.rs",
+    "anchors": ["InProcessTransportFactory", "open"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/in_process_transport.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/rmcp_client/in_process_transport.py"],
+    "anchors": ["InProcessTransportFactory", "open"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_rmcp_client_foundation_modules_rs.py",
+    "tests/test_rmcp_client_in_process_rs.py"
+  ]
+}

@@ -5,21 +5,31 @@ import asyncio
 import pytest
 
 from pycodex.exec_server import (
-    ByteChunk,
     ExecOutputStream,
     ExecParams,
     ExecProcessEvent,
-    ExecProcessEventLog,
     ExecServerError,
-    ExecServerTransportParams,
-    LazyRemoteExecServerClient,
     ProcessId,
     ProcessOutputChunk,
     ReadResponse,
-    RemoteExecProcess,
-    RemoteProcessBoundary,
     WriteResponse,
     WriteStatus,
+)
+from pycodex.exec_server.client import (
+    LazyRemoteExecServerClient,
+)
+from pycodex.exec_server.client_api import (
+    ExecServerTransportParams,
+)
+from pycodex.exec_server.process import (
+    ExecProcessEventLog,
+)
+from pycodex.exec_server.protocol import (
+    ByteChunk,
+)
+from pycodex.exec_server.remote_process import (
+    RemoteExecProcess,
+    RemoteProcessBoundary,
 )
 
 

@@ -10,6 +10,7 @@ Rust coordinates:
 Python mapping:
 
 - `pycodex/uds/__init__.py`
+- `pycodex/uds/platform.py`
 
 Current status: complete.
 
@@ -17,6 +18,9 @@ Certified behavior:
 
 - `prepare_private_socket_directory` creates the rendezvous directory and, on Unix, normalizes existing directory permissions to exact owner-only `0700`.
 - `is_stale_socket_path` mirrors Rust platform behavior: Unix checks for socket file type, while Windows uses path existence because `uds_windows` uses a regular rendezvous path.
+- The root module owns the public listener/stream wrappers and delegates
+  platform behavior to the Python counterpart of Rust's inline `platform`
+  module.
 - `UnixListener` and `UnixStream` expose the async bind/accept/connect/read/write surface when Python's standard library exposes asyncio Unix socket APIs.
 
 Focused validation:

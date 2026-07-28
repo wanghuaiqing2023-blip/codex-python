@@ -1,0 +1,23 @@
+{
+  "contract_id": "codex-core-skills.injection",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-skills",
+    "module": "injection",
+    "source": "codex/codex-rs/core-skills/src/injection.rs",
+    "anchors": ["SkillInjection", "SkillInjections", "build_skill_injections", "collect_explicit_skill_mentions"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_skills/injection/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/core_skills/injection/__init__.py",
+      "pycodex/core_skills/injection/mentions.py"
+    ],
+    "anchors": ["SkillInjection", "SkillInjections", "build_skill_injections", "collect_explicit_skill_mentions"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_skill_injections.py", "tests/test_core_skill_mentions.py", "tests/test_core_skills_module_ownership_rs.py"]
+}

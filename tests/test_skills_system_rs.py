@@ -5,8 +5,8 @@ from pycodex.skills import (
     embedded_system_skills_fingerprint,
     install_system_skills,
     system_cache_root_dir,
-    uninstall_system_skills,
 )
+from pycodex.core_skills.system import uninstall_system_skills
 
 
 def test_install_system_skills_writes_embedded_tree_and_matching_marker(tmp_path: Path) -> None:

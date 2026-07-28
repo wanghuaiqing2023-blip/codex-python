@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-utils-sleep-inhibitor.linux-inhibitor",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-sleep-inhibitor",
+    "module": "linux_inhibitor",
+    "source": "codex/codex-rs/utils/sleep-inhibitor/src/linux_inhibitor.rs",
+    "anchors": ["LinuxSleepInhibitor", "SleepInhibitor", "APP_ID", "ASSERTION_REASON", "BLOCKER_SLEEP_SECONDS", "LinuxBackend"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/sleep_inhibitor/linux_inhibitor.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/utils/sleep_inhibitor/linux_inhibitor.py"],
+    "anchors": ["LinuxSleepInhibitor", "SleepInhibitor", "APP_ID", "ASSERTION_REASON", "BLOCKER_SLEEP_SECONDS", "LinuxBackend"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_utils_sleep_inhibitor.py", "tests/test_utils_sleep_inhibitor_module_ownership_rs.py"]
+}

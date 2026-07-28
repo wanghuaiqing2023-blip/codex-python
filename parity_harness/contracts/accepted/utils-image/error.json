@@ -1,0 +1,37 @@
+{
+  "contract_id": "codex-utils-image.error",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-image",
+    "module": "error",
+    "source": "codex/codex-rs/utils/image/src/error.rs",
+    "anchors": [
+      "ImageProcessingError",
+      "decode_error",
+      "is_invalid_image"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/image/error.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/image/error.py"
+    ],
+    "anchors": [
+      "ImageProcessingError",
+      "decode_error",
+      "is_invalid_image"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_image_error_rs.py",
+    "tests/test_utils_image_lib_rs.py"
+  ]
+}

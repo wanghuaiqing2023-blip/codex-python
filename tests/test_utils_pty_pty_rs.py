@@ -11,13 +11,15 @@ from pathlib import Path
 
 import pytest
 
-import pycodex.utils.pty as pty
-from pycodex.utils.pty import (
+import pycodex.utils.pty as crate
+import pycodex.utils.pty.pty as pty
+import pycodex.utils.pty.win.psuedocon as psuedocon
+from pycodex.utils.pty import spawn_pty_process
+from pycodex.utils.pty.pty import (
     TerminalSize,
     conpty_supported,
     spawn_process,
     spawn_process_with_inherited_fds,
-    spawn_pty_process,
 )
 
 
@@ -33,15 +35,11 @@ def test_conpty_supported_windows_uses_version_gate(monkeypatch: pytest.MonkeyPa
     # Rust: codex-utils-pty/src/pty.rs::conpty_supported
     # Contract: Windows delegates to the ConPTY support probe. The Python
     # dependency-light facade models that as a Windows 10+ version gate.
-    class Version:
-        def __init__(self, major: int) -> None:
-            self.major = major
-
     monkeypatch.setattr(pty.os, "name", "nt", raising=False)
-    monkeypatch.setattr(pty.sys, "getwindowsversion", lambda: Version(10), raising=False)
+    monkeypatch.setattr(psuedocon, "windows_build_number", lambda: 20_000)
     assert conpty_supported() is True
 
-    monkeypatch.setattr(pty.sys, "getwindowsversion", lambda: Version(6), raising=False)
+    monkeypatch.setattr(psuedocon, "windows_build_number", lambda: 10_000)
     assert conpty_supported() is False
 
 
@@ -109,52 +107,12 @@ def test_spawn_process_delegates_to_inherited_fd_entry_with_empty_list(
 
 
 def test_spawn_pty_process_is_crate_root_alias_for_spawn_process(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Rust crates/modules: codex-utils-pty/src/lib.rs and src/pty.rs
     # Contract: lib.rs re-exports pty::spawn_process as spawn_pty_process, so
     # the public compatibility name follows the Rust spawn_process facade.
-    calls: list[dict[str, object]] = []
-    cwd = Path.cwd()
-    size = TerminalSize(rows=40, cols=100)
-
-    async def fake_spawn_process(program, args, cwd_arg, env, arg0=None, size=TerminalSize()):
-        calls.append(
-            {
-                "program": program,
-                "args": tuple(args),
-                "cwd": cwd_arg,
-                "env": dict(env),
-                "arg0": arg0,
-                "size": size,
-            }
-        )
-        return "spawned"
-
-    monkeypatch.setattr(pty, "spawn_process", fake_spawn_process)
-
-    result = asyncio.run(
-        spawn_pty_process(
-            "python",
-            ["-i"],
-            cwd,
-            {"PTY_ALIAS": "1"},
-            arg0="py",
-            size=size,
-        )
-    )
-
-    assert result == "spawned"
-    assert calls == [
-        {
-            "program": "python",
-            "args": ("-i",),
-            "cwd": cwd,
-            "env": {"PTY_ALIAS": "1"},
-            "arg0": "py",
-            "size": size,
-        }
-    ]
+    assert spawn_pty_process is pty.spawn_process
+    assert crate.spawn_pty_process is pty.spawn_process
 
 
 def test_spawn_with_inherited_fds_rejects_missing_program_before_unix_fd_branch(
@@ -273,6 +231,7 @@ def test_portable_pty_arg0_becomes_command_builder_program(
         )
         return "spawned"
 
+    monkeypatch.setattr(pty.os, "name", "java", raising=False)
     monkeypatch.setattr(pty, "_spawn_process", fake_spawn)
 
     result = asyncio.run(

@@ -1,0 +1,38 @@
+{
+  "contract_id": "codex-rmcp-client.http_client_adapter.www_authenticate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "http_client_adapter::www_authenticate",
+    "source": "codex/codex-rs/rmcp-client/src/http_client_adapter/www_authenticate.rs",
+    "anchors": [
+      "InsufficientScopeChallenge",
+      "insufficient_scope_challenge",
+      "BearerInsufficientScope",
+      "parse_bearer_insufficient_scope"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/http_client_adapter/www_authenticate.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/rmcp_client/http_client_adapter/www_authenticate.py"
+    ],
+    "anchors": [
+      "InsufficientScopeChallenge",
+      "insufficient_scope_challenge",
+      "BearerInsufficientScope",
+      "parse_bearer_insufficient_scope"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_rmcp_client_http_adapter_rs.py"
+  ]
+}

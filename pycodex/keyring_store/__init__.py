@@ -7,7 +7,6 @@ Rust source:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from threading import RLock
 from typing import Protocol
 
 
@@ -25,10 +24,6 @@ class CredentialStoreError(Exception):
 
     def into_error(self) -> BaseException | str:
         return self.error
-
-
-class KeyringNoEntryError(Exception):
-    """Portable stand-in for Rust keyring::Error::NoEntry in tests."""
 
 
 class KeyringStore(Protocol):
@@ -73,64 +68,6 @@ class DefaultKeyringStore:
             raise CredentialStoreError.new(exc) from exc
 
 
-class MockKeyringStore:
-    """Test-support keyring store matching Rust ``tests::MockKeyringStore``."""
-
-    def __init__(self) -> None:
-        self._credentials: dict[str, str] = {}
-        self._errors: dict[str, BaseException | str] = {}
-        self._lock = RLock()
-
-    def credential(self, account: str) -> str | None:
-        with self._lock:
-            return self._credentials.get(account)
-
-    def saved_value(self, account: str) -> str | None:
-        return self.credential(account)
-
-    def set_error(self, account: str, error: BaseException | str) -> None:
-        with self._lock:
-            self._errors[account] = error
-
-    def contains(self, account: str) -> bool:
-        with self._lock:
-            return account in self._credentials
-
-    def load(self, service: str, account: str) -> str | None:
-        del service
-        with self._lock:
-            error = self._error_for_account(account)
-            if error is not None:
-                if _is_no_entry_error(error):
-                    return None
-                raise CredentialStoreError.new(error)
-            return self._credentials.get(account)
-
-    def save(self, service: str, account: str, value: str) -> None:
-        del service
-        with self._lock:
-            self._raise_if_error(account)
-            self._credentials[account] = value
-
-    def delete(self, service: str, account: str) -> bool:
-        del service
-        with self._lock:
-            error = self._error_for_account(account)
-            if error is not None and not _is_no_entry_error(error):
-                raise CredentialStoreError.new(error)
-            if account not in self._credentials:
-                return False
-            del self._credentials[account]
-            return error is None
-
-    def _raise_if_error(self, account: str) -> None:
-        if account in self._errors:
-            raise CredentialStoreError.new(self._errors[account])
-
-    def _error_for_account(self, account: str) -> BaseException | str | None:
-        return self._errors.get(account)
-
-
 def _import_keyring():
     try:
         import keyring  # type: ignore[import-not-found]
@@ -142,8 +79,6 @@ def _import_keyring():
 def _is_no_entry_error(error: BaseException | str) -> bool:
     if isinstance(error, str):
         return error.lower() in {"noentry", "no entry", "no_entry"}
-    if isinstance(error, KeyringNoEntryError):
-        return True
     name = error.__class__.__name__.lower()
     return "notfound" in name or "noentry" in name or "passworddeleteerror" in name
 
@@ -151,7 +86,5 @@ def _is_no_entry_error(error: BaseException | str) -> bool:
 __all__ = [
     "CredentialStoreError",
     "DefaultKeyringStore",
-    "KeyringNoEntryError",
     "KeyringStore",
-    "MockKeyringStore",
 ]

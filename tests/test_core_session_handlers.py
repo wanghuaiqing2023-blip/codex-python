@@ -51,7 +51,7 @@ from pycodex.protocol import (
     ThreadSettingsOverrides,
     ThreadRolledBackEvent,
 )
-from pycodex.rollout import append_response_item_to_rollout
+from pycodex.rollout.recorder import append_response_item_to_rollout
 
 
 def _message_payload(role: str, text: str) -> dict[str, object]:

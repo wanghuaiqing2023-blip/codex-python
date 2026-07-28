@@ -21,7 +21,7 @@ from pycodex.hooks import HookEvent
 from pycodex.hooks import HookEventAfterAgent
 from pycodex.hooks import HookPayload
 from pycodex.hooks import HookResult
-from pycodex.hooks import HookResultKind
+from pycodex.hooks.types import HookResultKind
 from pycodex.hooks import legacy_notify_json
 from pycodex.hooks import notify_hook
 from pycodex.protocol import ThreadId

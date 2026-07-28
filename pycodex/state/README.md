@@ -77,7 +77,7 @@ wrapper behavior. The base migrators point at the four embedded migration
 directories, and each runtime migrator returns the same configuration with
 `ignore_missing=True`, matching Rust's compatibility behavior for databases
 already migrated by a newer binary. Runtime SQL execution is owned by
-`pycodex.state.state_runtime`, which applies the upstream SQL files when this
+`pycodex.state.runtime`, which applies the upstream SQL files when this
 source checkout is available.
 
 ## `src/lib.rs`
@@ -91,7 +91,7 @@ surface pass.
 
 ## `src/runtime.rs`
 
-`pycodex.state.state_runtime` mirrors the Rust runtime aggregation and DB
+`pycodex.state.runtime` mirrors the Rust runtime aggregation and DB
 opening surface around the already ported runtime child modules. It defines the
 four runtime DB specs, opens SQLite connections with WAL/normal sync/busy
 timeout/incremental autovacuum pragmas, builds `StateRuntime` with state/logs/

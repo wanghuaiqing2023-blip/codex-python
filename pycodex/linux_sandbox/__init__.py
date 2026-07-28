@@ -12,10 +12,12 @@ import importlib
 import json
 import sys
 from pathlib import Path
-from typing import Mapping, NoReturn, Sequence
+from typing import TYPE_CHECKING, Mapping, NoReturn, Sequence
 
-from pycodex.core.spawn import SpawnChildRequest, StdioPolicy, build_spawn_child_request
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile
+
+if TYPE_CHECKING:
+    from pycodex.core.spawn import SpawnChildRequest, StdioPolicy
 
 
 CODEX_LINUX_SANDBOX_ARG0 = "codex-linux-sandbox"
@@ -119,6 +121,8 @@ def build_linux_sandbox_spawn_child_request(
     env: Mapping[str, str] | None = None,
     network: object | None = None,
 ) -> SpawnChildRequest:
+    from pycodex.core.spawn import build_spawn_child_request
+
     if not isinstance(permission_profile, PermissionProfile):
         raise TypeError("permission_profile must be a PermissionProfile")
     args = create_linux_sandbox_command_args_for_permission_profile(

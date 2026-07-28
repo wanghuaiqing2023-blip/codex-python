@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-hooks.registry",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "registry",
+    "source": "codex/codex-rs/hooks/src/registry.rs",
+    "anchors": [
+      "HookListOutcome",
+      "Hooks",
+      "HooksConfig",
+      "command_from_argv",
+      "dispatch",
+      "list_hooks",
+      "new",
+      "preview_permission_request",
+      "preview_post_compact",
+      "preview_post_tool_use",
+      "preview_pre_compact",
+      "preview_pre_tool_use"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/registry.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/registry.py"
+    ],
+    "anchors": [
+      "HookListOutcome",
+      "Hooks",
+      "HooksConfig",
+      "command_from_argv",
+      "dispatch",
+      "list_hooks",
+      "new",
+      "preview_permission_request",
+      "preview_post_compact",
+      "preview_post_tool_use",
+      "preview_pre_compact",
+      "preview_pre_tool_use"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_registry_rs.py"
+  ]
+}

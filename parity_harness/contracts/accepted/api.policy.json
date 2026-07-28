@@ -6,9 +6,7 @@
   "include_inline_modules": true,
   "coverage_expectation": "verified",
   "uncovered_rust_modules": [],
-  "uncovered_python_files": [
-    "pycodex/codex_api/endpoint/realtime_websocket/methods_common_constants.py"
-  ],
+  "uncovered_python_files": [],
   "allowed_unowned": [
     {
       "path": "pycodex/codex_api/endpoint/_websocket_client.py",

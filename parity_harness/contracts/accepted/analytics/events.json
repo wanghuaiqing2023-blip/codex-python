@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-analytics.events",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-analytics",
+    "module": "events",
+    "source": "codex/codex-rs/analytics/src/events.rs",
+    "anchors": [
+      "AppServerRpcTransport",
+      "CodexToolItemEventBase",
+      "FinalApprovalOutcome",
+      "GuardianApprovalRequestSource",
+      "GuardianReviewAnalyticsResult",
+      "GuardianReviewDecision",
+      "GuardianReviewEventParams",
+      "GuardianReviewFailureReason",
+      "GuardianReviewSessionKind",
+      "GuardianReviewTerminalStatus",
+      "GuardianReviewTrackContext",
+      "GuardianReviewedAction"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/analytics/events.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/analytics/events.py"
+    ],
+    "anchors": [
+      "AppServerRpcTransport",
+      "CodexToolItemEventBase",
+      "FinalApprovalOutcome",
+      "GuardianApprovalRequestSource",
+      "GuardianReviewAnalyticsResult",
+      "GuardianReviewDecision",
+      "GuardianReviewEventParams",
+      "GuardianReviewFailureReason",
+      "GuardianReviewSessionKind",
+      "GuardianReviewTerminalStatus",
+      "GuardianReviewTrackContext",
+      "GuardianReviewedAction"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_analytics_events_rs.py"
+  ]
+}

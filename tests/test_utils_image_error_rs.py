@@ -28,6 +28,8 @@ def test_decode_error_preserves_decoding_errors() -> None:
     assert error.path == Path("bad.png")
     assert error.source is source
     assert error.is_invalid_image() is True
+    assert ImageProcessingError.__module__ == "pycodex.utils.image.error"
+    assert DecodeImageError.__module__ == "pycodex.utils.image.error"
 
 
 def test_decode_error_maps_non_decoding_errors_to_unsupported_mime() -> None:

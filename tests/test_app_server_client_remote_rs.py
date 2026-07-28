@@ -61,8 +61,8 @@ from pycodex.app_server_client import (
     remote_write_jsonrpc_message_projection,
     request_id_from_client_request,
     websocket_url_supports_auth_token,
-    _to_exec_remote_connect_args,
 )
+from pycodex.app_server_client.remote import _to_exec_remote_connect_args
 from pycodex.app_server_protocol import ClientNotification, ClientRequest, JSONRPCErrorError
 from pycodex.exec.session import ClientRequest as ExecClientRequest
 from pycodex.exec.websocket import OPCODE_BINARY, OPCODE_CLOSE, OPCODE_TEXT, WebSocketFrame

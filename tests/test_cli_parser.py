@@ -55,8 +55,8 @@ from pycodex.cli import DoctorUpdateCheck, NpmRootCheck, UpdateAction
 from pycodex.cli.login import AuthDotJson
 from pycodex.exec.config_plan import build_exec_config_bootstrap_plan
 from pycodex.core import Feature, Features, PersonalityMigrationStatus
-from pycodex.rollout import (
-    SessionMeta,
+from pycodex.protocol import SessionMeta
+from pycodex.rollout.recorder import (
     materialize_session_rollout,
     read_event_msgs_from_rollout,
     read_response_items_from_rollout,
@@ -6923,7 +6923,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(
-            tuple(rule.pattern for rule in captured["rules"]),
+            tuple(tuple(rule.pattern) for rule in captured["rules"]),
             (("pwd",), ("git", "push")),
         )
         self.assertEqual(captured["rules"][0].decision, "prompt")
@@ -8929,6 +8929,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_exec_local_http_shell_tool_forbidden_by_policy(self) -> None:
         request_bodies = []
+        dangerous_command = (
+            r"Remove-Item C:\important\data -Recurse -Force"
+            if os.name == "nt"
+            else "rm -rf /important/data"
+        )
 
         class FakeResponse:
             def __init__(self, payload):
@@ -8952,7 +8957,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                         "call_id": "shell-forbidden",
                         "arguments": json.dumps(
                             {
-                                "cmd": "rm -rf /important/data",
+                                "cmd": dangerous_command,
                             }
                         ),
                     }
@@ -8993,10 +8998,12 @@ class TopLevelCliParserTests(unittest.TestCase):
                                 "exec",
                                 "--ask-for-approval",
                                 "never",
+                                "--sandbox",
+                                "workspace-write",
                                 "--cd",
                                 tmpdir,
                                 "--skip-git-repo-check",
-                                "rm -rf /important/data",
+                                dangerous_command,
                             ],
                             stdout=stdout,
                             stderr=stderr,

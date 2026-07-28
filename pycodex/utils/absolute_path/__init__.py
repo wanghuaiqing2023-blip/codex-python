@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+from . import absolutize
+
 
 _ABSOLUTE_PATH_BASE: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "absolute_path_base",
@@ -31,12 +33,12 @@ class AbsolutePathBuf:
         base = _normalize(Path(base_path))
         if not candidate.is_absolute():
             candidate = base / candidate
-        return cls(_absolutize(candidate))
+        return cls(absolutize.absolutize_from(candidate, base))
 
     @classmethod
     def from_absolute_path(cls, path: str | Path) -> "AbsolutePathBuf":
         candidate = _expand_home(Path(path))
-        return cls(_absolutize(candidate))
+        return cls(absolutize.absolutize(candidate))
 
     @classmethod
     def from_absolute_path_checked(cls, path: str | Path) -> "AbsolutePathBuf":
@@ -44,7 +46,7 @@ class AbsolutePathBuf:
         candidate = _normalize(candidate)
         if not candidate.is_absolute():
             raise ValueError(f"path is not absolute: {path}")
-        return cls(_absolutize(candidate))
+        return cls(absolutize.absolutize_from(candidate, Path(candidate.anchor)))
 
     @classmethod
     def current_dir(cls) -> "AbsolutePathBuf":
@@ -152,25 +154,6 @@ def _normalize_windows_device_path(path: str) -> str | None:
             if len(rest) >= 3 and rest[0].isalpha() and rest[1] == ":" and rest[2] in "\\/":
                 return rest
     return None
-
-
-def _absolutize(path: Path) -> Path:
-    if path.is_absolute():
-        return Path(*_normalized_parts(path))
-    return Path.cwd() / Path(*_normalized_parts(path))
-
-
-def _normalized_parts(path: Path) -> tuple[str, ...]:
-    output: list[str] = []
-    for part in path.parts:
-        if part == ".":
-            continue
-        if part == ".." and output and output[-1] != "..":
-            if len(output) > 1 or not Path(output[0]).anchor:
-                output.pop()
-            continue
-        output.append(part)
-    return tuple(output)
 
 
 def _should_preserve_logical_path(logical: Path) -> bool:

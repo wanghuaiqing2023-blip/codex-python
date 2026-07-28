@@ -4,20 +4,8 @@
   "python_root": "pycodex/app_server_client",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::legacy_core",
-    "crate::legacy_core::config",
-    "crate::legacy_core::config::edit",
-    "crate::legacy_core::connectors",
-    "crate::legacy_core::otel_init",
-    "crate::legacy_core::personality_migration",
-    "crate::legacy_core::review_format",
-    "crate::legacy_core::review_prompts",
-    "crate::legacy_core::test_support",
-    "crate::legacy_core::util",
-    "crate::legacy_core::windows_sandbox"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

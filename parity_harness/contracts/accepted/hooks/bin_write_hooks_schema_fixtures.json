@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-hooks.bin.write_hooks_schema_fixtures",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "bin::write_hooks_schema_fixtures",
+    "source": "codex/codex-rs/hooks/src/bin/write_hooks_schema_fixtures.rs",
+    "anchors": [
+      "main"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/bin/write_hooks_schema_fixtures.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/hooks/bin/write_hooks_schema_fixtures.py"
+    ],
+    "anchors": [
+      "main"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_hooks_schema_rs.py"
+  ]
+}

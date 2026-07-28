@@ -31,13 +31,13 @@ from pycodex.rollout import (
     first_rollout_content_match_snippet,
     get_threads,
     get_threads_in_root,
-    list_threads_from_state_metadata,
     parse_cursor,
     read_thread_item_from_rollout,
     read_session_meta_line,
     rollout_date_parts,
     search_rollout_paths,
 )
+from pycodex.rollout.list import list_threads_from_state_metadata
 
 from ..error import ThreadStoreError
 from ..in_memory import InMemoryThreadStore
@@ -50,6 +50,7 @@ from ..types import (
 )
 
 from .helpers import (
+    _coerce_session_source,
     _maybe_await,
     distinct_thread_metadata_title,
     rollout_path_is_archived,
@@ -331,7 +332,7 @@ def _state_metadata_from_rollout(store: LocalThreadStore, thread_id: ThreadId, r
         thread_id,
         rollout_path,
         created_at,
-        SessionSource.from_startup_arg(meta.source),
+        _coerce_session_source(meta.source),
     )
     builder.model_provider = meta.model_provider
     builder.thread_source = meta.thread_source

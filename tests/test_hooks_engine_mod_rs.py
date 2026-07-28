@@ -15,18 +15,20 @@ import asyncio
 import json
 from pathlib import Path
 
-from pycodex import hooks as hooks_mod
-from pycodex.hooks import CommandRunResult
-from pycodex.hooks import ConfiguredHandler
-from pycodex.hooks import HookOutputSpiller
+import pycodex.hooks.engine as hooks_mod
+import pycodex.hooks.engine.discovery as discovery_mod
+import pycodex.hooks.engine.dispatcher as dispatcher_mod
+from pycodex.hooks.engine.command_runner import CommandRunResult
+from pycodex.hooks.engine import ConfiguredHandler
+from pycodex.hooks.output_spill import HookOutputSpiller
 from pycodex.hooks import PermissionRequestRequest
-from pycodex.hooks import PermissionRequestDecisionKind
+from pycodex.hooks.events.permission_request import PermissionRequestDecisionKind
 from pycodex.hooks import PostToolUseRequest
 from pycodex.hooks import PreToolUseRequest
 from pycodex.hooks import StopHookTarget
 from pycodex.hooks import StopRequest
-from pycodex.hooks import _ClaudeHooksEngine
-from pycodex.hooks import _CommandShell
+from pycodex.hooks.engine import _ClaudeHooksEngine
+from pycodex.hooks.engine import _CommandShell
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookRunStatus
 from pycodex.protocol import HookSource
@@ -118,7 +120,7 @@ def test_new_enabled_loads_schemas_and_exposes_discovery_warnings(monkeypatch) -
         return object()
 
     def fake_discover(_stack, _sources, warnings, _bypass):
-        return hooks_mod.DiscoveryResult(
+        return discovery_mod.DiscoveryResult(
             handlers=[],
             warnings=list(warnings),
         )
@@ -187,7 +189,7 @@ def test_run_pre_tool_use_executes_handlers_decorates_completed_ids_and_spills_c
             )
         )
 
-    monkeypatch.setattr(hooks_mod, "run_command", fake_run_command)
+    monkeypatch.setattr(dispatcher_mod, "run_command", fake_run_command)
     engine = _ClaudeHooksEngine(
         [_handler(HookEventName.PRE_TOOL_USE, "Bash|shell", 0)],
         output_spiller=HookOutputSpiller(tmp_path / "hook-outputs"),
@@ -222,7 +224,7 @@ def test_run_permission_request_decorates_suffix_and_resolves_deny(monkeypatch, 
             )
         )
 
-    monkeypatch.setattr(hooks_mod, "run_command", fake_run_command)
+    monkeypatch.setattr(dispatcher_mod, "run_command", fake_run_command)
     engine = _ClaudeHooksEngine([_handler(HookEventName.PERMISSION_REQUEST, "^Bash$", 0)])
     request = PermissionRequestRequest(
         session_id="thread-1",
@@ -255,7 +257,7 @@ def test_run_post_tool_use_spills_feedback_message(monkeypatch, tmp_path) -> Non
     async def fake_run_command(_shell, _handler, _input_json, _cwd):
         return _run(long_feedback, exit_code=2, stderr=long_feedback)
 
-    monkeypatch.setattr(hooks_mod, "run_command", fake_run_command)
+    monkeypatch.setattr(dispatcher_mod, "run_command", fake_run_command)
     engine = _ClaudeHooksEngine(
         [_handler(HookEventName.POST_TOOL_USE, "^Bash$", 0)],
         output_spiller=HookOutputSpiller(tmp_path / "hook-outputs"),
@@ -293,7 +295,7 @@ def test_run_stop_spills_continuation_fragments(monkeypatch, tmp_path) -> None:
         assert json.loads(input_json)["hook_event_name"] == "Stop"
         return _run("", exit_code=2, stderr=long_reason)
 
-    monkeypatch.setattr(hooks_mod, "run_command", fake_run_command)
+    monkeypatch.setattr(dispatcher_mod, "run_command", fake_run_command)
     engine = _ClaudeHooksEngine(
         [_handler(HookEventName.STOP, None, 0)],
         output_spiller=HookOutputSpiller(tmp_path / "hook-outputs"),

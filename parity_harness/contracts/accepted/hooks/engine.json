@@ -1,0 +1,52 @@
+{
+  "contract_id": "codex-hooks.engine",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-hooks",
+    "module": "engine",
+    "source": "codex/codex-rs/hooks/src/engine/mod.rs",
+    "anchors": [
+      "CommandShell",
+      "ConfiguredHandler",
+      "HookListEntry",
+      "new",
+      "preview_permission_request",
+      "preview_post_compact",
+      "preview_post_tool_use",
+      "preview_pre_compact",
+      "preview_pre_tool_use",
+      "preview_session_start",
+      "preview_stop",
+      "preview_user_prompt_submit"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/hooks/engine/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/hooks/engine/__init__.py"
+    ],
+    "anchors": [
+      "CommandShell",
+      "ConfiguredHandler",
+      "HookListEntry",
+      "new",
+      "preview_permission_request",
+      "preview_post_compact",
+      "preview_post_tool_use",
+      "preview_pre_compact",
+      "preview_pre_tool_use",
+      "preview_session_start",
+      "preview_stop",
+      "preview_user_prompt_submit"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": []
+}

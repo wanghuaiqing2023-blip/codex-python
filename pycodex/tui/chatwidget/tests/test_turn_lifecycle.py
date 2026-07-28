@@ -54,7 +54,7 @@ def test_set_prevent_idle_sleep_recreates_inhibitor_and_preserves_running_flag()
     state.set_prevent_idle_sleep(True)
 
     assert state.sleep_inhibitor is not old_inhibitor
-    assert state.sleep_inhibitor.prevent_idle_sleep is True
+    assert state.sleep_inhibitor.enabled is True
     assert state.sleep_inhibitor.is_turn_running() is True
 
 

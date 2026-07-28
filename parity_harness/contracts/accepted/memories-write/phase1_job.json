@@ -1,0 +1,40 @@
+{
+  "contract_id": "codex-memories-write.phase1.job",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "phase1::job",
+    "source": "codex/codex-rs/memories/write/src/phase1.rs",
+    "anchors": [
+      "is_memory_excluded_contextual_user_fragment",
+      "run",
+      "sample",
+      "sanitize_response_item_for_memories",
+      "serialize_filtered_rollout_response_items"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/phase1/job/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/memories/write/phase1/job/__init__.py"
+    ],
+    "anchors": [
+      "is_memory_excluded_contextual_user_fragment",
+      "run",
+      "sample",
+      "sanitize_response_item_for_memories",
+      "serialize_filtered_rollout_response_items"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_phase1_rs.py"
+  ]
+}

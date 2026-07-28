@@ -551,7 +551,7 @@ def test_config_requirements_from_sources_parses_exec_policy_rules() -> None:
     assert requirements.exec_policy_source() == source
     assert requirements.exec_policy is not None
     rule = requirements.exec_policy.value.prefix_rules[0]
-    assert rule.pattern == ("rm",)
+    assert tuple(rule.pattern) == ("rm",)
     assert rule.decision is Decision.FORBIDDEN
 
 

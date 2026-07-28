@@ -4,11 +4,11 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pycodex.memories.write import (
-    memory_extensions_root,
+from pycodex.memories.write import memory_extensions_root
+from pycodex.memories.write.extensions import seed_extension_instructions
+from pycodex.memories.write.extensions.prune import (
     prune_old_extension_resources_with_now,
     resource_timestamp,
-    seed_extension_instructions,
 )
 
 

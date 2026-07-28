@@ -1,0 +1,46 @@
+{
+  "contract_id": "codex-keyring-store.tests",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-keyring-store",
+    "module": "tests",
+    "source": "codex/codex-rs/keyring-store/src/lib.rs",
+    "anchors": [
+      "MockKeyringStore",
+      "contains",
+      "credential",
+      "saved_value",
+      "set_error",
+      "delete",
+      "load",
+      "save"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/keyring_store/tests.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/keyring_store/tests.py"
+    ],
+    "anchors": [
+      "MockKeyringStore",
+      "contains",
+      "credential",
+      "saved_value",
+      "set_error",
+      "delete",
+      "load",
+      "save"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_keyring_store_lib_rs.py"
+  ]
+}

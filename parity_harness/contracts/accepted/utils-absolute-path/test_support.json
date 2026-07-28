@@ -1,0 +1,29 @@
+{
+  "contract_id": "codex-utils-absolute-path.test_support",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-absolute-path",
+    "module": "test_support",
+    "source": "codex/codex-rs/utils/absolute-path/src/lib.rs",
+    "anchors": ["PathBufExt", "PathExt", "test_path_buf", "abs"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/absolute_path/test_support.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/absolute_path/test_support.py"
+    ],
+    "anchors": ["PathBufExt", "PathExt", "test_path_buf", "abs"]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_tui_test_support.py",
+    "tests/test_utils_absolute_path_module_ownership_rs.py"
+  ]
+}

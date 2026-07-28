@@ -97,7 +97,7 @@ class RequestPluginInstallDataTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            request.to_mapping(),
+            request.to_camel_mapping(),
             {
                 "threadId": "thread-1",
                 "turnId": "turn-1",

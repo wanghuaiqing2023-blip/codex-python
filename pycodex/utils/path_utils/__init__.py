@@ -10,6 +10,8 @@ import sys
 import tempfile
 from typing import Mapping
 
+from .env import is_wsl
+
 
 @dataclass(frozen=True)
 class SymlinkWritePaths:
@@ -21,27 +23,6 @@ class SymlinkWritePaths:
             object.__setattr__(self, "read_path", Path(self.read_path))
         if not isinstance(self.write_path, Path):
             object.__setattr__(self, "write_path", Path(self.write_path))
-
-
-def is_wsl(
-    *,
-    env: Mapping[str, str] | None = None,
-    proc_version_path: str | Path = "/proc/version",
-    platform: str | None = None,
-) -> bool:
-    if platform is None:
-        platform = sys.platform
-    if not str(platform).startswith("linux"):
-        return False
-    if env is None:
-        env = os.environ
-    if "WSL_DISTRO_NAME" in env:
-        return True
-    try:
-        version = Path(proc_version_path).read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return False
-    return "microsoft" in version.lower()
 
 
 def normalize_for_path_comparison(path: str | Path) -> Path:

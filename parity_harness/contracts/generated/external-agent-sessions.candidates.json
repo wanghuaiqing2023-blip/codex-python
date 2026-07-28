@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 5,
-    "python_files": 1,
-    "modules_with_candidates": 1,
-    "modules_with_anchors": 1
+    "python_files": 5,
+    "modules_with_candidates": 5,
+    "modules_with_anchors": 5
   },
   "contracts": [
     {
@@ -57,7 +57,15 @@
         "source": "codex/codex-rs/external-agent-sessions/src/detect.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/external_agent_sessions/detect.py",
+          "anchor_candidates": [
+            "detect_recent_sessions",
+            "SESSION_IMPORT_MAX_COUNT"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -73,7 +81,15 @@
         "source": "codex/codex-rs/external-agent-sessions/src/export.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/external_agent_sessions/export.py",
+          "anchor_candidates": [
+            "load_session_for_import",
+            "EXTERNAL_SESSION_IMPORTED_MARKER"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -89,7 +105,16 @@
         "source": "codex/codex-rs/external-agent-sessions/src/ledger.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/external_agent_sessions/ledger.py",
+          "anchor_candidates": [
+            "has_current_session_been_imported",
+            "record_imported_session",
+            "SESSION_IMPORT_LEDGER_FILE"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -105,7 +130,25 @@
         "source": "codex/codex-rs/external-agent-sessions/src/records.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/external_agent_sessions/records.py",
+          "anchor_candidates": [
+            "SessionSummary",
+            "conversation_messages",
+            "project_root_from_records",
+            "read_records",
+            "source_title_from_records",
+            "summarize_session",
+            "EXTERNAL_AGENT_TOOL_CALL_TAG",
+            "EXTERNAL_AGENT_TOOL_RESULT_TAG",
+            "NOTE_MAX_LEN",
+            "TOOL_RESULT_MAX_LEN",
+            "tool_call_note",
+            "tool_result_note"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

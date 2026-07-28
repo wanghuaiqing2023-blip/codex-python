@@ -11,7 +11,7 @@ from enum import Enum
 
 from pycodex.shell_command import is_known_safe_command, parse_command
 
-MEMORIES_USAGE_METRIC = "codex.memories.usage"
+from .metrics import MEMORIES_USAGE_METRIC
 
 
 class MemoriesUsageKind(str, Enum):

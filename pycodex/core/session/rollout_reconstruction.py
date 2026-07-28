@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from pycodex.protocol import RolloutItem
-from pycodex.rollout import (
+from pycodex.rollout.recorder import (
     PreviousTurnSettings,
     RolloutReconstruction,
     _ParsedRolloutItem,

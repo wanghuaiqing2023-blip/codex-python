@@ -5,11 +5,19 @@ Rust source: ``codex/codex-rs/shell-command/src/shell_detect.rs``.
 
 from __future__ import annotations
 
+from enum import Enum
 from pathlib import PurePath
-from typing import Any
 
 
-def detect_shell_type(shell_path: str | PurePath) -> Any | None:
+class ShellType(str, Enum):
+    ZSH = "zsh"
+    BASH = "bash"
+    POWERSHELL = "powershell"
+    SH = "sh"
+    CMD = "cmd"
+
+
+def detect_shell_type(shell_path: str | PurePath) -> ShellType | None:
     """Return the known shell type for a binary name or path.
 
     The Rust helper first checks exact known names, then recursively checks the
@@ -22,8 +30,7 @@ def detect_shell_type(shell_path: str | PurePath) -> Any | None:
     return _detect(str(shell_path))
 
 
-def _detect(value: str) -> Any | None:
-    ShellType = _shell_type()
+def _detect(value: str) -> ShellType | None:
     if value == "zsh":
         return ShellType.ZSH
     if value == "sh":
@@ -41,12 +48,6 @@ def _detect(value: str) -> Any | None:
     return None
 
 
-def _shell_type() -> Any:
-    from pycodex.core.shell import ShellType
-
-    return ShellType
-
-
 def _file_stem(value: str) -> str:
     normalized = value.replace("\\", "/").rstrip("/")
     base = normalized.rsplit("/", 1)[-1]
@@ -55,4 +56,4 @@ def _file_stem(value: str) -> str:
     return base.rsplit(".", 1)[0]
 
 
-__all__ = ["detect_shell_type"]
+__all__ = ["ShellType", "detect_shell_type"]

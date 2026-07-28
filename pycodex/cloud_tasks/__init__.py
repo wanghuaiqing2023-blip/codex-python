@@ -46,6 +46,7 @@ from pycodex.cloud_tasks.new_task import NewTaskPage
 from pycodex.cloud_tasks.app import App
 from pycodex.cloud_tasks.app import AppEvent
 from pycodex.cloud_tasks.app import ApplyModalState
+from pycodex.cloud_tasks.app import ApplyResultLevel
 from pycodex.cloud_tasks.app import AttemptView
 from pycodex.cloud_tasks.app import BestOfModalState
 from pycodex.cloud_tasks.app import DetailView
@@ -66,6 +67,29 @@ from pycodex.cloud_tasks.app import handle_new_task_submitted_event
 from pycodex.cloud_tasks.app import handle_tasks_loaded_event
 from pycodex.cloud_tasks.app import load_tasks
 from pycodex.cloud_tasks.app import pretty_lines_from_error
+from pycodex.cloud_tasks.env_detect import AutodetectSelection
+from pycodex.cloud_tasks.env_detect import CloudTasksHttpResponse
+from pycodex.cloud_tasks.env_detect import CodeEnvironment
+from pycodex.cloud_tasks.env_detect import autodetect_environment_id
+from pycodex.cloud_tasks.env_detect import by_repo_environments_url
+from pycodex.cloud_tasks.env_detect import environment_list_url
+from pycodex.cloud_tasks.env_detect import get_git_origins
+from pycodex.cloud_tasks.env_detect import get_json
+from pycodex.cloud_tasks.env_detect import list_environments
+from pycodex.cloud_tasks.env_detect import parse_owner_repo
+from pycodex.cloud_tasks.env_detect import pick_environment_row
+from pycodex.cloud_tasks.env_detect import uniq
+from pycodex.cloud_tasks.util import _auth_account_id
+from pycodex.cloud_tasks.util import _auth_from_manager
+from pycodex.cloud_tasks.util import _auth_uses_codex_backend
+from pycodex.cloud_tasks.util import _enum_value
+from pycodex.cloud_tasks.util import append_error_log
+from pycodex.cloud_tasks.util import build_chatgpt_headers
+from pycodex.cloud_tasks.util import format_relative_time
+from pycodex.cloud_tasks.util import load_auth_manager
+from pycodex.cloud_tasks.util import normalize_base_url
+from pycodex.cloud_tasks.util import set_user_agent_suffix
+from pycodex.cloud_tasks.util import task_url
 
 
 __all__ = [
@@ -155,8 +179,6 @@ __all__ = [
 ]
 
 
-Headers = Mapping[str, str]
-Transport = Callable[[str, Headers], "CloudTasksHttpResponse"]
 DEFAULT_CLOUD_TASKS_BASE_URL = "https://chatgpt.com/backend-api"
 NOT_SIGNED_IN_MESSAGE = (
     "Not signed in. Please run 'codex login' to sign in with ChatGPT, "
@@ -168,50 +190,6 @@ class GitInfoProvider(Protocol):
     def current_branch_name(self) -> str | None: ...
 
     def default_branch_name(self) -> str | None: ...
-
-
-@dataclass(frozen=True)
-class CodeEnvironment:
-    id: str
-    label: str | None = None
-    is_pinned: bool | None = None
-    task_count: int | None = None
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, Any]) -> "CodeEnvironment":
-        return cls(
-            id=str(value["id"]),
-            label=None if value.get("label") is None else str(value.get("label")),
-            is_pinned=None
-            if value.get("is_pinned") is None
-            else bool(value.get("is_pinned")),
-            task_count=None
-            if value.get("task_count") is None
-            else int(value.get("task_count")),
-        )
-
-
-@dataclass(frozen=True)
-class AutodetectSelection:
-    id: str
-    label: str | None = None
-
-
-@dataclass(frozen=True)
-class CloudTasksHttpResponse:
-    status: int
-    body: str
-    content_type: str = ""
-
-    @property
-    def is_success(self) -> bool:
-        return 200 <= self.status < 300
-
-
-class ApplyResultLevel(str, Enum):
-    SUCCESS = "success"
-    PARTIAL = "partial"
-    ERROR = "error"
 
 
 @dataclass(frozen=True)
@@ -248,64 +226,6 @@ class RunMainDispatchProjection:
     handler: str
     command_kind: str | None
     enters_tui: bool
-
-
-def normalize_base_url(input_url: str) -> str:
-    base_url = input_url
-    while base_url.endswith("/"):
-        base_url = base_url[:-1]
-    if (
-        base_url.startswith("https://chatgpt.com")
-        or base_url.startswith("https://chat.openai.com")
-    ) and "/backend-api" not in base_url:
-        base_url = f"{base_url}/backend-api"
-    return base_url
-
-
-def append_error_log(message: object) -> None:
-    ts = datetime.now(timezone.utc).isoformat()
-    try:
-        with open("error.log", "a", encoding="utf-8") as f:
-            f.write(f"[{ts}] {message}\n")
-    except OSError:
-        return
-
-
-def set_user_agent_suffix(suffix: str) -> None:
-    default_client.set_user_agent_suffix(suffix)
-
-
-async def load_auth_manager(chatgpt_base_url: str | None = None) -> Any | None:
-    try:
-        codex_home = find_codex_home()
-        config_toml = ConfigToml.from_mapping(
-            read_toml_mapping(Path(codex_home) / CONFIG_TOML_FILE)
-        )
-        store_mode = config_toml.cli_auth_credentials_store or "file"
-        resolved_chatgpt_base_url = chatgpt_base_url or config_toml.chatgpt_base_url
-        return await AuthManager.new(
-            Path(codex_home),
-            False,
-            _enum_value(store_mode),
-            resolved_chatgpt_base_url,
-        )
-    except Exception:
-        return None
-
-
-async def build_chatgpt_headers(auth_manager: Any | None = None) -> dict[str, str]:
-    set_user_agent_suffix("codex_cloud_tasks_tui")
-    headers = {
-        default_client.USER_AGENT_HEADER_NAME: default_client.get_codex_user_agent()
-    }
-
-    manager = auth_manager
-    if manager is None:
-        manager = await load_auth_manager(None)
-    auth = await _auth_from_manager(manager)
-    if auth is not None and _auth_uses_codex_backend(auth):
-        headers.update(auth_provider_from_auth(auth).to_auth_headers())
-    return headers
 
 
 async def init_backend(
@@ -359,17 +279,6 @@ async def init_backend(
     return BackendContext(backend=http, base_url=base_url)
 
 
-def task_url(base_url: str, task_id: str) -> str:
-    normalized = normalize_base_url(base_url)
-    if normalized.endswith("/backend-api"):
-        return f"{normalized[:-len('/backend-api')]}/codex/tasks/{task_id}"
-    if normalized.endswith("/api/codex"):
-        return f"{normalized[:-len('/api/codex')]}/codex/tasks/{task_id}"
-    if normalized.endswith("/codex"):
-        return f"{normalized}/tasks/{task_id}"
-    return f"{normalized}/codex/tasks/{task_id}"
-
-
 def parse_task_id(raw: str) -> TaskId:
     trimmed = raw.strip()
     if not trimmed:
@@ -380,43 +289,6 @@ def parse_task_id(raw: str) -> TaskId:
     if not task:
         raise ValueError("task id must not be empty")
     return TaskId(task)
-
-
-async def _auth_from_manager(auth_manager: Any | None) -> Any | None:
-    if auth_manager is None:
-        return None
-    auth_method = getattr(auth_manager, "auth", None)
-    if not callable(auth_method):
-        return None
-    auth = auth_method()
-    if inspect.isawaitable(auth):
-        auth = await auth
-    return auth
-
-
-def _auth_uses_codex_backend(auth: Any) -> bool:
-    uses = getattr(auth, "uses_codex_backend", None)
-    if callable(uses):
-        return bool(uses())
-    if isinstance(auth, Mapping):
-        return bool(auth.get("uses_codex_backend"))
-    return bool(getattr(auth, "uses_codex_backend", False))
-
-
-def _auth_account_id(auth: Any) -> str | None:
-    getter = getattr(auth, "get_account_id", None)
-    if callable(getter):
-        value = getter()
-    elif isinstance(auth, Mapping):
-        value = auth.get("account_id")
-    else:
-        value = getattr(auth, "account_id", None)
-    return None if value is None else str(value)
-
-
-def _enum_value(value: Any) -> str:
-    raw = getattr(value, "value", value)
-    return str(raw)
 
 
 def resolve_environment_id_from_rows(
@@ -678,28 +550,6 @@ def summary_line(summary: DiffSummary, colorize: bool = False) -> str:
     )
 
 
-def format_relative_time(reference: datetime, ts: datetime | float) -> str:
-    if isinstance(ts, (int, float)):
-        ts = datetime.fromtimestamp(ts, tz=timezone.utc)
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=timezone.utc)
-    secs = int((reference - ts).total_seconds())
-    if secs < 0:
-        secs = 0
-    if secs < 60:
-        return f"{secs}s ago"
-    mins = secs // 60
-    if mins < 60:
-        return f"{mins}m ago"
-    hours = mins // 60
-    if hours < 24:
-        return f"{hours}h ago"
-    local = ts.astimezone()
-    return f"{local.strftime('%b')} {local.day:2d} {local.strftime('%H:%M')}"
-
-
 def format_task_status_lines(task: Any, now: datetime, colorize: bool = False) -> list[str]:
     del colorize
     lines = [f"[{task_status_label(task.status)}] {task.title}"]
@@ -818,251 +668,3 @@ def _jsonable_time(value: Any) -> Any:
             value = value.replace(tzinfo=timezone.utc)
         return value.isoformat().replace("+00:00", "Z")
     return value
-
-
-def environment_list_url(base_url: str) -> str:
-    if "/backend-api" in base_url:
-        return f"{base_url}/wham/environments"
-    return f"{base_url}/api/codex/environments"
-
-
-def by_repo_environments_url(base_url: str, owner: str, repo: str) -> str:
-    if "/backend-api" in base_url:
-        return f"{base_url}/wham/environments/by-repo/github/{owner}/{repo}"
-    return f"{base_url}/api/codex/environments/by-repo/github/{owner}/{repo}"
-
-
-def parse_owner_repo(url: str) -> tuple[str, str] | None:
-    s = url.strip()
-    if s.startswith("ssh://"):
-        s = s[len("ssh://") :]
-
-    marker = "@github.com:"
-    idx = s.find(marker)
-    if idx != -1:
-        rest = s[idx + len(marker) :].lstrip("/").removesuffix(".git")
-        parts = rest.split("/", 1)
-        if len(parts) == 2:
-            return parts[0], parts[1]
-        return None
-
-    for prefix in (
-        "https://github.com/",
-        "http://github.com/",
-        "git://github.com/",
-        "github.com/",
-    ):
-        if s.startswith(prefix):
-            rest = s[len(prefix) :].lstrip("/").removesuffix(".git")
-            parts = rest.split("/", 1)
-            if len(parts) == 2:
-                return parts[0], parts[1]
-            return None
-    return None
-
-
-def uniq(values: Iterable[str]) -> list[str]:
-    return sorted(set(values))
-
-
-def pick_environment_row(
-    envs: Sequence[CodeEnvironment], desired_label: str | None = None
-) -> CodeEnvironment | None:
-    if not envs:
-        return None
-    if desired_label is not None:
-        lc = desired_label.lower()
-        for env in envs:
-            if (env.label or "").lower() == lc:
-                return env
-    if len(envs) == 1:
-        return envs[0]
-    for env in envs:
-        if env.is_pinned or False:
-            return env
-
-    best = envs[0]
-    best_key = best.task_count or 0
-    for env in envs[1:]:
-        key = env.task_count or 0
-        if key >= best_key:
-            best = env
-            best_key = key
-    return best
-
-
-def _default_transport(url: str, headers: Headers) -> CloudTasksHttpResponse:
-    req = request.Request(url, headers=dict(headers), method="GET")
-    try:
-        with request.urlopen(req) as res:  # noqa: S310 - caller controls URL.
-            body = res.read().decode("utf-8", errors="replace")
-            content_type = res.headers.get("content-type", "")
-            return CloudTasksHttpResponse(res.status, body, content_type)
-    except request.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        content_type = exc.headers.get("content-type", "") if exc.headers else ""
-        return CloudTasksHttpResponse(exc.code, body, content_type)
-
-
-def get_json(
-    url: str,
-    headers: Headers | None = None,
-    *,
-    transport: Transport | None = None,
-) -> list[CodeEnvironment]:
-    response = (transport or _default_transport)(url, headers or {})
-    if not response.is_success:
-        raise RuntimeError(
-            f"GET {url} failed: {response.status}; "
-            f"content-type={response.content_type}; body={response.body}"
-        )
-    try:
-        parsed = json.loads(response.body)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Decode error for {url}: {exc}; "
-            f"content-type={response.content_type}; body={response.body}"
-        ) from exc
-    if not isinstance(parsed, list):
-        raise RuntimeError(
-            f"Decode error for {url}: expected list; "
-            f"content-type={response.content_type}; body={response.body}"
-        )
-    return [CodeEnvironment.from_mapping(item) for item in parsed]
-
-
-def get_git_origins(
-    runner: Callable[[Sequence[str]], subprocess.CompletedProcess[str]] | None = None,
-) -> list[str]:
-    run = runner or _run_git
-
-    config = run(["git", "config", "--get-regexp", r"remote\..*\.url"])
-    if config.returncode == 0:
-        urls = []
-        for line in config.stdout.splitlines():
-            if " " in line:
-                _, url = line.split(" ", 1)
-                urls.append(url.strip())
-        if urls:
-            return uniq(urls)
-
-    remote = run(["git", "remote", "-v"])
-    if remote.returncode == 0:
-        urls = []
-        for line in remote.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                urls.append(parts[1])
-        if urls:
-            return uniq(urls)
-
-    return []
-
-
-def _run_git(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, check=False)
-
-
-def autodetect_environment_id(
-    base_url: str,
-    headers: Headers | None = None,
-    desired_label: str | None = None,
-    *,
-    origins: Sequence[str] | None = None,
-    transport: Transport | None = None,
-) -> AutodetectSelection:
-    request_headers = headers or {}
-    by_repo_envs: list[CodeEnvironment] = []
-    for origin in (origins if origins is not None else get_git_origins()):
-        parsed = parse_owner_repo(origin)
-        if parsed is None:
-            continue
-        owner, repo = parsed
-        url = by_repo_environments_url(base_url, owner, repo)
-        try:
-            by_repo_envs.extend(get_json(url, request_headers, transport=transport))
-        except Exception:
-            continue
-
-    picked = pick_environment_row(by_repo_envs, desired_label)
-    if picked is not None:
-        return AutodetectSelection(picked.id, picked.label)
-
-    list_url = environment_list_url(base_url)
-    all_envs = get_json(list_url, request_headers, transport=transport)
-    picked = pick_environment_row(all_envs, desired_label)
-    if picked is not None:
-        return AutodetectSelection(picked.id, picked.label)
-    raise RuntimeError("no environments available")
-
-
-def list_environments(
-    base_url: str,
-    headers: Headers | None = None,
-    *,
-    origins: Sequence[str] | None = None,
-    transport: Transport | None = None,
-) -> list[EnvironmentRow]:
-    request_headers = headers or {}
-    rows: MutableMapping[str, EnvironmentRow] = {}
-
-    for origin in (origins if origins is not None else get_git_origins()):
-        parsed = parse_owner_repo(origin)
-        if parsed is None:
-            continue
-        owner, repo = parsed
-        url = by_repo_environments_url(base_url, owner, repo)
-        try:
-            envs = get_json(url, request_headers, transport=transport)
-        except Exception:
-            continue
-        repo_hint = f"{owner}/{repo}"
-        for env in envs:
-            existing = rows.get(env.id)
-            if existing is None:
-                rows[env.id] = EnvironmentRow(
-                    id=env.id,
-                    label=env.label,
-                    is_pinned=env.is_pinned or False,
-                    repo_hints=repo_hint,
-                )
-            else:
-                rows[env.id] = EnvironmentRow(
-                    id=existing.id,
-                    label=existing.label if existing.label is not None else env.label,
-                    is_pinned=existing.is_pinned or (env.is_pinned or False),
-                    repo_hints=existing.repo_hints or repo_hint,
-                )
-
-    list_url = environment_list_url(base_url)
-    try:
-        envs = get_json(list_url, request_headers, transport=transport)
-    except Exception:
-        if not rows:
-            raise
-    else:
-        for env in envs:
-            existing = rows.get(env.id)
-            if existing is None:
-                rows[env.id] = EnvironmentRow(
-                    id=env.id,
-                    label=env.label,
-                    is_pinned=env.is_pinned or False,
-                    repo_hints=None,
-                )
-            else:
-                rows[env.id] = EnvironmentRow(
-                    id=existing.id,
-                    label=existing.label if existing.label is not None else env.label,
-                    is_pinned=existing.is_pinned or (env.is_pinned or False),
-                    repo_hints=existing.repo_hints,
-                )
-
-    return sorted(
-        rows.values(),
-        key=lambda row: (
-            not row.is_pinned,
-            (row.label or "").lower(),
-            row.id,
-        ),
-    )

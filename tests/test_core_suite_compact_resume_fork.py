@@ -16,7 +16,10 @@ import unittest
 import uuid
 from pathlib import Path
 
-from pycodex.rollout import read_model_history_from_rollout, read_rollout_reconstruction_from_rollout
+from pycodex.rollout.recorder import (
+    read_model_history_from_rollout,
+    read_rollout_reconstruction_from_rollout,
+)
 from pycodex.protocol import AskForApproval, CompactedItem, EventMsg, ResponseItem, SandboxPolicy, ThreadRolledBackEvent, TurnContextItem
 from pycodex.protocol.models import ContentItem
 

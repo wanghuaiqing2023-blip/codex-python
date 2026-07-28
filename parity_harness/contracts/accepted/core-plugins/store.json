@@ -1,0 +1,55 @@
+{
+  "contract_id": "codex-core-plugins.store",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "store",
+    "source": "codex/codex-rs/core-plugins/src/store.rs",
+    "anchors": [
+      "DEFAULT_PLUGIN_VERSION",
+      "PLUGINS_CACHE_DIR",
+      "PLUGINS_DATA_DIR",
+      "PluginInstallResult",
+      "PluginStore",
+      "PluginStoreError",
+      "active_plugin_root",
+      "active_plugin_version",
+      "install",
+      "install_with_version",
+      "is_installed",
+      "new"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/store.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/store.py"
+    ],
+    "anchors": [
+      "DEFAULT_PLUGIN_VERSION",
+      "PLUGINS_CACHE_DIR",
+      "PLUGINS_DATA_DIR",
+      "PluginInstallResult",
+      "PluginStore",
+      "PluginStoreError",
+      "active_plugin_root",
+      "active_plugin_version",
+      "install",
+      "install_with_version",
+      "is_installed",
+      "new"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_store_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

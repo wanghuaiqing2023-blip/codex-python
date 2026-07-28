@@ -13,9 +13,10 @@ The crate root API is represented in `pycodex/realtime_webrtc/__init__.py`:
 error types, event shapes, started-session data, session handle methods, and
 the non-native unsupported-platform behavior.
 
-The native macOS worker module is represented as a dependency-light
-compatibility boundary: Python does not bind Rust `libwebrtc`, but preserves the
-unsupported public behavior plus stable helper contracts such as native message
-wrapping and audio-level peak conversion.
+The native macOS worker module maps to `native.py`. Python does not bind Rust
+`libwebrtc`; this is an intentional platform adaptation. The module preserves
+the host-independent native contracts (error wrapping and exact audio-peak
+conversion), while the crate root preserves Rust's unsupported-platform
+behavior on non-macOS hosts. It does not fabricate a successful WebRTC session.
 
 Remaining Rust modules: none.

@@ -5,7 +5,7 @@ from pycodex.core.session.rollout_reconstruction import (
     reconstruct_history_from_rollout_async,
     turn_ids_are_compatible,
 )
-from pycodex.rollout import RolloutReconstruction
+from pycodex.rollout.recorder import RolloutReconstruction
 
 
 def test_turn_ids_are_compatible_matches_rust_predicate():

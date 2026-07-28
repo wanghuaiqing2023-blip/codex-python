@@ -178,7 +178,10 @@ class ShellCommandHandler:
     def build_shell_request(exec_params: ExecParams, *, hook_command: str, shell_type: ShellType | str | None, cancellation_token: Any=None, explicit_env_overrides: Mapping[str, str] | None=None, effective_additional_permissions: Any, normalized_additional_permissions: AdditionalPermissionProfile | None, approval_policy: AskForApproval | GranularApprovalConfig, permission_profile: PermissionProfile, file_system_sandbox_policy: FileSystemSandboxPolicy, sandbox_cwd: Path | str, prefix_rule: Sequence[str] | None=None, matched_rules: Sequence[object]=()) -> Any:
         from pycodex.core.tools.runtimes import ShellRequest
         from pycodex.core.tools.handlers import EffectiveAdditionalPermissions
-        from pycodex.execpolicy import ExecApprovalRequest, create_exec_approval_requirement_for_command
+        from pycodex.core.exec_policy import (
+            ExecApprovalRequest,
+            create_exec_approval_requirement_for_command,
+        )
         if not isinstance(exec_params, ExecParams):
             raise TypeError('exec_params must be ExecParams')
         if not isinstance(effective_additional_permissions, EffectiveAdditionalPermissions):

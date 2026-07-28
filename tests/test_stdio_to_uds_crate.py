@@ -7,12 +7,13 @@ import sys
 import pytest
 
 from pycodex import stdio_to_uds
+from pycodex.stdio_to_uds import __main__ as stdio_to_uds_main
 
 
 def test_main_requires_socket_path(capsys: pytest.CaptureFixture[str]) -> None:
     # Rust crate/module: codex-stdio-to-uds src/main.rs. Behavior contract:
     # missing socket path prints the usage line and exits with status 1.
-    assert stdio_to_uds.main([]) == 1
+    assert stdio_to_uds_main.main([]) == 1
     captured = capsys.readouterr()
     assert captured.err == "Usage: codex-stdio-to-uds <socket-path>\n"
 
@@ -20,7 +21,7 @@ def test_main_requires_socket_path(capsys: pytest.CaptureFixture[str]) -> None:
 def test_main_rejects_extra_args(capsys: pytest.CaptureFixture[str]) -> None:
     # Rust crate/module: codex-stdio-to-uds src/main.rs. Behavior contract:
     # more than one argument is rejected with the exact user-facing message.
-    assert stdio_to_uds.main(["socket", "extra"]) == 1
+    assert stdio_to_uds_main.main(["socket", "extra"]) == 1
     captured = capsys.readouterr()
     assert captured.err == "Expected exactly one argument: <socket-path>\n"
 
@@ -36,9 +37,9 @@ def test_main_treats_dash_prefixed_socket_path_as_positional(
     async def fake_run(socket_path: str) -> None:
         seen.append(socket_path)
 
-    monkeypatch.setattr(stdio_to_uds, "run", fake_run)
+    monkeypatch.setattr(stdio_to_uds_main, "run", fake_run)
 
-    assert stdio_to_uds.main(["--socket-like"]) == 0
+    assert stdio_to_uds_main.main(["--socket-like"]) == 0
     assert seen == ["--socket-like"]
 
 

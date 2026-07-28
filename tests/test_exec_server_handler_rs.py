@@ -7,13 +7,19 @@ import asyncio
 from pycodex.app_server.error_code import INVALID_REQUEST_ERROR_CODE
 from pycodex.app_server_protocol.jsonrpc_lite import JSONRPCErrorError
 from pycodex.exec_server import (
-    ExecServerHandler,
     ExecServerRuntimePaths,
     FsReadFileParams,
     FsReadFileResponse,
     InitializeParams,
     InitializeResponse,
+)
+from pycodex.exec_server.rpc import (
     RpcNotificationSender,
+)
+from pycodex.exec_server.server.handler import (
+    ExecServerHandler,
+)
+from pycodex.exec_server.server.session_registry import (
     SessionRegistry,
 )
 

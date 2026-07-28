@@ -19,11 +19,11 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 
-from pycodex.hooks import ParsedStopHandler
-from pycodex.hooks import StopHandlerData
+from pycodex.hooks.events.stop import ParsedStopHandler
+from pycodex.hooks.events.stop import StopHandlerData
 from pycodex.hooks import StopHookTarget
-from pycodex.hooks import aggregate_stop_results
-from pycodex.hooks import parse_stop_completed
+from pycodex.hooks.events.stop import aggregate_stop_results
+from pycodex.hooks.events.stop import parse_stop_completed
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookOutputEntry
 from pycodex.protocol import HookOutputEntryKind

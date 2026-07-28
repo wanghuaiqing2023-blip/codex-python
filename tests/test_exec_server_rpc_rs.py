@@ -19,7 +19,13 @@ from pycodex.app_server_protocol import (
     JSONRPCRequest,
     JSONRPCResponse,
 )
-from pycodex.exec_server import (
+from pycodex.app_server.error_code import (
+    internal_error,
+    invalid_params,
+    invalid_request,
+    method_not_found,
+)
+from pycodex.exec_server.rpc import (
     RpcCallError,
     RpcClient,
     RpcClientEvent,
@@ -31,10 +37,6 @@ from pycodex.exec_server import (
     drain_pending,
     encode_server_message,
     handle_server_message,
-    internal_error,
-    invalid_params,
-    invalid_request,
-    method_not_found,
     not_found,
 )
 from pycodex.protocol import RequestId

@@ -8,29 +8,37 @@ import pytest
 
 from pycodex.shell_escalation import (
     ESCALATE_SOCKET_ENV_VAR,
-    EXEC_WRAPPER_ENV_VAR,
-    MAX_FDS_PER_MESSAGE,
-    AsyncSocket,
-    CancellationToken,
     EscalateAction,
-    EscalateRequest,
-    EscalateResponse,
     EscalationDecision,
     EscalationPolicy,
     EscalateServer,
     ExecParams,
     ExecResult,
-    ExecveWrapperCli,
     PreparedExec,
     ShellCommandExecutor,
     Stopwatch,
-    SuperExecMessage,
-    SuperExecResult,
-    codex_execve_wrapper_main,
+)
+from pycodex.shell_escalation.bin.main_execve_wrapper import (
+    main as codex_execve_wrapper_main,
+)
+from pycodex.shell_escalation.unix.escalate_client import (
     duplicate_fd_for_transfer,
-    encode_length,
     shell_escalation_request_env,
 )
+from pycodex.shell_escalation.unix.escalate_protocol import (
+    EXEC_WRAPPER_ENV_VAR,
+    EscalateRequest,
+    EscalateResponse,
+    SuperExecMessage,
+    SuperExecResult,
+)
+from pycodex.shell_escalation.unix.execve_wrapper import ExecveWrapperCli
+from pycodex.shell_escalation.unix.socket import (
+    MAX_FDS_PER_MESSAGE,
+    AsyncSocket,
+    encode_length,
+)
+from pycodex.shell_escalation.unix.stopwatch import CancellationToken
 
 
 def test_protocol_constants_and_length_encoding_match_rust() -> None:

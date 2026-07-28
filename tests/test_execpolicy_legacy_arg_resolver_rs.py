@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.execpolicy_legacy import ArgMatcher
-from pycodex.execpolicy_legacy import ArgType
-from pycodex.execpolicy_legacy import LiteralValueDidNotMatch
-from pycodex.execpolicy_legacy import MatchedArg
-from pycodex.execpolicy_legacy import MultipleVarargPatterns
-from pycodex.execpolicy_legacy import NotEnoughArgs
-from pycodex.execpolicy_legacy import PositionalArg
-from pycodex.execpolicy_legacy import RangeEndOutOfBounds
-from pycodex.execpolicy_legacy import UnexpectedArguments
-from pycodex.execpolicy_legacy import VarargMatcherDidNotMatchAnything
-from pycodex.execpolicy_legacy import resolve_observed_args_with_patterns
+from pycodex.execpolicy_legacy.arg_matcher import ArgMatcher
+from pycodex.execpolicy_legacy.arg_type import ArgType
+from pycodex.execpolicy_legacy.error import LiteralValueDidNotMatch
+from pycodex.execpolicy_legacy.valid_exec import MatchedArg
+from pycodex.execpolicy_legacy.error import MultipleVarargPatterns
+from pycodex.execpolicy_legacy.error import NotEnoughArgs
+from pycodex.execpolicy_legacy.arg_resolver import PositionalArg
+from pycodex.execpolicy_legacy.error import RangeEndOutOfBounds
+from pycodex.execpolicy_legacy.error import UnexpectedArguments
+from pycodex.execpolicy_legacy.error import VarargMatcherDidNotMatchAnything
+from pycodex.execpolicy_legacy.arg_resolver import resolve_observed_args_with_patterns
 
 
 def _args(*values: str) -> list[PositionalArg]:

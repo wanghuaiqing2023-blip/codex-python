@@ -38,12 +38,6 @@ def install_system_skills(codex_home: Path | str) -> None:
     marker.write_text(f"{expected}\n", encoding="utf-8")
 
 
-def uninstall_system_skills(codex_home: Path | str) -> None:
-    destination = system_cache_root_dir(codex_home)
-    if destination.exists():
-        shutil.rmtree(destination)
-
-
 def _read_marker(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8").strip()

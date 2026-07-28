@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-utils-string.truncate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-string",
+    "module": "truncate",
+    "source": "codex/codex-rs/utils/string/src/truncate.rs",
+    "anchors": [
+      "approx_bytes_for_tokens",
+      "approx_token_count",
+      "approx_tokens_from_byte_count",
+      "truncate_middle_chars",
+      "truncate_middle_with_token_budget",
+      "APPROX_BYTES_PER_TOKEN"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/string/truncate.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/string/truncate.py"
+    ],
+    "anchors": [
+      "approx_bytes_for_tokens",
+      "approx_token_count",
+      "approx_tokens_from_byte_count",
+      "truncate_middle_chars",
+      "truncate_middle_with_token_budget",
+      "APPROX_BYTES_PER_TOKEN"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_string_utils.py"
+  ]
+}

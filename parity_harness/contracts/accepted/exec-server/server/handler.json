@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-exec-server.server.handler",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-exec-server",
+    "module": "server::handler",
+    "source": "codex/codex-rs/exec-server/src/server/handler.rs",
+    "anchors": [
+      "ExecServerHandler",
+      "exec",
+      "exec_read",
+      "exec_write",
+      "fs_copy",
+      "fs_create_directory",
+      "fs_get_metadata",
+      "fs_read_directory",
+      "fs_read_file",
+      "fs_remove",
+      "fs_write_file",
+      "http_request"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/exec_server/server/handler.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/exec_server/server/handler.py"
+    ],
+    "anchors": [
+      "ExecServerHandler",
+      "exec",
+      "exec_read",
+      "exec_write",
+      "fs_copy",
+      "fs_create_directory",
+      "fs_get_metadata",
+      "fs_read_directory",
+      "fs_read_file",
+      "fs_remove",
+      "fs_write_file",
+      "http_request"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_exec_server_handler_rs.py"
+  ]
+}

@@ -2,10 +2,10 @@ import collections
 import io
 import unittest
 
-from pycodex.responses_api_proxy import (
+from pycodex.responses_api_proxy import ResponsesApiProxyError
+from pycodex.responses_api_proxy.read_api_key import (
     AUTH_HEADER_PREFIX,
     BUFFER_SIZE,
-    ResponsesApiProxyError,
     read_auth_header_with,
 )
 

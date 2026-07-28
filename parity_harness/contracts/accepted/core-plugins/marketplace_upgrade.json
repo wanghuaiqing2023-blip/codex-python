@@ -1,0 +1,43 @@
+{
+  "contract_id": "codex-core-plugins.marketplace_upgrade",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "marketplace_upgrade",
+    "source": "codex/codex-rs/core-plugins/src/marketplace_upgrade.rs",
+    "anchors": [
+      "ConfiguredMarketplaceUpgradeError",
+      "ConfiguredMarketplaceUpgradeOutcome",
+      "all_succeeded",
+      "configured_git_marketplace_names",
+      "upgrade_configured_git_marketplaces",
+      "marketplace_install_root"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/marketplace_upgrade/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/core_plugins/marketplace_upgrade/__init__.py"
+    ],
+    "anchors": [
+      "ConfiguredMarketplaceUpgradeError",
+      "ConfiguredMarketplaceUpgradeOutcome",
+      "all_succeeded",
+      "configured_git_marketplace_names",
+      "upgrade_configured_git_marketplaces",
+      "marketplace_install_root"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_marketplace_upgrade_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

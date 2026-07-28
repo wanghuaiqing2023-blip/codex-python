@@ -1,0 +1,36 @@
+{
+  "contract_id": "codex-memories-write.storage",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "storage",
+    "source": "codex/codex-rs/memories/write/src/storage.rs",
+    "anchors": [
+      "rebuild_raw_memories_file_from_memories",
+      "rollout_summary_file_stem",
+      "sync_rollout_summaries_from_memories"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/storage.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/write/storage.py"
+    ],
+    "anchors": [
+      "rebuild_raw_memories_file_from_memories",
+      "rollout_summary_file_stem",
+      "sync_rollout_summaries_from_memories"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_storage_rs.py"
+  ]
+}

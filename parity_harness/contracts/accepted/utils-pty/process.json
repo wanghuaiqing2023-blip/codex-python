@@ -1,0 +1,42 @@
+{
+  "contract_id": "codex-utils-pty.process",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-utils-pty",
+    "module": "process",
+    "source": "codex/codex-rs/utils/pty/src/process.rs",
+    "anchors": [
+      "ProcessDriver",
+      "ProcessHandle",
+      "SpawnedProcess",
+      "TerminalSize",
+      "combine_output_receivers",
+      "spawn_from_driver"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/utils/pty/process.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/utils/pty/process.py"
+    ],
+    "anchors": [
+      "ProcessDriver",
+      "ProcessHandle",
+      "SpawnedProcess",
+      "TerminalSize",
+      "combine_output_receivers",
+      "spawn_from_driver"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_utils_pty_process_rs.py"
+  ]
+}

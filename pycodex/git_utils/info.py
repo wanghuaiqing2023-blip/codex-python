@@ -1,0 +1,632 @@
+"""Git repository information owned by ``info.rs``."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+from pycodex.protocol import GitInfo as _ProtocolGitInfo, GitSha
+
+from .errors import GitCommandError, GitOutputUtf8Error
+
+GIT_COMMAND_TIMEOUT_SECONDS = 5
+
+
+@dataclass(frozen=True)
+class GitInfo(_ProtocolGitInfo):
+    """Git-utils-owned projection of the protocol-compatible GitInfo shape."""
+
+
+@dataclass(frozen=True)
+class CommitLogEntry:
+    sha: str
+    timestamp: int
+    subject: str
+
+    def __post_init__(self) -> None:
+        _ensure_str(self.sha, "sha")
+        _ensure_i64(self.timestamp, "timestamp")
+        _ensure_str(self.subject, "subject")
+
+
+@dataclass(frozen=True)
+class GitDiffToRemote:
+    sha: GitSha
+    diff: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sha, GitSha):
+            raise TypeError("sha must be a GitSha")
+        _ensure_str(self.diff, "diff")
+
+
+def get_git_repo_root(base_dir: Path | str) -> Path | None:
+    _ensure_pathlike(base_dir, "base_dir")
+    base_path = Path(base_dir)
+    base = base_path if base_path.is_dir() else base_path.parent
+    return _find_ancestor_git_entry(base)
+
+
+def get_git_repo_root_with_fs(fs: Any, cwd: Path | str | None = None) -> Path | None:
+    """Return the repository root using a filesystem facade when supplied.
+
+    Mirrors Rust ``codex_git_utils::get_git_repo_root_with_fs``.  The Python
+    port keeps this synchronous because the local core helpers are synchronous;
+    callers may pass either ``(fs, cwd)`` with a facade exposing ``get_metadata``
+    or just ``(cwd)`` for the local filesystem behavior.
+    """
+
+    if cwd is None:
+        cwd = fs
+        fs = None
+    _ensure_pathlike(cwd, "cwd")
+    cwd_path = Path(cwd)
+    if fs is None:
+        return get_git_repo_root(cwd_path)
+    base = cwd_path if _fs_path_is_directory(fs, cwd_path) else cwd_path.parent
+    return _find_ancestor_git_entry_with_fs(fs, base)
+
+
+def collect_git_info(cwd: Path | str) -> GitInfo | None:
+    _ensure_pathlike(cwd, "cwd")
+    cwd = Path(cwd)
+    repo_check = run_git_command_with_timeout(("rev-parse", "--git-dir"), cwd)
+    if repo_check is None or repo_check.returncode != 0:
+        return None
+
+    commit = run_git_command_with_timeout(("rev-parse", "HEAD"), cwd)
+    branch = run_git_command_with_timeout(("rev-parse", "--abbrev-ref", "HEAD"), cwd)
+    url = run_git_command_with_timeout(("remote", "get-url", "origin"), cwd)
+
+    return GitInfo(
+        commit_hash=_stdout_text(commit) if commit is not None and commit.returncode == 0 else None,
+        branch=_branch_name(_stdout_text(branch)) if branch is not None and branch.returncode == 0 else None,
+        repository_url=_stdout_text(url) if url is not None and url.returncode == 0 else None,
+    )
+
+
+def get_git_remote_urls(cwd: Path | str) -> dict[str, str] | None:
+    _ensure_pathlike(cwd, "cwd")
+    cwd = Path(cwd)
+    repo_check = run_git_command_with_timeout(("rev-parse", "--git-dir"), cwd)
+    if repo_check is None or repo_check.returncode != 0:
+        return None
+    return get_git_remote_urls_assume_git_repo(cwd)
+
+
+def get_git_remote_urls_assume_git_repo(cwd: Path | str) -> dict[str, str] | None:
+    _ensure_pathlike(cwd, "cwd")
+    output = run_git_command_with_timeout(("remote", "-v"), Path(cwd))
+    if output is None or output.returncode != 0:
+        return None
+    return parse_git_remote_urls(output.stdout.decode("utf-8", errors="replace"))
+
+
+def get_head_commit_hash(cwd: Path | str) -> GitSha | None:
+    _ensure_pathlike(cwd, "cwd")
+    output = run_git_command_with_timeout(("rev-parse", "HEAD"), Path(cwd))
+    if output is None or output.returncode != 0:
+        return None
+    text = _stdout_text(output)
+    return GitSha.new(text) if text else None
+
+
+def canonicalize_git_remote_url(url: str) -> str | None:
+    _ensure_str(url, "url")
+    value = _trim_git_suffix(url.strip().rstrip("/"))
+    if not value:
+        return None
+    if "://" in value:
+        scheme, rest = value.split("://", 1)
+        return _canonicalize_git_url_like_remote(scheme, rest)
+    scp = _parse_scp_like_remote(value)
+    if scp is not None:
+        host_part, path = scp
+        return _canonicalize_git_remote_host_path(host_part, path)
+    if "/" not in value:
+        return None
+    host_part, path = value.split("/", 1)
+    return _canonicalize_git_remote_host_path(host_part, path)
+
+
+def get_has_changes(cwd: Path | str) -> bool | None:
+    _ensure_pathlike(cwd, "cwd")
+    output = run_git_command_with_timeout(("status", "--porcelain"), Path(cwd))
+    if output is None or output.returncode != 0:
+        return None
+    return bool(output.stdout)
+
+
+def recent_commits(cwd: Path | str, limit: int) -> list[CommitLogEntry]:
+    _ensure_pathlike(cwd, "cwd")
+    _ensure_usize(limit, "limit")
+    cwd = Path(cwd)
+    repo_check = run_git_command_with_timeout(("rev-parse", "--git-dir"), cwd)
+    if repo_check is None or repo_check.returncode != 0:
+        return []
+
+    args = ["log"]
+    if limit > 0:
+        args.extend(["-n", str(limit)])
+    args.append("--pretty=format:%H%x1f%ct%x1f%s")
+    output = run_git_command_with_timeout(args, cwd)
+    if output is None or output.returncode != 0:
+        return []
+
+    entries: list[CommitLogEntry] = []
+    for line in output.stdout.decode("utf-8", errors="replace").splitlines():
+        sha, timestamp, subject = _split_commit_line(line)
+        if not sha or not timestamp:
+            continue
+        try:
+            parsed_timestamp = int(timestamp)
+        except ValueError:
+            parsed_timestamp = 0
+        entries.append(CommitLogEntry(sha=sha, timestamp=parsed_timestamp, subject=subject))
+    return entries
+
+
+def git_diff_to_remote(cwd: Path | str) -> GitDiffToRemote | None:
+    _ensure_pathlike(cwd, "cwd")
+    cwd = Path(cwd)
+    if get_git_repo_root(cwd) is None:
+        return None
+    remotes = _get_git_remotes(cwd)
+    if remotes is None:
+        return None
+    branches = _branch_ancestry(cwd)
+    if branches is None:
+        return None
+    base_sha = _find_closest_sha(cwd, branches, remotes)
+    if base_sha is None:
+        return None
+    diff = _diff_against_sha(cwd, base_sha)
+    if diff is None:
+        return None
+    return GitDiffToRemote(sha=base_sha, diff=diff)
+
+
+def default_branch_name(cwd: Path | str) -> str | None:
+    _ensure_pathlike(cwd, "cwd")
+    cwd = Path(cwd)
+    for remote in _get_git_remotes(cwd) or []:
+        symref = run_git_command_with_timeout(("symbolic-ref", "--quiet", f"refs/remotes/{remote}/HEAD"), cwd)
+        if symref is not None and symref.returncode == 0:
+            text = _stdout_text(symref)
+            if "/" in text:
+                return text.rsplit("/", 1)[1]
+        show = run_git_command_with_timeout(("remote", "show", remote), cwd)
+        if show is not None and show.returncode == 0:
+            for line in show.stdout.decode("utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if line.startswith("HEAD branch:"):
+                    name = line.removeprefix("HEAD branch:").strip()
+                    if name:
+                        return name
+    return _default_branch_local(cwd)
+
+
+def local_git_branches(cwd: Path | str) -> list[str]:
+    _ensure_pathlike(cwd, "cwd")
+    cwd = Path(cwd)
+    output = run_git_command_with_timeout(("branch", "--format=%(refname:short)"), cwd)
+    if output is None or output.returncode != 0:
+        return []
+    branches = sorted(
+        line.strip()
+        for line in output.stdout.decode("utf-8", errors="replace").splitlines()
+        if line.strip()
+    )
+    base = _default_branch_local(cwd)
+    if base in branches:
+        branches.remove(base)
+        branches.insert(0, base)
+    return branches
+
+
+def current_branch_name(cwd: Path | str) -> str | None:
+    _ensure_pathlike(cwd, "cwd")
+    output = run_git_command_with_timeout(("branch", "--show-current"), Path(cwd))
+    if output is None or output.returncode != 0:
+        return None
+    text = _stdout_text(output)
+    return text or None
+
+
+def resolve_root_git_project_for_trust(fs: Any, cwd: Path | str | None = None) -> Path | None:
+    """Resolve the path used for repository trust checks.
+
+    Supports the Rust-shaped ``(fs, cwd)`` call as well as the historical
+    Python ``(cwd)`` call. Linked worktrees resolve to their main repository
+    root by inspecting the ``.git`` gitdir pointer without invoking git.
+    """
+
+    if cwd is None:
+        cwd = fs
+        fs = None
+    _ensure_pathlike(cwd, "cwd")
+    repo_root = get_git_repo_root_with_fs(fs, cwd) if fs is not None else get_git_repo_root(cwd)
+    if repo_root is None:
+        return None
+    dot_git = repo_root / ".git"
+    if _fs_path_is_directory(fs, dot_git) if fs is not None else dot_git.is_dir():
+        return repo_root
+    try:
+        gitdir_text = _fs_read_text(fs, dot_git).strip() if fs is not None else dot_git.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    gitdir = gitdir_text.removeprefix("gitdir:").strip() if gitdir_text.startswith("gitdir:") else ""
+    if not gitdir:
+        return None
+    gitdir_path = Path(gitdir)
+    if not gitdir_path.is_absolute():
+        gitdir_path = repo_root / gitdir_path
+    worktrees_dir = gitdir_path.parent
+    if worktrees_dir.name != "worktrees":
+        return None
+    return worktrees_dir.parent.parent
+
+
+def _find_ancestor_git_entry(base_dir: Path) -> Path | None:
+    current = base_dir
+    while True:
+        if (current / ".git").exists():
+            return current
+        if current.parent == current:
+            return None
+        current = current.parent
+
+
+def _find_ancestor_git_entry_with_fs(fs: Any, base_dir: Path) -> Path | None:
+    current = base_dir
+    while True:
+        if _fs_path_exists(fs, current / ".git"):
+            return current
+        if current.parent == current:
+            return None
+        current = current.parent
+
+
+def _fs_path_exists(fs: Any, path: Path) -> bool:
+    try:
+        _fs_get_metadata(fs, path)
+        return True
+    except OSError:
+        return False
+
+
+def _fs_path_is_directory(fs: Any, path: Path) -> bool:
+    if fs is None:
+        return path.is_dir()
+    try:
+        metadata = _fs_get_metadata(fs, path)
+    except OSError:
+        return False
+    value = getattr(metadata, "is_directory", None)
+    if value is not None:
+        return bool(value)
+    value = getattr(metadata, "is_dir", None)
+    return bool(value() if callable(value) else value)
+
+
+def _fs_get_metadata(fs: Any, path: Path) -> Any:
+    getter = getattr(fs, "get_metadata", None)
+    if getter is None:
+        raise OSError("filesystem facade must expose get_metadata")
+    try:
+        return getter(path, None)
+    except TypeError:
+        return getter(path)
+
+
+def _fs_read_text(fs: Any, path: Path) -> str:
+    reader = getattr(fs, "read_file_text", None)
+    if reader is None:
+        raise OSError("filesystem facade must expose read_file_text")
+    try:
+        return reader(path, None)
+    except TypeError:
+        return reader(path)
+
+
+def _run_git_stdout(cwd: Path, args: Iterable[str]) -> str:
+    args_list = list(args)
+    output = run_git_command_with_timeout(args_list, cwd)
+    command = "git " + " ".join(args_list)
+    if output is None:
+        raise GitCommandError(command, "timeout", "")
+    if output.returncode != 0:
+        stderr = output.stderr.decode("utf-8", errors="replace").strip()
+        raise GitCommandError(command, output.returncode, stderr)
+    try:
+        return output.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise GitOutputUtf8Error(command, exc) from exc
+
+
+def _run_git_stdout_or_none(cwd: Path, args: Iterable[str]) -> str | None:
+    try:
+        value = _run_git_stdout(cwd, args)
+    except GitCommandError:
+        return None
+    return value or None
+
+
+def run_git_command_with_timeout(args: Iterable[str], cwd: Path) -> subprocess.CompletedProcess[bytes] | None:
+    if isinstance(args, (str, bytes)):
+        raise TypeError("args must be an iterable of strings")
+    args_list = list(args)
+    if not all(isinstance(arg, str) for arg in args_list):
+        raise TypeError("args must contain only strings")
+    if not isinstance(cwd, Path):
+        raise TypeError("cwd must be a Path")
+    command = [
+        "git",
+        "-c",
+        f"core.hooksPath={os.devnull}",
+        "-c",
+        "core.fsmonitor=false",
+        *args_list,
+    ]
+    env = os.environ.copy()
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=GIT_COMMAND_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def parse_git_remote_urls(stdout: str) -> dict[str, str] | None:
+    _ensure_str(stdout, "stdout")
+    remotes: dict[str, str] = {}
+    for line in stdout.splitlines():
+        if not line.endswith(" (fetch)"):
+            continue
+        fetch_line = line.removesuffix(" (fetch)")
+        if "\t" in fetch_line:
+            name, url = fetch_line.split("\t", 1)
+        elif " " in fetch_line:
+            name, url = fetch_line.split(" ", 1)
+        else:
+            continue
+        url = url.strip()
+        if url:
+            remotes[name] = url
+    return remotes or None
+
+
+def _canonicalize_git_url_like_remote(scheme: str, rest: str) -> str | None:
+    _ensure_str(scheme, "scheme")
+    _ensure_str(rest, "rest")
+    default_port = {"git": "9418", "http": "80", "https": "443", "ssh": "22"}.get(scheme)
+    if default_port is None:
+        return None
+    rest = rest.split("?", 1)[0].split("#", 1)[0]
+    if "/" not in rest:
+        return None
+    host_part, path = rest.split("/", 1)
+    return _canonicalize_git_remote_host_path(host_part, path, default_port)
+
+
+def _parse_scp_like_remote(remote: str) -> tuple[str, str] | None:
+    _ensure_str(remote, "remote")
+    slash = remote.find("/")
+    colon = remote.find(":")
+    if slash != -1 and (colon == -1 or slash < colon):
+        return None
+    if ":" not in remote:
+        return None
+    host_part, path = remote.split(":", 1)
+    if not host_part or not path:
+        return None
+    return host_part, path
+
+
+def _canonicalize_git_remote_host_path(host_part: str, path: str, default_port: str | None = None) -> str | None:
+    _ensure_str(host_part, "host_part")
+    _ensure_str(path, "path")
+    if default_port is not None:
+        _ensure_str(default_port, "default_port")
+    host = _normalize_remote_host(host_part.rsplit("@", 1)[-1].strip().rstrip("/"), default_port)
+    if not host:
+        return None
+    clean_path = _trim_git_suffix(path.strip().strip("/"))
+    components = [part for part in clean_path.split("/") if part]
+    if len(components) < 2:
+        return None
+    owner, repo = components[0], components[1]
+    if owner in {".", ".."} or repo in {".", ".."}:
+        return None
+    joined = "/".join(components)
+    if host == "github.com":
+        joined = joined.lower()
+    return f"{host}/{joined}"
+
+
+def _normalize_remote_host(host: str, default_port: str | None) -> str:
+    _ensure_str(host, "host")
+    if default_port is not None:
+        _ensure_str(default_port, "default_port")
+    host = host.lower()
+    if default_port is not None and ":" in host:
+        host_without_port, port = host.rsplit(":", 1)
+        if port == default_port:
+            return host_without_port
+    return host
+
+
+def _trim_git_suffix(value: str) -> str:
+    _ensure_str(value, "value")
+    return value.removesuffix(".git")
+
+
+def _get_git_remotes(cwd: Path) -> list[str] | None:
+    output = run_git_command_with_timeout(("remote",), cwd)
+    if output is None or output.returncode != 0:
+        return None
+    remotes = [line for line in output.stdout.decode("utf-8", errors="replace").splitlines() if line]
+    if "origin" in remotes:
+        remotes.remove("origin")
+        remotes.insert(0, "origin")
+    return remotes
+
+
+def _default_branch_local(cwd: Path) -> str | None:
+    for candidate in ("main", "master"):
+        verify = run_git_command_with_timeout(
+            ("rev-parse", "--verify", "--quiet", f"refs/heads/{candidate}"),
+            cwd,
+        )
+        if verify is not None and verify.returncode == 0:
+            return candidate
+    return None
+
+
+def _branch_ancestry(cwd: Path) -> list[str] | None:
+    current = current_branch_name(cwd)
+    default = default_branch_name(cwd)
+    ancestry: list[str] = []
+    seen: set[str] = set()
+    for branch in (current, default):
+        if branch and branch not in seen:
+            seen.add(branch)
+            ancestry.append(branch)
+    for remote in _get_git_remotes(cwd) or []:
+        output = run_git_command_with_timeout(
+            ("for-each-ref", "--format=%(refname:short)", "--contains=HEAD", f"refs/remotes/{remote}"),
+            cwd,
+        )
+        if output is None or output.returncode != 0:
+            continue
+        for line in output.stdout.decode("utf-8", errors="replace").splitlines():
+            short = line.strip()
+            prefix = f"{remote}/"
+            if short.startswith(prefix):
+                branch = short.removeprefix(prefix)
+                if branch and branch != "HEAD" and branch not in seen:
+                    seen.add(branch)
+                    ancestry.append(branch)
+    return ancestry
+
+
+def _branch_remote_and_distance(cwd: Path, branch: str, remotes: list[str]) -> tuple[GitSha | None, int] | None:
+    remote_sha: GitSha | None = None
+    remote_ref: str | None = None
+    for remote in remotes:
+        candidate = f"refs/remotes/{remote}/{branch}"
+        verify = run_git_command_with_timeout(("rev-parse", "--verify", "--quiet", candidate), cwd)
+        if verify is None:
+            return None
+        if verify.returncode != 0:
+            continue
+        remote_sha = GitSha.new(_stdout_text(verify))
+        remote_ref = candidate
+        break
+
+    count = run_git_command_with_timeout(("rev-list", "--count", f"{branch}..HEAD"), cwd)
+    if count is None or count.returncode != 0:
+        if remote_ref is None:
+            return None
+        count = run_git_command_with_timeout(("rev-list", "--count", f"{remote_ref}..HEAD"), cwd)
+    if count is None or count.returncode != 0:
+        return None
+    try:
+        distance = int(_stdout_text(count))
+    except ValueError:
+        return None
+    return remote_sha, distance
+
+
+def _find_closest_sha(cwd: Path, branches: list[str], remotes: list[str]) -> GitSha | None:
+    closest: tuple[GitSha, int] | None = None
+    for branch in branches:
+        result = _branch_remote_and_distance(cwd, branch, remotes)
+        if result is None:
+            continue
+        remote_sha, distance = result
+        if remote_sha is None:
+            continue
+        if closest is None or distance < closest[1]:
+            closest = (remote_sha, distance)
+    return closest[0] if closest is not None else None
+
+
+def _diff_against_sha(cwd: Path, sha: GitSha) -> str | None:
+    output = run_git_command_with_timeout(("diff", "--no-textconv", "--no-ext-diff", sha.to_json()), cwd)
+    if output is None or output.returncode not in {0, 1}:
+        return None
+    diff = output.stdout.decode("utf-8", errors="replace")
+    untracked_output = run_git_command_with_timeout(("ls-files", "--others", "--exclude-standard"), cwd)
+    if untracked_output is None or untracked_output.returncode != 0:
+        return diff
+    null_device = "NUL" if os.name == "nt" else "/dev/null"
+    for line in untracked_output.stdout.decode("utf-8", errors="replace").splitlines():
+        file_name = line.strip()
+        if not file_name:
+            continue
+        extra = run_git_command_with_timeout(
+            ("diff", "--no-textconv", "--no-ext-diff", "--binary", "--no-index", "--", null_device, file_name),
+            cwd,
+        )
+        if extra is not None and extra.returncode in {0, 1}:
+            diff += extra.stdout.decode("utf-8", errors="replace")
+    return diff
+
+
+def _stdout_text(output: subprocess.CompletedProcess[bytes]) -> str:
+    return output.stdout.decode("utf-8", errors="replace").strip()
+
+
+def _branch_name(value: str) -> str | None:
+    return value if value and value != "HEAD" else None
+
+
+def _split_commit_line(line: str) -> tuple[str, str, str]:
+    _ensure_str(line, "line")
+    parts = line.split("\x1f", 2)
+    while len(parts) < 3:
+        parts.append("")
+    return parts[0].strip(), parts[1].strip(), parts[2].strip()
+
+
+def _ensure_pathlike(value: object, name: str) -> None:
+    if not isinstance(value, (str, Path)):
+        raise TypeError(f"{name} must be a path-like value")
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_str_list(value: object, name: str) -> None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{name} must be a list of strings")
+
+
+def _ensure_i64(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < -(2**63) or value > 2**63 - 1:
+        raise ValueError(f"{name} must fit in a signed 64-bit integer")
+
+
+def _ensure_usize(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+
+
+__all__ = ['CommitLogEntry', 'GIT_COMMAND_TIMEOUT_SECONDS', 'GitDiffToRemote', 'GitInfo', 'canonicalize_git_remote_url', 'collect_git_info', 'current_branch_name', 'default_branch_name', 'get_git_remote_urls', 'get_git_remote_urls_assume_git_repo', 'get_git_repo_root', 'get_git_repo_root_with_fs', 'get_has_changes', 'get_head_commit_hash', 'git_diff_to_remote', 'local_git_branches', 'parse_git_remote_urls', 'recent_commits', 'resolve_root_git_project_for_trust', 'run_git_command_with_timeout']

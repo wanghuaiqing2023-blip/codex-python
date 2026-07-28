@@ -1,0 +1,45 @@
+{
+  "contract_id": "codex-code-mode.runtime.callbacks",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-code-mode",
+    "module": "runtime::callbacks",
+    "source": "codex/codex-rs/code-mode/src/runtime/callbacks.rs",
+    "anchors": [
+      "clear_timeout_callback",
+      "exit_callback",
+      "image_callback",
+      "load_callback",
+      "notify_callback",
+      "set_timeout_callback",
+      "store_callback",
+      "text_callback",
+      "tool_callback",
+      "yield_control_callback"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/code_mode/runtime/callbacks.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/code_mode/runtime/callbacks.py"],
+    "anchors": [
+      "clear_timeout_callback",
+      "exit_callback",
+      "image_callback",
+      "load_callback",
+      "notify_callback",
+      "set_timeout_callback",
+      "store_callback",
+      "text_callback",
+      "tool_callback",
+      "yield_control_callback"
+    ]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": [
+    "tests/test_codex_code_mode_modules_rs.py",
+    "tests/test_core_code_mode.py"
+  ]
+}

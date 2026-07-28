@@ -7,13 +7,11 @@ from typing import Any
 from pycodex.protocol import RealtimeOutputModality
 from pycodex.protocol import RealtimeVoice
 
-from . import methods_v1
-from . import methods_v2
-from .methods_common_constants import REALTIME_AUDIO_SAMPLE_RATE
 from .protocol import RealtimeEventParser
 from .protocol import RealtimeSessionConfig
 from .protocol import RealtimeSessionMode
 
+REALTIME_AUDIO_SAMPLE_RATE = 24_000
 AGENT_FINAL_MESSAGE_PREFIX = '"Agent Final Message":\n\n'
 
 
@@ -30,6 +28,8 @@ def conversation_item_create_message(
     event_parser: RealtimeEventParser,
     text: str,
 ) -> dict[str, Any]:
+    from . import methods_v1, methods_v2
+
     if event_parser == RealtimeEventParser.V1:
         return methods_v1.conversation_item_create_message(text)
     return methods_v2.conversation_item_create_message(text)
@@ -40,6 +40,8 @@ def conversation_function_call_output_message(
     call_id: str,
     output_text: str,
 ) -> dict[str, Any]:
+    from . import methods_v1, methods_v2
+
     if event_parser == RealtimeEventParser.V1:
         return methods_v1.conversation_handoff_append_message(
             call_id,
@@ -55,6 +57,8 @@ def session_update_session(
     output_modality: RealtimeOutputModality,
     voice: RealtimeVoice,
 ) -> dict[str, Any]:
+    from . import methods_v1, methods_v2
+
     normalized_mode = normalized_session_mode(event_parser, session_mode)
     if event_parser == RealtimeEventParser.V1:
         return methods_v1.session_update_session(instructions, voice)
@@ -81,6 +85,8 @@ def session_update_message(config: RealtimeSessionConfig) -> dict[str, Any]:
 
 
 def websocket_intent(event_parser: RealtimeEventParser) -> str | None:
+    from . import methods_v1, methods_v2
+
     if event_parser == RealtimeEventParser.V1:
         return methods_v1.websocket_intent()
     return methods_v2.websocket_intent()

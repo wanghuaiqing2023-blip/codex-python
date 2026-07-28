@@ -13,8 +13,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from pycodex.hooks import HOOK_OUTPUTS_DIR
-from pycodex.hooks import HookOutputSpiller
+from pycodex.hooks.output_spill import HOOK_OUTPUTS_DIR, HookOutputSpiller
 from pycodex.protocol import HookPromptFragment
 from pycodex.protocol import ThreadId
 

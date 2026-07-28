@@ -16,11 +16,11 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from types import SimpleNamespace
 
-from pycodex.hooks import ParsedSessionStartHandler
-from pycodex.hooks import SessionStartHandlerData
+from pycodex.hooks.events.session_start import ParsedSessionStartHandler
+from pycodex.hooks.events.session_start import SessionStartHandlerData
 from pycodex.hooks import SessionStartSource
 from pycodex.hooks import StartHookTarget
-from pycodex.hooks import parse_session_start_completed
+from pycodex.hooks.events.session_start import parse_session_start_completed
 from pycodex.protocol import HookEventName
 from pycodex.protocol import HookOutputEntry
 from pycodex.protocol import HookOutputEntryKind

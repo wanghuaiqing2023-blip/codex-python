@@ -130,17 +130,17 @@ Evidence: `tests/test_execpolicy_execpolicycheck.py` derives from `execpolicyche
 
 - Existing implemented objects are exported from the package root with Rust-aligned names where practical.
 - `MatchOptions`, `Rule`, `RuleRef`, `PolicyParser`, and `ExecPolicyCheckCommand` now exist as explicit Python interfaces.
-- `PolicyParser` and `ExecPolicyCheckCommand.run()` intentionally block on the separate `PolicyParser`/Starlark parser contract instead of faking parser-backed policy loading.
+- `PolicyParser` and `ExecPolicyCheckCommand.run()` implement the supported policy-loading and evaluation path.
 
-Evidence: `tests/test_execpolicy_lib.py` verifies the package-root export surface and explicit parser/check-command boundaries.
+Evidence: `tests/test_execpolicy_lib.py` verifies the package-root export surface and parser/check-command boundaries.
 
 ## Rust parity update: main.rs CLI dispatch surface
 
-`codex-execpolicy/src/main.rs` is represented by Python CLI dispatch helpers:
+`codex-execpolicy/src/main.rs` is represented by `pycodex.execpolicy.main`:
 
-- `ExecPolicyCli` mirrors the single Rust `Cli::Check(ExecPolicyCheckCommand)` enum variant.
+- `Cli` mirrors the single Rust `Cli::Check(ExecPolicyCheckCommand)` enum variant.
 - `parse_execpolicy_cli(...)` mirrors the `codex-execpolicy check` argument shape for repeatable rules, pretty output, host-executable resolution flag, and trailing command tokens.
-- `run_execpolicy_cli(...)` mirrors Rust `main()` dispatch by calling `ExecPolicyCheckCommand.run()` and therefore remains blocked at parser-backed `load_policies` until the `PolicyParser` slice is completed.
+- `main(...)` mirrors Rust `main()` dispatch by calling `ExecPolicyCheckCommand.run()`.
 
 Evidence: `tests/test_execpolicy_main.py` derives from `main.rs` dispatch behavior and `ExecPolicyCheckCommand` clap argument shape.
 

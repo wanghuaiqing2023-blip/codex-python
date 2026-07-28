@@ -1,0 +1,41 @@
+{
+  "contract_id": "codex-config.loader.macos",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-config",
+    "module": "loader::macos",
+    "source": "codex/codex-rs/config/src/loader/macos.rs",
+    "anchors": [
+      "load_managed_admin_requirements_toml",
+      "managed_preferences_requirements_source",
+      "MANAGED_PREFERENCES_APPLICATION_ID",
+      "MANAGED_PREFERENCES_CONFIG_KEY",
+      "MANAGED_PREFERENCES_REQUIREMENTS_KEY"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/config/loader/macos.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/config/loader/macos.py"
+    ],
+    "anchors": [
+      "load_managed_admin_requirements_toml",
+      "managed_preferences_requirements_source",
+      "MANAGED_PREFERENCES_APPLICATION_ID",
+      "MANAGED_PREFERENCES_CONFIG_KEY",
+      "MANAGED_PREFERENCES_REQUIREMENTS_KEY"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_config_loader.py",
+    "tests/test_config_module_ownership_rs.py"
+  ]
+}

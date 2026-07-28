@@ -4,16 +4,8 @@
   "python_root": "pycodex/utils/stream_parser",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::assistant_text",
-    "crate::citation",
-    "crate::inline_hidden_tag",
-    "crate::proposed_plan",
-    "crate::stream_text",
-    "crate::tagged_line_parser",
-    "crate::utf8_stream"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

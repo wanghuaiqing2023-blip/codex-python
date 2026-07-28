@@ -1,0 +1,54 @@
+{
+  "contract_id": "codex-rmcp-client.http_client_adapter",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-rmcp-client",
+    "module": "http_client_adapter",
+    "source": "codex/codex-rs/rmcp-client/src/http_client_adapter.rs",
+    "anchors": [
+      "StreamableHttpClientAdapter",
+      "StreamableHttpClientAdapterError",
+      "EVENT_STREAM_MIME_TYPE",
+      "HEADER_SESSION_ID",
+      "JSON_MIME_TYPE",
+      "NON_JSON_RESPONSE_BODY_PREVIEW_BYTES",
+      "body_preview",
+      "collect_body",
+      "delete_session",
+      "get_stream",
+      "is_streamable_http_content_type",
+      "post_message"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/rmcp_client/http_client_adapter/__init__.py",
+    "layout": "module-package",
+    "implementation_files": [
+      "pycodex/rmcp_client/http_client_adapter/__init__.py"
+    ],
+    "anchors": [
+      "StreamableHttpClientAdapter",
+      "StreamableHttpClientAdapterError",
+      "EVENT_STREAM_MIME_TYPE",
+      "HEADER_SESSION_ID",
+      "JSON_MIME_TYPE",
+      "NON_JSON_RESPONSE_BODY_PREVIEW_BYTES",
+      "body_preview",
+      "collect_body",
+      "delete_session",
+      "get_stream",
+      "is_streamable_http_content_type",
+      "post_message"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_rmcp_client_http_adapter_rs.py"
+  ]
+}

@@ -4,42 +4,53 @@ import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from uuid import NAMESPACE_URL, UUID, uuid5
 
-from pycodex.memories.write import (
-    MemoryStartupContext,
-    PHASE_TWO_DISABLED_FEATURES,
+from pycodex.memories.write import memory_root
+from pycodex.memories.write.phase2 import (
     PhaseTwoClaim,
-    STAGE_TWO_MODEL,
-    STAGE_TWO_REASONING_EFFORT,
-    STAGE_TWO_JOB_LEASE_SECONDS,
-    STAGE_TWO_JOB_RETRY_DELAY_SECONDS,
-    SpawnedConsolidationAgent,
-    Stage1Output,
-    emit_phase_two_metrics,
-    emit_phase_two_token_usage_metrics,
-    memory_root,
-    memory_workspace_diff,
-    prepare_memory_workspace,
-    phase_two_claim,
-    phase_two_agent_config,
-    phase_two_agent_prompt,
-    phase_two_get_watermark,
-    phase_two_handle_agent_completion,
-    phase_two_is_final_agent_status,
-    phase_two_loop_agent,
-    phase_two_mark_failed,
-    phase_two_mark_succeeded,
-    phase_two_run,
-    reset_memory_workspace_baseline,
+    emit_metrics as emit_phase_two_metrics,
+    emit_token_usage_metrics as emit_phase_two_token_usage_metrics,
+    get_watermark as phase_two_get_watermark,
+    is_final_agent_status as phase_two_is_final_agent_status,
+    run as phase_two_run,
     sync_phase2_workspace_inputs,
 )
-from pycodex.protocol import AgentStatus, TokenUsage
-from pycodex.state import Phase2JobClaimOutcome, Phase2JobClaimed
+from pycodex.memories.write.phase2.agent import (
+    PHASE_TWO_DISABLED_FEATURES,
+    get_config as phase_two_agent_config,
+    get_prompt as phase_two_agent_prompt,
+    handle as phase_two_handle_agent_completion,
+    loop_agent as phase_two_loop_agent,
+)
+from pycodex.memories.write.phase2.job import (
+    claim as phase_two_claim,
+    failed as phase_two_mark_failed,
+    succeed as phase_two_mark_succeeded,
+)
+from pycodex.memories.write.runtime import MemoryStartupContext, SpawnedConsolidationAgent
+from pycodex.memories.write.stage_two import (
+    JOB_LEASE_SECONDS as STAGE_TWO_JOB_LEASE_SECONDS,
+    JOB_RETRY_DELAY_SECONDS as STAGE_TWO_JOB_RETRY_DELAY_SECONDS,
+    MODEL as STAGE_TWO_MODEL,
+    REASONING_EFFORT as STAGE_TWO_REASONING_EFFORT,
+)
+from pycodex.memories.write.workspace import (
+    memory_workspace_diff,
+    prepare_memory_workspace,
+    reset_memory_workspace_baseline,
+)
+from pycodex.protocol import AgentStatus, ThreadId, TokenUsage
+from pycodex.state import Phase2JobClaimOutcome, Phase2JobClaimed, Stage1Output
 
 
 def memory(thread_id: str, updated_at: datetime, raw: str = "raw", summary: str = "summary") -> Stage1Output:
+    try:
+        parsed_thread_id = ThreadId(UUID(thread_id))
+    except ValueError:
+        parsed_thread_id = ThreadId(uuid5(NAMESPACE_URL, thread_id))
     return Stage1Output(
-        thread_id=thread_id,
+        thread_id=parsed_thread_id,
         rollout_path=Path(f"/rollouts/{thread_id}.jsonl"),
         source_updated_at=updated_at,
         raw_memory=raw,
@@ -47,6 +58,7 @@ def memory(thread_id: str, updated_at: datetime, raw: str = "raw", summary: str 
         rollout_slug=thread_id,
         cwd=Path("/workspace"),
         git_branch=f"branch-{thread_id}",
+        generated_at=updated_at,
     )
 
 

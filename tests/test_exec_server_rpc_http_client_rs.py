@@ -5,9 +5,6 @@ import asyncio
 import pytest
 
 from pycodex.exec_server import (
-    HTTP_BODY_DELTA_CHANNEL_CAPACITY,
-    HTTP_REQUEST_METHOD,
-    ByteChunk,
     ExecServerClient,
     ExecServerClientConnectOptions,
     ExecServerError,
@@ -15,7 +12,16 @@ from pycodex.exec_server import (
     HttpRequestParams,
     HttpRequestResponse,
     HttpResponseBodyStream,
+)
+from pycodex.exec_server.client.http_client.rpc_http_client import (
+    HTTP_BODY_DELTA_CHANNEL_CAPACITY,
+)
+from pycodex.exec_server.connection import (
     JsonRpcConnection,
+)
+from pycodex.exec_server.protocol import (
+    HTTP_REQUEST_METHOD,
+    ByteChunk,
 )
 
 

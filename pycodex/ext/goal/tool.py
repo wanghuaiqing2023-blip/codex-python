@@ -18,6 +18,7 @@ from pycodex.state import GoalAccountingMode, GoalUpdate, ThreadGoalStatus as St
 
 from .accounting import BudgetLimitedGoalDisposition, GoalAccountingState
 from .events import GoalEventEmitter
+from .metrics import GoalMetrics
 from .spec import (
     CREATE_GOAL_TOOL_NAME,
     GET_GOAL_TOOL_NAME,
@@ -42,12 +43,14 @@ class GoalToolExecutor:
         state_dbs: Any,
         accounting_state: GoalAccountingState,
         event_emitter: GoalEventEmitter,
+        metrics: GoalMetrics,
     ) -> None:
         self.kind = GoalToolKind(kind)
         self.thread_id = thread_id
         self.state_dbs = state_dbs
         self.accounting_state = accounting_state
         self.event_emitter = event_emitter
+        self.metrics = metrics
 
     @classmethod
     def get(cls, *args: Any) -> "GoalToolExecutor":
@@ -127,6 +130,7 @@ class GoalToolExecutor:
             )
         await self._fill_empty_thread_preview(state_goal.objective)
         turn_id = self.accounting_state.mark_current_turn_goal_active(state_goal.goal_id)
+        self.metrics.record_created()
         goal = protocol_goal_from_state(state_goal)
         await self.event_emitter.thread_goal_updated(invocation.call_id, turn_id, goal)
         return goal_response(goal, include_completion_budget_report=False)
@@ -148,6 +152,7 @@ class GoalToolExecutor:
             invocation.call_id,
             BudgetLimitedGoalDisposition.CLEAR_ACTIVE,
         )
+        previous_status = await self._current_goal_status_for_metrics()
         try:
             state_goal = await _maybe_await(
                 self._thread_goals().update_thread_goal(
@@ -159,6 +164,7 @@ class GoalToolExecutor:
             raise FunctionCallError.respond_to_model(f"failed to update goal: {err}") from err
         if state_goal is None:
             raise FunctionCallError.respond_to_model("cannot update goal because this thread has no goal")
+        self.metrics.record_terminal_if_status_changed(previous_status, state_goal)
         goal = protocol_goal_from_state(state_goal)
         turn_id = self.accounting_state.clear_current_turn_goal()
         await self.event_emitter.thread_goal_updated(invocation.call_id, turn_id, goal)
@@ -179,6 +185,9 @@ class GoalToolExecutor:
         snapshot = self.accounting_state.progress_snapshot(turn_id)
         if snapshot is None:
             return None
+        previous_status = await self._current_goal_status_for_metrics(
+            snapshot.expected_goal_id
+        )
         try:
             outcome = await _maybe_await(
                 self._thread_goals().account_thread_goal_usage(
@@ -194,6 +203,7 @@ class GoalToolExecutor:
         if not bool(getattr(outcome, "updated", False)):
             return None
         state_goal = outcome.goal
+        self.metrics.record_terminal_if_status_changed(previous_status, state_goal)
         self.accounting_state.mark_progress_accounted_for_status(
             turn_id,
             snapshot,
@@ -220,6 +230,19 @@ class GoalToolExecutor:
         if value is None:
             raise RuntimeError("state DB must provide thread_goals")
         return value
+
+    async def _current_goal_status_for_metrics(
+        self,
+        expected_goal_id: str | None = None,
+    ) -> StateGoalStatus | None:
+        goal = await _maybe_await(
+            self._thread_goals().get_thread_goal(self.thread_id)
+        )
+        if goal is None:
+            return None
+        if expected_goal_id is not None and goal.goal_id != expected_goal_id:
+            return None
+        return goal.status
 
 
 def protocol_goal_from_state(goal: Any) -> ThreadGoal:

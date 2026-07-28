@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pycodex.execpolicy import (
+from pycodex.execpolicy.error import (
     ErrorLocation,
     ExampleDidMatchError,
     ExampleDidNotMatchError,

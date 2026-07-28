@@ -8,17 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from pycodex.execpolicy_legacy import ArgType
-from pycodex.execpolicy_legacy import CannotCheckRelativePath
-from pycodex.execpolicy_legacy import ExecCall
-from pycodex.execpolicy_legacy import ExecvChecker
-from pycodex.execpolicy_legacy import MatchedArg
-from pycodex.execpolicy_legacy import MatchedExec
-from pycodex.execpolicy_legacy import MatchedOpt
-from pycodex.execpolicy_legacy import PolicyParser
-from pycodex.execpolicy_legacy import ReadablePathNotInReadableFolders
-from pycodex.execpolicy_legacy import ValidExec
-from pycodex.execpolicy_legacy import WriteablePathNotInWriteableFolders
+from pycodex.execpolicy_legacy.arg_type import ArgType
+from pycodex.execpolicy_legacy.error import CannotCheckRelativePath
+from pycodex.execpolicy_legacy.exec_call import ExecCall
+from pycodex.execpolicy_legacy.execv_checker import ExecvChecker
+from pycodex.execpolicy_legacy.valid_exec import MatchedArg
+from pycodex.execpolicy_legacy.program import MatchedExec
+from pycodex.execpolicy_legacy.valid_exec import MatchedOpt
+from pycodex.execpolicy_legacy.policy_parser import PolicyParser
+from pycodex.execpolicy_legacy.error import ReadablePathNotInReadableFolders
+from pycodex.execpolicy_legacy.valid_exec import ValidExec
+from pycodex.execpolicy_legacy.error import WriteablePathNotInWriteableFolders
 
 
 def _make_checker(fake_cp: Path) -> ExecvChecker:

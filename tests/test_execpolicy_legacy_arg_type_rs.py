@@ -6,11 +6,11 @@ from collections.abc import Callable
 
 import pytest
 
-from pycodex.execpolicy_legacy import ArgType
-from pycodex.execpolicy_legacy import EmptyFileName
-from pycodex.execpolicy_legacy import InvalidPositiveInteger
-from pycodex.execpolicy_legacy import LiteralValueDidNotMatch
-from pycodex.execpolicy_legacy import SedCommandNotProvablySafe
+from pycodex.execpolicy_legacy.arg_type import ArgType
+from pycodex.execpolicy_legacy.error import EmptyFileName
+from pycodex.execpolicy_legacy.error import InvalidPositiveInteger
+from pycodex.execpolicy_legacy.error import LiteralValueDidNotMatch
+from pycodex.execpolicy_legacy.error import SedCommandNotProvablySafe
 
 
 def test_literal_validate_matches_exact_value() -> None:

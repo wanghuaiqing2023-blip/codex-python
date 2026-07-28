@@ -812,8 +812,8 @@ def test_legacy_core_reexports_existing_core_boundaries() -> None:
     assert callable(legacy_core.format_exec_policy_error_with_source)
     assert callable(legacy_core.grant_read_root_non_elevated)
     assert callable(legacy_core.web_search_detail)
-    assert legacy_core.config.__name__ == "pycodex.core.config"
-    assert legacy_core.review_prompts.__name__ == "pycodex.core.review_prompts"
+    assert legacy_core.config.__name__ == "pycodex.app_server_client.legacy_core.config"
+    assert legacy_core.review_prompts.__name__ == "pycodex.app_server_client.legacy_core.review_prompts"
 
 
 def test_app_server_control_socket_path_reexports_exec_session_policy() -> None:

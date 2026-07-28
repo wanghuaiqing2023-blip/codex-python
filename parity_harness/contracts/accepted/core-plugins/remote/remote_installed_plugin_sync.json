@@ -1,0 +1,47 @@
+{
+  "contract_id": "codex-core-plugins.remote.remote_installed_plugin_sync",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "remote::remote_installed_plugin_sync",
+    "source": "codex/codex-rs/core-plugins/src/remote/remote_installed_plugin_sync.rs",
+    "anchors": [
+      "RemoteInstalledPluginBundleSyncError",
+      "RemoteInstalledPluginBundleSyncOutcome",
+      "RemotePluginCacheMutationGuard",
+      "changed_local_cache",
+      "mark_remote_plugin_cache_mutation_in_flight",
+      "maybe_start_remote_installed_plugin_bundle_sync",
+      "sync_remote_installed_plugin_bundles_once",
+      "remove_stale_remote_plugin_caches"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/remote/remote_installed_plugin_sync.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/remote/remote_installed_plugin_sync.py"
+    ],
+    "anchors": [
+      "RemoteInstalledPluginBundleSyncError",
+      "RemoteInstalledPluginBundleSyncOutcome",
+      "RemotePluginCacheMutationGuard",
+      "changed_local_cache",
+      "mark_remote_plugin_cache_mutation_in_flight",
+      "maybe_start_remote_installed_plugin_bundle_sync",
+      "sync_remote_installed_plugin_bundles_once",
+      "remove_stale_remote_plugin_caches"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_remote_installed_sync_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

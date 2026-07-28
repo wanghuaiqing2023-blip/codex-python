@@ -1,0 +1,49 @@
+{
+  "contract_id": "codex-shell-command.command_safety.is_safe_command",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-shell-command",
+    "module": "command_safety::is_safe_command",
+    "source": "codex/codex-rs/shell-command/src/command_safety/is_safe_command.rs",
+    "anchors": [
+      "is_known_safe_command",
+      "is_safe_git_command",
+      "is_safe_powershell_words",
+      "UNSAFE_FIND_OPTIONS",
+      "UNSAFE_GIT_GLOBAL_OPTIONS",
+      "UNSAFE_GIT_SUBCOMMAND_OPTIONS",
+      "UNSAFE_RIPGREP_OPTIONS_WITHOUT_ARGS",
+      "UNSAFE_RIPGREP_OPTIONS_WITH_ARGS",
+      "is_safe_to_call_with_exec"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/shell_command/command_safety/is_safe_command.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/shell_command/command_safety/is_safe_command.py"
+    ],
+    "anchors": [
+      "is_known_safe_command",
+      "is_safe_git_command",
+      "is_safe_powershell_words",
+      "UNSAFE_FIND_OPTIONS",
+      "UNSAFE_GIT_GLOBAL_OPTIONS",
+      "UNSAFE_GIT_SUBCOMMAND_OPTIONS",
+      "UNSAFE_RIPGREP_OPTIONS_WITHOUT_ARGS",
+      "UNSAFE_RIPGREP_OPTIONS_WITH_ARGS",
+      "is_safe_to_call_with_exec"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_shell_command_module_ownership_rs.py",
+    "tests/test_shell_command_safety.py"
+  ]
+}

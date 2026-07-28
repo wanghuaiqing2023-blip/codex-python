@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pycodex.app_server_protocol.apps import AppInfo
-from pycodex.app_server_protocol.elicitation import (
+from pycodex.app_server_protocol.mcp import (
     McpElicitationSchema,
     McpServerElicitationRequest,
     McpServerElicitationRequestParams,

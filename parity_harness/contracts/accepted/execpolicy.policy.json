@@ -4,18 +4,8 @@
   "python_root": "pycodex/execpolicy",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
-  "uncovered_rust_modules": [
-    "crate::amend",
-    "crate::decision",
-    "crate::error",
-    "crate::execpolicycheck",
-    "crate::executable_name",
-    "crate::parser",
-    "crate::policy",
-    "crate::rule",
-    "bin::codex-execpolicy"
-  ],
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
 }

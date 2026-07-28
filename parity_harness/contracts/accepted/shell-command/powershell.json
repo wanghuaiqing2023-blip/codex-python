@@ -12,7 +12,8 @@
       "parse_powershell_command_into_plain_commands",
       "prefix_powershell_script_with_utf8",
       "try_find_powershell_executable_blocking",
-      "try_find_pwsh_executable_blocking"
+      "try_find_pwsh_executable_blocking",
+      "POWERSHELL_FLAGS"
     ],
     "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
   },
@@ -28,7 +29,8 @@
       "parse_powershell_command_into_plain_commands",
       "prefix_powershell_script_with_utf8",
       "try_find_powershell_executable_blocking",
-      "try_find_pwsh_executable_blocking"
+      "try_find_pwsh_executable_blocking",
+      "POWERSHELL_FLAGS"
     ]
   },
   "checks": {

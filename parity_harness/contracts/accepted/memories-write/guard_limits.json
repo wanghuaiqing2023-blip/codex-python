@@ -1,0 +1,32 @@
+{
+  "contract_id": "codex-memories-write.guard_limits",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-memories-write",
+    "module": "guard_limits",
+    "source": "codex/codex-rs/memories/write/src/lib.rs",
+    "anchors": [
+      "CODEX_LIMIT_ID"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/memories/write/guard_limits.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/memories/write/guard_limits.py"
+    ],
+    "anchors": [
+      "CODEX_LIMIT_ID"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_memories_write_guard_rs.py"
+  ]
+}

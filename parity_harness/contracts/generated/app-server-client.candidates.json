@@ -11,9 +11,9 @@
   },
   "summary": {
     "rust_modules": 13,
-    "python_files": 2,
-    "modules_with_candidates": 2,
-    "modules_with_anchors": 2
+    "python_files": 13,
+    "modules_with_candidates": 13,
+    "modules_with_anchors": 13
   },
   "contracts": [
     {
@@ -59,7 +59,7 @@
       },
       "python_candidates": [
         {
-          "owner": "pycodex/app_server_client/legacy_core.py",
+          "owner": "pycodex/app_server_client/legacy_core/__init__.py",
           "anchor_candidates": [
             "DEFAULT_AGENTS_MD_FILENAME",
             "LOCAL_AGENTS_MD_FILENAME",
@@ -86,7 +86,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/config/__init__.py",
+          "anchor_candidates": [
+            "reexport:config"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -102,7 +109,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/config/edit.py",
+          "anchor_candidates": [
+            "reexport:edit"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -118,7 +132,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/connectors.py",
+          "anchor_candidates": [
+            "reexport:connectors"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -134,7 +155,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/otel_init.py",
+          "anchor_candidates": [
+            "reexport:otel_init"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -150,7 +178,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/personality_migration.py",
+          "anchor_candidates": [
+            "reexport:personality_migration"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -166,7 +201,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/review_format.py",
+          "anchor_candidates": [
+            "reexport:review_format"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -182,7 +224,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/review_prompts.py",
+          "anchor_candidates": [
+            "reexport:review_prompts"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -198,7 +247,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/test_support.py",
+          "anchor_candidates": [
+            "reexport:test_support"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -214,7 +270,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/util.py",
+          "anchor_candidates": [
+            "reexport:util"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -230,7 +293,14 @@
         "source": "codex/codex-rs/app-server-client/src/lib.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/legacy_core/windows_sandbox.py",
+          "anchor_candidates": [
+            "reexport:windows_sandbox"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [
@@ -246,7 +316,25 @@
         "source": "codex/codex-rs/app-server-client/src/remote.rs",
         "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
       },
-      "python_candidates": [],
+      "python_candidates": [
+        {
+          "owner": "pycodex/app_server_client/remote.py",
+          "anchor_candidates": [
+            "RemoteAppServerClient",
+            "RemoteAppServerConnectArgs",
+            "RemoteAppServerEndpoint",
+            "RemoteAppServerRequestHandle",
+            "connect",
+            "next_event",
+            "notify",
+            "reject_server_request",
+            "request",
+            "request_handle",
+            "request_typed",
+            "resolve_server_request"
+          ]
+        }
+      ],
       "review": {
         "status": "candidate",
         "unresolved": [

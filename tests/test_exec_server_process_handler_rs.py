@@ -5,11 +5,8 @@ from __future__ import annotations
 import asyncio
 
 from pycodex.exec_server import (
-    ByteChunk,
     ExecParams,
     ExecResponse,
-    LocalProcess,
-    ProcessHandler,
     ProcessId,
     ReadParams,
     ReadResponse,
@@ -18,6 +15,15 @@ from pycodex.exec_server import (
     WriteParams,
     WriteResponse,
     WriteStatus,
+)
+from pycodex.exec_server.local_process import (
+    LocalProcess,
+)
+from pycodex.exec_server.protocol import (
+    ByteChunk,
+)
+from pycodex.exec_server.server.process_handler import (
+    ProcessHandler,
 )
 
 

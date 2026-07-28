@@ -13,7 +13,7 @@
     "rust_modules": 1,
     "python_files": 1,
     "modules_with_candidates": 1,
-    "modules_with_anchors": 0
+    "modules_with_anchors": 1
   },
   "contracts": [
     {
@@ -26,7 +26,9 @@
       "python_candidates": [
         {
           "owner": "pycodex/bwrap/__init__.py",
-          "anchor_candidates": []
+          "anchor_candidates": [
+            "main"
+          ]
         }
       ],
       "review": {

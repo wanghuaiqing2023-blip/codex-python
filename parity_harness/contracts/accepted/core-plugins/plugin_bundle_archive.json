@@ -1,0 +1,41 @@
+{
+  "contract_id": "codex-core-plugins.plugin_bundle_archive",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-core-plugins",
+    "module": "plugin_bundle_archive",
+    "source": "codex/codex-rs/core-plugins/src/plugin_bundle_archive.rs",
+    "anchors": [
+      "PluginBundlePackError",
+      "PluginBundleUnpackError",
+      "pack_plugin_bundle_tar_gz",
+      "unpack_plugin_bundle_tar_gz",
+      "io"
+    ],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/core_plugins/plugin_bundle_archive.py",
+    "layout": "module-file",
+    "implementation_files": [
+      "pycodex/core_plugins/plugin_bundle_archive.py"
+    ],
+    "anchors": [
+      "PluginBundlePackError",
+      "PluginBundleUnpackError",
+      "pack_plugin_bundle_tar_gz",
+      "unpack_plugin_bundle_tar_gz",
+      "io"
+    ]
+  },
+  "checks": {
+    "structure": {
+      "checker": "structure.owner-and-coordinate"
+    }
+  },
+  "fixture_refs": [
+    "tests/test_core_plugins_plugin_bundle_archive_rs.py",
+    "tests/test_core_plugins_module_ownership_rs.py"
+  ]
+}

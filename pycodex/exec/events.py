@@ -15,15 +15,15 @@ from pathlib import Path
 from typing import Any
 
 from pycodex.protocol import (
-    AgentMessageItem,
-    CallToolResult,
-    CollabAgentToolCallItem,
-    CommandExecutionItem,
-    FileChangeItem,
-    McpToolCallItem,
-    ReasoningItem,
-    TurnItem,
-    WebSearchItem,
+    AgentMessageItem as ProtocolAgentMessageItem,
+    CallToolResult as ProtocolCallToolResult,
+    CollabAgentToolCallItem as ProtocolCollabAgentToolCallItem,
+    CommandExecutionItem as ProtocolCommandExecutionItem,
+    FileChangeItem as ProtocolFileChangeItem,
+    McpToolCallItem as ProtocolMcpToolCallItem,
+    ReasoningItem as ProtocolReasoningItem,
+    TurnItem as ProtocolTurnItem,
+    WebSearchItem as ProtocolWebSearchItem,
 )
 
 JsonValue = Any
@@ -79,6 +79,117 @@ class PatchChangeKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class ThreadStartedEvent:
+    thread_id: str
+
+
+@dataclass(frozen=True)
+class TurnStartedEvent:
+    pass
+
+
+@dataclass(frozen=True)
+class TurnCompletedEvent:
+    usage: "Usage"
+
+
+@dataclass(frozen=True)
+class TurnFailedEvent:
+    error: "ThreadErrorEvent"
+
+
+@dataclass(frozen=True)
+class AgentMessageItem:
+    text: str
+
+
+@dataclass(frozen=True)
+class ReasoningItem:
+    text: str
+
+
+@dataclass(frozen=True)
+class CommandExecutionItem:
+    command: str
+    aggregated_output: str = ""
+    exit_code: int | None = None
+    status: CommandExecutionStatus = CommandExecutionStatus.IN_PROGRESS
+
+
+@dataclass(frozen=True)
+class FileUpdateChange:
+    path: str
+    kind: PatchChangeKind
+
+
+@dataclass(frozen=True)
+class FileChangeItem:
+    changes: tuple[FileUpdateChange, ...]
+    status: PatchApplyStatus
+
+
+@dataclass(frozen=True)
+class CollabAgentState:
+    status: CollabAgentStatus
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class CollabToolCallItem:
+    tool: CollabTool
+    sender_thread_id: str
+    receiver_thread_ids: tuple[str, ...]
+    prompt: str | None
+    agents_states: Mapping[str, CollabAgentState]
+    status: CollabToolCallStatus
+
+
+@dataclass(frozen=True)
+class McpToolCallItemResult:
+    content: tuple[JsonValue, ...]
+    meta: JsonValue = None
+    structured_content: JsonValue = None
+
+
+@dataclass(frozen=True)
+class McpToolCallItemError:
+    message: str
+
+
+@dataclass(frozen=True)
+class McpToolCallItem:
+    server: str
+    tool: str
+    arguments: JsonValue
+    result: McpToolCallItemResult | None
+    error: McpToolCallItemError | None
+    status: McpToolCallStatus
+
+
+@dataclass(frozen=True)
+class WebSearchItem:
+    id: str
+    query: str
+    action: JsonValue
+
+
+@dataclass(frozen=True)
+class ErrorItem:
+    message: str
+
+
+@dataclass(frozen=True)
+class TodoItem:
+    text: str
+    completed: bool
+
+
+@dataclass(frozen=True)
+class TodoListItem:
+    items: tuple[TodoItem, ...]
+
+
+@dataclass(frozen=True)
 class Usage:
     input_tokens: int = 0
     cached_input_tokens: int = 0
@@ -103,13 +214,37 @@ class ThreadErrorEvent:
 
 
 @dataclass(frozen=True)
-class ExecThreadItem:
+class ThreadItem:
     id: str
     type: str
     payload: Mapping[str, JsonValue]
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {"id": self.id, "type": self.type, **_to_json(dict(self.payload))}
+
+
+ExecThreadItem = ThreadItem
+
+
+@dataclass(frozen=True)
+class ThreadItemDetails:
+    type: str
+    payload: JsonValue
+
+
+@dataclass(frozen=True)
+class ItemStartedEvent:
+    item: ThreadItem
+
+
+@dataclass(frozen=True)
+class ItemCompletedEvent:
+    item: ThreadItem
+
+
+@dataclass(frozen=True)
+class ItemUpdatedEvent:
+    item: ThreadItem
 
 
 @dataclass(frozen=True)
@@ -206,7 +341,7 @@ def command_execution_item(
     )
 
 
-def mcp_tool_call_item(id: str, item: McpToolCallItem) -> ExecThreadItem:
+def mcp_tool_call_item(id: str, item: ProtocolMcpToolCallItem) -> ExecThreadItem:
     result = _call_tool_result_to_mapping(item.result) if item.result is not None else None
     error = {"message": item.error.message} if item.error is not None else None
     return ExecThreadItem(
@@ -247,7 +382,7 @@ def collab_tool_call_item(
     )
 
 
-def file_change_item(id: str, item: FileChangeItem) -> ExecThreadItem:
+def file_change_item(id: str, item: ProtocolFileChangeItem) -> ExecThreadItem:
     changes = [
         {
             "path": path.as_posix(),
@@ -265,7 +400,7 @@ def file_change_item(id: str, item: FileChangeItem) -> ExecThreadItem:
     return ExecThreadItem(id, "file_change", payload)
 
 
-def web_search_item(id: str, item: WebSearchItem) -> ExecThreadItem:
+def web_search_item(id: str, item: ProtocolWebSearchItem) -> ExecThreadItem:
     return ExecThreadItem(
         id,
         "web_search",
@@ -284,17 +419,17 @@ def todo_list_item(id: str, items: tuple[tuple[str, bool], ...] | list[tuple[str
     )
 
 
-def exec_item_from_turn_item(item: TurnItem, id: str) -> ExecThreadItem | None:
-    if item.type == "AgentMessage" and isinstance(item.item, AgentMessageItem):
+def exec_item_from_turn_item(item: ProtocolTurnItem, id: str) -> ExecThreadItem | None:
+    if item.type == "AgentMessage" and isinstance(item.item, ProtocolAgentMessageItem):
         return agent_message_item(id, _agent_message_text(item.item))
-    if item.type == "Reasoning" and isinstance(item.item, ReasoningItem):
+    if item.type == "Reasoning" and isinstance(item.item, ProtocolReasoningItem):
         text = "\n".join(item.item.summary_text)
         if text.strip() == "":
             return None
         return reasoning_item(id, text)
-    if item.type == "McpToolCall" and isinstance(item.item, McpToolCallItem):
+    if item.type == "McpToolCall" and isinstance(item.item, ProtocolMcpToolCallItem):
         return mcp_tool_call_item(id, item.item)
-    if item.type == "CommandExecution" and isinstance(item.item, CommandExecutionItem):
+    if item.type == "CommandExecution" and isinstance(item.item, ProtocolCommandExecutionItem):
         return command_execution_item(
             id,
             command=item.item.command,
@@ -307,11 +442,11 @@ def exec_item_from_turn_item(item: TurnItem, id: str) -> ExecThreadItem | None:
             duration_ms=item.item.duration_ms,
             status=item.item.status,
         )
-    if item.type == "FileChange" and isinstance(item.item, FileChangeItem):
+    if item.type == "FileChange" and isinstance(item.item, ProtocolFileChangeItem):
         return file_change_item(id, item.item)
-    if item.type == "WebSearch" and isinstance(item.item, WebSearchItem):
+    if item.type == "WebSearch" and isinstance(item.item, ProtocolWebSearchItem):
         return web_search_item(id, item.item)
-    if item.type == "CollabAgentToolCall" and isinstance(item.item, CollabAgentToolCallItem):
+    if item.type == "CollabAgentToolCall" and isinstance(item.item, ProtocolCollabAgentToolCallItem):
         return collab_tool_call_item(
             id,
             tool=item.item.tool,
@@ -324,9 +459,9 @@ def exec_item_from_turn_item(item: TurnItem, id: str) -> ExecThreadItem | None:
     return None
 
 
-def final_message_from_turn_items(items: tuple[TurnItem, ...] | list[TurnItem]) -> str | None:
+def final_message_from_turn_items(items: tuple[ProtocolTurnItem, ...] | list[ProtocolTurnItem]) -> str | None:
     for item in reversed(items):
-        if item.type == "AgentMessage" and isinstance(item.item, AgentMessageItem):
+        if item.type == "AgentMessage" and isinstance(item.item, ProtocolAgentMessageItem):
             return _agent_message_text(item.item)
     for item in reversed(items):
         if item.type == "Plan":
@@ -334,11 +469,11 @@ def final_message_from_turn_items(items: tuple[TurnItem, ...] | list[TurnItem]) 
     return None
 
 
-def _agent_message_text(item: AgentMessageItem) -> str:
+def _agent_message_text(item: ProtocolAgentMessageItem) -> str:
     return "".join(content.text for content in item.content)
 
 
-def _call_tool_result_to_mapping(result: CallToolResult) -> dict[str, JsonValue]:
+def _call_tool_result_to_mapping(result: ProtocolCallToolResult) -> dict[str, JsonValue]:
     data: dict[str, JsonValue] = {
         "content": list(result.content),
         "structured_content": result.structured_content,
@@ -528,17 +663,40 @@ def _to_json(value: JsonValue) -> JsonValue:
 
 
 __all__ = [
+    "AgentMessageItem",
+    "CollabAgentState",
     "CommandExecutionStatus",
     "CollabAgentStatus",
     "CollabTool",
+    "CollabToolCallItem",
     "CollabToolCallStatus",
+    "CommandExecutionItem",
+    "ErrorItem",
     "ExecThreadItem",
+    "FileChangeItem",
+    "FileUpdateChange",
+    "ItemCompletedEvent",
+    "ItemStartedEvent",
+    "ItemUpdatedEvent",
+    "McpToolCallItem",
+    "McpToolCallItemError",
+    "McpToolCallItemResult",
     "McpToolCallStatus",
     "PatchApplyStatus",
     "PatchChangeKind",
+    "ReasoningItem",
     "ThreadErrorEvent",
     "ThreadEvent",
+    "ThreadItem",
+    "ThreadItemDetails",
+    "ThreadStartedEvent",
+    "TodoItem",
+    "TodoListItem",
+    "TurnCompletedEvent",
+    "TurnFailedEvent",
+    "TurnStartedEvent",
     "Usage",
+    "WebSearchItem",
     "agent_message_item",
     "collab_tool_call_item",
     "command_execution_item",
