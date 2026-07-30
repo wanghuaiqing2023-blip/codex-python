@@ -1,0 +1,8 @@
+{
+  "contract_id": "app_test_support.rollout",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "app_test_support", "module": "rollout", "source": "codex/codex-rs/app-server/tests/common/rollout.rs", "anchors": ["create_fake_rollout", "create_fake_rollout_with_source", "create_fake_rollout_with_text_elements", "create_fake_rollout_with_token_usage", "rollout_path"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/app_test_support/rollout.py", "layout": "module-file", "implementation_files": ["tests/support/app_test_support/rollout.py"], "anchors": ["create_fake_rollout", "create_fake_rollout_with_source", "create_fake_rollout_with_text_elements", "create_fake_rollout_with_token_usage", "rollout_path"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_test_support_rs.py"]
+}

@@ -44,7 +44,7 @@ from pycodex.core import (
 from pycodex.core import Config
 from pycodex.core.config import GhostSnapshotConfig, ThreadStoreConfig
 from pycodex.exec_server import EnvironmentManager, ExecServerRuntimePaths
-from pycodex.extension_api import empty_extension_registry
+from pycodex.ext.extension_api import empty_extension_registry
 from pycodex.features import Feature, Features
 from pycodex.login.auth.default_client import set_default_originator
 from pycodex.model_provider_info import OPENAI_PROVIDER_ID, built_in_model_providers

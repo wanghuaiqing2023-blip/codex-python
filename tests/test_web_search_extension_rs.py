@@ -23,7 +23,7 @@ from pycodex.ext.web_search.history import recent_input
 from pycodex.ext.web_search.output import EncryptedSearchOutput
 from pycodex.ext.web_search.schema import commands_schema
 from pycodex.ext.web_search.tool import WebSearchTool, parse_commands
-from pycodex.extension_api import ExtensionData, ExtensionRegistryBuilder, ToolName
+from pycodex.ext.extension_api import ExtensionData, ExtensionRegistryBuilder, ToolName
 from pycodex.model_provider_info import ModelProviderInfo
 from pycodex.protocol import (
     ContentItem,

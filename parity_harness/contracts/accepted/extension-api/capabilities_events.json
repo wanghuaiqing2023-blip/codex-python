@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-extension-api.capabilities.events",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-extension-api",
+    "module": "capabilities::events",
+    "source": "codex/codex-rs/ext/extension-api/src/capabilities/events.rs",
+    "anchors": ["ExtensionEventSink", "NoopExtensionEventSink", "emit"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ext/extension_api/capabilities/events.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/ext/extension_api/capabilities/events.py"],
+    "anchors": ["ExtensionEventSink", "NoopExtensionEventSink", "emit"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

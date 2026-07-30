@@ -1,0 +1,11 @@
+{
+  "scope": "extension-api",
+  "rust_root": "codex/codex-rs/ext/extension-api",
+  "python_root": "pycodex/ext/extension_api",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

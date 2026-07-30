@@ -136,7 +136,7 @@ class McpToolExposureTests(unittest.TestCase):
         deferred_tool_names = tool_names(exposure.deferred_tools or ())
         self.assertIn(ToolName.namespaced("mcp__rmcp__", "tool"), deferred_tool_names)
         self.assertIn(
-            ToolName.namespaced("mcp__codex-apps__calendar", "_create_event"),
+            ToolName.namespaced("mcp__codex_apps__calendar", "_create_event"),
             deferred_tool_names,
         )
 

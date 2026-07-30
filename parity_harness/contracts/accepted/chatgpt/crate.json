@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-chatgpt.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-chatgpt",
+    "module": "crate",
+    "source": "codex/codex-rs/chatgpt/src/lib.rs",
+    "anchors": ["module:apply_command", "module:chatgpt_client", "module:connectors", "module:get_task", "module:workspace_settings"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/chatgpt/__init__.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/chatgpt/__init__.py"],
+    "anchors": ["module:apply_command", "module:chatgpt_client", "module:connectors", "module:get_task", "module:workspace_settings"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

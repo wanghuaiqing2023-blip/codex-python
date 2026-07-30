@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pycodex.extension_api import ExtensionRegistryBuilder, PromptFragment
+from pycodex.ext.extension_api import ExtensionRegistryBuilder, PromptFragment
 from pycodex.features import Feature
 
 from .local import LocalMemoriesBackend

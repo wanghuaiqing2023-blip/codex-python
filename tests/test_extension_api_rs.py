@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 
-from pycodex.extension_api import (
+from pycodex.ext.extension_api import (
     ExtensionData,
     ExtensionRegistryBuilder,
     PromptFragment,
     PromptSlot,
     empty_extension_registry,
 )
+from pycodex.ext.extension_api.capabilities.agent import AgentSpawner
+from pycodex.ext.extension_api.capabilities.events import NoopExtensionEventSink
+from pycodex.ext.extension_api.capabilities.response_items import NoopResponseItemInjector
+from pycodex.ext.extension_api.contributors.prompt import PromptFragment as PromptFragmentModuleOwner
 
 
 class State:
@@ -74,3 +78,10 @@ def test_approval_review_uses_first_claiming_contributor() -> None:
 def test_prompt_fragment_constructors_preserve_rust_slots() -> None:
     fragment = PromptFragment.developer_capability("tools")
     assert fragment == PromptFragment(PromptSlot.DEVELOPER_CAPABILITIES, "tools")
+
+
+def test_rust_submodules_own_exported_extension_items() -> None:
+    assert PromptFragmentModuleOwner is PromptFragment
+    assert AgentSpawner is not None
+    assert NoopExtensionEventSink is not None
+    assert NoopResponseItemInjector is not None

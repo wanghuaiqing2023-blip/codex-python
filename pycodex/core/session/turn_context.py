@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pycodex.extension_api import ExtensionData
+from pycodex.ext.extension_api import ExtensionData
 from pycodex.protocol import (
     AskForApproval,
     FileSystemSandboxPolicy,

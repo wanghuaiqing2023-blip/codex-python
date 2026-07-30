@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pycodex.core.plugins.injection import build_plugin_injections
-from pycodex.mcp import CODEX_APPS_MCP_SERVER_NAME
+from pycodex.codex_mcp import CODEX_APPS_MCP_SERVER_NAME
 from pycodex.plugin import PluginCapabilitySummary
 from pycodex.tools.tool_discovery import AppInfo
 

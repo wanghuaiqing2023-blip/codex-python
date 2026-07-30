@@ -13,7 +13,7 @@ from pycodex.codex_api import (
     SearchFilters,
     SearchSettings,
 )
-from pycodex.extension_api import ExtensionRegistryBuilder
+from pycodex.ext.extension_api import ExtensionRegistryBuilder
 from pycodex.features import Feature
 from pycodex.model_provider import create_model_provider
 from pycodex.protocol import WebSearchMode

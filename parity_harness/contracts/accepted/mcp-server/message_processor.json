@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-mcp-server.message_processor",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-mcp-server",
+    "module": "message_processor",
+    "source": "codex/codex-rs/mcp-server/src/message_processor.rs",
+    "anchors": ["MessageProcessor", "process_error", "process_notification", "process_request", "process_response"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/mcp_server/message_processor.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/mcp_server/message_processor.py"],
+    "anchors": ["MessageProcessor", "process_error", "process_notification", "process_request", "process_response"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_mcp_server_rs.py", "tests/e2e/mcp_server/test_stdio.py"]
+}

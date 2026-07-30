@@ -9,7 +9,7 @@ from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.context import ToolPayload
 from pycodex.ext.memories.local import LocalMemoriesBackend
 from pycodex.ext.memories.tools import memory_tools
-from pycodex.extension_api import ToolCall
+from pycodex.ext.extension_api import ToolCall
 from pycodex.protocol import ToolName
 
 

@@ -1,0 +1,11 @@
+{
+  "scope": "core_test_support",
+  "rust_root": "codex/codex-rs/core/tests/common",
+  "python_root": "tests/support/core_test_support",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

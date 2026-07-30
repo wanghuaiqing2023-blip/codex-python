@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 import socket
@@ -73,14 +74,17 @@ def run(
     if args:
         subcommand = args[0]
         if subcommand == "start":
-            return _run_remote_control_start(
-                mode="daemon",
+            return _run_remote_control_daemon_start(
                 json_output=is_json,
                 stdout=stdout,
                 stderr=stderr,
             )
         if subcommand == "stop":
-            return _run_remote_control_stop(json_output=is_json, stdout=stdout, stderr=stderr)
+            return _run_remote_control_daemon_stop(
+                json_output=is_json,
+                stdout=stdout,
+                stderr=stderr,
+            )
         print(f"pycodex: unrecognized remote-control subcommand: {subcommand}", file=stderr)
         return 2
 
@@ -90,6 +94,100 @@ def run(
         stdout=stdout,
         stderr=stderr,
     )
+
+
+def _run_remote_control_daemon_start(
+    *,
+    json_output: bool,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    from pycodex.app_server_daemon import ensure_remote_control_ready
+
+    if not json_output:
+        print(
+            "Starting app-server daemon with remote control enabled...",
+            file=stdout,
+        )
+    try:
+        output = asyncio.run(ensure_remote_control_ready())
+        remote_control = output.remote_control
+        status = remote_control.status.value
+        if status == "errored":
+            raise RuntimeError(
+                "Remote control is enabled on "
+                f"{remote_control.server_name} but the connection is errored."
+            )
+        if status == "disabled":
+            raise RuntimeError(
+                f"Remote control is disabled on {remote_control.server_name}."
+            )
+    except Exception as exc:
+        print(f"pycodex: remote-control failed: {exc}", file=stderr)
+        return 1
+
+    if json_output:
+        payload = {
+            "mode": "daemon",
+            **remote_control.to_dict(),
+            "daemon": output.daemon.to_dict(),
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=stdout)
+        return 0
+
+    print(
+        _remote_control_start_human_message(
+            remote_control.status.value,
+            remote_control.server_name,
+        ),
+        file=stdout,
+    )
+    print("Daemon used app-server:", file=stdout)
+    print(f"  path: {output.daemon.managed_codex_path}", file=stdout)
+    print(
+        f"  version: {output.daemon.managed_codex_version or 'unknown'}",
+        file=stdout,
+    )
+    return 0
+
+
+def _run_remote_control_daemon_stop(
+    *,
+    json_output: bool,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    from pycodex.app_server_daemon import LifecycleCommand
+    from pycodex.app_server_daemon import LifecycleStatus
+    from pycodex.app_server_daemon import run as run_daemon
+
+    if not json_output:
+        print("Stopping remote control...", file=stdout)
+    try:
+        output = asyncio.run(run_daemon(LifecycleCommand.STOP))
+    except Exception as exc:
+        print(f"pycodex: remote-control failed: {exc}", file=stderr)
+        return 1
+
+    if json_output:
+        print(
+            json.dumps(output.to_dict(), ensure_ascii=False, sort_keys=True),
+            file=stdout,
+        )
+        return 0
+
+    if output.status is LifecycleStatus.STOPPED:
+        message = "Remote control stopped."
+    elif output.status is LifecycleStatus.NOT_RUNNING:
+        message = "Remote control is not running."
+    else:
+        message = (
+            "Remote control stop completed with status "
+            f"{output.status.value}."
+        )
+    print(message, file=stdout)
+    return 0
+
 
 def _run_remote_control_start(
     *,

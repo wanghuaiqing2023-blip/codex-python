@@ -206,6 +206,7 @@ DEFAULT_REQUEST_ROUTES: dict[str, tuple[str, str]] = {
     "McpServerStatusList": ("mcp_processor", "mcp_server_status_list"),
     "McpResourceRead": ("mcp_processor", "mcp_resource_read"),
     "McpServerToolCall": ("mcp_processor", "mcp_server_tool_call"),
+    "AppsList": ("apps_processor", "apps_list"),
     "LoginAccount": ("account_processor", "login_account"),
     "LogoutAccount": ("account_processor", "logout_account"),
     "CancelLoginAccount": ("account_processor", "cancel_login_account"),
@@ -254,6 +255,11 @@ class MessageProcessor:
         from pycodex.app_server.request_processors_initialize_processor import (
             InitializeRequestProcessor,
         )
+        from pycodex.app_server.request_processors_apps_processor import (
+            AppsRequestProcessor,
+        )
+        from pycodex.chatgpt.workspace_settings import WorkspaceSettingsCache
+        from pycodex.core.codex_delegate import CancellationToken
         from pycodex.core.thread_manager import ThreadManager
 
         thread_manager = args.thread_manager
@@ -284,6 +290,17 @@ class MessageProcessor:
                 args.config,
                 args.config_warnings,
                 args.rpc_transport,
+            ),
+        )
+        processors.setdefault(
+            "apps_processor",
+            AppsRequestProcessor.new(
+                args.auth_manager,
+                thread_manager,
+                args.outgoing,
+                args.config_manager,
+                WorkspaceSettingsCache(),
+                CancellationToken(),
             ),
         )
         effective_args = MessageProcessorArgs(

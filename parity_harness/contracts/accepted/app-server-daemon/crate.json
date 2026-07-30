@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-app-server-daemon.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-daemon",
+    "module": "crate",
+    "source": "codex/codex-rs/app-server-daemon/src/lib.rs",
+    "anchors": ["BootstrapOptions", "BootstrapOutput", "Daemon", "LifecycleCommand", "LifecycleOutput", "RemoteControlMode", "RemoteControlOutput", "ensure_remote_control_ready", "run"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_daemon/__init__.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/app_server_daemon/__init__.py"],
+    "anchors": ["BootstrapOptions", "BootstrapOutput", "Daemon", "LifecycleCommand", "LifecycleOutput", "RemoteControlMode", "RemoteControlOutput", "ensure_remote_control_ready", "run"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_server_daemon_rs.py", "tests/e2e/app_server_daemon/test_cli.py"]
+}

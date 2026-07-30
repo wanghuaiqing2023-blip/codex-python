@@ -25,7 +25,6 @@ from pycodex.core import (
     TerminalOutcomeFlag,
     ExecutionStatus,
     ToolCall,
-    ToolCallOutcome,
     ToolExposure,
     ToolInvocation,
     ToolPayload,
@@ -40,6 +39,7 @@ from pycodex.core import (
     dispatch_tool_call_with_terminal_outcome,
     extension_tool_executors,
 )
+from pycodex.ext.extension_api import ToolCallOutcome
 from pycodex.core.tools.handlers.view_image import ViewImageHandler
 from pycodex.core.unified_exec import UnifiedExecProcessManager
 from pycodex.protocol import ConfigShellToolType, NetworkSandboxPolicy, PermissionProfile, ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig

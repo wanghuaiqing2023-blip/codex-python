@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-chatgpt.chatgpt_client",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-chatgpt",
+    "module": "chatgpt_client",
+    "source": "codex/codex-rs/chatgpt/src/chatgpt_client.rs",
+    "anchors": ["chatgpt_get_request", "chatgpt_get_request_with_timeout", "CODEX_PRODUCT_SKU", "OAI_PRODUCT_SKU_HEADER"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/chatgpt/chatgpt_client.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/chatgpt/chatgpt_client.py"],
+    "anchors": ["chatgpt_get_request", "chatgpt_get_request_with_timeout", "CODEX_PRODUCT_SKU", "OAI_PRODUCT_SKU_HEADER"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

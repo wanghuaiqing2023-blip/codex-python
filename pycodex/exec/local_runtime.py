@@ -127,7 +127,7 @@ from pycodex.core.unified_exec import (
 )
 from pycodex.core_plugins import PluginsManager
 from pycodex.core_skills import SkillsManager
-from pycodex.mcp import McpConnectionManager
+from pycodex.codex_mcp import McpConnectionManager
 from pycodex.utils.home_dir import find_codex_home
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
@@ -2421,10 +2421,6 @@ def refresh_exec_core_session(
         else getattr(model_info, "default_reasoning_summary", "auto")
     )
     session.service_tier = config.service_tier
-    connection_manager = getattr(session.services, "mcp_connection_manager", None)
-    replace_servers = getattr(connection_manager, "replace_servers", None)
-    if callable(replace_servers):
-        replace_servers(config.mcp_servers)
     for manager_name in ("plugins_manager", "skills_manager"):
         clear_cache = getattr(getattr(session.services, manager_name, None), "clear_cache", None)
         if callable(clear_cache):
@@ -2778,33 +2774,38 @@ async def prewarm_exec_core_websocket_session(
         auth_manager=auth_manager,
         environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
     )
-    request_plan = await build_user_turn_responses_request_from_session(
-        session,
-        (),
-        model_client,
-        provider,
-        model_info,
-        built_tools=built_tools,
-        effort=config.reasoning_effort,
-        summary=config.model_reasoning_summary,
-        service_tier=config.service_tier,
-    )
-
-    def transport_config() -> Any:
-        return http_transport_config_from_provider(
+    try:
+        request_plan = await build_user_turn_responses_request_from_session(
+            session,
+            (),
             model_client,
             provider,
-            auth=_local_http_auth_for_recovered_manager(auth_manager, auth),
-            endpoint=endpoint,
-            timeout=timeout,
+            model_info,
+            built_tools=built_tools,
+            effort=config.reasoning_effort,
+            summary=config.model_reasoning_summary,
+            service_tier=config.service_tier,
         )
 
-    result = await prewarm_model_client_websocket_session(
-        model_session,
-        transport_config(),
-        request=request_plan.request,
-    )
-    return model_session if result is not None else None
+        def transport_config() -> Any:
+            return http_transport_config_from_provider(
+                model_client,
+                provider,
+                auth=_local_http_auth_for_recovered_manager(auth_manager, auth),
+                endpoint=endpoint,
+                timeout=timeout,
+            )
+
+        result = await prewarm_model_client_websocket_session(
+            model_session,
+            transport_config(),
+            request=request_plan.request,
+        )
+        return model_session if result is not None else None
+    finally:
+        from pycodex.core.session.handlers import shutdown_session_runtime
+
+        await shutdown_session_runtime(session)
 
 
 def _local_http_auth_for_recovered_manager(auth_manager: Any, fallback_auth: Any) -> Any:

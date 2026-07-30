@@ -62,26 +62,27 @@ class StdioServerProcessHandle:
                 return
             if self._executor is not None:
                 await self._executor.terminate()
-            elif self._local is not None and self._local.returncode is None:
-                if sys.platform == "win32" and self._local.pid is not None:
-                    taskkill = await asyncio.create_subprocess_exec(
-                        "taskkill",
-                        "/PID",
-                        str(self._local.pid),
-                        "/T",
-                        "/F",
-                        stdin=asyncio.subprocess.DEVNULL,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await taskkill.wait()
-                else:
-                    self._local.terminate()
-                try:
-                    await asyncio.wait_for(self._local.wait(), 2)
-                except TimeoutError:
-                    self._local.kill()
-                    await self._local.wait()
+            elif self._local is not None:
+                if self._local.returncode is None:
+                    if sys.platform == "win32" and self._local.pid is not None:
+                        taskkill = await asyncio.create_subprocess_exec(
+                            "taskkill",
+                            "/PID",
+                            str(self._local.pid),
+                            "/T",
+                            "/F",
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await taskkill.wait()
+                    else:
+                        self._local.terminate()
+                    try:
+                        await asyncio.wait_for(self._local.wait(), 2)
+                    except TimeoutError:
+                        self._local.kill()
+                        await self._local.wait()
             self.terminated = True
 
 
@@ -135,6 +136,12 @@ class StdioServerTransport:
                 )
 
     async def close(self) -> None:
+        if self._local is not None and self._local.stdin is not None:
+            self._local.stdin.close()
+            try:
+                await self._local.stdin.wait_closed()
+            except (BrokenPipeError, ConnectionError):
+                pass
         await self._process.terminate()
         if self._executor is not None:
             await self._executor.close()
@@ -143,6 +150,9 @@ class StdioServerTransport:
                 await asyncio.wait_for(self._stderr_task, 1)
             except TimeoutError:
                 self._stderr_task.cancel()
+                await asyncio.gather(self._stderr_task, return_exceptions=True)
+        if self._local is not None and self._local.stdout is not None:
+            await self._local.stdout.read()
 
 
 class StdioServerLauncher(Sealed):

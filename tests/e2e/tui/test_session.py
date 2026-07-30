@@ -301,6 +301,141 @@ def test_windows_conpty_native_and_python_same_session_history_up_recall_when_en
         assert answer in output
 
 
+def test_windows_conpty_python_healthy_mcp_turn_closes_without_pipe_errors_when_enabled() -> None:
+    # Rust source/runtime contract:
+    # - codex-core::session owns McpConnectionManager for the full session.
+    # - codex-mcp::connection_manager keeps healthy stdio clients alive across
+    #   turns and shuts them down before the session runtime is dropped.
+    # This exercises the real terminal entrypoint, one model turn, and /quit so
+    # Windows subprocess transport errors cannot hide behind unit-test doubles.
+    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
+        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run local ConPTY E2E")
+    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
+    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
+    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY smoke only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    repo_root = _repo_root()
+    answer = "PYCODEX_MCP_SESSION_OK"
+    body = _responses_sse(
+        {"type": "response.created", "response": {"id": "resp-mcp-session"}},
+        {
+            "type": "response.output_item.added",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "id": "msg-mcp-session",
+                "content": [],
+            },
+            "output_index": 0,
+        },
+        {
+            "type": "response.output_text.delta",
+            "item_id": "msg-mcp-session",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": answer,
+        },
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "message",
+                "role": "assistant",
+                "id": "msg-mcp-session",
+                "content": [{"type": "output_text", "text": answer}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-mcp-session",
+                "usage": {
+                    "input_tokens": 1,
+                    "input_tokens_details": None,
+                    "output_tokens": 2,
+                    "output_tokens_details": None,
+                    "total_tokens": 3,
+                },
+            },
+        },
+    )
+
+    with _SseFixtureServer(body) as server:
+        config = (
+            'model = "mock-model"\n'
+            'model_provider = "pycodex_mock"\n'
+            'approval_policy = "never"\n'
+            'sandbox_mode = "read-only"\n'
+            'suppress_unstable_features_warning = true\n'
+            "\n"
+            "[model_providers.pycodex_mock]\n"
+            'name = "Mock provider for MCP session test"\n'
+            f'base_url = "{server.base_url}"\n'
+            'wire_api = "responses"\n'
+            "request_max_retries = 0\n"
+            "stream_max_retries = 0\n"
+            "supports_websockets = false\n"
+            "\n"
+            "[mcp_servers.healthy]\n"
+            f"command = {json.dumps(sys.executable)}\n"
+            'args = ["-B", "-m", "pycodex.rmcp_client.bin.rmcp_test_server"]\n'
+            "\n"
+            f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+            'trust_level = "trusted"\n'
+        )
+        env, temp_home = _isolated_codex_home_env_with_config(config)
+        command = build_inline_tui_command(
+            "python",
+            repo_root=repo_root,
+            python_executable=sys.executable,
+            extra_args=("--disable", "apps", "--disable", "plugins"),
+        )
+        with temp_home:
+            transcript = run_windows_conpty_tui_command(
+                command,
+                input_steps=(
+                    ConptyInputStep(
+                        "你好\r",
+                        ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
+                        ready_timeout=30.0,
+                        ready_quiet_period=0.2,
+                    ),
+                    ConptyInputStep(
+                        "",
+                        ready_text=answer,
+                        ready_timeout=30.0,
+                    ),
+                    ConptyInputStep(
+                        "/quit\r",
+                        ready_timeout=0.2,
+                        chunk_delay=0.02,
+                    ),
+                    ConptyInputStep("", ready_text="Token usage:", ready_timeout=10.0),
+                ),
+                env=env,
+                timeout=45,
+                size=TerminalSize(rows=32, cols=120),
+            )
+
+    combined = transcript.normalized_combined()
+    assert transcript.returncode == 0, combined
+    assert answer in transcript.normalized_stdout(), combined
+    assert len(server.requests) == 1, combined
+    assert "MCP runtime is not implemented" not in combined
+    assert "MCP startup incomplete" not in combined
+    assert "ProactorBasePipeTransport" not in combined
+    assert "BaseSubprocessTransport" not in combined
+    assert "I/O operation on closed pipe" not in combined
+
+
 def test_windows_conpty_native_and_python_local_sse_multi_turn_clean_shutdown_when_enabled() -> None:
     # Rust source/test contract:
     # - codex-tui::bottom_pane::chat_composer submits each non-empty Enter as a
@@ -2355,64 +2490,80 @@ def test_windows_conpty_native_and_python_live_multi_turn_clean_shutdown_when_en
 
     def input_steps_for_prompt_marker(prompt_marker: str) -> tuple[ConptyInputStep, ...]:
         return (
-        ConptyInputStep(
-            first_prompt,
-            ready_pattern=READY_COMPOSER_PATTERN,
-            ready_timeout=30.0,
-            chunk_delay=0.02,
-            ready_quiet_period=0.8,
-        ),
-        ConptyInputStep(
-            "\r",
-            ready_text="nothing else.",
-            ready_timeout=10.0,
-            chunk_delay=0.02,
-            ready_quiet_period=0.3,
-        ),
-        ConptyInputStep(
-            "",
-            ready_text_sequence=(first, prompt_marker),
-            ready_timeout=140.0,
-            chunk_delay=0.02,
-        ),
-        ConptyInputStep(
-            second_prompt,
-            chunk_delay=0.02,
-        ),
-        ConptyInputStep(
-            "\r",
-            ready_text="nothing else.",
-            ready_timeout=10.0,
-            chunk_delay=0.02,
-            ready_quiet_period=0.3,
-        ),
-        ConptyInputStep(
-            "",
-            ready_text_sequence=(second, prompt_marker),
-            ready_timeout=140.0,
-            chunk_delay=0.02,
-        ),
-        ConptyInputStep(
-            "/quit\r",
-            chunk_delay=0.05,
-        ),
+            ConptyInputStep(
+                first_prompt,
+                ready_pattern=READY_COMPOSER_PATTERN,
+                ready_timeout=30.0,
+                chunk_delay=0.02,
+                ready_quiet_period=0.8,
+            ),
+            ConptyInputStep(
+                "\r",
+                ready_text="nothing else.",
+                ready_timeout=10.0,
+                chunk_delay=0.02,
+                ready_quiet_period=0.3,
+            ),
+            ConptyInputStep(
+                "",
+                ready_text_sequence=(first, prompt_marker),
+                ready_timeout=140.0,
+                chunk_delay=0.02,
+            ),
+            ConptyInputStep(
+                second_prompt,
+                chunk_delay=0.02,
+            ),
+            ConptyInputStep(
+                "\r",
+                ready_text="nothing else.",
+                ready_timeout=10.0,
+                chunk_delay=0.02,
+                ready_quiet_period=0.3,
+            ),
+            ConptyInputStep(
+                "",
+                ready_text_sequence=(second, prompt_marker),
+                ready_timeout=140.0,
+                chunk_delay=0.02,
+            ),
+            ConptyInputStep(
+                "\x15/quit",
+                chunk_delay=0.02,
+            ),
+            ConptyInputStep(
+                "\r",
+                ready_text="/quit",
+                ready_timeout=10.0,
+                ready_quiet_period=0.2,
+                chunk_delay=0.02,
+            ),
+            ConptyInputStep(
+                "",
+                ready_text="Token usage:",
+                ready_timeout=10.0,
+            ),
         )
 
-    rust_transcript = run_windows_conpty_tui_command(
-        rust,
-        input_steps=input_steps_for_prompt_marker("\u203a"),
-        env=_conpty_tui_env(),
-        timeout=20,
-        size=TerminalSize(rows=32, cols=120),
-        stop_timeout=45,
+    rust_transcript = _run_live_conpty_with_capacity_retries(
+        lambda: run_windows_conpty_tui_command(
+            rust,
+            input_steps=input_steps_for_prompt_marker("\u203a"),
+            env=_conpty_tui_env(),
+            timeout=20,
+            size=TerminalSize(rows=32, cols=120),
+            stop_timeout=45,
+        )
     )
-    python_transcript = run_windows_conpty_tui_command(
-        python,
-        input_steps=input_steps_for_prompt_marker("\u203a"),
-        env=_conpty_tui_env(),
-        timeout=20,
-        size=TerminalSize(rows=32, cols=120),
-        stop_timeout=45,
+    python_transcript = _run_live_conpty_with_capacity_retries(
+        lambda: run_windows_conpty_tui_command(
+            python,
+            input_steps=input_steps_for_prompt_marker("\u203a"),
+            env=_conpty_tui_env(),
+            timeout=20,
+            size=TerminalSize(rows=32, cols=120),
+            stop_timeout=45,
+        )
     )
 
     for transcript in (rust_transcript, python_transcript):

@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any
 
 from pycodex.core.tools.handlers.mcp import ToolInfo
-from pycodex.core.tools.handlers.request_plugin_install import CODEX_APPS_MCP_SERVER_NAME
+from pycodex.codex_mcp import CODEX_APPS_MCP_SERVER_NAME
 from pycodex.tools.tool_discovery import AppInfo
 from pycodex.connectors.accessible import (
     AccessibleConnectorTool as _AccessibleConnectorTool,

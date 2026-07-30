@@ -13,7 +13,7 @@ from pycodex.app_server_protocol.thread import ThreadGoal as AppServerThreadGoal
 from pycodex.ext.guardian import install as install_guardian
 from pycodex.ext.memories import install as install_memories
 from pycodex.ext.web_search import install as install_web_search
-from pycodex.extension_api import (
+from pycodex.ext.extension_api import (
     AgentSpawner,
     ExtensionEventSink,
     ExtensionRegistry,

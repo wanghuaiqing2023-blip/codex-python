@@ -3305,8 +3305,14 @@
         {
           "owner": "pycodex/core/session/__init__.py",
           "anchor_candidates": [
+            "Codex",
             "PreviousTurnSettings",
-            "set_thread_memory_mode"
+            "next_event",
+            "set_thread_memory_mode",
+            "shutdown_and_wait",
+            "spawn",
+            "submit",
+            "submit_with_id"
           ]
         }
       ],

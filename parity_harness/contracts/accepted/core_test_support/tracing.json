@@ -1,0 +1,8 @@
+{
+  "contract_id": "core_test_support.tracing",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "core_test_support", "module": "tracing", "source": "codex/codex-rs/core/tests/common/tracing.rs", "anchors": ["TestTracingContext", "install_test_tracing"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/core_test_support/tracing.py", "layout": "module-file", "implementation_files": ["tests/support/core_test_support/tracing.py"], "anchors": ["TestTracingContext", "install_test_tracing"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_test_support_rs.py"]
+}

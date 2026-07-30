@@ -1,0 +1,8 @@
+{
+  "contract_id": "core_test_support.test_codex_exec",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "core_test_support", "module": "test_codex_exec", "source": "codex/codex-rs/core/tests/common/test_codex_exec.rs", "anchors": ["TestCodexExecBuilder", "test_codex_exec"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/core_test_support/test_codex_exec.py", "layout": "module-file", "implementation_files": ["tests/support/core_test_support/test_codex_exec.py"], "anchors": ["TestCodexExecBuilder", "test_codex_exec"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_test_support_rs.py", "tests/e2e/core/test_test_support.py"]
+}

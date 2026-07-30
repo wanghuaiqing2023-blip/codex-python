@@ -1,0 +1,8 @@
+{
+  "contract_id": "core_test_support.context_snapshot",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "core_test_support", "module": "context_snapshot", "source": "codex/codex-rs/core/tests/common/context_snapshot.rs", "anchors": ["ContextSnapshotOptions", "ContextSnapshotRenderMode", "format_request_input_snapshot", "format_response_items_snapshot"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/core_test_support/context_snapshot.py", "layout": "module-file", "implementation_files": ["tests/support/core_test_support/context_snapshot.py"], "anchors": ["ContextSnapshotOptions", "ContextSnapshotRenderMode", "format_request_input_snapshot", "format_response_items_snapshot"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_test_support_rs.py"]
+}

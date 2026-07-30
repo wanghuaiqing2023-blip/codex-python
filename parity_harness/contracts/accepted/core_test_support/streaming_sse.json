@@ -1,0 +1,8 @@
+{
+  "contract_id": "core_test_support.streaming_sse",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "core_test_support", "module": "streaming_sse", "source": "codex/codex-rs/core/tests/common/streaming_sse.rs", "anchors": ["StreamingSseChunk", "StreamingSseServer", "start_streaming_sse_server"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/core_test_support/streaming_sse.py", "layout": "module-file", "implementation_files": ["tests/support/core_test_support/streaming_sse.py"], "anchors": ["StreamingSseChunk", "StreamingSseServer", "start_streaming_sse_server"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_test_support_rs.py"]
+}

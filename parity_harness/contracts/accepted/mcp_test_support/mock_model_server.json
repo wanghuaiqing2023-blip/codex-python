@@ -1,0 +1,8 @@
+{
+  "contract_id": "mcp_test_support.mock_model_server",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "mcp_test_support", "module": "mock_model_server", "source": "codex/codex-rs/mcp-server/tests/common/mock_model_server.rs", "anchors": ["create_mock_responses_server"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/mcp_test_support/mock_model_server.py", "layout": "module-file", "implementation_files": ["tests/support/mcp_test_support/mock_model_server.py"], "anchors": ["create_mock_responses_server"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_mcp_test_support_rs.py"]
+}

@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-extension-api.capabilities",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-extension-api",
+    "module": "capabilities",
+    "source": "codex/codex-rs/ext/extension-api/src/capabilities/mod.rs",
+    "anchors": ["AgentSpawnFuture", "AgentSpawner", "ExtensionEventSink", "NoopExtensionEventSink", "NoopResponseItemInjector", "ResponseItemInjectionFuture", "ResponseItemInjector"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ext/extension_api/capabilities/__init__.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/ext/extension_api/capabilities/__init__.py"],
+    "anchors": ["AgentSpawnFuture", "AgentSpawner", "ExtensionEventSink", "NoopExtensionEventSink", "NoopResponseItemInjector", "ResponseItemInjectionFuture", "ResponseItemInjector"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

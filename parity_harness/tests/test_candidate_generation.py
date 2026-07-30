@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from parity_harness.contracts.generator import generate_candidate_catalog
 from parity_harness.paths import HARNESS_ROOT
-from parity_harness.workspace import load_workspace_contract
+from parity_harness.workspace import (
+    WorkspaceContract,
+    WorkspaceCrate,
+    load_workspace_contract,
+)
 
 
 class CandidateGenerationTests(unittest.TestCase):
@@ -107,8 +113,28 @@ class CandidateGenerationTests(unittest.TestCase):
         )
 
     def test_deferred_scope_cannot_fabricate_candidates(self) -> None:
-        with self.assertRaisesRegex(ValueError, "deferred scope"):
-            generate_candidate_catalog("chatgpt")
+        workspace = WorkspaceContract(
+            workspace="codex/codex-rs",
+            baseline_commit="1c7832ffa37a3ab56f601497c00bfce120370bf9",
+            crates=(
+                WorkspaceCrate(
+                    scope="deferred-fixture",
+                    rust_crate="deferred-fixture",
+                    rust_root="codex/codex-rs/chatgpt",
+                    cargo_toml="codex/codex-rs/chatgpt/Cargo.toml",
+                    python_root="pycodex/chatgpt",
+                    disposition="deferred",
+                    reason="synthetic deferred-scope regression fixture",
+                ),
+            ),
+            source_path=Path("workspace.json"),
+        )
+        with patch(
+            "parity_harness.contracts.generator.load_workspace_contract",
+            return_value=workspace,
+        ):
+            with self.assertRaisesRegex(ValueError, "deferred scope"):
+                generate_candidate_catalog("deferred-fixture")
 
 
 if __name__ == "__main__":

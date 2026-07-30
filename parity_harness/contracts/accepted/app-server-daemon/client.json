@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-app-server-daemon.client",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-daemon",
+    "module": "client",
+    "source": "codex/codex-rs/app-server-daemon/src/client.rs",
+    "anchors": ["CONTROL_SOCKET_RESPONSE_TIMEOUT", "ProbeInfo", "connect", "initialize", "parse_version_from_user_agent", "probe"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_daemon/client.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/app_server_daemon/client.py"],
+    "anchors": ["CONTROL_SOCKET_RESPONSE_TIMEOUT", "ProbeInfo", "connect", "initialize", "parse_version_from_user_agent", "probe"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_server_daemon_rs.py"]
+}

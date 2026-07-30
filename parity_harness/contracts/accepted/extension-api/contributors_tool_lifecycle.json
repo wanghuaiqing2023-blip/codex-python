@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-extension-api.contributors.tool_lifecycle",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-extension-api",
+    "module": "contributors::tool_lifecycle",
+    "source": "codex/codex-rs/ext/extension-api/src/contributors/tool_lifecycle.rs",
+    "anchors": ["ToolCallOutcome", "ToolCallSource", "ToolFinishInput", "ToolLifecycleFuture", "ToolStartInput"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ext/extension_api/contributors/tool_lifecycle.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/ext/extension_api/contributors/tool_lifecycle.py"],
+    "anchors": ["ToolCallOutcome", "ToolCallSource", "ToolFinishInput", "ToolLifecycleFuture", "ToolStartInput"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

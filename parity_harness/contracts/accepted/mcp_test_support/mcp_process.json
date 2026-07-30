@@ -1,0 +1,8 @@
+{
+  "contract_id": "mcp_test_support.mcp_process",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "mcp_test_support", "module": "mcp_process", "source": "codex/codex-rs/mcp-server/tests/common/mcp_process.rs", "anchors": ["McpProcess", "initialize", "new", "new_with_env", "read_stream_until_response_message", "send_codex_tool_call", "send_response"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/mcp_test_support/mcp_process.py", "layout": "module-file", "implementation_files": ["tests/support/mcp_test_support/mcp_process.py"], "anchors": ["McpProcess", "initialize", "new", "new_with_env", "read_stream_until_response_message", "send_codex_tool_call", "send_response"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_mcp_test_support_rs.py", "tests/e2e/mcp_server/test_stdio.py"]
+}

@@ -1,0 +1,8 @@
+{
+  "contract_id": "app_test_support.mcp_process",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "app_test_support", "module": "mcp_process", "source": "codex/codex-rs/app-server/tests/common/mcp_process.rs", "anchors": ["DEFAULT_CLIENT_NAME", "DISABLE_PLUGIN_STARTUP_TASKS_ARG", "McpProcess", "initialize", "new", "read_stream_until_response_message", "send_raw_request"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/app_test_support/mcp_process.py", "layout": "module-file", "implementation_files": ["tests/support/app_test_support/mcp_process.py"], "anchors": ["DEFAULT_CLIENT_NAME", "DISABLE_PLUGIN_STARTUP_TASKS_ARG", "McpProcess", "initialize", "new", "read_stream_until_response_message", "send_raw_request"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_test_support_rs.py", "tests/e2e/app_server/test_stdio.py"]
+}

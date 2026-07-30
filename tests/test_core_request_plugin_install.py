@@ -101,7 +101,7 @@ class RequestPluginInstallDataTests(unittest.TestCase):
             {
                 "threadId": "thread-1",
                 "turnId": "turn-1",
-                "serverName": "codex-apps",
+                "serverName": "codex_apps",
                 "mode": "form",
                 "_meta": {
                     "codex_approval_kind": "tool_suggestion",

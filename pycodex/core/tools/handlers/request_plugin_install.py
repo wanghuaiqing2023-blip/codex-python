@@ -16,6 +16,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any
 
+from pycodex.codex_mcp import CODEX_APPS_MCP_SERVER_NAME
 from pycodex.core.config.edit import ConfigEditsBuilder, ToolSuggestDisabledTool
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
@@ -61,7 +62,6 @@ from pycodex.protocol.mcp_approval_meta import (
 
 JsonValue = Any
 
-CODEX_APPS_MCP_SERVER_NAME = "codex-apps"
 MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS = 240
 
 
@@ -564,7 +564,6 @@ def _string_tuple(values: Iterable[JsonValue], field_name: str) -> tuple[str, ..
 
 
 __all__ = [
-    "CODEX_APPS_MCP_SERVER_NAME",
     "MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS",
     "ConnectorRefreshCallback",
     "ListAvailablePluginsToInstallHandler",

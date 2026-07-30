@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-chatgpt.apply_command",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-chatgpt",
+    "module": "apply_command",
+    "source": "codex/codex-rs/chatgpt/src/apply_command.rs",
+    "anchors": ["ApplyCommand", "apply_diff_from_task", "run_apply_command"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/chatgpt/apply_command.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/chatgpt/apply_command.py"],
+    "anchors": ["ApplyCommand", "apply_diff_from_task", "run_apply_command"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

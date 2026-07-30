@@ -1,0 +1,367 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "core_test_support",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 12,
+    "python_files": 12,
+    "modules_with_candidates": 12,
+    "modules_with_anchors": 12
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "crate",
+        "source": "codex/codex-rs/core/tests/common/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/__init__.py",
+          "anchor_candidates": [
+            "assert_regex_match",
+            "fetch_dotslash_file",
+            "format_with_current_shell",
+            "format_with_current_shell_display",
+            "format_with_current_shell_display_non_login",
+            "format_with_current_shell_non_login",
+            "get_remote_test_env",
+            "remote_env_env_var",
+            "sandbox_env_var",
+            "sandbox_network_env_var",
+            "stdio_server_bin",
+            "test_absolute_path"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "apps_test_server",
+        "source": "codex/codex-rs/core/tests/common/apps_test_server.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/apps_test_server.py",
+          "anchor_candidates": [
+            "AppsTestServer",
+            "CALENDAR_CREATE_EVENT_MCP_APP_RESOURCE_URI",
+            "CALENDAR_CREATE_EVENT_RESOURCE_URI",
+            "CALENDAR_EXTRACT_TEXT_TOOL_NAME",
+            "DIRECT_CALENDAR_CREATE_EVENT_TOOL",
+            "DIRECT_CALENDAR_EXTRACT_TEXT_TOOL",
+            "DIRECT_CALENDAR_LIST_EVENTS_TOOL",
+            "DOCUMENT_EXTRACT_TEXT_RESOURCE_URI",
+            "SEARCH_CALENDAR_CREATE_TOOL",
+            "SEARCH_CALENDAR_EXTRACT_TEXT_TOOL",
+            "SEARCH_CALENDAR_LIST_TOOL",
+            "SEARCH_CALENDAR_NAMESPACE"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "context_snapshot",
+        "source": "codex/codex-rs/core/tests/common/context_snapshot.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/context_snapshot.py",
+          "anchor_candidates": [
+            "ContextSnapshotOptions",
+            "ContextSnapshotRenderMode",
+            "format_labeled_items_snapshot",
+            "format_labeled_requests_snapshot",
+            "format_request_input_snapshot",
+            "format_response_items_snapshot",
+            "render_mode",
+            "strip_agents_md_user_context",
+            "strip_capability_instructions"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "fs_wait",
+        "source": "codex/codex-rs/core/tests/common/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/fs_wait.py",
+          "anchor_candidates": [
+            "wait_for_matching_file",
+            "wait_for_path_exists"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "hooks",
+        "source": "codex/codex-rs/core/tests/common/hooks.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/hooks.py",
+          "anchor_candidates": [
+            "trust_discovered_hooks",
+            "trust_hooks",
+            "trusted_config_layer_stack"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "process",
+        "source": "codex/codex-rs/core/tests/common/process.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/process.py",
+          "anchor_candidates": [
+            "process_is_alive",
+            "wait_for_pid_file",
+            "wait_for_process_exit"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "responses",
+        "source": "codex/codex-rs/core/tests/common/responses.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/responses.py",
+          "anchor_candidates": [
+            "ev_apply_patch_custom_tool_call",
+            "ev_assistant_message",
+            "ev_completed",
+            "ev_completed_with_tokens",
+            "ev_custom_tool_call",
+            "ev_function_call",
+            "ev_function_call_with_namespace",
+            "ev_message_item_added",
+            "ev_output_text_delta",
+            "ev_reasoning_item",
+            "ev_reasoning_item_added",
+            "ev_reasoning_summary_text_delta"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "streaming_sse",
+        "source": "codex/codex-rs/core/tests/common/streaming_sse.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/streaming_sse.py",
+          "anchor_candidates": [
+            "StreamingSseChunk",
+            "StreamingSseServer",
+            "requests",
+            "shutdown",
+            "start_streaming_sse_server",
+            "uri",
+            "wait_for_request_count"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "test_codex",
+        "source": "codex/codex-rs/core/tests/common/test_codex.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/test_codex.py",
+          "anchor_candidates": [
+            "TestCodex",
+            "TestCodexBuilder",
+            "TestCodexHarness",
+            "build",
+            "codex_home_path",
+            "cwd",
+            "cwd_path",
+            "environment",
+            "new",
+            "path",
+            "path_exists",
+            "read_file_text"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "test_codex_exec",
+        "source": "codex/codex-rs/core/tests/common/test_codex_exec.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/test_codex_exec.py",
+          "anchor_candidates": [
+            "TestCodexExecBuilder",
+            "cmd_with_server",
+            "cwd_path",
+            "home_path",
+            "test_codex_exec"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "tracing",
+        "source": "codex/codex-rs/core/tests/common/tracing.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/tracing.py",
+          "anchor_candidates": [
+            "TestTracingContext",
+            "install_test_tracing"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "core_test_support",
+        "module": "zsh_fork",
+        "source": "codex/codex-rs/core/tests/common/zsh_fork.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/core_test_support/zsh_fork.py",
+          "anchor_candidates": [
+            "ZshForkRuntime",
+            "build_zsh_fork_test",
+            "restrictive_workspace_write_profile",
+            "zsh_fork_runtime"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

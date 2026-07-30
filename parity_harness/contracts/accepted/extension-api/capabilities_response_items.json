@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-extension-api.capabilities.response_items",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-extension-api",
+    "module": "capabilities::response_items",
+    "source": "codex/codex-rs/ext/extension-api/src/capabilities/response_items.rs",
+    "anchors": ["NoopResponseItemInjector", "ResponseItemInjectionFuture", "ResponseItemInjector", "inject_response_items"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ext/extension_api/capabilities/response_items.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/ext/extension_api/capabilities/response_items.py"],
+    "anchors": ["NoopResponseItemInjector", "ResponseItemInjectionFuture", "ResponseItemInjector", "inject_response_items"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

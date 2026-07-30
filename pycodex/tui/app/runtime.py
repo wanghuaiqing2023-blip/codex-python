@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from queue import Empty, Queue
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
@@ -223,6 +223,72 @@ def _run_coro_blocking(coro: Any) -> Any:
     if "error" in box:
         raise box["error"]
     return box.get("result")
+
+
+class _PersistentAsyncRuntime:
+    """Own one event loop for session-scoped async resources."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._ready = Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: Thread | None = None
+        self._closed = False
+
+    def _ensure_started(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("async runtime is closed")
+            if self._thread is None:
+                self._thread = Thread(
+                    target=self._run_loop,
+                    name="pycodex-tui-session-async",
+                    daemon=True,
+                )
+                self._thread.start()
+        self._ready.wait()
+        if self._loop is None:
+            raise RuntimeError("async runtime failed to start")
+        return self._loop
+
+    def _run_loop(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._loop = loop
+        self._ready.set()
+        try:
+            loop.run_forever()
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+            with self._lock:
+                self._loop = None
+
+    def submit(self, coro: Any) -> Any:
+        loop = self._ensure_started()
+        return asyncio.run_coroutine_threadsafe(coro, loop)
+
+    def run(self, coro: Any) -> Any:
+        return self.submit(coro).result()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            loop = self._loop
+            thread = self._thread
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None and thread is not current_thread():
+            thread.join()
+        with self._lock:
+            self._thread = None
 
 
 def _close_model_session(session: Any) -> None:
@@ -1089,6 +1155,9 @@ class CoreExecActiveThreadRuntime:
     _rollout_persist_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _last_worker_error: BaseException | None = field(default=None, init=False, repr=False)
     _startup_app_server_events: Queue[Any] = field(default_factory=Queue, init=False, repr=False)
+    _async_runtime_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _async_runtime: _PersistentAsyncRuntime | None = field(default=None, init=False, repr=False)
+    _mcp_startup_future: Any = field(default=None, init=False, repr=False)
     _state_runtime: Any = field(default=None, init=False, repr=False)
     _core_session: Any = field(default=None, init=False, repr=False)
     _resumed_reference_context_item: Any = field(default=None, init=False, repr=False)
@@ -1098,6 +1167,8 @@ class CoreExecActiveThreadRuntime:
 
     def __post_init__(self) -> None:
         self._internal_operation_ready.set()
+        if isinstance(self.session_config, ExecSessionConfig):
+            self._ensure_core_session_sync()
         self._seed_configured_mcp_startup_events()
         if self.prewarmed_model_session is not None:
             self._startup_prewarm_session = self.prewarmed_model_session
@@ -1441,11 +1512,20 @@ class CoreExecActiveThreadRuntime:
             state_db=state_runtime,
         )
         self._core_session.history = list(self._model_history_snapshot())
-        _run_coro_blocking(
-            self._core_session.set_reference_context_item(self._resumed_reference_context_item)
-        )
+        if self._resumed_reference_context_item is not None:
+            self._session_async_runtime().run(
+                self._core_session.set_reference_context_item(
+                    self._resumed_reference_context_item
+                )
+            )
         self._core_session.goal_continuation_callback = self._queue_goal_continuation_from_core
         return self._core_session
+
+    def _session_async_runtime(self) -> _PersistentAsyncRuntime:
+        with self._async_runtime_lock:
+            if self._async_runtime is None:
+                self._async_runtime = _PersistentAsyncRuntime()
+            return self._async_runtime
 
     def _queue_goal_continuation_from_core(self, item: ResponseInputItem, goal: Any) -> None:
         text = next(
@@ -1694,6 +1774,7 @@ class CoreExecActiveThreadRuntime:
         with self._active_turn_lock:
             if self._active_turn is not None:
                 raise RuntimeError("cannot switch sessions while a task is running")
+        self._shutdown_core_session_sync()
         _close_model_session(self._startup_prewarm_session)
         _close_model_session(self.prewarmed_model_session)
         self._startup_prewarm_session = None
@@ -1711,6 +1792,31 @@ class CoreExecActiveThreadRuntime:
         self.rollout_path = Path(rollout_path) if rollout_path is not None else None
         self._rollout_path_ready.clear()
         self._internal_operation_ready.set()
+        if isinstance(self.session_config, ExecSessionConfig):
+            self._ensure_core_session_sync(thread_id=thread_id)
+        self._seed_configured_mcp_startup_events()
+
+    def _shutdown_core_session_sync(self) -> None:
+        mcp_startup_future = self._mcp_startup_future
+        self._mcp_startup_future = None
+        if mcp_startup_future is not None:
+            try:
+                mcp_startup_future.result()
+            except Exception:
+                pass
+
+        core_session = self._core_session
+        self._core_session = None
+        if core_session is None:
+            return
+        try:
+            from pycodex.core.session.handlers import shutdown_session_runtime
+
+            self._session_async_runtime().run(
+                shutdown_session_runtime(core_session)
+            )
+        except Exception:
+            pass
 
     def _started_thread_result(
         self,
@@ -1804,22 +1910,46 @@ class CoreExecActiveThreadRuntime:
                     ),
                 }
             )
-            self._startup_app_server_events.put(
-                {
-                    "kind": "ServerNotification",
-                    "notification": ServerNotification(
-                        "McpServerStatusUpdated",
-                        {
-                            "name": name,
-                            "status": "Failed",
-                            "error": (
-                                f"MCP client for `{name}` failed to start: "
-                                "MCP runtime is not implemented in the PyCodex TUI"
-                            ),
-                        },
-                    ),
-                }
-            )
+        if not names:
+            return
+
+        core_session = self._ensure_core_session_sync()
+        manager = getattr(getattr(core_session, "services", None), "mcp_connection_manager", None)
+        if manager is None:
+            for name in names:
+                self._enqueue_mcp_startup_result(
+                    name,
+                    error="MCP session runtime is unavailable",
+                )
+            return
+
+        async def start_configured_servers() -> None:
+            try:
+                await manager.ensure_started()
+            except Exception:
+                # Required-server failures are also retained in startup_errors.
+                pass
+            errors = manager.startup_errors()
+            for name in names:
+                self._enqueue_mcp_startup_result(name, error=errors.get(name))
+
+        self._mcp_startup_future = self._session_async_runtime().submit(
+            start_configured_servers()
+        )
+
+    def _enqueue_mcp_startup_result(self, name: str, *, error: Any = None) -> None:
+        payload: dict[str, Any] = {
+            "name": name,
+            "status": "Failed" if error is not None else "Ready",
+        }
+        if error is not None:
+            payload["error"] = f"MCP client for `{name}` failed to start: {error}"
+        self._startup_app_server_events.put(
+            {
+                "kind": "ServerNotification",
+                "notification": ServerNotification("McpServerStatusUpdated", payload),
+            }
+        )
 
     def submit_thread_op(self, thread_id: str, op: AppCommand) -> ActiveThreadEventStream:
         if op.kind == "Interrupt":
@@ -1833,7 +1963,7 @@ class CoreExecActiveThreadRuntime:
             response = op.payload.get("response")
             core_session = self._core_session
             if core_session is not None and sub_id and response is not None:
-                _run_coro_blocking(
+                self._session_async_runtime().run(
                     core_session.notify_user_input_response(sub_id, response)
                 )
             return _closed_event_stream()
@@ -2087,7 +2217,7 @@ class CoreExecActiveThreadRuntime:
                 except Exception:
                     self.session_config = previous_session_config
                 model_session = self._take_startup_prewarm_session()
-                result, turn_plan = asyncio.run(
+                result, turn_plan = self._session_async_runtime().run(
                     self._run_op(
                         op,
                         session_event_observer=observe_session_event,
@@ -2202,6 +2332,8 @@ class CoreExecActiveThreadRuntime:
             active_turn = self._active_turn
         if active_turn is not None:
             active_turn.interrupt()
+
+        self._shutdown_core_session_sync()
         queue: Queue[Any] = Queue()
         queue.put(ServerNotification("ThreadClosed", {"thread_id": thread_id}))
         queue.put(_EOF)
@@ -2220,6 +2352,8 @@ class CoreExecActiveThreadRuntime:
             active_turn = self._active_turn
         if active_turn is not None:
             active_turn.interrupt()
+
+        self._shutdown_core_session_sync()
 
         with self._startup_prewarm_lock:
             startup_session = self._startup_prewarm_session
@@ -2241,6 +2375,12 @@ class CoreExecActiveThreadRuntime:
         if callable(close_cached):
             close_cached()
 
+        with self._async_runtime_lock:
+            async_runtime = self._async_runtime
+            self._async_runtime = None
+        if async_runtime is not None:
+            async_runtime.close()
+
     def _schedule_startup_prewarm(self) -> None:
         new_session = getattr(self.model_client, "new_session", None)
         model = str(getattr(self.model_info, "slug", "") or "")
@@ -2255,7 +2395,7 @@ class CoreExecActiveThreadRuntime:
             try:
                 session = new_session()
                 _timing_trace("startup_prewarm_worker_started")
-                session = asyncio.run(
+                session = self._session_async_runtime().run(
                     prewarm_exec_core_websocket_session(
                         self.session_config,
                         self.model_client,

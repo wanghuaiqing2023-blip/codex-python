@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
-from pycodex.mcp import CODEX_APPS_MCP_SERVER_NAME
+from pycodex.codex_mcp import CODEX_APPS_MCP_SERVER_NAME
 from pycodex.protocol import APPS_INSTRUCTIONS_CLOSE_TAG, APPS_INSTRUCTIONS_OPEN_TAG
 
 from .fragment import ContextualUserFragmentBase

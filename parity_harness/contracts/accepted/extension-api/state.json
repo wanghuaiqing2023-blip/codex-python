@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-extension-api.state",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-extension-api",
+    "module": "state",
+    "source": "codex/codex-rs/ext/extension-api/src/state.rs",
+    "anchors": ["ExtensionData", "get", "get_or_init", "insert", "level_id", "remove"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/ext/extension_api/state.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/ext/extension_api/state.py"],
+    "anchors": ["ExtensionData", "get", "get_or_init", "insert", "level_id", "remove"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

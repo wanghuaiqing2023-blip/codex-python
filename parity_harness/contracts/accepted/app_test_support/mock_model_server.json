@@ -1,0 +1,8 @@
+{
+  "contract_id": "app_test_support.mock_model_server",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "app_test_support", "module": "mock_model_server", "source": "codex/codex-rs/app-server/tests/common/mock_model_server.rs", "anchors": ["create_mock_responses_server_repeating_assistant", "create_mock_responses_server_sequence", "create_mock_responses_server_sequence_unchecked"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/app_test_support/mock_model_server.py", "layout": "module-file", "implementation_files": ["tests/support/app_test_support/mock_model_server.py"], "anchors": ["create_mock_responses_server_repeating_assistant", "create_mock_responses_server_sequence", "create_mock_responses_server_sequence_unchecked"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_test_support_rs.py"]
+}

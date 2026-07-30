@@ -8,7 +8,7 @@ from typing import Any
 from pycodex.connectors.metadata import connector_display_label
 from pycodex.core.context import PluginInstructions
 from pycodex.core.plugins.render import render_explicit_plugin_instructions
-from pycodex.mcp import CODEX_APPS_MCP_SERVER_NAME
+from pycodex.codex_mcp import CODEX_APPS_MCP_SERVER_NAME
 from pycodex.plugin import PluginCapabilitySummary
 from pycodex.protocol import ResponseItem
 

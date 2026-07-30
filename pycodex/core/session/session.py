@@ -63,7 +63,7 @@ from pycodex.core.session.turn.prompt import is_guardian_reviewer_source
 from pycodex.core.session.turn_context import TurnContext, local_time_context
 from pycodex.core.skills import build_available_skills, default_skill_metadata_budget, skills_load_input_from_config
 from pycodex.core.unified_exec import UnifiedExecProcessManager
-from pycodex.extension_api import (
+from pycodex.ext.extension_api import (
     ExtensionData,
     ThreadStartInput,
     PromptSlot,

@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any
 
 from pycodex.core.tools.registry import ToolExposure
-from pycodex.extension_api import FunctionCallError, ToolName
+from pycodex.ext.extension_api import FunctionCallError, ToolName
 from pycodex.tools import (
     ResponsesApiNamespace,
     ResponsesApiNamespaceTool,

@@ -203,7 +203,7 @@ class CodexThread:
             await _maybe_await(waiter())
 
     async def emit_thread_resume_lifecycle(self) -> None:
-        from pycodex.extension_api import ThreadResumeInput
+        from pycodex.ext.extension_api import ThreadResumeInput
 
         services = _nested_get(self.codex, "session", "services")
         contributors = _call_optional(_nested_get(self.codex, "session", "services", "extensions"), "thread_lifecycle_contributors", ())

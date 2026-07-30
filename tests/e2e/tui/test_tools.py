@@ -512,29 +512,33 @@ def test_windows_conpty_native_and_python_live_complex_tool_prompt_when_enabled(
         ),
     )
 
-    rust_transcript = run_windows_conpty_tui_command(
-        rust,
-        input_steps=input_steps,
-        env=_conpty_tui_env(),
-        timeout=10,
-        size=TerminalSize(rows=36, cols=140),
-        stop_pattern=marker,
-        stop_timeout=5,
-        terminate_on_stop_pattern=True,
-    )
-    python_env = _conpty_tui_env()
-    with tempfile.TemporaryDirectory(prefix="pycodex-reasoning-trace-") as trace_dir:
-        trace_path = Path(trace_dir) / "reasoning.jsonl"
-        python_env["PYCODEX_TUI_REASONING_TRACE"] = str(trace_path)
-        python_transcript = run_windows_conpty_tui_command(
-            python,
+    rust_transcript = _run_live_conpty_with_capacity_retries(
+        lambda: run_windows_conpty_tui_command(
+            rust,
             input_steps=input_steps,
-            env=python_env,
+            env=_conpty_tui_env(),
             timeout=10,
             size=TerminalSize(rows=36, cols=140),
             stop_pattern=marker,
             stop_timeout=5,
             terminate_on_stop_pattern=True,
+        )
+    )
+    python_env = _conpty_tui_env()
+    with tempfile.TemporaryDirectory(prefix="pycodex-reasoning-trace-") as trace_dir:
+        trace_path = Path(trace_dir) / "reasoning.jsonl"
+        python_env["PYCODEX_TUI_REASONING_TRACE"] = str(trace_path)
+        python_transcript = _run_live_conpty_with_capacity_retries(
+            lambda: run_windows_conpty_tui_command(
+                python,
+                input_steps=input_steps,
+                env=python_env,
+                timeout=10,
+                size=TerminalSize(rows=36, cols=140),
+                stop_pattern=marker,
+                stop_timeout=5,
+                terminate_on_stop_pattern=True,
+            )
         )
         reasoning_trace = _read_jsonl_records(trace_path)
 

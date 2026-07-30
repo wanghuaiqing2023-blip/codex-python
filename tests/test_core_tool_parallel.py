@@ -6,8 +6,8 @@ from pycodex.core.tools.network_approval import CancellationToken
 from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.hook_runtime import PostToolUseHookOutcome, PreToolUseHookResult
 from pycodex.core.tools.context import FunctionToolOutput, JsonToolOutput, ToolPayload
-from pycodex.core.tools.lifecycle import ToolCallOutcome
-from pycodex.core.tools.lifecycle import ExtensionToolCallSource
+from pycodex.ext.extension_api import ToolCallOutcome
+from pycodex.ext.extension_api import ToolCallSource as ExtensionToolCallSource
 from pycodex.core.tools.parallel import (
     TerminalOutcomeFlag,
     ToolCallResult,
@@ -1089,7 +1089,8 @@ class ToolParallelTests(unittest.TestCase):
 
         class Router(ToolRouter):
             async def dispatch_tool_call_with_terminal_outcome(self, call, **kwargs):
-                from pycodex.core.tools.lifecycle import ToolCallOutcome, notify_tool_finish
+                from pycodex.core.tools.lifecycle import notify_tool_finish
+                from pycodex.ext.extension_api import ToolCallOutcome
 
                 await notify_tool_finish(
                     [BlockingFinishContributor()],
@@ -1158,7 +1159,8 @@ class ToolParallelTests(unittest.TestCase):
 
         class Router(ToolRouter):
             async def dispatch_tool_call_with_terminal_outcome(self, call, **kwargs):
-                from pycodex.core.tools.lifecycle import ToolCallOutcome, notify_tool_finish
+                from pycodex.core.tools.lifecycle import notify_tool_finish
+                from pycodex.ext.extension_api import ToolCallOutcome
 
                 await notify_tool_finish(
                     [BlockingFinishContributor()],

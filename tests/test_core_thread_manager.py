@@ -5,6 +5,9 @@ import uuid
 import pytest
 
 from pycodex.exec_server import EnvironmentManager
+from pycodex.exec.session import ExecSessionConfig
+from pycodex.core.codex_thread import CodexThread
+from pycodex.core.session import Codex
 from pycodex.core.thread_manager import (
     ForkSnapshot,
     ForkSnapshotKind,
@@ -74,6 +77,37 @@ async def test_start_thread_accepts_injected_factory_result():
     assert new_thread.thread_id == "thread-1"
     assert new_thread.thread == {"config": {"profile": "test"}}
     assert new_thread.session_configured == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_start_thread_spawns_core_codex_runtime_for_product_config(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """Rust: ThreadManager::spawn_thread_with_source calls Codex::spawn."""
+
+    calls: list[StartThreadOptions] = []
+    runtime = object()
+
+    async def spawn(options: StartThreadOptions):
+        calls.append(options)
+        return runtime, "thread-product", {"model": "gpt-test"}
+
+    monkeypatch.setattr(Codex, "spawn", spawn)
+    config = ExecSessionConfig(
+        model="gpt-test",
+        model_provider_id="openai",
+        cwd=tmp_path,
+    )
+
+    created = await ThreadManager().start_thread(config)
+
+    assert len(calls) == 1
+    assert calls[0].config is config
+    assert created.thread_id == "thread-product"
+    assert isinstance(created.thread, CodexThread)
+    assert created.thread.codex is runtime
+    assert created.session_configured == {"model": "gpt-test"}
 
 
 def test_default_environment_selections_uses_environment_manager_defaults():

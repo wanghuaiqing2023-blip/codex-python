@@ -1,0 +1,133 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "mcp_test_support",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 4,
+    "python_files": 4,
+    "modules_with_candidates": 4,
+    "modules_with_anchors": 4
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "mcp_test_support",
+        "module": "crate",
+        "source": "codex/codex-rs/mcp-server/tests/common/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/mcp_test_support/__init__.py",
+          "anchor_candidates": [
+            "McpProcess",
+            "create_apply_patch_sse_response",
+            "create_final_assistant_message_sse_response",
+            "create_mock_responses_server",
+            "create_shell_command_sse_response",
+            "format_with_current_shell",
+            "format_with_current_shell_display_non_login",
+            "format_with_current_shell_non_login",
+            "to_response"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "mcp_test_support",
+        "module": "mcp_process",
+        "source": "codex/codex-rs/mcp-server/tests/common/mcp_process.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/mcp_test_support/mcp_process.py",
+          "anchor_candidates": [
+            "McpProcess",
+            "initialize",
+            "new",
+            "new_with_env",
+            "read_stream_until_legacy_task_complete_notification",
+            "read_stream_until_request_message",
+            "read_stream_until_response_message",
+            "send_codex_tool_call",
+            "send_response",
+            "read_jsonrpc_message",
+            "send_jsonrpc_message",
+            "send_request"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "mcp_test_support",
+        "module": "mock_model_server",
+        "source": "codex/codex-rs/mcp-server/tests/common/mock_model_server.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/mcp_test_support/mock_model_server.py",
+          "anchor_candidates": [
+            "create_mock_responses_server"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "mcp_test_support",
+        "module": "responses",
+        "source": "codex/codex-rs/mcp-server/tests/common/responses.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "tests/support/mcp_test_support/responses.py",
+          "anchor_candidates": [
+            "create_apply_patch_sse_response",
+            "create_final_assistant_message_sse_response",
+            "create_shell_command_sse_response"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}
