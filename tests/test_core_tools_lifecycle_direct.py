@@ -2,8 +2,6 @@ import pytest
 
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.lifecycle import (
-    ExtensionToolCallSource,
-    ToolCallOutcome,
     extension_tool_call_source,
     lifecycle_store_context,
     notify_tool_finish,
@@ -12,6 +10,10 @@ from pycodex.core.tools.lifecycle import (
     tool_start_input,
 )
 from pycodex.core.tools.registry import ToolCallSource, ToolInvocation
+from pycodex.ext.extension_api import (
+    ToolCallOutcome,
+    ToolCallSource as ExtensionToolCallSource,
+)
 from pycodex.protocol import ToolName
 
 

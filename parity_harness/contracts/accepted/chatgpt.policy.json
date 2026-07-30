@@ -1,0 +1,11 @@
+{
+  "scope": "chatgpt",
+  "rust_root": "codex/codex-rs/chatgpt",
+  "python_root": "pycodex/chatgpt",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

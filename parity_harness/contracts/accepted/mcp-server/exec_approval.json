@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-mcp-server.exec_approval",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-mcp-server",
+    "module": "exec_approval",
+    "source": "codex/codex-rs/mcp-server/src/exec_approval.rs",
+    "anchors": ["ExecApprovalElicitRequestParams", "ExecApprovalResponse", "handle_exec_approval_request"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/mcp_server/exec_approval.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/mcp_server/exec_approval.py"],
+    "anchors": ["ExecApprovalElicitRequestParams", "ExecApprovalResponse", "handle_exec_approval_request"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_mcp_server_rs.py"]
+}

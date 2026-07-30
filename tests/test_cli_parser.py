@@ -1597,6 +1597,32 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("/wham/tasks/task-99", str(captured.get("url", "")))
 
+    def test_main_apply_dispatches_to_codex_chatgpt_owner(self):
+        observed: dict[str, object] = {}
+
+        async def fake_run(command, cwd=None, *, stdout=None):
+            observed["command"] = command
+            observed["cwd"] = cwd
+            print("Successfully applied diff", file=stdout)
+
+        stdout = io.StringIO()
+        with patch(
+            "pycodex.cli.main.run_chatgpt_apply_command",
+            side_effect=fake_run,
+        ):
+            code = main(
+                ["-c", 'chatgpt_base_url="https://chatgpt.test"', "apply", "task-1"],
+                stdout=stdout,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(observed["command"].task_id, "task-1")
+        self.assertEqual(
+            observed["command"].config_overrides.raw_overrides,
+            ['chatgpt_base_url="https://chatgpt.test"'],
+        )
+        self.assertEqual(stdout.getvalue(), "Successfully applied diff\n")
+
     def test_main_cloud_diff_normalizes_task_id_from_url(self):
         stdout = io.StringIO()
 
@@ -12422,657 +12448,6 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(native.stdout.strip(), python.stdout.strip())
         self.assertEqual(native.stderr.strip(), python.stderr.strip())
 
-    def test_main_mcp_server_not_implemented(self):
-        stderr = io.StringIO()
-
-        code = main(["mcp-server"], stderr=stderr)
-
-        self.assertEqual(code, 64)
-        self.assertIn("command 'mcp-server' is not implemented in this Python port.", stderr.getvalue())
-        self.assertIn("launch the Rust `codex-mcp-server` binary", stderr.getvalue())
-
-    def test_main_mcp_server_runtime_handles_initialize_and_tools_list(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": "2025-06-18",
-                            "clientInfo": {
-                                "name": "test-client",
-                                "version": "0.0.1",
-                            },
-                        },
-                    }
-                ),
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/list",
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        self.assertIn("starting mcp-server stdio runtime.", stderr.getvalue())
-        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual(len(lines), 2)
-
-        initialize = json.loads(lines[0])
-        tools_list = json.loads(lines[1])
-        self.assertEqual(initialize["id"], 1)
-        self.assertIn("result", initialize)
-        self.assertIn("capabilities", initialize["result"])
-        self.assertEqual(tools_list["id"], 2)
-        names = {tool["name"] for tool in tools_list["result"]["tools"]}
-        self.assertIn("codex", names)
-        self.assertIn("codex-reply", names)
-
-    def test_main_mcp_server_runtime_notifications_initialized_is_acked(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": "2025-06-18",
-                            "clientInfo": {
-                                "name": "test-client",
-                                "version": "0.0.1",
-                            },
-                        },
-                    }
-                ),
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": "notifications/initialized",
-                    }
-                ),
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/list",
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual(len(lines), 2)
-        self.assertEqual(json.loads(lines[0])["id"], 1)
-        self.assertEqual(json.loads(lines[1])["id"], 2)
-
-    def test_main_mcp_server_runtime_initialize_twice_returns_error(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "initialize",
-                    }
-                ),
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "initialize",
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual(len(lines), 2)
-        second = json.loads(lines[1])
-        self.assertEqual(second["id"], 2)
-        self.assertIn("error", second)
-        self.assertEqual(second["error"]["code"], -32600)
-        self.assertEqual(second["error"]["message"], "initialize called more than once")
-
-    def test_main_mcp_server_runtime_codex_tool_rejects_missing_prompt(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {"name": "codex", "arguments": {}},
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        self.assertIn("starting mcp-server stdio runtime.", stderr.getvalue())
-        line = [line for line in stdout.getvalue().splitlines() if line.strip()][0]
-        call = json.loads(line)
-        self.assertEqual(call["id"], 1)
-        self.assertTrue(call["result"].get("isError"))
-        self.assertIn(
-            "Missing arguments for codex tool-call; the `prompt` field is required.",
-            call["result"]["content"][0]["text"],
-        )
-
-    def test_main_mcp_server_runtime_tools_call_requires_name(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {"arguments": {"prompt": "hello"}},
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        call = json.loads([line for line in stdout.getvalue().splitlines() if line.strip()][0])
-        self.assertTrue(call["result"].get("isError"))
-        self.assertIn("Unknown tool 'None'", call["result"]["content"][0]["text"])
-
-    def test_main_mcp_server_runtime_rejects_unknown_codex_argument(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "codex",
-                            "arguments": {
-                                "prompt": "hello",
-                                "unknown": "field",
-                            },
-                        },
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        call = json.loads([line for line in stdout.getvalue().splitlines() if line.strip()][0])
-        self.assertTrue(call["result"].get("isError"))
-        self.assertIn("Failed to parse configuration for Codex tool: unknown field", call["result"]["content"][0]["text"])
-
-    def test_main_mcp_server_runtime_notification_prefixed_methods_are_acknowledged_without_response(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "method": "notifications/initialized",
-                        "id": 1,
-                    }
-                ),
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "notifications/something",
-                    }
-                ),
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 3,
-                        "method": "initialized",
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual(lines, [])
-
-    def test_main_mcp_server_runtime_codex_tool_creates_thread(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "codex",
-                            "arguments": {
-                                "prompt": "hello world",
-                                "model": "gpt-5",
-                            },
-                        },
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        self.assertIn("starting mcp-server stdio runtime.", stderr.getvalue())
-        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual(len(lines), 1)
-
-        call = json.loads(lines[0])
-        self.assertEqual(call["id"], 1)
-        self.assertIn("result", call)
-        self.assertIn("structuredContent", call["result"])
-        self.assertEqual(call["result"]["structuredContent"].get("content"), "stub started")
-
-    def test_main_mcp_server_runtime_codex_reply_missing_thread(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "codex-reply",
-                            "arguments": {
-                                "threadId": "missing-thread",
-                                "prompt": "continue please",
-                            },
-                        },
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual(len(lines), 1)
-
-        call = json.loads(lines[0])
-        self.assertEqual(call["id"], 1)
-        self.assertTrue(call["result"].get("isError"))
-        self.assertIn("Session not found", call["result"]["content"][0]["text"])
-
-    def test_main_mcp_server_runtime_codex_reply_followed_by_success(self):
-        stdout_create = io.StringIO()
-        stdout_reply = io.StringIO()
-        stderr = io.StringIO()
-
-        create_payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "codex",
-                            "arguments": {
-                                "prompt": "first prompt",
-                            },
-                        },
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            create_code = main(
-                ["mcp-server"],
-                stdout=stdout_create,
-                stderr=stderr,
-                stdin=create_payload,
-            )
-            create_lines = [
-                line
-                for line in stdout_create.getvalue().splitlines()
-                if line.strip()
-            ]
-            self.assertEqual(create_code, 0)
-            self.assertEqual(len(create_lines), 1)
-            create_call = json.loads(create_lines[0])
-            thread_id = create_call["result"]["structuredContent"]["threadId"]
-
-            reply_payload = "\n".join(
-                [
-                    json.dumps(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 2,
-                            "method": "tools/call",
-                            "params": {
-                                "name": "codex-reply",
-                                "arguments": {
-                                    "threadId": thread_id,
-                                    "prompt": "second prompt",
-                                },
-                            },
-                        }
-                    ),
-                    "",
-                ]
-            )
-
-            reply_code = main(
-                ["mcp-server"],
-                stdout=stdout_reply,
-                stderr=stderr,
-                stdin=reply_payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(reply_code, 0)
-        reply_lines = [line for line in stdout_reply.getvalue().splitlines() if line.strip()]
-        self.assertEqual(len(reply_lines), 1)
-
-        reply_call = json.loads(reply_lines[0])
-        self.assertEqual(reply_call["id"], 2)
-        self.assertIn("result", reply_call)
-        self.assertEqual(reply_call["result"].get("isError"), False)
-        self.assertEqual(reply_call["result"]["structuredContent"].get("threadId"), thread_id)
-
-    def test_main_mcp_server_runtime_tools_list_has_expected_schema_fields(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/list",
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            code = main(
-                ["mcp-server"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(code, 0)
-        line = [line for line in stdout.getvalue().splitlines() if line.strip()][0]
-        tools_list = json.loads(line)["result"]
-        codex = next(item for item in tools_list["tools"] if item["name"] == "codex")
-        codex_reply = next(
-            item for item in tools_list["tools"] if item["name"] == "codex-reply"
-        )
-        self.assertEqual(codex["outputSchema"]["required"], ["threadId", "content"])
-        self.assertIn("prompt", codex["inputSchema"]["required"])
-        self.assertIn("threadId", codex_reply["inputSchema"]["properties"])
-        self.assertIn("conversationId", codex_reply["inputSchema"]["properties"])
-        self.assertEqual(codex_reply["inputSchema"]["required"], ["prompt"])
-
-    def test_main_mcp_server_runtime_codex_reply_accepts_conversation_id_alias(self):
-        stdout_create = io.StringIO()
-        stderr = io.StringIO()
-        payload = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "codex",
-                            "arguments": {
-                                "prompt": "first prompt",
-                            },
-                        },
-                    }
-                ),
-                "",
-            ]
-        )
-
-        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
-        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
-        try:
-            create_code = main(["mcp-server"], stdout=stdout_create, stderr=stderr, stdin=payload)
-            tools_list = [
-                line
-                for line in stdout_create.getvalue().splitlines()
-                if line.strip()
-            ]
-            self.assertEqual(create_code, 0)
-            create_call = json.loads(tools_list[0])
-            thread_id = create_call["result"]["structuredContent"]["threadId"]
-
-            stdout_reply = io.StringIO()
-            reply_payload = "\n".join(
-                [
-                    json.dumps(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 2,
-                            "method": "tools/call",
-                            "params": {
-                                "name": "codex-reply",
-                                "arguments": {
-                                    "conversationId": thread_id,
-                                    "prompt": "continue",
-                                },
-                            },
-                        }
-                    ),
-                    "",
-                ]
-            )
-            reply_code = main(
-                ["mcp-server"],
-                stdout=stdout_reply,
-                stderr=stderr,
-                stdin=reply_payload,
-            )
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
-            else:
-                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
-
-        self.assertEqual(reply_code, 0)
-        reply_call = json.loads([line for line in stdout_reply.getvalue().splitlines() if line.strip()][0])
-        self.assertEqual(reply_call["result"]["structuredContent"]["threadId"], thread_id)
-
     def test_main_resume_without_fallback_uses_terminal_tui_path(self):
         class ResumeRuntime(ExecFunctionActiveThreadRuntime):
             def list_resume_threads(self, *, include_non_interactive: bool = False):
@@ -13215,325 +12590,205 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertFalse(run_noninteractive.call_args.kwargs["stdin_is_terminal"])
 
     def test_main_remote_control_start_is_implemented(self):
+        from pycodex.app_server_protocol import RemoteControlConnectionStatus
+
         stderr = io.StringIO()
         stdout = io.StringIO()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
-                code = main(["remote-control", "start"], stdout=stdout, stderr=stderr)
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
+        remote_control = SimpleNamespace(
+            status=RemoteControlConnectionStatus.CONNECTED,
+            server_name="owen-mbp",
+            environment_id="env_test",
+            timed_out=False,
+            to_dict=lambda: {
+                "status": "connected",
+                "serverName": "owen-mbp",
+                "environmentId": "env_test",
+                "timedOut": False,
+            },
+        )
+        daemon = SimpleNamespace(
+            managed_codex_path=Path("/managed/codex"),
+            managed_codex_version="1.2.3",
+            to_dict=lambda: {"status": "started"},
+        )
+
+        async def fake_ready():
+            return SimpleNamespace(remote_control=remote_control, daemon=daemon)
+
+        with patch(
+            "pycodex.app_server_daemon.ensure_remote_control_ready",
+            side_effect=fake_ready,
+        ) as ready_call:
+            code = main(["remote-control", "start"], stdout=stdout, stderr=stderr)
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr.getvalue(), "")
         self.assertIn("Starting app-server daemon with remote control enabled", stdout.getvalue())
+        self.assertIn("This machine is available for remote control as owen-mbp.", stdout.getvalue())
+        self.assertIn("Daemon used app-server:", stdout.getvalue())
+        ready_call.assert_called_once_with()
 
-    def test_main_remote_control_start_and_stop_json(self):
+    def test_main_remote_control_start_json_uses_daemon_output(self):
+        from pycodex.app_server_protocol import RemoteControlConnectionStatus
+
         stdout = io.StringIO()
         stderr = io.StringIO()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
+        remote_control = SimpleNamespace(
+            status=RemoteControlConnectionStatus.CONNECTED,
+            server_name="owen-mbp",
+            to_dict=lambda: {
+                "status": "connected",
+                "serverName": "owen-mbp",
+                "environmentId": "env_test",
+                "timedOut": False,
+            },
+        )
+        daemon = SimpleNamespace(to_dict=lambda: {"status": "started", "backend": "pid"})
+
+        async def fake_ready():
+            return SimpleNamespace(remote_control=remote_control, daemon=daemon)
+
+        with patch(
+            "pycodex.app_server_daemon.ensure_remote_control_ready",
+            side_effect=fake_ready,
+        ):
                 start_code = main(["remote-control", "start", "--json"], stdout=stdout, stderr=stderr)
-                self.assertEqual(start_code, 0)
-                self.assertEqual(stderr.getvalue(), "")
-                start_payload = json.loads(stdout.getvalue().strip().split("\n")[-1])
-                self.assertEqual(start_payload.get("mode"), "daemon")
-                self.assertEqual(start_payload.get("status"), "connected")
-                self.assertIsInstance(start_payload.get("daemon"), dict)
-                self.assertIn("pid", start_payload["daemon"])
-                self.assertEqual(start_payload["daemon"].get("backend"), "pid")
-                self.assertIn("managedCodexPath", start_payload["daemon"])
-                self.assertIn("socketPath", start_payload["daemon"])
+        self.assertEqual(start_code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {
+                "mode": "daemon",
+                "status": "connected",
+                "serverName": "owen-mbp",
+                "environmentId": "env_test",
+                "timedOut": False,
+                "daemon": {"status": "started", "backend": "pid"},
+            },
+        )
 
-                stop_stdout = io.StringIO()
-                stop_stderr = io.StringIO()
-                stop_code = main(["remote-control", "stop", "--json"], stdout=stop_stdout, stderr=stop_stderr)
-                self.assertEqual(stop_code, 0)
-                stop_payload = json.loads(stop_stdout.getvalue().strip())
-                self.assertEqual(stop_payload.get("status"), "stopped")
-                self.assertIsInstance(stop_payload.get("daemon"), dict)
-                self.assertIn("status", stop_payload["daemon"])
-                self.assertEqual(stop_payload["daemon"].get("status"), "stopped")
-                self.assertIn("pid", stop_payload["daemon"])
-                self.assertIn("backend", stop_payload["daemon"])
-                self.assertIn("managedCodexVersion", stop_payload["daemon"])
-                self.assertEqual(stop_stderr.getvalue(), "")
+    def test_main_remote_control_stop_uses_daemon_lifecycle(self):
+        from pycodex.app_server_daemon import LifecycleCommand
+        from pycodex.app_server_daemon import LifecycleStatus
 
-                final_state = json.loads((Path(tmpdir) / "app-server-state.json").read_text(encoding="utf-8"))
-                self.assertEqual(final_state.get("daemon", {}).get("running"), False)
-                self.assertEqual(final_state.get("remote_control", {}).get("status"), "disabled")
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
+        async def fake_run(command):
+            self.assertIs(command, LifecycleCommand.STOP)
+            return SimpleNamespace(
+                status=LifecycleStatus.NOT_RUNNING,
+                to_dict=lambda: {"status": "notRunning"},
+            )
 
-    def test_main_remote_control_stop_when_not_running(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
-                code = main(["remote-control", "stop"], stdout=stdout, stderr=stderr)
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
+        with patch("pycodex.app_server_daemon.run", side_effect=fake_run):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            code = main(["remote-control", "stop"], stdout=stdout, stderr=stderr)
+            json_stdout = io.StringIO()
+            json_code = main(
+                ["remote-control", "stop", "--json"],
+                stdout=json_stdout,
+                stderr=stderr,
+            )
 
         self.assertEqual(code, 0)
+        self.assertEqual(json_code, 0)
         self.assertEqual(stderr.getvalue(), "")
-        self.assertEqual(stdout.getvalue().strip(), "Remote control is not running.")
-
-    def test_main_remote_control_stop_not_running_json(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
-                code = main(["remote-control", "stop", "--json"], stdout=stdout, stderr=stderr)
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
-
-        self.assertEqual(code, 0)
-        self.assertEqual(stderr.getvalue(), "")
-        payload = json.loads(stdout.getvalue().strip())
-        self.assertEqual(payload.get("status"), "notRunning")
-        self.assertIsInstance(payload.get("daemon"), dict)
-        self.assertEqual(payload["daemon"].get("status"), "notRunning")
-        self.assertIn("managedCodexPath", payload["daemon"])
-        self.assertIn("cliVersion", payload["daemon"])
-        self.assertNotIn("backend", payload["daemon"])
-        self.assertNotIn("pid", payload["daemon"])
+        self.assertIn("Stopping remote control...", stdout.getvalue())
+        self.assertIn("Remote control is not running.", stdout.getvalue())
+        self.assertEqual(json.loads(json_stdout.getvalue()), {"status": "notRunning"})
 
     def test_main_app_server_daemon_bootstrap_json(self):
         stdout = io.StringIO()
         stderr = io.StringIO()
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
-                code = main(
-                    ["app-server", "daemon", "bootstrap", "--remote-control"],
-                    stdout=stdout,
-                    stderr=stderr,
-                )
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
+        async def fake_bootstrap(options):
+            self.assertTrue(options.remote_control_enabled)
+            return SimpleNamespace(to_dict=lambda: {"status": "bootstrapped"})
+
+        with patch(
+            "pycodex.app_server_daemon.bootstrap",
+            side_effect=fake_bootstrap,
+        ) as bootstrap_call:
+            code = main(
+                ["app-server", "daemon", "bootstrap", "--remote-control"],
+                stdout=stdout,
+                stderr=stderr,
+            )
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr.getvalue(), "")
-        payload = json.loads(stdout.getvalue().strip())
-        self.assertEqual(payload.get("status"), "bootstrapped")
-        self.assertEqual(payload.get("backend"), "pid")
-        self.assertTrue(payload.get("autoUpdateEnabled"))
-        self.assertTrue(payload.get("remoteControlEnabled"))
-        self.assertIsInstance(payload.get("managedCodexPath"), str)
-        self.assertIsInstance(payload.get("cliVersion"), str)
-        self.assertIn("socketPath", payload)
+        self.assertEqual(json.loads(stdout.getvalue()), {"status": "bootstrapped"})
+        bootstrap_call.assert_called_once()
 
     def test_main_app_server_daemon_start_and_restart_json(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
+        from pycodex.app_server_daemon import LifecycleCommand
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
-                start_code = main(["app-server", "daemon", "start"], stdout=stdout, stderr=stderr)
-                self.assertEqual(start_code, 0)
+        seen = []
+
+        async def fake_run(command):
+            seen.append(command)
+            return SimpleNamespace(to_dict=lambda: {"status": command.value})
+
+        with patch("pycodex.app_server_daemon.run", side_effect=fake_run):
+            for subcommand in ("start", "restart", "stop", "version"):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                code = main(
+                    ["app-server", "daemon", subcommand],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+                self.assertEqual(code, 0)
                 self.assertEqual(stderr.getvalue(), "")
-                start_payload = json.loads(stdout.getvalue().strip())
-                self.assertEqual(start_payload.get("status"), "started")
-                self.assertIn("pid", start_payload)
-                self.assertIn("backend", start_payload)
-                self.assertIn("managedCodexPath", start_payload)
+                self.assertEqual(json.loads(stdout.getvalue()), {"status": subcommand})
 
-                start_again_stdout = io.StringIO()
-                start_again_stderr = io.StringIO()
-                start_again_code = main(
-                    ["app-server", "daemon", "start"],
-                    stdout=start_again_stdout,
-                    stderr=start_again_stderr,
-                )
-                self.assertEqual(start_again_code, 0)
-                self.assertEqual(start_again_stderr.getvalue(), "")
-                already_running_payload = json.loads(start_again_stdout.getvalue().strip())
-                self.assertEqual(already_running_payload.get("status"), "alreadyRunning")
-                self.assertNotIn("pid", already_running_payload)
-                self.assertIn("backend", already_running_payload)
+        self.assertEqual(
+            seen,
+            [
+                LifecycleCommand.START,
+                LifecycleCommand.RESTART,
+                LifecycleCommand.STOP,
+                LifecycleCommand.VERSION,
+            ],
+        )
 
-                restart_stdout = io.StringIO()
-                restart_stderr = io.StringIO()
-                restart_code = main(
-                    ["app-server", "daemon", "restart"],
-                    stdout=restart_stdout,
-                    stderr=restart_stderr,
-                )
-                self.assertEqual(restart_code, 0)
-                self.assertEqual(restart_stderr.getvalue(), "")
-                restart_payload = json.loads(restart_stdout.getvalue().strip())
-                self.assertEqual(restart_payload.get("status"), "restarted")
-                self.assertIn("pid", restart_payload)
-                self.assertIn("backend", restart_payload)
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
+    def test_main_app_server_daemon_remote_control_modes(self):
+        from pycodex.app_server_daemon import RemoteControlMode
 
-    def test_main_app_server_daemon_stop_and_not_running_json(self):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
+        seen = []
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
-                start_code = main(["app-server", "daemon", "start"], stdout=stdout, stderr=stderr)
-                self.assertEqual(start_code, 0)
+        async def fake_set_remote_control(mode):
+            seen.append(mode)
+            return SimpleNamespace(to_dict=lambda: {"status": mode.value})
 
-                stdout.seek(0)
-                stdout.truncate(0)
-                stderr.seek(0)
-                stderr.truncate(0)
-
-                stop_code = main(["app-server", "daemon", "stop"], stdout=stdout, stderr=stderr)
-                self.assertEqual(stop_code, 0)
-                self.assertEqual(stderr.getvalue(), "")
-                stop_payload = json.loads(stdout.getvalue().strip())
-                self.assertEqual(stop_payload.get("status"), "stopped")
-                self.assertIn("backend", stop_payload)
-                self.assertNotIn("pid", stop_payload)
-
-                stdout.seek(0)
-                stdout.truncate(0)
-                stderr.seek(0)
-                stderr.truncate(0)
-
-                not_running_code = main(["app-server", "daemon", "stop"], stdout=stdout, stderr=stderr)
-                self.assertEqual(not_running_code, 0)
-                payload = json.loads(stdout.getvalue().strip())
-                self.assertEqual(payload.get("status"), "notRunning")
-                self.assertNotIn("backend", payload)
-                self.assertNotIn("pid", payload)
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
-
-    def test_main_app_server_daemon_version_and_remote_control_toggle_json(self):
-        start_stdout = io.StringIO()
-        start_stderr = io.StringIO()
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            previous = os.environ.get("CODEX_HOME")
-            os.environ["CODEX_HOME"] = tmpdir
-            try:
-                start_code = main(
-                    ["app-server", "daemon", "start"],
-                    stdout=start_stdout,
-                    stderr=start_stderr,
-                )
-                self.assertEqual(start_code, 0)
-                self.assertEqual(start_stderr.getvalue(), "")
-
-                version_stdout = io.StringIO()
-                version_stderr = io.StringIO()
-                version_code = main(
-                    ["app-server", "daemon", "version"],
-                    stdout=version_stdout,
-                    stderr=version_stderr,
-                )
-                self.assertEqual(version_code, 0)
-                version_payload = json.loads(version_stdout.getvalue().strip())
-                self.assertEqual(version_payload.get("status"), "running")
-                self.assertNotIn("pid", version_payload)
-
-                stop_code = main(
-                    ["app-server", "daemon", "stop"],
-                    stdout=io.StringIO(),
+        with patch(
+            "pycodex.app_server_daemon.set_remote_control",
+            side_effect=fake_set_remote_control,
+        ):
+            for subcommand in ("enable-remote-control", "disable-remote-control"):
+                stdout = io.StringIO()
+                code = main(
+                    ["app-server", "daemon", subcommand],
+                    stdout=stdout,
                     stderr=io.StringIO(),
                 )
-                self.assertEqual(stop_code, 0)
-
-                failed_version_stderr = io.StringIO()
-                failed_version_code = main(
-                    ["app-server", "daemon", "version"],
-                    stdout=io.StringIO(),
-                    stderr=failed_version_stderr,
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    json.loads(stdout.getvalue()),
+                    {
+                        "status": (
+                            "enabled"
+                            if subcommand == "enable-remote-control"
+                            else "disabled"
+                        )
+                    },
                 )
-                self.assertEqual(failed_version_code, 2)
-                self.assertIn("not running", failed_version_stderr.getvalue())
 
-                enable_again_stdout = io.StringIO()
-                enable_code = main(
-                    ["app-server", "daemon", "enable-remote-control"],
-                    stdout=enable_again_stdout,
-                    stderr=io.StringIO(),
-                )
-                self.assertEqual(enable_code, 0)
-                enable_payload = json.loads(enable_again_stdout.getvalue().strip())
-                self.assertEqual(enable_payload.get("status"), "enabled")
-                self.assertTrue(enable_payload.get("remoteControlEnabled"))
-
-                enable_stdout = io.StringIO()
-                already_enabled_code = main(
-                    ["app-server", "daemon", "enable-remote-control"],
-                    stdout=enable_stdout,
-                    stderr=io.StringIO(),
-                )
-                self.assertEqual(already_enabled_code, 0)
-                already_enabled_payload = json.loads(enable_stdout.getvalue().strip())
-                self.assertEqual(already_enabled_payload.get("status"), "alreadyEnabled")
-
-                disable_stdout = io.StringIO()
-                disable_code = main(
-                    ["app-server", "daemon", "disable-remote-control"],
-                    stdout=disable_stdout,
-                    stderr=io.StringIO(),
-                )
-                self.assertEqual(disable_code, 0)
-                disable_payload = json.loads(disable_stdout.getvalue().strip())
-                self.assertEqual(disable_payload.get("status"), "disabled")
-                self.assertFalse(disable_payload.get("remoteControlEnabled"))
-
-                disable_again_stdout = io.StringIO()
-                disable_again_code = main(
-                    ["app-server", "daemon", "disable-remote-control"],
-                    stdout=disable_again_stdout,
-                    stderr=io.StringIO(),
-                )
-                self.assertEqual(disable_again_code, 0)
-                already_disabled_payload = json.loads(disable_again_stdout.getvalue().strip())
-                self.assertEqual(already_disabled_payload.get("status"), "alreadyDisabled")
-                self.assertFalse(already_disabled_payload.get("remoteControlEnabled"))
-
-            finally:
-                if previous is None:
-                    os.environ.pop("CODEX_HOME", None)
-                else:
-                    os.environ["CODEX_HOME"] = previous
+        self.assertEqual(
+            seen,
+            [RemoteControlMode.ENABLED, RemoteControlMode.DISABLED],
+        )
 
     def test_main_command_help_placeholder(self):
         stdout = io.StringIO()

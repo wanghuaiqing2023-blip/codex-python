@@ -1,0 +1,367 @@
+{
+  "schema": "parity-harness/structure-candidates/v1",
+  "scope": "mcp",
+  "evidence_status": "candidate",
+  "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9",
+  "generation_policy": {
+    "cargo_graph_is_source": true,
+    "python_tree_is_source": true,
+    "accepted_contracts_are_not_read": true,
+    "generated_candidates_cannot_claim_parity": true
+  },
+  "summary": {
+    "rust_modules": 11,
+    "python_files": 11,
+    "modules_with_candidates": 11,
+    "modules_with_anchors": 11
+  },
+  "contracts": [
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "crate",
+        "source": "codex/codex-rs/codex-mcp/src/lib.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/__init__.py",
+          "anchor_candidates": [
+            "CODEX_APPS_MCP_SERVER_NAME",
+            "CodexAppsAuthElicitation",
+            "CodexAppsAuthElicitationPlan",
+            "CodexAppsConnectorAuthFailure",
+            "CodexAppsToolsCacheKey",
+            "EffectiveMcpServer",
+            "ElicitationReviewRequest",
+            "ElicitationReviewer",
+            "ElicitationReviewerHandle",
+            "MCP_SANDBOX_STATE_META_CAPABILITY",
+            "MCP_TOOL_CODEX_APPS_META_KEY",
+            "McpAuthStatusEntry"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "auth_elicitation",
+        "source": "codex/codex-rs/codex-mcp/src/auth_elicitation.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/auth_elicitation.py",
+          "anchor_candidates": [
+            "CONNECTOR_AUTH_FAILURE_META_KEY",
+            "CodexAppsAuthElicitation",
+            "CodexAppsAuthElicitationPlan",
+            "CodexAppsConnectorAuthFailure",
+            "MCP_TOOL_CODEX_APPS_META_KEY",
+            "auth_elicitation_completed_result",
+            "auth_elicitation_id",
+            "build_auth_elicitation",
+            "build_auth_elicitation_plan",
+            "connector_auth_failure_from_tool_result"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "codex_apps",
+        "source": "codex/codex-rs/codex-mcp/src/codex_apps.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/codex_apps.py",
+          "anchor_candidates": [
+            "CODEX_APPS_TOOLS_CACHE_SCHEMA_VERSION",
+            "CachedCodexAppsToolsLoad",
+            "CodexAppsToolsCacheContext",
+            "CodexAppsToolsCacheKey",
+            "cache_path",
+            "codex_apps_tools_cache_key",
+            "filter_disallowed_codex_apps_tools",
+            "load_cached_codex_apps_tools",
+            "load_startup_cached_codex_apps_tools_snapshot",
+            "normalize_codex_apps_callable_name",
+            "normalize_codex_apps_callable_namespace",
+            "normalize_codex_apps_tool_title"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "connection_manager",
+        "source": "codex/codex-rs/codex-mcp/src/connection_manager.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/connection_manager.py",
+          "anchor_candidates": [
+            "McpConnectionManager",
+            "begin_shutdown",
+            "call_tool",
+            "elicitations_auto_deny",
+            "has_servers",
+            "list_all_resource_templates",
+            "list_all_resources",
+            "list_all_tools",
+            "list_resource_templates",
+            "list_resources",
+            "read_resource",
+            "resolve_elicitation"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "elicitation",
+        "source": "codex/codex-rs/codex-mcp/src/elicitation.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/elicitation.py",
+          "anchor_candidates": [
+            "ElicitationRequestManager",
+            "ElicitationReviewRequest",
+            "ElicitationReviewer",
+            "ElicitationReviewerHandle",
+            "auto_deny",
+            "elicitation_is_rejected_by_policy",
+            "make_sender",
+            "resolve",
+            "set_auto_deny",
+            "review"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "mcp",
+        "source": "codex/codex-rs/codex-mcp/src/mcp/mod.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/mcp/__init__.py",
+          "anchor_candidates": [
+            "CODEX_APPS_MCP_SERVER_NAME",
+            "McpAuthStatusEntry",
+            "McpConfig",
+            "McpOAuthLoginConfig",
+            "McpOAuthLoginSupport",
+            "McpOAuthScopesSource",
+            "McpPermissionPromptAutoApproveContext",
+            "McpServerStatusSnapshot",
+            "McpSnapshotDetail",
+            "ResolvedMcpOAuthScopes",
+            "ToolPluginProvenance",
+            "codex_apps_mcp_url"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "mcp::auth",
+        "source": "codex/codex-rs/codex-mcp/src/mcp/auth.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/mcp/auth.py",
+          "anchor_candidates": [
+            "McpAuthStatusEntry",
+            "McpOAuthLoginConfig",
+            "McpOAuthLoginSupport",
+            "McpOAuthScopesSource",
+            "ResolvedMcpOAuthScopes",
+            "compute_auth_statuses",
+            "discover_supported_scopes",
+            "oauth_login_support",
+            "resolve_oauth_scopes",
+            "should_retry_without_scopes"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "rmcp_client",
+        "source": "codex/codex-rs/codex-mcp/src/rmcp_client.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/rmcp_client.py",
+          "anchor_candidates": [
+            "DEFAULT_STARTUP_TIMEOUT",
+            "DEFAULT_TOOL_TIMEOUT",
+            "MCP_SANDBOX_STATE_META_CAPABILITY",
+            "ManagedClient",
+            "StartupOutcomeError",
+            "client",
+            "sanitize_tool_connector_metadata"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "runtime",
+        "source": "codex/codex-rs/codex-mcp/src/runtime.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/runtime.py",
+          "anchor_candidates": [
+            "McpRuntimeContext",
+            "SandboxState",
+            "local_stdio_fallback_cwd",
+            "resolve_server_environment"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "server",
+        "source": "codex/codex-rs/codex-mcp/src/server.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/server.py",
+          "anchor_candidates": [
+            "EffectiveMcpServer",
+            "McpServerMetadata",
+            "configured",
+            "configured_config",
+            "enabled",
+            "required"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    },
+    {
+      "rust": {
+        "crate": "codex-mcp",
+        "module": "tools",
+        "source": "codex/codex-rs/codex-mcp/src/tools.rs",
+        "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+      },
+      "python_candidates": [
+        {
+          "owner": "pycodex/codex_mcp/tools.py",
+          "anchor_candidates": [
+            "ToolFilter",
+            "ToolInfo",
+            "allows",
+            "canonical_tool_name",
+            "declared_openai_file_input_param_names",
+            "filter_tools",
+            "from_config",
+            "normalize_tools_for_model_with_prefix",
+            "tool_with_model_visible_input_schema",
+            "META_OPENAI_FILE_PARAMS"
+          ]
+        }
+      ],
+      "review": {
+        "status": "candidate",
+        "unresolved": [
+          "owner-review",
+          "anchor-review"
+        ]
+      }
+    }
+  ]
+}

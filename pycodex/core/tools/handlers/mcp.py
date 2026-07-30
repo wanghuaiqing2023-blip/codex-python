@@ -10,9 +10,10 @@ from __future__ import annotations
 import copy
 import json
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
+from pycodex.codex_mcp import ToolInfo
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.context import FunctionToolOutput, McpToolOutput, ToolPayload
 from pycodex.core.tools.hook_names import HookToolName
@@ -28,44 +29,6 @@ McpToolRequestCallback = Callable[
     ["ToolInfo", str, ToolName, JsonValue],
     FunctionToolOutput | McpToolOutput | CallToolResult | str | Mapping[str, JsonValue],
 ]
-
-
-@dataclass(frozen=True)
-class ToolInfo:
-    server_name: str
-    callable_namespace: str
-    callable_name: str
-    tool: Tool
-    supports_parallel_tool_calls: bool = False
-    server_origin: str | None = None
-    namespace_description: str | None = None
-    connector_id: str | None = None
-    connector_name: str | None = None
-    plugin_display_names: tuple[str, ...] = field(default_factory=tuple)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.tool, Tool):
-            object.__setattr__(self, "tool", Tool.from_mcp_value(self.tool))
-        if not isinstance(self.plugin_display_names, tuple):
-            object.__setattr__(self, "plugin_display_names", tuple(self.plugin_display_names))
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, JsonValue]) -> "ToolInfo":
-        return cls(
-            server_name=str(value["server_name"]),
-            supports_parallel_tool_calls=bool(value.get("supports_parallel_tool_calls", False)),
-            server_origin=_optional_str(value.get("server_origin")),
-            callable_name=str(value["callable_name"]),
-            callable_namespace=str(value["callable_namespace"]),
-            namespace_description=_optional_str(value.get("namespace_description")),
-            connector_id=_optional_str(value.get("connector_id")),
-            connector_name=_optional_str(value.get("connector_name")),
-            plugin_display_names=tuple(str(name) for name in value.get("plugin_display_names", ())),
-            tool=Tool.from_mcp_value(value["tool"]),
-        )
-
-    def canonical_tool_name(self) -> ToolName:
-        return ToolName.namespaced(self.callable_namespace, self.callable_name)
 
 
 @dataclass(frozen=True)

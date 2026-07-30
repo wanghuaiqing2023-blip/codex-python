@@ -65,8 +65,7 @@
       "rust_root": "codex/codex-rs/app-server-daemon",
       "cargo_toml": "codex/codex-rs/app-server-daemon/Cargo.toml",
       "python_root": "pycodex/app_server_daemon",
-      "disposition": "deferred",
-      "reason": "No Python product package exists for the Rust app-server daemon crate at the fixed baseline."
+      "disposition": "accepted"
     },
     {
       "scope": "app-server-protocol",
@@ -97,9 +96,8 @@
       "rust_crate": "app_test_support",
       "rust_root": "codex/codex-rs/app-server/tests/common",
       "cargo_toml": "codex/codex-rs/app-server/tests/common/Cargo.toml",
-      "python_root": "pycodex/app_test_support",
-      "disposition": "deferred",
-      "reason": "Rust integration-test support crate with no Python product package; it is not a production ownership scope."
+      "python_root": "tests/support/app_test_support",
+      "disposition": "accepted"
     },
     {
       "scope": "apply-patch",
@@ -163,8 +161,7 @@
       "rust_root": "codex/codex-rs/chatgpt",
       "cargo_toml": "codex/codex-rs/chatgpt/Cargo.toml",
       "python_root": "pycodex/chatgpt",
-      "disposition": "deferred",
-      "reason": "No Python product package exists for the Rust ChatGPT authentication crate at the fixed baseline."
+      "disposition": "accepted"
     },
     {
       "scope": "cli",
@@ -283,9 +280,8 @@
       "rust_crate": "core_test_support",
       "rust_root": "codex/codex-rs/core/tests/common",
       "cargo_toml": "codex/codex-rs/core/tests/common/Cargo.toml",
-      "python_root": "pycodex/core_test_support",
-      "disposition": "deferred",
-      "reason": "Rust Core integration-test support crate with no Python product package; it is not a production ownership scope."
+      "python_root": "tests/support/core_test_support",
+      "disposition": "accepted"
     },
     {
       "scope": "debug-client",
@@ -341,8 +337,7 @@
       "rust_root": "codex/codex-rs/ext/extension-api",
       "cargo_toml": "codex/codex-rs/ext/extension-api/Cargo.toml",
       "python_root": "pycodex/ext/extension_api",
-      "disposition": "deferred",
-      "reason": "No Python product package exists for the standalone Rust extension API crate at the fixed baseline."
+      "disposition": "partial"
     },
     {
       "scope": "external-agent-migration",
@@ -478,8 +473,7 @@
       "rust_root": "codex/codex-rs/codex-mcp",
       "cargo_toml": "codex/codex-rs/codex-mcp/Cargo.toml",
       "python_root": "pycodex/codex_mcp",
-      "disposition": "deferred",
-      "reason": "No Python product package exists for the standalone Rust MCP orchestration crate at the fixed baseline."
+      "disposition": "partial"
     },
     {
       "scope": "mcp-server",
@@ -487,17 +481,15 @@
       "rust_root": "codex/codex-rs/mcp-server",
       "cargo_toml": "codex/codex-rs/mcp-server/Cargo.toml",
       "python_root": "pycodex/mcp_server",
-      "disposition": "deferred",
-      "reason": "No Python product package exists for the standalone Rust MCP server binary crate at the fixed baseline."
+      "disposition": "partial"
     },
     {
       "scope": "mcp_test_support",
       "rust_crate": "mcp_test_support",
       "rust_root": "codex/codex-rs/mcp-server/tests/common",
       "cargo_toml": "codex/codex-rs/mcp-server/tests/common/Cargo.toml",
-      "python_root": "pycodex/mcp_test_support",
-      "disposition": "deferred",
-      "reason": "Rust MCP integration-test support crate with no Python product package; it is not a production ownership scope."
+      "python_root": "tests/support/mcp_test_support",
+      "disposition": "accepted"
     },
     {
       "scope": "memories-extension",

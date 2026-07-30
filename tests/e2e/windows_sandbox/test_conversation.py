@@ -171,7 +171,7 @@ def test_windows_conpty_native_and_python_conversation_session_uses_windows_sand
                             ready_pattern=READY_COMPOSER_PATTERN,
                             ready_timeout=30.0,
                             ready_quiet_period=0.2,
-                            chunk_delay=0.01,
+                            atomic_write=True,
                         ),
                         ConptyInputStep(
                             "\r",

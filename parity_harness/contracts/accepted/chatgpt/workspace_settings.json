@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-chatgpt.workspace_settings",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-chatgpt",
+    "module": "workspace_settings",
+    "source": "codex/codex-rs/chatgpt/src/workspace_settings.rs",
+    "anchors": ["WorkspaceSettingsCache", "codex_plugins_enabled_for_workspace", "CODEX_PLUGINS_BETA_SETTING", "WORKSPACE_SETTINGS_CACHE_TTL", "WORKSPACE_SETTINGS_TIMEOUT", "encode_path_segment", "get_codex_plugins_enabled", "set_codex_plugins_enabled"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/chatgpt/workspace_settings.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/chatgpt/workspace_settings.py"],
+    "anchors": ["WorkspaceSettingsCache", "codex_plugins_enabled_for_workspace", "CODEX_PLUGINS_BETA_SETTING", "WORKSPACE_SETTINGS_CACHE_TTL", "WORKSPACE_SETTINGS_TIMEOUT", "encode_path_segment", "get_codex_plugins_enabled", "set_codex_plugins_enabled"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

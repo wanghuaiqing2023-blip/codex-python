@@ -1043,6 +1043,24 @@ class ThreadManager:
                 result = await result
             return _coerce_new_thread(result)
 
+        from pycodex.exec.session import ExecSessionConfig
+
+        if isinstance(options.config, ExecSessionConfig):
+            from pycodex.core.codex_thread import CodexThread
+            from pycodex.core.session import Codex
+
+            codex, thread_id, session_configured = await Codex.spawn(options)
+            thread = CodexThread(
+                codex,
+                session_configured,
+                session_source=options.session_source,
+            )
+            return NewThread(
+                thread_id=thread_id,
+                thread=thread,
+                session_configured=session_configured,
+            )
+
         thread_id = _new_thread_id_from_options(options)
         thread = ManagedThread(
             thread_id=thread_id,

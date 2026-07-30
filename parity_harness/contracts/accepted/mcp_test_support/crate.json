@@ -1,0 +1,8 @@
+{
+  "contract_id": "mcp_test_support.crate",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "mcp_test_support", "module": "crate", "source": "codex/codex-rs/mcp-server/tests/common/lib.rs", "anchors": ["McpProcess", "create_mock_responses_server", "format_with_current_shell", "to_response"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/mcp_test_support/__init__.py", "layout": "module-package", "implementation_files": ["tests/support/mcp_test_support/__init__.py"], "anchors": ["McpProcess", "create_mock_responses_server", "format_with_current_shell", "to_response"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_mcp_test_support_rs.py", "tests/e2e/mcp_server/test_stdio.py"]
+}

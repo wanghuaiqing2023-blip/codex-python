@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.app_test_support import McpProcess
+
 
 pytestmark = pytest.mark.e2e
 
@@ -46,4 +48,19 @@ def test_app_server_command_serves_initialize_over_stdio(tmp_path: Path) -> None
     messages = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
     response = next(message for message in messages if message.get("id") == 1)
     assert response["result"]["codexHome"] == str(tmp_path / "codex-home")
+    assert response["result"]["userAgent"]
+
+
+@pytest.mark.asyncio
+async def test_app_test_support_mcp_process_serves_initialize_over_stdio(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / "support-codex-home"
+    process = await McpProcess.new(codex_home)
+    try:
+        response = await process.initialize(client_name="pycodex-e2e-app-test-support")
+    finally:
+        await process.close()
+
+    assert response["result"]["codexHome"] == str(codex_home)
     assert response["result"]["userAgent"]

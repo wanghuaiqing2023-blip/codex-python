@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from pycodex.core.plugins.injection import build_plugin_injections
 from pycodex.core.plugins.render import render_apps_section, render_plugins_section
 from pycodex.core.session.turn.runtime import _track_explicit_plugin_mentions
-from pycodex.mcp import CODEX_APPS_MCP_SERVER_NAME
+from pycodex.codex_mcp import CODEX_APPS_MCP_SERVER_NAME
 from pycodex.plugin import PluginCapabilitySummary
 from pycodex.tools.tool_discovery import AppInfo
 

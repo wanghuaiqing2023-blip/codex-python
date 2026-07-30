@@ -2,13 +2,9 @@ import asyncio
 import unittest
 
 from pycodex.core import (
-    ExtensionToolCallSource,
-    ToolCallOutcome,
     ToolCallSource,
-    ToolFinishInput,
     ToolInvocation,
     ToolPayload,
-    ToolStartInput,
     extension_tool_call_source,
     notify_tool_aborted,
     notify_tool_aborted_parts,
@@ -18,6 +14,12 @@ from pycodex.core import (
     tool_finish_input,
     tool_finish_input_parts,
     tool_start_input,
+)
+from pycodex.ext.extension_api import (
+    ToolCallOutcome,
+    ToolCallSource as ExtensionToolCallSource,
+    ToolFinishInput,
+    ToolStartInput,
 )
 from pycodex.core.tools.lifecycle import lifecycle_store_context
 from pycodex.protocol import ToolName

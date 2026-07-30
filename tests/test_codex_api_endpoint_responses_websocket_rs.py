@@ -512,8 +512,17 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
         self.assertEqual(caught.exception.message, "idle timeout waiting for websocket")
 
     def test_connection_stream_request_prepends_server_metadata_and_closes_on_error(self) -> None:
+        class ClosableMemoryStream(ResponsesWebsocketMemoryStream):
+            def __init__(self, messages):
+                super().__init__(messages)
+                self.close_calls = 0
+
+            def close(self) -> None:
+                self.close_calls += 1
+
+        memory = ClosableMemoryStream([ResponsesWebsocketBinaryMessage(b"\x00")])
         connection = ResponsesWebsocketConnection(
-            ResponsesWebsocketMemoryStream([ResponsesWebsocketBinaryMessage(b"\x00")]),
+            memory,
             server_reasoning_included=True,
             models_etag="etag-1",
             server_model="gpt-5.3-codex",
@@ -531,6 +540,28 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
         self.assertIsInstance(events[-1], ApiError)
         self.assertEqual(events[-1].message, "unexpected binary websocket event")
         self.assertTrue(connection.is_closed())
+        self.assertEqual(memory.close_calls, 1)
+
+    def test_connection_close_drops_healthy_stream_once(self) -> None:
+        # Rust crate/module: codex-api/src/endpoint/responses_websocket.rs
+        # Contract: dropping ResponsesWebsocketConnection drops WsStream, whose
+        # Drop implementation aborts its receive pump.
+        class ClosableMemoryStream(ResponsesWebsocketMemoryStream):
+            def __init__(self):
+                super().__init__()
+                self.close_calls = 0
+
+            def close(self) -> None:
+                self.close_calls += 1
+
+        memory = ClosableMemoryStream()
+        connection = ResponsesWebsocketConnection(memory)
+
+        connection.close()
+        connection.close()
+
+        self.assertTrue(connection.is_closed())
+        self.assertEqual(memory.close_calls, 1)
 
     def test_connection_stream_request_is_lazy_for_live_deltas(self) -> None:
         # Rust crate/module: codex-api/src/endpoint/responses_websocket.rs.

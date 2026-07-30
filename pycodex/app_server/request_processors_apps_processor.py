@@ -62,6 +62,8 @@ class AppsRequestProcessor:
         workspace_settings_cache: Any,
         shutdown_token: Any,
     ) -> "AppsRequestProcessor":
+        from pycodex.chatgpt.connectors import ChatgptAppsConnectorLoader
+
         return cls(
             auth_manager,
             thread_manager,
@@ -69,6 +71,7 @@ class AppsRequestProcessor:
             config_manager,
             workspace_settings_cache,
             shutdown_token,
+            connector_loader=ChatgptAppsConnectorLoader(),
         )
 
     async def apps_list(

@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-app-server-daemon.update_loop",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-daemon",
+    "module": "update_loop",
+    "source": "codex/codex-rs/app-server-daemon/src/update_loop.rs",
+    "anchors": ["INITIAL_UPDATE_DELAY", "RESTART_RETRY_INTERVAL", "UPDATE_INTERVAL", "install_latest_standalone", "reexec_managed_updater", "run", "update_modes_for_identities", "update_once"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_daemon/update_loop.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/app_server_daemon/update_loop.py"],
+    "anchors": ["INITIAL_UPDATE_DELAY", "RESTART_RETRY_INTERVAL", "UPDATE_INTERVAL", "install_latest_standalone", "reexec_managed_updater", "run", "update_modes_for_identities", "update_once"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_server_daemon_rs.py"]
+}

@@ -1,0 +1,20 @@
+{
+  "contract_id": "app_test_support.crate",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "app_test_support",
+    "module": "crate",
+    "source": "codex/codex-rs/app-server/tests/common/lib.rs",
+    "anchors": ["ChatGptAuthFixture", "McpProcess", "create_fake_rollout", "create_final_assistant_message_sse_response", "to_response", "write_models_cache"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "tests/support/app_test_support/__init__.py",
+    "layout": "module-file",
+    "implementation_files": ["tests/support/app_test_support/__init__.py"],
+    "anchors": ["ChatGptAuthFixture", "McpProcess", "create_fake_rollout", "create_final_assistant_message_sse_response", "to_response", "write_models_cache"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_test_support_rs.py", "tests/e2e/app_server/test_stdio.py"]
+}

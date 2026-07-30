@@ -63,6 +63,26 @@ READY_COMPOSER_PATTERN = "(?m)>\\s*$|^\\s*\\u203a\\s+.+$"
 SESSION_CONFIGURED_COMPOSER_PATTERN = (
     "(?ms)model:\\s+(?!loading)\\S+.*directory:.*codex-python"
 )
+LIVE_MODEL_CAPACITY_MESSAGE = "Selected model is at capacity. Please try a different model."
+
+
+def _run_live_conpty_with_capacity_retries(
+    run_once,
+    *,
+    attempts: int = 3,
+    retry_delay: float = 10.0,
+):
+    """Retry only the service's explicit transient model-capacity response."""
+
+    transcript = None
+    for attempt in range(max(int(attempts), 1)):
+        transcript = run_once()
+        if LIVE_MODEL_CAPACITY_MESSAGE not in transcript.normalized_combined():
+            return transcript
+        if attempt + 1 < attempts:
+            time.sleep(max(float(retry_delay), 0.0))
+    return transcript
+
 
 def _with_rust_startup_tip_ready(input_steps: tuple[ConptyInputStep, ...]) -> tuple[ConptyInputStep, ...]:
     first, *rest = input_steps

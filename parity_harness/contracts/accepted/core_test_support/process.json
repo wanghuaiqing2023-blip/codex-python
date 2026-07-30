@@ -1,0 +1,8 @@
+{
+  "contract_id": "core_test_support.process",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "core_test_support", "module": "process", "source": "codex/codex-rs/core/tests/common/process.rs", "anchors": ["process_is_alive", "wait_for_pid_file", "wait_for_process_exit"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/core_test_support/process.py", "layout": "module-file", "implementation_files": ["tests/support/core_test_support/process.py"], "anchors": ["process_is_alive", "wait_for_pid_file", "wait_for_process_exit"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_core_test_support_rs.py"]
+}

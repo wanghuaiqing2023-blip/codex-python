@@ -3,7 +3,7 @@
 import asyncio
 
 from pycodex.core.session.session import Session
-from pycodex.extension_api import ExtensionData, ExtensionRegistryBuilder
+from pycodex.ext.extension_api import ExtensionData, ExtensionRegistryBuilder
 from pycodex.protocol import TokenUsage
 
 

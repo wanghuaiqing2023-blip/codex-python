@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-mcp.connection_manager",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-mcp",
+    "module": "connection_manager",
+    "source": "codex/codex-rs/codex-mcp/src/connection_manager.rs",
+    "anchors": ["McpConnectionManager", "list_all_tools", "call_tool", "read_resource", "begin_shutdown"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/codex_mcp/connection_manager.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/codex_mcp/connection_manager.py"],
+    "anchors": ["McpConnectionManager", "list_all_tools", "call_tool", "read_resource", "begin_shutdown"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_codex_mcp_rs.py", "tests/e2e/mcp/test_client.py"]
+}

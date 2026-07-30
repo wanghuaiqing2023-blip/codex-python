@@ -27,7 +27,7 @@ from pycodex.codex_api import (
     TimeOperation,
     WeatherOperation,
 )
-from pycodex.extension_api import FunctionCallError, ToolName
+from pycodex.ext.extension_api import FunctionCallError, ToolName
 from pycodex.tools import (
     ResponsesApiNamespace,
     ResponsesApiNamespaceTool,

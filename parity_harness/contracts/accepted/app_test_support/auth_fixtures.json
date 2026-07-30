@@ -1,0 +1,8 @@
+{
+  "contract_id": "app_test_support.auth_fixtures",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "app_test_support", "module": "auth_fixtures", "source": "codex/codex-rs/app-server/tests/common/auth_fixtures.rs", "anchors": ["ChatGptAuthFixture", "ChatGptIdTokenClaims", "encode_id_token", "write_chatgpt_auth"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/app_test_support/auth_fixtures.py", "layout": "module-file", "implementation_files": ["tests/support/app_test_support/auth_fixtures.py"], "anchors": ["ChatGptAuthFixture", "ChatGptIdTokenClaims", "encode_id_token", "write_chatgpt_auth"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_test_support_rs.py"]
+}

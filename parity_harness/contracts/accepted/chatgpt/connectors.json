@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-chatgpt.connectors",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-chatgpt",
+    "module": "connectors",
+    "source": "codex/codex-rs/chatgpt/src/connectors.rs",
+    "anchors": ["connectors_for_plugin_apps", "list_all_connectors", "list_all_connectors_with_options", "list_cached_all_connectors", "list_connectors", "merge_connectors_with_accessible", "DIRECTORY_CONNECTORS_TIMEOUT"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/chatgpt/connectors.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/chatgpt/connectors.py"],
+    "anchors": ["connectors_for_plugin_apps", "list_all_connectors", "list_all_connectors_with_options", "list_cached_all_connectors", "list_connectors", "merge_connectors_with_accessible", "DIRECTORY_CONNECTORS_TIMEOUT"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": []
+}

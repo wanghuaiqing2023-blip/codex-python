@@ -16,7 +16,7 @@ from pycodex.ext.goal import GoalExtension, GoalRuntimeHandle, install_with_back
 from pycodex.core.tools.context import ToolPayload
 from pycodex.exec.local_runtime import LocalHttpModelInfo, create_exec_core_session
 from pycodex.exec.session import ExecSessionConfig
-from pycodex.extension_api import (
+from pycodex.ext.extension_api import (
     ExtensionData,
     ExtensionRegistryBuilder,
     ThreadStartInput,

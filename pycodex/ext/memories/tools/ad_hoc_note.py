@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pycodex.extension_api import JsonToolOutput
+from pycodex.ext.extension_api import JsonToolOutput
 
 from ..backend import AddAdHocMemoryNoteRequest, AddAdHocMemoryNoteResponse
 from ..metrics import record_tool_call
@@ -74,7 +74,7 @@ class AddAdHocNoteTool:
 def _required_string(args: dict[str, Any], name: str) -> str:
     value = args.get(name)
     if not isinstance(value, str):
-        from pycodex.extension_api import FunctionCallError
+        from pycodex.ext.extension_api import FunctionCallError
 
         raise FunctionCallError.respond_to_model(f"{name} must be a string")
     return value

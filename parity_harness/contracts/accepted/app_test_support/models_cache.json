@@ -1,0 +1,8 @@
+{
+  "contract_id": "app_test_support.models_cache",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "app_test_support", "module": "models_cache", "source": "codex/codex-rs/app-server/tests/common/models_cache.rs", "anchors": ["write_models_cache", "write_models_cache_with_models"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/app_test_support/models_cache.py", "layout": "module-file", "implementation_files": ["tests/support/app_test_support/models_cache.py"], "anchors": ["write_models_cache", "write_models_cache_with_models"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_test_support_rs.py"]
+}

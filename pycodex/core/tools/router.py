@@ -25,7 +25,7 @@ from pycodex.core.hook_runtime import (
     additional_context_messages,
     post_tool_use_replacement_text,
 )
-from pycodex.core.tools.lifecycle import ToolCallOutcome, notify_tool_finish, notify_tool_start
+from pycodex.core.tools.lifecycle import notify_tool_finish, notify_tool_start
 from pycodex.core.tools.registry import (
     PostToolUsePayload,
     PreToolUsePayload,
@@ -36,6 +36,7 @@ from pycodex.core.tools.registry import (
     unsupported_tool_call_message,
     with_updated_hook_input,
 )
+from pycodex.ext.extension_api import ToolCallOutcome
 from pycodex.protocol import ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
 
 JsonValue = Any

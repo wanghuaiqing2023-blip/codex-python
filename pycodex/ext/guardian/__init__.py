@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any
 
-from pycodex.extension_api import ExtensionRegistryBuilder
+from pycodex.ext.extension_api import ExtensionRegistryBuilder
 from pycodex.protocol import ThreadId
 
 

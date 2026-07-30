@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.ext.memories.extension import MemoriesExtensionConfig
-from pycodex.extension_api import ExtensionData, ExtensionRegistryBuilder, ThreadStartInput
+from pycodex.ext.extension_api import ExtensionData, ExtensionRegistryBuilder, ThreadStartInput
 from pycodex.features import Feature
 
 

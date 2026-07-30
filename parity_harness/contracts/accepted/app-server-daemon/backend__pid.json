@@ -1,0 +1,20 @@
+{
+  "contract_id": "codex-app-server-daemon.backend--pid",
+  "evidence_status": "mapped",
+  "rust": {
+    "workspace": "codex/codex-rs",
+    "crate": "codex-app-server-daemon",
+    "module": "backend::pid",
+    "source": "codex/codex-rs/app-server-daemon/src/backend/pid.rs",
+    "anchors": ["PidBackend", "PidLogTail", "PidRecord", "read_stderr_log_tail", "START_TIMEOUT", "STDERR_LOG_TAIL_BYTES"],
+    "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+  },
+  "python": {
+    "owner": "pycodex/app_server_daemon/backend/pid.py",
+    "layout": "module-file",
+    "implementation_files": ["pycodex/app_server_daemon/backend/pid.py"],
+    "anchors": ["PidBackend", "PidLogTail", "PidRecord", "read_stderr_log_tail", "START_TIMEOUT", "STDERR_LOG_TAIL_BYTES"]
+  },
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_server_daemon_rs.py"]
+}

@@ -160,6 +160,10 @@ from pycodex.execpolicy import PrefixRule
 from pycodex.git_utils import current_branch_name, default_branch_name
 from pycodex.utils.home_dir import find_codex_home
 from pycodex.core.config.edit import CONFIG_TOML_FILE, read_toml_mapping, write_toml_mapping
+from pycodex.chatgpt.apply_command import (
+    ApplyCommand as ChatgptApplyCommand,
+    run_apply_command as run_chatgpt_apply_command,
+)
 from .spec import CliParseError, COMMANDS_BY_NAME, UPSTREAM_CLI_MAIN, CommandSpec, visible_commands
 from ..mcp_cmd import help_text as _mcp_help_text, parse_args as _parse_mcp_args, run as _run_mcp_command
 from ..desktop_app import help_text as _app_help_text, run_app_open_or_install as _run_app_command
@@ -611,7 +615,12 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
         return args
     original_args = args
 
-    root_bool_options = {"--strict-config", "--remote-control", "--analytics-default-enabled"}
+    root_bool_options = {
+        "--strict-config",
+        "--remote-control",
+        "--analytics-default-enabled",
+        "--disable-plugin-startup-tasks-for-tests",
+    }
     root_value_options = {
         "--listen",
         "--ws-auth",
@@ -2151,6 +2160,7 @@ def main(
             return 0
         return _run_apply_command(
             parsed.command_args,
+            config_overrides=parsed.cli_config_overrides(),
             stdout=out,
             stderr=err,
         )
@@ -2222,7 +2232,9 @@ def main(
                 print(_unimplemented_command_help_text(parsed.command), file=out)
             return 0
         if parsed.command == "mcp-server":
-            return _run_mcp_server_command(
+            from pycodex.mcp_server.main import run_command as run_mcp_server_command
+
+            return run_mcp_server_command(
                 parsed.command_args,
                 stdout=out,
                 stderr=err,
@@ -2576,6 +2588,63 @@ def _parse_app_server_out_argument(args: tuple[str, ...]) -> str | None:
 
 
 
+def _run_app_server_daemon_command(
+    args: tuple[str, ...],
+    *,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
+    from pycodex.app_server_daemon import BootstrapOptions
+    from pycodex.app_server_daemon import LifecycleCommand
+    from pycodex.app_server_daemon import RemoteControlMode
+    from pycodex.app_server_daemon import bootstrap
+    from pycodex.app_server_daemon import run
+    from pycodex.app_server_daemon import run_pid_update_loop
+    from pycodex.app_server_daemon import set_remote_control
+
+    if len(args) < 2:
+        print(_app_server_help_text(("daemon",)), file=stdout)
+        return 2
+
+    daemon_command = args[1]
+    try:
+        if daemon_command == "bootstrap":
+            output = asyncio.run(
+                bootstrap(
+                    BootstrapOptions(
+                        remote_control_enabled="--remote-control" in args[2:],
+                    )
+                )
+            )
+        elif daemon_command == "start":
+            output = asyncio.run(run(LifecycleCommand.START))
+        elif daemon_command == "restart":
+            output = asyncio.run(run(LifecycleCommand.RESTART))
+        elif daemon_command == "enable-remote-control":
+            output = asyncio.run(set_remote_control(RemoteControlMode.ENABLED))
+        elif daemon_command == "disable-remote-control":
+            output = asyncio.run(set_remote_control(RemoteControlMode.DISABLED))
+        elif daemon_command == "stop":
+            output = asyncio.run(run(LifecycleCommand.STOP))
+        elif daemon_command == "version":
+            output = asyncio.run(run(LifecycleCommand.VERSION))
+        elif daemon_command == "pid-update-loop":
+            asyncio.run(run_pid_update_loop())
+            return 0
+        else:
+            print(f"Unknown app-server daemon subcommand: {daemon_command}", file=stderr)
+            return 64
+    except Exception as exc:
+        print(f"pycodex: app-server daemon failed: {exc}", file=stderr)
+        return 1
+
+    print(
+        json.dumps(output.to_dict(), ensure_ascii=False, sort_keys=True),
+        file=stdout,
+    )
+    return 0
+
+
 def _run_app_server_command(
     command_args: tuple[str, ...],
     *,
@@ -2600,6 +2669,10 @@ def _run_app_server_command(
                     args=AppServerArgsProjection(
                         listen=listen,
                         strict_config="--strict-config" in command_args,
+                        disable_plugin_startup_tasks_for_tests=(
+                            "--disable-plugin-startup-tasks-for-tests"
+                            in command_args
+                        ),
                         remote_control="--remote-control" in command_args,
                     ),
                     stdin=stdin,
@@ -2611,257 +2684,8 @@ def _run_app_server_command(
             return 1
         return 0
 
-    try:
-        codex_home = _safe_codex_home()
-        state_path = codex_home / _APP_SERVER_STATE_FILE
-        state = _read_json_state(state_path)
-    except RuntimeError as exc:
-        print(f"pycodex: {exc}", file=stderr)
-        return 2
-
-    daemon_state = state.get("daemon", {})
-    if not isinstance(daemon_state, MutableMapping):
-        daemon_state = {}
-
     if args[0] == "daemon":
-        if len(args) < 2:
-            print(_app_server_help_text(("daemon",)), file=stdout)
-            return 2
-        daemon_command = args[1]
-        default_socket_path = _app_server_control_socket_path(codex_home)
-        daemon_state.setdefault("socket_path", default_socket_path)
-        daemon_state.setdefault("managed_codex_path", sys.executable)
-        daemon_state.setdefault("managed_codex_version", __version__)
-        daemon_state.setdefault("cli_version", __version__)
-        daemon_state.setdefault("app_server_version", __version__)
-        daemon_state.setdefault("backend", "pid")
-        if daemon_command == "bootstrap":
-            daemon_state.update(
-                {
-                    "bootstrap": True,
-                    "bootstrapped_at": datetime.now(timezone.utc).isoformat(),
-                    "running": True,
-                    "command": "bootstrap",
-                    "status": "bootstrapped",
-                    "pid": os.getpid(),
-                    "backend": "pid",
-                    "remote_control_enabled": "--remote-control" in args[2:],
-                    "auto_update_enabled": True,
-                    "socket_path": default_socket_path,
-                }
-            )
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            print(
-                json.dumps(
-                    _app_server_bootstrap_payload(
-                        daemon_state,
-                    ),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                file=stdout,
-            )
-            return 0
-        if daemon_command == "start":
-            was_running = bool(daemon_state.get("running"))
-            status = "alreadyRunning" if was_running else "started"
-            daemon_state.update(
-                {
-                    "running": True,
-                    "command": "start",
-                    "status": status,
-                    "pid": os.getpid() if not was_running else daemon_state.get("pid"),
-                    "backend": "pid",
-                    "socket_path": default_socket_path,
-                    "remote_control_enabled": bool(daemon_state.get("remote_control_enabled")),
-                }
-            )
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            print(
-                json.dumps(
-                    _app_server_lifecycle_payload(
-                        daemon_state,
-                        status=status,
-                        fallback_socket_path=default_socket_path,
-                        include_pid=not was_running,
-                    ),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                file=stdout,
-            )
-            return 0
-        if daemon_command == "restart":
-            daemon_state.update(
-                {
-                    "running": True,
-                    "command": "restart",
-                    "status": "restarted",
-                    "pid": os.getpid(),
-                    "backend": "pid",
-                    "socket_path": default_socket_path,
-                    "remote_control_enabled": bool(daemon_state.get("remote_control_enabled")),
-                }
-            )
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            print(
-                json.dumps(
-                    _app_server_lifecycle_payload(
-                        daemon_state,
-                        status="restarted",
-                        fallback_socket_path=default_socket_path,
-                    ),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                file=stdout,
-            )
-            return 0
-        if daemon_command == "enable-remote-control":
-            was_enabled = bool(daemon_state.get("remote_control_enabled"))
-            daemon_state["remote_control_enabled"] = True
-            status = (
-                "alreadyEnabled"
-                if was_enabled
-                else "enabled"
-            )
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            print(
-                json.dumps(
-                    _app_server_remote_control_output_payload(
-                        daemon_state,
-                        status=status,
-                        mode=True,
-                        fallback_socket_path=default_socket_path,
-                    ),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                file=stdout,
-            )
-            return 0
-        if daemon_command == "disable-remote-control":
-            was_enabled = bool(daemon_state.get("remote_control_enabled"))
-            daemon_state["remote_control_enabled"] = False
-            status = (
-                "alreadyDisabled"
-                if not was_enabled
-                else "disabled"
-            )
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            print(
-                json.dumps(
-                    _app_server_remote_control_output_payload(
-                        daemon_state,
-                        status=status,
-                        mode=False,
-                        fallback_socket_path=default_socket_path,
-                    ),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                file=stdout,
-            )
-            return 0
-        if daemon_command == "stop":
-            was_running = bool(daemon_state.get("running"))
-            new_status = "stopped" if was_running else "notRunning"
-            daemon_state.update(
-                {
-                    "command": "stop",
-                    "status": new_status,
-                    "running": was_running and False,
-                    "backend": daemon_state.get("backend") if was_running else None,
-                }
-            )
-            daemon_state.pop("pid", None)
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            print(
-                json.dumps(
-                    _app_server_lifecycle_payload(
-                        daemon_state,
-                        status=new_status,
-                        fallback_socket_path=default_socket_path,
-                        include_pid=False,
-                        include_backend=was_running,
-                    ),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                file=stdout,
-            )
-            return 0
-        if daemon_command == "version":
-            is_running = bool(daemon_state.get("running"))
-            if not is_running:
-                print("app-server daemon is not running.", file=stderr)
-                return 2
-
-            daemon_state["command"] = "version"
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            print(
-                json.dumps(
-                    _app_server_lifecycle_payload(
-                        daemon_state,
-                        status="running",
-                        fallback_socket_path=default_socket_path,
-                        include_pid=False,
-                    ),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                file=stdout,
-            )
-            return 0
-        if daemon_command == "pid-update-loop":
-            daemon_state["pid_update_loop"] = True
-            daemon_state["pid_update_loop_at"] = datetime.now(timezone.utc).isoformat()
-            state["daemon"] = daemon_state
-            try:
-                _write_json_state(state_path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write app-server state: {exc}", file=stderr)
-                return 2
-            return 0
-
-        print(f"Unknown app-server daemon subcommand: {daemon_command}", file=stderr)
-        return 64
-
+        return _run_app_server_daemon_command(args, stdout=stdout, stderr=stderr)
     if args[0] == "proxy":
         sock = None
         index = 1
@@ -2904,148 +2728,6 @@ def _run_app_server_command(
 
     print(_app_server_help_text(args), file=stdout)
     return 0
-
-
-
-
-
-
-
-
-def _app_server_control_socket_path(codex_home: Path) -> str:
-    return str(
-        codex_home
-        / _APP_SERVER_CONTROL_SOCKET_DIR
-        / _APP_SERVER_CONTROL_SOCKET_FILE
-    )
-
-
-def _app_server_lifecycle_payload(
-    daemon_state: Mapping[str, object],
-    *,
-    status: str,
-    fallback_socket_path: str,
-    include_pid: bool = True,
-    include_backend: bool = True,
-) -> dict[str, object]:
-    normalized_status = status
-    if normalized_status not in {
-        "alreadyRunning",
-        "started",
-        "restarted",
-        "stopped",
-        "notRunning",
-        "running",
-        "bootstrapped",
-    }:
-        normalized_status = "notRunning"
-
-    payload: dict[str, object] = {
-        "status": normalized_status,
-        "managedCodexPath": _as_str(
-            daemon_state.get("managed_codex_path"),
-            fallback=sys.executable,
-        ),
-        "socketPath": _as_str(
-            daemon_state.get("socket_path"),
-            fallback=fallback_socket_path,
-        ),
-    }
-
-    managed_codex_version = _as_optional_str(daemon_state.get("managed_codex_version"))
-    if managed_codex_version is not None:
-        payload["managedCodexVersion"] = managed_codex_version
-
-    cli_version = _as_optional_str(daemon_state.get("cli_version"), fallback=__version__)
-    if cli_version is not None:
-        payload["cliVersion"] = cli_version
-
-    app_server_version = _as_optional_str(daemon_state.get("app_server_version"))
-    if app_server_version is not None:
-        payload["appServerVersion"] = app_server_version
-
-    if include_backend:
-        backend = _as_optional_str(daemon_state.get("backend"), fallback="pid")
-        if backend is not None:
-            payload["backend"] = backend
-
-    pid = daemon_state.get("pid")
-    if include_pid and isinstance(pid, int) and normalized_status != "notRunning":
-        payload["pid"] = pid
-
-    return payload
-
-
-def _app_server_bootstrap_payload(daemon_state: Mapping[str, object]) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "status": "bootstrapped",
-        "backend": "pid",
-        "autoUpdateEnabled": True,
-        "remoteControlEnabled": bool(daemon_state.get("remote_control_enabled")),
-        "managedCodexPath": _as_str(
-            daemon_state.get("managed_codex_path"),
-            fallback=sys.executable,
-        ),
-        "socketPath": _as_str(
-            daemon_state.get("socket_path"),
-            fallback=_app_server_control_socket_path(
-                _safe_codex_home(),
-            ),
-        ),
-        "cliVersion": _as_str(
-            daemon_state.get("cli_version"),
-            fallback=__version__,
-        ),
-    }
-
-    managed_codex_version = _as_optional_str(daemon_state.get("managed_codex_version"))
-    if managed_codex_version is not None:
-        payload["managedCodexVersion"] = managed_codex_version
-
-    app_server_version = _as_optional_str(daemon_state.get("app_server_version"))
-    if app_server_version is not None:
-        payload["appServerVersion"] = app_server_version
-
-    return payload
-
-
-def _app_server_remote_control_output_payload(
-    daemon_state: Mapping[str, object],
-    *,
-    status: str,
-    mode: bool,
-    fallback_socket_path: str,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "status": status,
-        "remoteControlEnabled": mode,
-        "socketPath": _as_str(
-            daemon_state.get("socket_path"),
-            fallback=fallback_socket_path,
-        ),
-        "cliVersion": _as_optional_str(
-            daemon_state.get("cli_version"),
-            fallback=__version__,
-        ),
-    }
-
-    if bool(daemon_state.get("running")):
-        payload["backend"] = _as_optional_str(daemon_state.get("backend"), fallback="pid")
-        app_server_version = _as_optional_str(daemon_state.get("app_server_version"))
-        if app_server_version is not None:
-            payload["appServerVersion"] = app_server_version
-
-    return payload
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -3363,556 +3045,6 @@ def _run_unimplemented_management_command(command: str, *, stdout: TextIO, stder
     return 64
 
 
-_MCP_STUB_SESSION_COUNTER = 0
-_MCP_STUB_SESSION_STORE: dict[str, dict[str, object]] = {}
-
-
-def _next_stub_thread_id() -> str:
-    global _MCP_STUB_SESSION_COUNTER
-    _MCP_STUB_SESSION_COUNTER += 1
-    return f"stub-{int(time.time() * 1000)}-{_MCP_STUB_SESSION_COUNTER}"
-
-
-def _mcp_tool_schema() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    """Return minimal codex and codex-reply tool schema definitions used by the stub runtime."""
-
-    output_schema = {
-        "type": "object",
-        "properties": {
-            "threadId": {"type": "string"},
-            "content": {"type": "string"},
-        },
-        "required": ["threadId", "content"],
-        "type": "object",
-    }
-
-    codex_input_schema = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "prompt": {"type": "string", "description": "The *initial user prompt* to start the Codex conversation."},
-            "model": {"type": "string", "description": "Optional override for the model name (e.g. 'gpt-5.3-codex', 'gpt-5.5')."},
-            "cwd": {"type": "string", "description": "Working directory for the session. If relative, it is resolved against the server process's current working directory."},
-            "approval-policy": {
-                "type": "string",
-                "description": "Approval policy for shell commands generated by the model: `untrusted`, `on-failure`, `on-request`, `never`.",
-            },
-            "sandbox": {
-                "type": "string",
-                "description": "Sandbox mode: `read-only`, `workspace-write`, or `danger-full-access`.",
-            },
-            "config": {"type": "object", "description": "Individual config settings that will override what is in CODEX_HOME/config.toml."},
-            "base-instructions": {"type": "string", "description": "The set of instructions to use instead of the default ones."},
-            "developer-instructions": {"type": "string", "description": "Developer instructions that should be injected as a developer role message."},
-            "compact-prompt": {"type": "string", "description": "Prompt used when compacting the conversation."},
-        },
-        "required": ["prompt"],
-    }
-
-    codex_reply_input_schema = {
-        "type": "object",
-        "properties": {
-            "threadId": {
-                "type": "string",
-                "description": "The thread id for this Codex session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId.",
-            },
-            "conversationId": {"type": "string", "description": "DEPRECATED: use threadId instead."},
-            "prompt": {"type": "string", "description": "The *next user prompt* to continue the Codex conversation."},
-        },
-        "required": ["prompt"],
-        "additionalProperties": False,
-    }
-
-    codex_tool = {
-        "name": "codex",
-        "title": "Codex",
-        "description": "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
-        "inputSchema": codex_input_schema,
-        "outputSchema": output_schema,
-    }
-    codex_reply_tool = {
-        "name": "codex-reply",
-        "title": "Codex Reply",
-        "description": "Continue a Codex conversation by providing the thread id and prompt.",
-        "inputSchema": codex_reply_input_schema,
-        "outputSchema": output_schema,
-    }
-
-    return [codex_tool, codex_reply_tool], [codex_input_schema, codex_reply_input_schema]
-
-
-_MCP_STUB_CODEX_TOOL_ARGUMENT_KEYS = {
-    "prompt",
-    "model",
-    "cwd",
-    "approval-policy",
-    "sandbox",
-    "config",
-    "base-instructions",
-    "developer-instructions",
-    "compact-prompt",
-}
-
-
-def _run_mcp_server_stdio_runtime(
-    *,
-    stdout: TextIO,
-    stderr: TextIO,
-    stdin: object | None = None,
-) -> int:
-    """Run a minimal MCP stdio loop using only the standard library."""
-
-    if stdin is None:
-        stdin_obj = sys.stdin
-    elif isinstance(stdin, (bytes, bytearray)):
-        stdin_obj = io.StringIO(stdin.decode("utf-8", errors="replace"))
-    elif isinstance(stdin, str):
-        stdin_obj = io.StringIO(stdin)
-    else:
-        stdin_obj = stdin
-
-    if hasattr(stdin_obj, "buffer") and not isinstance(stdin_obj, io.TextIOBase):
-        stdin_obj = io.TextIOWrapper(stdin_obj, encoding="utf-8", errors="replace")  # type: ignore[arg-type]
-
-    if not hasattr(stdin_obj, "read"):
-        print("pycodex: mcp-server requires a readable stdin object in runtime mode.", file=stderr)
-        return 2
-
-    initialized = False
-
-    def _emit(message: dict[str, object]) -> None:
-        try:
-            stdout.write(json.dumps(message, ensure_ascii=False))
-            stdout.write("\n")
-            stdout.flush()
-        except OSError as exc:
-            print(f"failed to write mcp response: {exc}", file=stderr)
-
-    def _error(request_id: object | None, method: str, code: int = -32601) -> None:
-        _emit(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {
-                    "code": code,
-                    "message": f"method not found: {method}",
-                    "data": {"method": method},
-                },
-            }
-        )
-
-    def _handle_initialize(request_id: object, params: dict[str, object] | None) -> None:
-        nonlocal initialized
-        if initialized:
-            _emit(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32600,
-                        "message": "initialize called more than once",
-                    },
-                }
-            )
-            return
-
-        protocol_version = __version__
-        if isinstance(params, dict):
-            candidate = params.get("protocolVersion")
-            if isinstance(candidate, str):
-                protocol_version = candidate
-
-        initialized = True
-        _emit(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "protocolVersion": protocol_version,
-                    "capabilities": {
-                        "tools": {"listChanged": True},
-                    },
-                    "serverInfo": {
-                        "name": "codex-mcp-server",
-                        "title": "Codex",
-                        "version": __version__,
-                        "user_agent": f"pycodex/{__version__}",
-                    },
-                },
-            }
-        )
-
-    def _handle_tools_list(request_id: object) -> None:
-        tools, _ = _mcp_tool_schema()
-
-        _emit(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "tools": tools,
-                    "nextCursor": None,
-                },
-            }
-        )
-
-    def _handle_tools_call(request_id: object, params: dict[str, object] | None) -> None:
-        if not isinstance(params, dict):
-            _emit(
-                {
-                    "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [{"type": "text", "text": "Missing arguments for tools/call"}],
-                    "isError": True,
-                    },
-                }
-            )
-            return
-
-        name = params.get("name")
-        arguments = params.get("arguments")
-
-        if not isinstance(name, str):
-            _emit(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "content": [{"type": "text", "text": f"Unknown tool '{name}'"}],
-                        "isError": True,
-                    },
-                }
-            )
-            return
-
-        if name == "codex":
-            if not isinstance(arguments, dict):
-                _emit(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Missing arguments for codex tool-call; the `prompt` field is required.",
-                                }
-                            ],
-                            "structuredContent": {
-                                "threadId": "",
-                                "content": "Missing arguments for codex tool-call; the `prompt` field is required.",
-                            },
-                            "isError": True,
-                        },
-                    }
-                )
-                return
-
-            prompt = arguments.get("prompt")
-            if not isinstance(prompt, str):
-                _emit(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Missing arguments for codex tool-call; the `prompt` field is required.",
-                                }
-                            ],
-                            "structuredContent": {
-                                "threadId": "",
-                                "content": "Missing arguments for codex tool-call; the `prompt` field is required.",
-                            },
-                            "isError": True,
-                        },
-                    }
-                )
-                return
-
-            unknown = sorted(str(key) for key in arguments if key not in _MCP_STUB_CODEX_TOOL_ARGUMENT_KEYS)
-            if unknown:
-                message = f"Failed to parse configuration for Codex tool: unknown field `{unknown[0]}`"
-                _emit(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": {
-                            "content": [{"type": "text", "text": message}],
-                            "structuredContent": {
-                                "threadId": "",
-                                "content": message,
-                            },
-                            "isError": True,
-                        },
-                    }
-                )
-                return
-
-            thread_id = _next_stub_thread_id()
-            _MCP_STUB_SESSION_STORE[thread_id] = {
-                "prompt": prompt,
-                "model": arguments.get("model") if isinstance(arguments.get("model"), str) else None,
-                "cwd": arguments.get("cwd") if isinstance(arguments.get("cwd"), str) else None,
-                "approval_policy": arguments.get("approval-policy")
-                if isinstance(arguments.get("approval-policy"), str)
-                else None,
-                "sandbox": arguments.get("sandbox")
-                if isinstance(arguments.get("sandbox"), str)
-                else None,
-                "config": arguments.get("config") if isinstance(arguments.get("config"), dict) else None,
-                "base_instructions": arguments.get("base-instructions")
-                if isinstance(arguments.get("base-instructions"), str)
-                else None,
-                "developer_instructions": arguments.get("developer-instructions")
-                if isinstance(arguments.get("developer-instructions"), str)
-                else None,
-                "compact_prompt": arguments.get("compact-prompt")
-                if isinstance(arguments.get("compact-prompt"), str)
-                else None,
-                "reply_count": 0,
-            }
-
-            _emit(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"Python MCP stub accepted codex prompt: {prompt[:80]}",
-                            }
-                        ],
-                        "structuredContent": {
-                            "threadId": thread_id,
-                            "content": "stub started",
-                        },
-                        "isError": False,
-                    },
-                }
-            )
-            return
-
-        if name == "codex-reply":
-            if not isinstance(arguments, dict):
-                _emit(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                                }
-                            ],
-                            "structuredContent": {
-                                "threadId": "",
-                                "content": "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                            },
-                            "isError": True,
-                        },
-                    }
-                )
-                return
-
-            thread_id = arguments.get("threadId") or arguments.get("conversationId")
-            if not isinstance(thread_id, str):
-                _emit(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                                }
-                            ],
-                            "structuredContent": {
-                                "threadId": "",
-                                "content": "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                            },
-                            "isError": True,
-                        },
-                    }
-                )
-                return
-
-            prompt = arguments.get("prompt")
-            if not isinstance(prompt, str):
-                _emit(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": {
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                                }
-                            ],
-                            "structuredContent": {
-                                "threadId": thread_id,
-                                "content": "Missing arguments for codex-reply tool-call; the `thread_id` and `prompt` fields are required.",
-                            },
-                            "isError": True,
-                        },
-                    }
-                )
-                return
-
-            session = _MCP_STUB_SESSION_STORE.get(thread_id)
-            if session is None:
-                _emit(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "result": {
-                            "content": [{
-                                "type": "text",
-                                "text": f"Session not found for thread_id: {thread_id}",
-                            }],
-                            "isError": True,
-                        },
-                    }
-                )
-                return
-
-            session["reply_count"] = int(session.get("reply_count", 0)) + 1
-            session["last_prompt"] = prompt
-
-            _emit(
-                {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"Python MCP stub continued thread {thread_id} with prompt: "
-                                    f"{prompt[:80]}"
-                                ),
-                            }
-                        ],
-                        "structuredContent": {
-                            "threadId": thread_id,
-                            "content": "stub continuation accepted",
-                            "replyCount": int(session.get("reply_count", 0)),
-                        },
-                        "isError": False,
-                    },
-                }
-            )
-            return
-
-        _emit(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "result": {
-                    "content": [{"type": "text", "text": f"Unknown tool '{name}'"}],
-                    "isError": True,
-                },
-            }
-        )
-
-    for raw_line in stdin_obj:
-        if isinstance(raw_line, bytes):
-            raw_line = raw_line.decode("utf-8", errors="replace")
-
-        line = str(raw_line).strip()
-        if not line:
-            continue
-
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError as exc:
-            print(f"mcp-server received invalid JSON: {exc}", file=stderr)
-            continue
-
-        if not isinstance(request, dict):
-            print("mcp-server received non-object JSON-RPC message", file=stderr)
-            continue
-
-        request_id = request.get("id")
-        method = request.get("method")
-        params = request.get("params")
-
-        if not isinstance(method, str):
-            continue
-
-        if method == "initialize":
-            if request_id is None:
-                print("mcp-server initialize request missing id", file=stderr)
-            else:
-                _handle_initialize(request_id, params if isinstance(params, dict) else None)
-            continue
-
-        if method == "ping":
-            if request_id is not None:
-                _emit({"jsonrpc": "2.0", "id": request_id, "result": {}})
-            continue
-
-        if method == "initialized" or method.startswith("notifications/"):
-            continue
-
-        if request_id is None:
-            # Notifications intentionally do not receive responses.
-            continue
-
-        if method == "tools/list":
-            _handle_tools_list(request_id)
-            continue
-
-        if method == "tools/call":
-            if isinstance(params, dict):
-                _handle_tools_call(request_id, params)
-            else:
-                _error(request_id, "tools/call", code=-32602)
-            continue
-
-        _error(request_id, method)
-
-    return 0
-
-
-def _run_mcp_server_command(
-    command_args: tuple[str, ...],
-    *,
-    stdout: TextIO,
-    stderr: TextIO,
-    stdin: object | None = None,
-) -> int:
-    del command_args
-    if _fallback_enabled("PYCODEX_MCP_SERVER_RUNTIME"):
-        print("pycodex: starting mcp-server stdio runtime.", file=stderr)
-        return _run_mcp_server_stdio_runtime(
-            stdout=stdout,
-            stderr=stderr,
-            stdin=stdin,
-        )
-
-    if _fallback_enabled("PYCODEX_MCP_SERVER_FALLBACK"):
-        print("pycodex: starting mcp-server stub mode with stdio passthrough.", file=stderr)
-        print("pycodex: MCP server behavior is a future work item in this Python port.", file=stderr)
-        return 0
-
-    print(
-        "pycodex: command 'mcp-server' is not implemented in this Python port.",
-        file=stderr,
-    )
-    print(
-        "pycodex: launch the Rust `codex-mcp-server` binary for the full MCP stdio server.",
-        file=stderr,
-    )
-    return 64
-
-
 def _run_debug_command(
     command_args: tuple[str, ...],
     *,
@@ -4172,40 +3304,22 @@ def _with_startup_session_options(
 def _run_apply_command(
     command_args: tuple[str, ...],
     *,
+    config_overrides: CliConfigOverrides,
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
+    task_id = command_args[1] if command_args and command_args[0] == "--" else command_args[0]
     try:
-        task_id = _parse_cloud_task_id(command_args[0])
-    except RuntimeError as exc:
-        print(f"pycodex: {exc}", file=stderr)
-        return 2
-    try:
-        token = _cloud_auth_token()
-        payload = _cloud_request_json(
-            url=f"{_CLOUD_BASE_URL}/wham/tasks/{task_id}",
-            method="GET",
-            token=token,
+        asyncio.run(
+            run_chatgpt_apply_command(
+                ChatgptApplyCommand(task_id, config_overrides),
+                stdout=stdout,
+            )
         )
-    except RuntimeError as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"pycodex: {exc}", file=stderr)
-        return 2
-
-    if not isinstance(payload, dict):
-        print("pycodex: unexpected response format from cloud task endpoint.", file=stderr)
-        return 2
-
-    try:
-        attempts = _collect_cloud_attempt_diffs(payload, token=token, task_id=task_id)
-    except RuntimeError as exc:
-        print(f"pycodex: {exc}", file=stderr)
-        return 2
-    diff = _select_cloud_attempt_diff(attempts, None)
-    if not diff:
-        print(f"No diff available for task {task_id}.", file=stderr)
         return 1
-
-    return _apply_task_diff_with_git(diff, stdout=stdout, stderr=stderr)
+    return 0
 
 
 @dataclass(frozen=True)
@@ -5089,7 +4203,12 @@ def _app_server_help_text(command_args: tuple[str, ...]) -> str:
 
 
 def _app_server_command_args_for_help(command_args: tuple[str, ...]) -> tuple[str, ...]:
-    root_bool_options = {"--strict-config", "--remote-control", "--analytics-default-enabled"}
+    root_bool_options = {
+        "--strict-config",
+        "--remote-control",
+        "--analytics-default-enabled",
+        "--disable-plugin-startup-tasks-for-tests",
+    }
     root_value_options = {
         "--listen",
         "--ws-auth",

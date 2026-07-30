@@ -13,7 +13,7 @@ from pycodex.core_plugins import PluginsManager
 from pycodex.core_skills import SkillsManager
 from pycodex.exec.local_runtime import LocalHttpModelInfo, LocalHttpProvider, create_exec_core_session
 from pycodex.exec.session import ExecSessionConfig
-from pycodex.mcp import McpConnectionManager
+from pycodex.codex_mcp import McpConnectionManager
 from pycodex.protocol import SessionSource, UserInput
 
 

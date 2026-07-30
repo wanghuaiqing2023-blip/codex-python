@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pycodex.extension_api import FunctionCallError, JsonToolOutput
+from pycodex.ext.extension_api import FunctionCallError, JsonToolOutput
 
 from ..backend import (
     SearchMatchMode,

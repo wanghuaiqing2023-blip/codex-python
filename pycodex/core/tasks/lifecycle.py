@@ -6,7 +6,7 @@ import inspect
 from collections.abc import Mapping
 from typing import Any
 
-from pycodex.extension_api import (
+from pycodex.ext.extension_api import (
     TurnAbortInput,
     TurnErrorInput,
     TurnStartInput,

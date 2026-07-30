@@ -1,0 +1,11 @@
+{
+  "scope": "app-server-daemon",
+  "rust_root": "codex/codex-rs/app-server-daemon",
+  "python_root": "pycodex/app_server_daemon",
+  "check_item_ownership": true,
+  "include_inline_modules": true,
+  "coverage_expectation": "verified",
+  "uncovered_rust_modules": [],
+  "uncovered_python_files": [],
+  "allowed_unowned": []
+}

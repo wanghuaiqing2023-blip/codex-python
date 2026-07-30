@@ -1,6 +1,7 @@
 ﻿import asyncio
 import base64
 import json
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -2171,6 +2172,38 @@ def test_core_exec_session_lifecycle_new_resume_and_fork_change_real_thread_stat
     assert sink_threads[-1] == fresh
 
 
+def test_core_exec_thread_activation_installs_replacement_core_session() -> None:
+    # Rust owners:
+    # - codex-core::thread_manager installs the resumed thread's Session.
+    # - codex-tui::app::session_lifecycle submits later turns to that Session.
+    # Session creation must finish before an async turn starts; deferring it to
+    # the turn loop can synchronously wait on that same loop while restoring
+    # the reference context.
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=PermissionProfile.read_only(),
+        ),
+        model_client=SimpleNamespace(state=SimpleNamespace(thread_id="old", session_id="old")),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+    previous = runtime._core_session
+
+    runtime._activate_thread_state(
+        "resumed",
+        history=(),
+        rollout_path=None,
+    )
+
+    assert runtime._core_session is not None
+    assert runtime._core_session is not previous
+    runtime.close()
+
+
 def test_startup_resume_last_installs_latest_session_for_current_cwd(tmp_path) -> None:
     # Rust owners: cli::finalize_resume_interactive and app::session_lifecycle.
     # ``resume --last`` is consumed before the terminal loop starts rather than
@@ -2445,7 +2478,9 @@ def test_tui_app_runtime_mcp_startup_notification_refreshes_expected_servers_bef
     ]
 
 
-def test_core_exec_active_thread_runtime_projects_configured_mcp_startup_events() -> None:
+def test_core_exec_active_thread_runtime_projects_configured_mcp_startup_events(
+    tmp_path,
+) -> None:
     # Rust source/test contract:
     # - codex-tui::app::App::run polls app_server.next_event during startup.
     # - codex-tui::app::app_server_events routes McpServerStatusUpdated
@@ -2453,31 +2488,98 @@ def test_core_exec_active_thread_runtime_projects_configured_mcp_startup_events(
     # - chatwidget/tests/mcp_startup.rs::app_server_mcp_startup_failure_renders_warning_history
     #   proves configured startup failures are visible history/status content.
     runtime = CoreExecActiveThreadRuntime(
-        session_config=SimpleNamespace(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=tmp_path,
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
             mcp_servers={
-                "alpha": {"command": "cmd"},
-                "disabled": {"command": "cmd", "enabled": False},
-            }
+                "alpha": {"command": "pycodex-missing-mcp-executable"},
+                "disabled": {
+                    "command": "pycodex-missing-mcp-executable",
+                    "enabled": False,
+                },
+            },
         ),
         model_client=SimpleNamespace(),
         provider=SimpleNamespace(),
-        model_info=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
     )
+    events = []
+    deadline = time.monotonic() + 5.0
+    try:
+        while time.monotonic() < deadline:
+            event = runtime.next_app_server_event(timeout=0.1)
+            if event is None:
+                continue
+            events.append(event)
+            notification = event["notification"]
+            if notification.payload.get("status") == "Failed":
+                break
+    finally:
+        runtime.close()
 
-    first = runtime.next_app_server_event(timeout=0)
-    second = runtime.next_app_server_event(timeout=0)
-    assert runtime.next_app_server_event(timeout=0) is None
-
-    assert first == {
+    assert events[0] == {
         "kind": "ServerNotification",
         "notification": ServerNotification("McpServerStatusUpdated", {"name": "alpha", "status": "Starting"}),
     }
+    assert len(events) == 2
+    second = events[1]
     assert second is not None
     notification = second["notification"]
     assert notification.kind == "McpServerStatusUpdated"
     assert notification.payload["name"] == "alpha"
     assert notification.payload["status"] == "Failed"
     assert "MCP client for `alpha` failed to start" in notification.payload["error"]
+
+
+def test_core_exec_active_thread_runtime_starts_working_mcp_server(tmp_path) -> None:
+    # Rust source/test contract:
+    # - codex-core::session::session constructs McpConnectionManager.
+    # - codex-mcp::connection_manager emits Starting followed by Ready for a
+    #   healthy stdio server and retains that client for later turns.
+    # The TUI must consume those real lifecycle events rather than fabricating
+    # an "MCP runtime is not implemented" failure.
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=tmp_path,
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
+            mcp_servers={
+                "healthy": {
+                    "command": sys.executable,
+                    "args": ["-m", "pycodex.rmcp_client.bin.rmcp_test_server"],
+                }
+            },
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+    notifications = []
+    deadline = time.monotonic() + 5.0
+    try:
+        while time.monotonic() < deadline:
+            event = runtime.next_app_server_event(timeout=0.1)
+            if event is None:
+                continue
+            notification = event["notification"]
+            notifications.append(notification)
+            if notification.payload.get("status") in {"Ready", "Failed"}:
+                break
+    finally:
+        runtime.close()
+
+    assert [
+        notification.payload.get("status") for notification in notifications
+    ] == ["Starting", "Ready"]
+    assert all(
+        "MCP runtime is not implemented" not in str(notification.payload)
+        for notification in notifications
+    )
 
 
 def test_tui_app_runtime_update_model_event_updates_widget_and_session_config() -> None:
@@ -3780,8 +3882,9 @@ def test_core_exec_active_thread_runtime_close_releases_prewarm_and_cached_webso
 
 def test_core_exec_active_thread_runtime_schedules_startup_prewarm(monkeypatch) -> None:
     # Rust-derived composition test:
-    # startup prewarm runs before the first regular turn and the first turn
-    # consumes the warmed session through the canonical session lane.
+    # session_startup_prewarm.rs builds a startup prompt without recording
+    # context on the interactive Session. The first turn consumes only the
+    # warmed ModelClientSession through the canonical session lane.
     prewarmed_session = object()
     seen_sessions = []
     prewarm_calls = []
@@ -3802,7 +3905,16 @@ def test_core_exec_active_thread_runtime_schedules_startup_prewarm(monkeypatch) 
         slug = "gpt-test"
 
     async def fake_prewarm(session_config, model_client, provider, model_info, **kwargs):
-        prewarm_calls.append((session_config, model_client, provider, model_info, kwargs.get("model_session")))
+        prewarm_calls.append(
+            (
+                session_config,
+                model_client,
+                provider,
+                model_info,
+                kwargs.get("model_session"),
+                kwargs.get("core_session"),
+            )
+        )
         await asyncio.sleep(0)
         return kwargs.get("model_session")
 
@@ -3817,7 +3929,13 @@ def test_core_exec_active_thread_runtime_schedules_startup_prewarm(monkeypatch) 
     monkeypatch.setattr("pycodex.tui.app.runtime.prewarm_exec_core_websocket_session", fake_prewarm)
     monkeypatch.setattr("pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred", fake_core_sampling)
     runtime = CoreExecActiveThreadRuntime(
-        session_config=object(),
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=PermissionProfile.read_only(),
+        ),
         model_client=ModelClient(),
         provider=Provider(),
         model_info=ModelInfo(),
@@ -3846,7 +3964,16 @@ def test_core_exec_active_thread_runtime_schedules_startup_prewarm(monkeypatch) 
         if event is None or event.kind == "TurnCompleted":
             break
 
-    assert prewarm_calls == [(runtime.session_config, runtime.model_client, runtime.provider, runtime.model_info, prewarmed_session)]
+    assert prewarm_calls == [
+        (
+            runtime.session_config,
+            runtime.model_client,
+            runtime.provider,
+            runtime.model_info,
+            prewarmed_session,
+            None,
+        )
+    ]
     assert seen_sessions == [prewarmed_session]
 
 

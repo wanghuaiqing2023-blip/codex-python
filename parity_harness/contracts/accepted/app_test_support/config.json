@@ -1,0 +1,8 @@
+{
+  "contract_id": "app_test_support.config",
+  "evidence_status": "mapped",
+  "rust": {"workspace": "codex/codex-rs", "crate": "app_test_support", "module": "config", "source": "codex/codex-rs/app-server/tests/common/config.rs", "anchors": ["write_mock_responses_config_toml", "write_mock_responses_config_toml_with_chatgpt_base_url"], "baseline_commit": "1c7832ffa37a3ab56f601497c00bfce120370bf9"},
+  "python": {"owner": "tests/support/app_test_support/config.py", "layout": "module-file", "implementation_files": ["tests/support/app_test_support/config.py"], "anchors": ["write_mock_responses_config_toml", "write_mock_responses_config_toml_with_chatgpt_base_url"]},
+  "checks": {"structure": {"checker": "structure.owner-and-coordinate"}},
+  "fixture_refs": ["tests/test_app_test_support_rs.py"]
+}

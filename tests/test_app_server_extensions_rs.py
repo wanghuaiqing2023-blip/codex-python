@@ -10,7 +10,7 @@ from pycodex.app_server.extensions import (
     thread_extensions,
 )
 from pycodex.app_server.outgoing_message import OutgoingMessageSender
-from pycodex.extension_api import ExtensionRegistry, NoopExtensionEventSink
+from pycodex.ext.extension_api import ExtensionRegistry, NoopExtensionEventSink
 from pycodex.protocol import CodexErr, ThreadGoal, ThreadGoalStatus, ThreadGoalUpdatedEvent, ThreadId
 
 

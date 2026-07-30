@@ -1196,7 +1196,7 @@ def test_windows_conpty_native_and_python_external_editor_missing_when_enabled()
     input_steps = (
         ConptyInputStep(
             "\x07",
-            ready_pattern=READY_COMPOSER_PATTERN,
+            ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
             ready_timeout=30.0,
             ready_quiet_period=0.5,
             chunk_delay=0.02,

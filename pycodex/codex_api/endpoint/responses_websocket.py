@@ -221,6 +221,13 @@ class _StdlibResponsesWebsocketStream:
         finally:
             self._sock.settimeout(original_timeout)
 
+    def close(self) -> None:
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self._sock.close()
+
     def _send_frame(self, opcode: int, payload: bytes) -> None:
         first = 0x80 | opcode
         mask = os.urandom(4)
@@ -259,6 +266,18 @@ class ResponsesWebsocketConnection:
 
     def is_closed(self) -> bool:
         return self.stream is None
+
+    def close(self) -> None:
+        stream = self.stream
+        self.stream = None
+        if stream is None:
+            return
+        closer = getattr(stream, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
 
     def send_response_processed(self, response_id: str) -> None:
         request = ResponsesWsRequest.response_processed(
@@ -304,7 +323,15 @@ class ResponsesWebsocketConnection:
                     connection_reused,
                 )
             except ApiError as err:
-                self.stream = None
+                if self.stream is stream:
+                    self.close()
+                else:
+                    closer = getattr(stream, "close", None)
+                    if callable(closer):
+                        try:
+                            closer()
+                        except Exception:
+                            pass
                 yield err
 
         return _IteratorResponseStream(iter_events())

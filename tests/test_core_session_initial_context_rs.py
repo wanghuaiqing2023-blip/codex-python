@@ -7,7 +7,7 @@ import unittest
 from pycodex.core.session.session import Session
 from pycodex.core.state.service import SessionServices
 from pycodex.core_skills import SkillLoadOutcome, SkillMetadata
-from pycodex.extension_api import ExtensionRegistryBuilder, PromptFragment
+from pycodex.ext.extension_api import ExtensionRegistryBuilder, PromptFragment, PromptSlot
 
 
 class _SkillsManager:
@@ -53,7 +53,7 @@ class _ContextContributor:
         return [
             PromptFragment.developer_capability("extension capability"),
             PromptFragment.separate_developer("separate extension policy"),
-            PromptFragment.contextual_user("extension user context"),
+            PromptFragment(PromptSlot.CONTEXTUAL_USER, "extension user context"),
         ]
 
 
