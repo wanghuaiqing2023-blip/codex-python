@@ -513,19 +513,57 @@ def _runtime_status_line_value(app_runtime: TuiAppRuntime, item: StatusLineItem,
     if item == StatusLineItem.TOTAL_OUTPUT_TOKENS:
         return f"{format_tokens_compact(_runtime_status_token_usage(app_runtime).output)} out"
     if item == StatusLineItem.SESSION_ID:
-        thread_id = getattr(app_runtime, "thread_id", None) or getattr(app_runtime.active_thread_runtime, "thread_id", None)
+        thread_id = (
+            getattr(app_runtime, "thread_id", None)
+            or getattr(app_runtime.active_thread_runtime, "thread_id", None)
+            or getattr(getattr(app_runtime, "chat_widget", None), "thread_id", None)
+        )
         return None if thread_id is None else str(thread_id)
     if item == StatusLineItem.FAST_MODE:
-        text = _runtime_model_with_reasoning(app_runtime)
-        return "fast" if " fast" in text else None
+        widget = getattr(app_runtime, "chat_widget", None)
+        current_tier = getattr(widget, "current_service_tier", None)
+        tier = current_tier() if callable(current_tier) else current_tier
+        return "Fast on" if str(tier or "").lower() == "fast" else "Fast off"
     if item == StatusLineItem.RAW_OUTPUT:
         raw = bool(getattr(getattr(app_runtime, "chat_widget", None), "raw_mode", False))
         return "raw output" if raw else None
     if item == StatusLineItem.THREAD_TITLE:
-        return getattr(app_runtime, "thread_name", None) or getattr(app_runtime, "thread_id", None)
-    agent_label = getattr(getattr(app_runtime, "chat_widget", None), "active_agent_label", None)
-    if agent_label and item == StatusLineItem.TASK_PROGRESS:
-        return str(agent_label)
+        widget = getattr(app_runtime, "chat_widget", None)
+        return (
+            getattr(widget, "thread_name", None)
+            or getattr(app_runtime, "thread_name", None)
+            or getattr(widget, "thread_id", None)
+            or getattr(app_runtime, "thread_id", None)
+        )
+    if item == StatusLineItem.CODEX_VERSION:
+        return _display_version()
+    if item in {StatusLineItem.FIVE_HOUR_LIMIT, StatusLineItem.WEEKLY_LIMIT}:
+        from .chatwidget.rate_limits import limit_label_for_window
+        from .chatwidget.status_surfaces import five_hour_status_window, weekly_status_window
+
+        widget = getattr(app_runtime, "chat_widget", None)
+        snapshots = getattr(widget, "rate_limit_snapshots_by_limit_id", {}) or {}
+        snapshot = snapshots.get("codex") if isinstance(snapshots, dict) else None
+        if snapshot is None:
+            return None
+        selected = (
+            five_hour_status_window(snapshot)
+            if item == StatusLineItem.FIVE_HOUR_LIMIT
+            else weekly_status_window(snapshot)
+        )
+        if selected is None:
+            return None
+        window, is_secondary = selected
+        label = limit_label_for_window(window.window_minutes, is_secondary)
+        remaining = max(0.0, min(100.0, 100.0 - float(window.used_percent)))
+        return f"{label} {remaining:.0f}% left"
+    if item == StatusLineItem.TASK_PROGRESS:
+        widget = getattr(app_runtime, "chat_widget", None)
+        progress = getattr(getattr(widget, "transcript", None), "last_plan_progress", None)
+        if not progress:
+            return None
+        completed, total = progress
+        return None if int(total) <= 0 else f"Tasks {int(completed)}/{int(total)}"
     return None
 
 

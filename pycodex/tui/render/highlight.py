@@ -6,13 +6,16 @@ Concrete behavior should be filled in from the Rust source and tests.
 
 from __future__ import annotations
 
+import json
 import plistlib
 import re
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from pycodex.vendor import import_vendored
 
 from .._porting import RustTuiModule, not_ported
 
@@ -269,6 +272,7 @@ KNOWN_LANGUAGES = {
 
 _THEME_OVERRIDE_NAME: Optional[str] = None
 _CURRENT_THEME_NAME = "catppuccin-mocha"
+_CURRENT_THEME_VALUE: Optional["SemanticTheme"] = None
 
 
 @dataclass(frozen=True)
@@ -380,7 +384,7 @@ def load_custom_theme(name: str, codex_home: Any) -> Optional[SemanticTheme]:
                 token_styles[scope] = SemanticStyle(
                     fg=SemanticColor("rgb", fg) if fg is not None else None,
                     bold="bold" in font_style,
-                    italic="italic" in font_style,
+                    italic=False,
                 )
 
     return SemanticTheme(
@@ -429,8 +433,67 @@ def adaptive_default_embedded_theme_name() -> str:
     return adaptive_default_theme_name()
 
 
+_THEME_ROLE_ASSET_PATH = Path(__file__).with_name("theme_roles.json")
+
+
+def _semantic_color_from_asset(value: Any) -> Optional[SemanticColor]:
+    if value == "default" or value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"invalid generated theme color: {value!r}")
+    kind = str(value.get("kind"))
+    raw = value.get("value")
+    if kind == "rgb":
+        return SemanticColor("rgb", tuple(int(channel) for channel in raw))
+    if kind == "ansi":
+        # Preserve the palette index instead of resolving it through a host
+        # terminal palette. The bridge emits indexed SGR, which the E2E VT
+        # projector normalizes to ansi(0..15).
+        return SemanticColor("indexed", int(raw))
+    if kind == "indexed":
+        return SemanticColor("indexed", int(raw))
+    raise ValueError(f"unknown generated theme color kind: {kind!r}")
+
+
+def _semantic_style_from_asset(value: Dict[str, Any]) -> SemanticStyle:
+    return SemanticStyle(
+        fg=_semantic_color_from_asset(value.get("fg")),
+        bold=bool(value.get("bold", False)),
+        # Rust convert_style intentionally suppresses italic and underline.
+        italic=False,
+    )
+
+
+@lru_cache(maxsize=1)
+def _builtin_theme_asset() -> Dict[str, Any]:
+    payload = json.loads(_THEME_ROLE_ASSET_PATH.read_text(encoding="utf-8"))
+    if payload.get("theme_names") != BUILTIN_THEME_NAMES:
+        raise RuntimeError("generated theme role inventory is out of sync with BUILTIN_THEME_NAMES")
+    return payload
+
+
+@lru_cache(maxsize=len(BUILTIN_THEME_NAMES))
 def _builtin_theme(name: str) -> SemanticTheme:
-    return SemanticTheme(name=name, is_custom=False)
+    generated = _builtin_theme_asset()["themes"][name]
+    roles = {
+        role: _semantic_style_from_asset(style)
+        for role, style in generated["roles"].items()
+    }
+    diff = generated.get("diff_backgrounds") or {}
+    backgrounds: Dict[str, Tuple[int, int, int]] = {}
+    if diff.get("inserted") is not None:
+        backgrounds["markup.inserted"] = tuple(int(value) for value in diff["inserted"])
+    if diff.get("deleted") is not None:
+        backgrounds["markup.deleted"] = tuple(int(value) for value in diff["deleted"])
+    default_fg = roles.get("default", SemanticStyle()).fg
+    foreground = default_fg.value if default_fg is not None and default_fg.kind == "rgb" else None
+    return SemanticTheme(
+        name=name,
+        is_custom=False,
+        foreground=foreground,
+        backgrounds=backgrounds or None,
+        token_styles=roles,
+    )
 
 
 def resolve_theme_by_name(name: str, codex_home: Optional[Any] = None) -> Optional[SemanticTheme]:
@@ -462,24 +525,35 @@ def theme_lock() -> SemanticTheme:
 
 
 def _current_theme() -> SemanticTheme:
-    return _builtin_theme(configured_theme_name())
+    if _CURRENT_THEME_VALUE is not None:
+        return _CURRENT_THEME_VALUE
+    name = configured_theme_name()
+    return _builtin_theme(name) if name in BUILTIN_THEME_NAMES else _builtin_theme(adaptive_default_theme_name())
 
 
 def set_syntax_theme(theme: Any) -> None:
-    global _CURRENT_THEME_NAME
+    global _CURRENT_THEME_NAME, _CURRENT_THEME_VALUE
     if isinstance(theme, SemanticTheme):
         _CURRENT_THEME_NAME = theme.name
+        _CURRENT_THEME_VALUE = theme
     elif isinstance(theme, str) and theme:
         _CURRENT_THEME_NAME = theme
+        _CURRENT_THEME_VALUE = _builtin_theme(theme) if theme in BUILTIN_THEME_NAMES else None
 
 
 def current_syntax_theme() -> SemanticTheme:
     return _current_theme()
 
 
-def set_theme_override(theme_name: Optional[str]) -> None:
+def set_theme_override(
+    theme_name: Optional[str], codex_home: Optional[Any] = None
+) -> Optional[str]:
     global _THEME_OVERRIDE_NAME
-    _THEME_OVERRIDE_NAME = theme_name
+    warning = validate_theme_name(theme_name, codex_home)
+    _THEME_OVERRIDE_NAME = theme_name if warning is None else None
+    theme = resolve_theme_by_name(theme_name, codex_home) if theme_name is not None else None
+    set_syntax_theme(theme or _builtin_theme(adaptive_default_theme_name()))
+    return warning
 
 
 def list_available_themes(codex_home: Optional[Any] = None) -> List[ThemeEntry]:
@@ -528,7 +602,7 @@ def convert_style(style: Any) -> SemanticStyle:
     return SemanticStyle(
         fg=fg,
         bold="bold" in font_text,
-        italic="italic" in font_text,
+        italic=False,
     )
 
 
@@ -576,101 +650,295 @@ def _plain_line_spans(code: str) -> List[List[SemanticSpan]]:
     return [[SemanticSpan(part)] for part in parts] or [[SemanticSpan("")]]
 
 
-_KEYWORD_STYLE = SemanticStyle(fg=SemanticColor("rgb", (203, 166, 247)), bold=True)
-_STRING_STYLE = SemanticStyle(fg=SemanticColor("rgb", (166, 227, 161)))
-_COMMENT_STYLE = SemanticStyle(fg=SemanticColor("rgb", (127, 132, 156)), italic=True)
-
-_KEYWORDS = {
-    "rust": {
-        "as",
-        "async",
-        "await",
-        "crate",
-        "else",
-        "enum",
-        "fn",
-        "for",
-        "if",
-        "impl",
-        "let",
-        "match",
-        "mod",
-        "mut",
-        "pub",
-        "return",
-        "self",
-        "Self",
-        "struct",
-        "trait",
-        "use",
-        "where",
-    },
-    "python": {
-        "and",
-        "as",
-        "class",
-        "def",
-        "elif",
-        "else",
-        "False",
-        "for",
-        "from",
-        "if",
-        "import",
-        "in",
-        "is",
-        "None",
-        "not",
-        "or",
-        "pass",
-        "return",
-        "True",
-        "while",
-        "with",
-    },
-    "bash": {"case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "then", "while"},
+_ROLE_SCOPES = {
+    "keyword": ["keyword", "keyword.control"],
+    "declaration_keyword": ["storage.type", "keyword"],
+    "function": ["entity.name.function"],
+    "method": ["entity.name.function", "meta.function-call"],
+    "macro": ["entity.name.function.macro", "entity.name.function"],
+    "parameter": ["variable.parameter"],
+    "variable": ["variable.other"],
+    "comment": ["comment"],
+    "string": ["string.quoted", "string"],
+    "string_quote": ["punctuation.definition.string", "string"],
+    "format_placeholder": ["constant.other.placeholder", "string"],
+    "number": ["constant.numeric"],
+    "operator": ["keyword.operator"],
+    "assignment_operator": ["keyword.operator.assignment", "keyword.operator"],
+    "path_separator": ["punctuation.accessor", "keyword.operator"],
+    "member_access": ["punctuation.accessor", "punctuation"],
+    "return_arrow": ["punctuation.separator", "punctuation"],
+    "type_angle": ["punctuation.definition.generic", "punctuation"],
+    "punctuation": ["punctuation"],
+    "brace": ["punctuation.section.block", "punctuation"],
+    "separator": ["punctuation.separator", "punctuation"],
+    "closure_pipe": ["punctuation.definition.parameters", "punctuation"],
+    "closure_parameter": ["variable.parameter"],
+    "property": ["variable.other.member", "variable.other"],
+    "primitive_type": ["storage.type", "support.type"],
+    "type_constructor": ["entity.name.type", "support.type"],
+    "type_parameter": ["variable.parameter", "entity.name.type"],
+    "builtin_type": ["support.type"],
+    "namespace": ["entity.name.namespace"],
+    "associated_item": ["variable.other"],
+    "default": [],
 }
+
+
+@lru_cache(maxsize=1)
+def _pygments_api() -> Tuple[Any, Any, Any]:
+    pygments = import_vendored("pygments")
+    lexers = import_vendored("pygments.lexers")
+    token = import_vendored("pygments.token")
+    return pygments.lex, lexers.get_lexer_by_name, token
+
+
+def _role_style(theme: SemanticTheme, role: str) -> SemanticStyle:
+    styles = theme.token_styles or {}
+    direct = styles.get(role)
+    if direct is not None:
+        return direct
+    scoped = foreground_style_for_scopes_with_theme(theme, _ROLE_SCOPES.get(role, []))
+    if scoped is not None:
+        return SemanticStyle(fg=scoped.fg, bold=scoped.bold, italic=False)
+    if theme.foreground is not None:
+        return SemanticStyle(fg=SemanticColor("rgb", theme.foreground))
+    return SemanticStyle()
+
+
+def _next_nonspace(tokens: List[Tuple[Any, str]], index: int) -> str:
+    for _token_type, value in tokens[index + 1 :]:
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _previous_nonspace(tokens: List[Tuple[Any, str]], index: int) -> str:
+    for _token_type, value in reversed(tokens[:index]):
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _rust_role(
+    token_type: Any,
+    value: str,
+    *,
+    tokens: List[Tuple[Any, str]],
+    index: int,
+    line_prefix: str,
+    token_api: Any,
+) -> str:
+    if token_type in token_api.Comment:
+        return "comment"
+    if token_type in token_api.String:
+        return "string"
+    if token_type in token_api.Number:
+        return "number"
+    if token_type in token_api.Keyword.Declaration:
+        return "declaration_keyword"
+    if token_type in token_api.Keyword.Type:
+        return "primitive_type"
+    if value == "|":
+        return "closure_pipe"
+    if value == "=":
+        return "assignment_operator"
+    if value == "<" and re.search(r"\b[A-Z][A-Za-z0-9_]*$", line_prefix):
+        return "type_angle"
+    if value == ">" and line_prefix.count("<") > line_prefix.count(">"):
+        return "type_angle"
+    if token_type in token_api.Keyword.Pseudo or token_type in token_api.Operator:
+        return "operator"
+    if token_type in token_api.Keyword:
+        return "keyword"
+    if token_type in token_api.Name.Function.Magic:
+        return "macro"
+    if token_type in token_api.Name.Function:
+        return "function"
+    if token_type in token_api.Name.Builtin:
+        return "type_constructor" if value == "Vec" else "builtin_type"
+
+    previous = _previous_nonspace(tokens, index)
+    following = _next_nonspace(tokens, index)
+    in_signature = bool(re.search(r"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\([^)]*$", line_prefix))
+    if token_type in token_api.Name:
+        if in_signature and following.startswith(":"):
+            return "parameter"
+        if previous.endswith("|") and line_prefix.count("|") % 2 == 1:
+            return "closure_parameter"
+        if previous.endswith("."):
+            return "method" if following.startswith("(") else "property"
+        if previous.endswith("::"):
+            return "associated_item"
+        if value[:1].isupper():
+            return "type_parameter" if in_signature else "namespace"
+        return "variable"
+
+    if token_type in token_api.Punctuation:
+        if value == ".":
+            return "member_access"
+        if value in {"{", "}"}:
+            return "brace"
+        if value in {":", ",", ";"}:
+            return "separator"
+        if in_signature and value in {"[", "]"}:
+            return "type_parameter"
+        return "punctuation"
+    if value == "::":
+        return "path_separator"
+    if value in {"=", "<", ">", "&", "|"}:
+        return "operator"
+    if value == ":":
+        return "separator"
+    if value == "->":
+        return "return_arrow"
+    return "default"
+
+
+def _generic_role(token_type: Any, token_api: Any) -> str:
+    if token_type in token_api.Comment:
+        return "comment"
+    if token_type in token_api.String:
+        return "string"
+    if token_type in token_api.Number:
+        return "number"
+    if token_type in token_api.Keyword:
+        return "keyword"
+    if token_type in token_api.Name.Function:
+        return "function"
+    if token_type in token_api.Name:
+        return "variable"
+    if token_type in token_api.Operator:
+        return "operator"
+    if token_type in token_api.Punctuation:
+        return "punctuation"
+    return "default"
+
+
+def _python_role(
+    token_type: Any,
+    value: str,
+    *,
+    tokens: List[Tuple[Any, str]],
+    index: int,
+    line_prefix: str,
+    token_api: Any,
+) -> str:
+    """Map Pygments Python tokens to syntect scopes used by Rust Codex."""
+
+    if token_type in token_api.Keyword:
+        return "operator"
+    if token_type in token_api.Name.Function:
+        return "function"
+    if token_type in token_api.Name.Builtin:
+        return "type_constructor"
+    if token_type in token_api.Literal.String.Affix:
+        return "declaration_keyword"
+    if token_type in token_api.Literal.String.Interpol:
+        return "default"
+    if token_type in token_api.Name:
+        stripped = line_prefix.lstrip()
+        if stripped.startswith("def ") and "(" in stripped and ")" not in stripped:
+            return "parameter"
+        if "{" in line_prefix and line_prefix.rfind("{") > line_prefix.rfind("}"):
+            return "default"
+    if token_type in token_api.Operator:
+        return "default"
+    if token_type in token_api.Text and not value.strip() and index > 0:
+        previous_type, _previous_value = tokens[index - 1]
+        if previous_type in token_api.Keyword:
+            return "operator"
+    return _generic_role(token_type, token_api)
+
+
+def _append_span(lines: List[List[SemanticSpan]], text: str, style: SemanticStyle) -> None:
+    pieces = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for part_index, part in enumerate(pieces):
+        if part:
+            if lines[-1] and lines[-1][-1].style == style:
+                previous = lines[-1][-1]
+                lines[-1][-1] = SemanticSpan(previous.text + part, style)
+            else:
+                lines[-1].append(SemanticSpan(part, style))
+        if part_index + 1 < len(pieces):
+            if not lines[-1]:
+                lines[-1].append(SemanticSpan(""))
+            lines.append([])
+
+
+def _append_string_token(
+    lines: List[List[SemanticSpan]], value: str, theme: SemanticTheme
+) -> None:
+    if value in {'"', "'"}:
+        _append_span(lines, value, _role_style(theme, "string_quote"))
+        return
+    cursor = 0
+    for match in re.finditer(r"(?<!\{)\{[^{}]*\}(?!\})", value):
+        if match.start() > cursor:
+            _append_span(lines, value[cursor : match.start()], _role_style(theme, "string"))
+        _append_span(lines, match.group(0), _role_style(theme, "format_placeholder"))
+        cursor = match.end()
+    if cursor < len(value):
+        _append_span(lines, value[cursor:], _role_style(theme, "string"))
 
 
 def _styled_line_spans(code: str, language: str, theme: SemanticTheme) -> List[List[SemanticSpan]]:
     normalized = find_syntax(language) or language
-    keyword_scope = foreground_style_for_scopes_with_theme(theme, ["keyword", "keyword.control"])
-    keyword_style = keyword_scope or _KEYWORD_STYLE
-    lines = _plain_line_spans(code)
-    keywords = _KEYWORDS.get(normalized, set())
-    if normalized == "rs":
-        keywords = _KEYWORDS["rust"]
-    if normalized == "py":
-        keywords = _KEYWORDS["python"]
-    if normalized == "sh":
-        keywords = _KEYWORDS["bash"]
-    result: List[List[SemanticSpan]] = []
-    for line in lines:
-        text = "".join(span.text for span in line)
-        result.append(_styled_line(text, keywords, keyword_style))
-    return result
+    lex, get_lexer_by_name, token_api = _pygments_api()
+    lexer_name = "rust" if normalized in {"rust", "rs"} else normalized
+    lexer = get_lexer_by_name(lexer_name)
+    normalized_code = code.replace("\r\n", "\n").replace("\r", "\n")
+    remaining = len(normalized_code)
+    tokens: List[Tuple[Any, str]] = []
+    for token_type, value in lex(normalized_code, lexer):
+        if remaining <= 0:
+            break
+        value = value[:remaining]
+        remaining -= len(value)
+        if value:
+            tokens.append((token_type, value))
 
-
-def _styled_line(text: str, keywords: Any, keyword_style: SemanticStyle) -> List[SemanticSpan]:
-    spans: List[SemanticSpan] = []
-    token_re = re.compile(r"(#.*$|//.*$|\"[^\"\\]*(?:\\.[^\"\\]*)*\"|'[^'\\]*(?:\\.[^'\\]*)*'|\b[A-Za-z_][A-Za-z0-9_]*\b)")
-    pos = 0
-    for match in token_re.finditer(text):
-        if match.start() > pos:
-            spans.append(SemanticSpan(text[pos:match.start()]))
-        token = match.group(0)
-        if token.startswith("#") or token.startswith("//"):
-            spans.append(SemanticSpan(token, _COMMENT_STYLE))
-        elif token.startswith("\"") or token.startswith("'"):
-            spans.append(SemanticSpan(token, _STRING_STYLE))
-        elif token in keywords:
-            spans.append(SemanticSpan(token, keyword_style))
+    lines: List[List[SemanticSpan]] = [[]]
+    line_prefix = ""
+    for index, (token_type, value) in enumerate(tokens):
+        is_rust = normalized in {"rust", "rs"}
+        role = (
+            _rust_role(
+                token_type,
+                value,
+                tokens=tokens,
+                index=index,
+                line_prefix=line_prefix,
+                token_api=token_api,
+            )
+            if is_rust
+            else (
+                _python_role(
+                    token_type,
+                    value,
+                    tokens=tokens,
+                    index=index,
+                    line_prefix=line_prefix,
+                    token_api=token_api,
+                )
+                if normalized in {"python", "py"}
+                else _generic_role(token_type, token_api)
+            )
+        )
+        if is_rust and token_type in token_api.String:
+            _append_string_token(lines, value, theme)
         else:
-            spans.append(SemanticSpan(token))
-        pos = match.end()
-    if pos < len(text):
-        spans.append(SemanticSpan(text[pos:]))
-    return spans or [SemanticSpan("")]
+            _append_span(lines, value, _role_style(theme, role))
+        line_prefix = (line_prefix + value).rsplit("\n", 1)[-1]
+
+    for line in lines:
+        if not line:
+            line.append(SemanticSpan(""))
+    if normalized_code.endswith("\n") and len(lines) > 1 and reconstructed([lines[-1]]) == "":
+        lines.pop()
+    return lines
 
 
 def highlight_to_line_spans_with_theme(
@@ -710,7 +978,7 @@ def diff_scope_background_rgbs_for_theme(theme: Any) -> DiffScopeBackgroundRgbs:
 
 
 def diff_scope_background_rgbs() -> DiffScopeBackgroundRgbs:
-    return DiffScopeBackgroundRgbs()
+    return diff_scope_background_rgbs_for_theme(current_syntax_theme())
 
 
 def scope_background_rgb(*args: Any, **kwargs: Any) -> None:
@@ -726,15 +994,20 @@ def scope_background_rgb(*args: Any, **kwargs: Any) -> None:
 
 def foreground_style_for_scopes_with_theme(theme: Any, scope_names: List[str]) -> Optional[SemanticStyle]:
     styles = getattr(theme, "token_styles", None) or {}
+    role_aliases = {
+        "entity.name.type": "type_constructor",
+        "support.type": "builtin_type",
+        "variable": "variable",
+    }
     for scope_name in scope_names:
-        style = styles.get(scope_name)
+        style = styles.get(scope_name) or styles.get(role_aliases.get(scope_name, ""))
         if style is not None and style.fg is not None:
             return style
     return None
 
 
 def foreground_style_for_scopes(scope_names: List[str]) -> Optional[SemanticStyle]:
-    return None
+    return foreground_style_for_scopes_with_theme(current_syntax_theme(), scope_names)
 
 
 def write_minimal_tmtheme(*args: Any, **kwargs: Any) -> None:

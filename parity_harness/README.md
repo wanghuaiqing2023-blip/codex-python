@@ -7,7 +7,7 @@ architecture data from `pycodex/`.
 ## Authority
 
 - `contracts/workspace.json` pins the Rust baseline and classifies every Cargo
-  crate as accepted, partial, or deferred.
+  crate as structurally accepted, partial, or deferred.
 - `contracts/accepted/<scope>/` contains reviewed module-owner contracts.
 - `contracts/accepted/<scope>.policy.json` records honest Rust and Python
   coverage debt.

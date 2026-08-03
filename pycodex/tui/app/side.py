@@ -173,10 +173,10 @@ def side_developer_instructions(existing_instructions: Optional[str] = None) -> 
 
 def side_boundary_prompt_item() -> dict[str, Any]:
     return {
-        "type": "Message",
+        "type": "message",
         "id": None,
         "role": "user",
-        "content": [{"type": "InputText", "text": SIDE_BOUNDARY_PROMPT}],
+        "content": [{"type": "input_text", "text": SIDE_BOUNDARY_PROMPT}],
         "phase": None,
     }
 
@@ -222,7 +222,7 @@ def sync_side_thread_ui(state: SideUiState, thread_label: Optional[Dict[str, str
     if side_state.parent_status is not None:
         parts.append(side_state.parent_status.label(parent_is_main))
     parts.append("Ctrl+C to return")
-    state.side_context_label = "Side " + " | ".join(parts)
+    state.side_context_label = "Side " + " · ".join(parts)
 
 
 def active_side_parent_thread_id(state: SideUiState) -> Optional[str]:

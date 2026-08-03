@@ -297,6 +297,63 @@ class TerminalStatusLineSetupController:
             sender.send(event)
 
 
+@dataclass(frozen=True)
+class TerminalTitleSetupController:
+    """Open terminal ``/title`` through Rust's terminal-title setup view."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from ..bottom_pane.title_setup import TerminalTitleSetupView
+        from .status_surfaces import DEFAULT_TERMINAL_TITLE_ITEMS
+
+        widget = getattr(self.app_runtime, "chat_widget", None)
+        config = getattr(widget, "config", None)
+        configured = getattr(config, "tui_terminal_title", None)
+        title_items = (
+            tuple(str(item) for item in configured)
+            if configured is not None
+            else DEFAULT_TERMINAL_TITLE_ITEMS
+        )
+
+        active = getattr(self.app_runtime, "active_thread_runtime", None)
+        session_config = getattr(active, "session_config", None)
+        cwd = Path(
+            getattr(active, "cwd", None)
+            or getattr(session_config, "cwd", None)
+            or getattr(self.app_runtime, "cwd", None)
+            or Path.cwd()
+        )
+        preview_data = {
+            "AppName": "codex",
+            "ProjectName": cwd.name,
+            "CurrentDir": str(cwd),
+        }
+        runtime_keymap = getattr(self.app_runtime, "runtime_keymap", None)
+        list_keymap = getattr(runtime_keymap, "list", None)
+        return TerminalTitleSetupView.new(
+            title_items,
+            preview_data,
+            self._send_app_event,
+            list_keymap,
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> None:
+        for event in events:
+            self._send_app_event(event)
+
+    def _send_app_event(self, event: Any) -> None:
+        from ..app_event import AppEvent
+
+        if isinstance(event, dict):
+            kind = str(event.get("type", ""))
+            payload = {key: value for key, value in event.items() if key != "type"}
+            event = AppEvent(kind, payload)
+        sender = getattr(self.app_runtime, "app_event_sender", None)
+        if isinstance(event, AppEvent) and sender is not None:
+            sender.send(event)
+
+
 def terminal_should_prefetch_rate_limits(app_runtime: Any) -> bool:
     """Match Rust's provider-auth and ChatGPT-account refresh guard."""
 
@@ -599,6 +656,7 @@ __all__ = [
     "StatusControlsState",
     "TerminalStatusCommandController",
     "TerminalStatusLineSetupController",
+    "TerminalTitleSetupController",
     "StatusDetailsCapitalization",
     "StatusOutputCell",
     "StatusOutputHandle",

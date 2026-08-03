@@ -25,7 +25,7 @@ def test_terminal_streaming_runtime_keeps_table_tail_in_frame_until_required_con
     # chatwidget::streaming keeps the mutable tail out of insert_history, then
     # app::agent_message_consolidation consumes it with Required replay.
     stable = []
-    tails: list[tuple[str, ...]] = []
+    tails: list[tuple[object, ...]] = []
     consolidations = []
     draws: list[str] = []
     runtime = TerminalChatWidgetStreamingRuntime(
@@ -43,7 +43,8 @@ def test_terminal_streaming_runtime_keeps_table_tail_in_frame_until_required_con
 
     assert stable == []
     assert runtime.has_live_tail()
-    assert tails[-1] == ("\u2022 | Key | Value |",)
+    assert tuple(line_text(line) for line in tails[-1]) == ("\u2022 | Key | Value |",)
+    assert tails[-1][0].line.spans[0].style == "dim"
     assert draws == ["draw"]
 
     runtime.finalize()

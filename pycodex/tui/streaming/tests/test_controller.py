@@ -82,8 +82,9 @@ def test_controller_holds_table_header_as_live_tail_until_finalize() -> None:
     ctrl.push("| --- | --- |\n")
     assert ctrl.queued_lines() == 0
     rendered_table = hyperlink_lines_to_plain_strings(ctrl.current_tail_lines())
-    assert rendered_table[0].split() == ["A", "B"]
-    assert len(rendered_table) == 2
+    assert rendered_table[0] == ""
+    assert rendered_table[1].split() == ["A", "B"]
+    assert len(rendered_table) == 3
 
     cell, _ = ctrl.finalize()
     assert cell is not None

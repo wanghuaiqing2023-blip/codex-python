@@ -13,6 +13,10 @@ from enum import Enum
 from typing import Any, Callable, List, Optional, Protocol, Tuple
 
 from .._porting import RustTuiModule
+from ..app_command import AppCommand as RuntimeAppCommand
+from ..app_event import AppEvent
+from ..bottom_pane.custom_prompt_view import CustomPromptView
+from pycodex.core.util import normalize_thread_name
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -28,6 +32,7 @@ __all__ = [
     "FrameRequester",
     "KeyBinding",
     "KeyEvent",
+    "TerminalRenamePromptController",
     "copy_last_agent_markdown_with",
     "apply_external_edit",
     "active_view_key_has_priority",
@@ -44,6 +49,7 @@ __all__ = [
     "no_modal_or_popup_active",
     "on_ctrl_c",
     "on_ctrl_d",
+    "rename_prompt_view",
     "RUST_MODULE",
     "set_external_editor_state",
     "set_footer_hint_override",
@@ -211,19 +217,64 @@ def ensure_thread_rename_allowed(widget: Any) -> bool:
     return True
 
 
-def show_rename_prompt(widget: Any) -> None:
+def rename_prompt_view(
+    widget: Any,
+    submit_name: Callable[[str], Any],
+) -> CustomPromptView | None:
     if not ensure_thread_rename_allowed(widget):
-        return
-    existing_name = getattr(widget, "thread_name", None) or ""
+        return None
+    existing_name = getattr(widget, "thread_name", None)
+    existing_name = existing_name if isinstance(existing_name, str) else ""
     title = "Rename thread" if existing_name else "Name thread"
-    view = {
-        "kind": "CustomPromptView",
-        "title": title,
-        "description": "Type a name and press Enter",
-        "initial_text": existing_name,
-        "context_label": None,
-    }
+
+    def on_submit(value: str) -> None:
+        name = normalize_thread_name(value)
+        if name is None:
+            widget.add_error_message("Thread name cannot be empty.")
+            return
+        submit_name(name)
+
+    return CustomPromptView.new(
+        title,
+        "Type a name and press Enter",
+        existing_name,
+        None,
+        on_submit,
+    )
+
+
+def show_rename_prompt(widget: Any) -> None:
+    sender = getattr(widget, "app_event_tx", None)
+    view = rename_prompt_view(
+        widget,
+        lambda name: sender.send(
+            AppEvent.codex_op(RuntimeAppCommand.set_thread_name(name))
+        ),
+    )
+    if view is None:
+        return
     widget.bottom_pane.show_view(view)
+
+
+class TerminalRenamePromptController:
+    """Terminal adapter for Rust ``ChatWidget::show_rename_prompt``."""
+
+    def __init__(self, app_runtime: Any) -> None:
+        self.app_runtime = app_runtime
+
+    def open_view(self) -> CustomPromptView | None:
+        widget = self.app_runtime.chat_widget
+        return rename_prompt_view(
+            widget,
+            lambda name: self.app_runtime.handle_app_event(
+                AppEvent.codex_op(RuntimeAppCommand.set_thread_name(name))
+            ),
+        )
+
+    def handle_events(self, events: tuple[object, ...]) -> None:
+        for event in events:
+            if isinstance(event, AppEvent):
+                self.app_runtime.handle_app_event(event)
 
 
 def handle_paste(widget: Any, text: str) -> None:

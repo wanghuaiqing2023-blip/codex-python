@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import math
 import os
 from pathlib import Path, PurePath
 import re
@@ -221,21 +222,41 @@ def fallback_diff_backgrounds(theme: DiffTheme | str, color_level: DiffColorLeve
 
 
 def quantize_rgb_to_ansi256(rgb: Sequence[int]) -> int:
-    r, g, b = [max(0, min(255, int(component))) for component in rgb]
-    levels = [0, 95, 135, 175, 215, 255]
+    target = tuple(max(0, min(255, int(component))) for component in rgb[:3])
+    levels = (0, 95, 135, 175, 215, 255)
+    palette = [
+        (red, green, blue)
+        for red in levels
+        for green in levels
+        for blue in levels
+    ]
+    palette.extend((8 + 10 * index,) * 3 for index in range(24))
 
-    def nearest_index(value: int) -> int:
-        return min(range(6), key=lambda idx: abs(levels[idx] - value))
+    def lab(color: Sequence[int]) -> tuple[float, float, float]:
+        def linear(channel: int) -> float:
+            value = channel / 255.0
+            return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
 
-    ri, gi, bi = nearest_index(r), nearest_index(g), nearest_index(b)
-    cube_index = 16 + (36 * ri) + (6 * gi) + bi
-    gray = round((r + g + b) / 3)
-    gray_index = max(0, min(23, round((gray - 8) / 10)))
-    gray_value = 8 + gray_index * 10
-    cube_rgb = (levels[ri], levels[gi], levels[bi])
-    cube_distance = sum((a - b) ** 2 for a, b in zip((r, g, b), cube_rgb))
-    gray_distance = sum((component - gray_value) ** 2 for component in (r, g, b))
-    return 232 + gray_index if gray_distance < cube_distance else cube_index
+        red, green, blue = (linear(int(channel)) for channel in color)
+        x = red * 0.4124 + green * 0.3576 + blue * 0.1805
+        y = red * 0.2126 + green * 0.7152 + blue * 0.0722
+        z = red * 0.0193 + green * 0.1192 + blue * 0.9505
+
+        def transform(value: float) -> float:
+            return value ** (1.0 / 3.0) if value > 0.008856 else 7.787 * value + 16.0 / 116.0
+
+        fx, fy, fz = transform(x / 0.95047), transform(y), transform(z / 1.08883)
+        return 116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)
+
+    target_lab = lab(target)
+
+    def distance(color: Sequence[int]) -> float:
+        candidate = lab(color)
+        return math.sqrt(sum((left - right) ** 2 for left, right in zip(candidate, target_lab)))
+
+    # Rust skips system-dependent 0..15 and selects from the fixed Xterm cube
+    # (16..231) plus grayscale ramp (232..255).
+    return 16 + min(range(len(palette)), key=lambda index: distance(palette[index]))
 
 
 def color_from_rgb_for_level(rgb: Sequence[int], color_level: RichDiffColorLevel | DiffColorLevel | str) -> Color:
@@ -271,7 +292,16 @@ def resolve_diff_backgrounds_for(
 
 
 def resolve_diff_backgrounds(theme: DiffTheme | str, color_level: DiffColorLevel | str | None) -> ResolvedDiffBackgrounds:
-    return resolve_diff_backgrounds_for(theme, color_level, None)
+    # Import lazily to preserve the render -> highlight dependency boundary and
+    # avoid a module cycle during TUI startup.
+    from .render.highlight import diff_scope_background_rgbs
+
+    scopes = diff_scope_background_rgbs()
+    return resolve_diff_backgrounds_for(
+        theme,
+        color_level,
+        {"inserted": scopes.inserted, "deleted": scopes.deleted},
+    )
 
 
 def current_diff_render_style_context() -> DiffRenderStyleContext:
@@ -405,6 +435,13 @@ def diff_color_level(
     env: Mapping[str, str] | None = None,
 ) -> DiffColorLevel:
     env = env or os.environ
+    if stdout_level is None:
+        color_term = str(env.get("COLORTERM", "")).lower()
+        term = str(env.get("TERM", "")).lower()
+        if color_term in {"truecolor", "24bit"}:
+            stdout_level = DiffColorLevel.TrueColor
+        elif "256color" in term:
+            stdout_level = DiffColorLevel.Ansi256
     return diff_color_level_for_terminal(
         stdout_level,
         terminal_name,

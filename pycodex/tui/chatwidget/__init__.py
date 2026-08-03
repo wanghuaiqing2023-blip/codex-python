@@ -79,6 +79,85 @@ def multi_agent_enable_prompt_params() -> Any:
             ),
         ],
     )
+
+
+def memories_enable_prompt_params() -> Any:
+    """Build Rust ``ChatWidget::open_memories_enable_prompt`` params."""
+
+    from pycodex.features import Feature
+
+    from ..app_event import AppEvent
+    from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+
+    return SelectionViewParams(
+        title=MEMORIES_ENABLE_TITLE,
+        subtitle="Memories are currently disabled in your config.",
+        footer_note=f"Learn more: {MEMORIES_DOC_URL}",
+        items=[
+            SelectionItem(
+                name=MEMORIES_ENABLE_YES,
+                description="Save the setting now. You will need a new session to use it.",
+                actions=[
+                    AppEvent.of(
+                        "UpdateFeatureFlags",
+                        updates=[(Feature.MEMORY_TOOL, True)],
+                    )
+                ],
+                dismiss_on_select=True,
+            ),
+            SelectionItem(
+                name=MEMORIES_ENABLE_NO,
+                description="Keep memories disabled.",
+                dismiss_on_select=True,
+            ),
+        ],
+    )
+
+
+@dataclass
+class TerminalMemoriesPopupController:
+    """Terminal adapter for Rust ``ChatWidget::open_memories_popup``."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from pycodex.features import Feature, Features
+
+        from ..bottom_pane.memories_settings_view import MemoriesSettingsView
+
+        config = getattr(
+            getattr(self.app_runtime, "active_thread_runtime", None),
+            "session_config",
+            None,
+        )
+        if config is None:
+            config = getattr(self.app_runtime.chat_widget, "config", None)
+        features = getattr(config, "features", None)
+        if not isinstance(features, Features) or not features.enabled(Feature.MEMORY_TOOL):
+            return memories_enable_prompt_params()
+
+        memories = getattr(config, "memories", None)
+        return MemoriesSettingsView.new(
+            use_memories=bool(_get(memories, "use_memories", True)),
+            generate_memories=bool(_get(memories, "generate_memories", True)),
+            app_event_tx=self.app_runtime.app_event_sender,
+            keymap=getattr(self.app_runtime, "runtime_keymap", None),
+        )
+
+    def handle_events(self, events: tuple[object, ...]) -> Any:
+        from ..bottom_pane.view_stack import TerminalSelectionTransition
+
+        for event in events:
+            if getattr(event, "kind", None) != "UpdateFeatureFlags":
+                continue
+
+            def apply(selected: Any = event) -> None:
+                self.app_runtime.handle_app_event(selected)
+
+            return TerminalSelectionTransition(after_pop=apply)
+        return None
+
+
 PLACEHOLDERS = ("Thinking", "Working", "Reading")
 SIDE_PLACEHOLDERS = ("Side conversation",)
 
@@ -598,6 +677,7 @@ __all__ = [
     "TRUSTED_ACCESS_FOR_CYBER_VERIFICATION_WARNING",
     "TUI_STUB_MESSAGE",
     "ThreadItemRenderSource",
+    "TerminalMemoriesPopupController",
     "TurnAbortReason",
     "USER_SHELL_COMMAND_HELP_HINT",
     "USER_SHELL_COMMAND_HELP_TITLE",
@@ -606,6 +686,7 @@ __all__ = [
     "exec_approval_request_from_params",
     "extract_first_bold",
     "has_websocket_timing_metrics",
+    "memories_enable_prompt_params",
     "patch_approval_request_from_params",
     "queued_message_edit_binding_for_terminal",
     "queued_message_edit_hint_binding",

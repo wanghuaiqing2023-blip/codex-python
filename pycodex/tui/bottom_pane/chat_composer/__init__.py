@@ -265,6 +265,7 @@ class TerminalComposerProjection:
     lines: tuple[str, ...]
     cursor_row_offset: int
     cursor_column: int
+    line_semantic_spans: tuple[tuple[tuple[str, str | None], ...], ...] = ()
 
     @property
     def line(self) -> str:
@@ -375,6 +376,7 @@ def run_terminal_composer_prompt_loop(
     initial_draft: str = "",
     composer: "ChatComposer | None" = None,
     handle_event: Callable[[str, str, float, bool], Any] | None = None,
+    on_idle: Callable[[], Any] | None = None,
 ) -> Any:
     """Run the terminal product-path composer input loop.
 
@@ -409,6 +411,8 @@ def run_terminal_composer_prompt_loop(
         now = time.monotonic()
         if event is None:
             flush_paste_burst(now)
+            if on_idle is not None:
+                on_idle()
             continue
 
         # Fixed Rust commit 1c7832f, ChatComposer::handle_input_basic_with_time:
@@ -536,6 +540,7 @@ def run_terminal_composer_read_prompt(
     initial_draft: str = "",
     composer: "ChatComposer | None" = None,
     handle_event: Callable[[str, str, float, bool], Any] | None = None,
+    on_idle: Callable[[], Any] | None = None,
 ) -> Any:
     """Read one terminal product-path composer prompt.
 
@@ -570,6 +575,7 @@ def run_terminal_composer_read_prompt(
             initial_draft=initial_draft,
             composer=composer,
             handle_event=handle_event,
+            on_idle=on_idle,
         )
 
     write_nonterminal_prompt()
@@ -601,6 +607,7 @@ class TerminalComposerPromptReader:
     handle_event: Callable[[str, str, float, bool], Any] | None = None
     handle_global_key: Callable[[str, str], bool] | None = None
     record_submission: Callable[[str], Any] | None = None
+    on_idle: Callable[[], Any] | None = None
     poll_timeout: float = 0.1
     _pending_draft: str = field(default="", init=False, repr=False)
 
@@ -632,6 +639,7 @@ class TerminalComposerPromptReader:
             initial_draft=initial_draft,
             composer=self.composer,
             handle_event=self.handle_event,
+            on_idle=self.on_idle,
         )
         if isinstance(result, InputResult) or result is None:
             return result
@@ -670,6 +678,15 @@ def terminal_composer_projection(
     if isinstance(draft, ChatComposer):
         textarea = draft.draft.textarea
         textarea_state = draft.draft.textarea_state
+        placeholder = (
+            draft.input_disabled_placeholder or "Input disabled."
+            if not draft.input_enabled
+            else (
+                draft.placeholder_text
+                if not textarea.text() and not draft.is_bash_mode
+                else None
+            )
+        )
     elif isinstance(draft, DraftState):
         textarea = draft.textarea
         textarea_state = draft.textarea_state
@@ -681,6 +698,7 @@ def terminal_composer_projection(
         textarea.set_text_clearing_elements(str(draft))
         textarea.set_cursor(len(textarea.text()))
         textarea_state = TextAreaState()
+        placeholder = None
 
     safe_columns = max(1, int(columns))
     prefix = "\u203a "
@@ -692,6 +710,14 @@ def terminal_composer_projection(
         (prefix if index == 0 else continuation) + row
         for index, row in enumerate(wrapped)
     )
+    line_semantic_spans: tuple[tuple[tuple[str, str | None], ...], ...] = ()
+    if placeholder is not None and lines:
+        visible_placeholder = str(placeholder)[:content_width]
+        lines = (prefix + visible_placeholder, *lines[1:])
+        line_semantic_spans = (
+            ((prefix, None), (visible_placeholder, "dim")),
+            *(tuple() for _line in lines[1:]),
+        )
     cursor = textarea.cursor_pos_with_state(
         {
             "x": _terminal_display_width(prefix),
@@ -708,6 +734,7 @@ def terminal_composer_projection(
         lines=lines,
         cursor_row_offset=cursor_row_offset,
         cursor_column=cursor_column,
+        line_semantic_spans=line_semantic_spans,
     )
 
 
@@ -848,6 +875,16 @@ def run_terminal_command_popup_input_action(
         return action.draft if action.draft is not None else draft
     if action.kind == "open_command_view":
         params = open_command_view(action.command or "") if open_command_view is not None else None
+        from ...chatwidget.slash_dispatch import TerminalSlashCommandViewDispatchResult
+
+        if isinstance(params, TerminalSlashCommandViewDispatchResult):
+            if params.view is not None and show_view is not None:
+                show_view(params.view)
+                return action.draft if action.draft is not None else ""
+            if params.handled:
+                state.hide()
+                return action.draft if action.draft is not None else ""
+            params = None
         if params is not None and show_view is not None:
             show_view(params)
             return action.draft if action.draft is not None else ""
@@ -950,6 +987,19 @@ class ChatComposer:
             ).binding_key()
             for binding in bindings
         }
+
+    def set_vim_enabled(self, enabled: bool) -> None:
+        """Apply Rust ``ChatComposer::set_vim_enabled`` to the textarea owner."""
+
+        self.draft.textarea.set_vim_enabled(bool(enabled))
+        self.draft.paste_burst.clear_after_explicit_paste()
+
+    def toggle_vim_enabled(self) -> bool:
+        """Toggle the real composer Vim state and return the new value."""
+
+        enabled = not self.draft.textarea.is_vim_enabled()
+        self.set_vim_enabled(enabled)
+        return enabled
 
     @classmethod
     def new_with_config(cls, *args: Any, config: ChatComposerConfig | None = None, **kwargs: Any) -> "ChatComposer":
@@ -1170,6 +1220,7 @@ class ChatComposer:
     def reset_vim_mode_after_successful_dispatch(self, result: InputResult) -> None:
         if result.kind != "None":
             self.reset_vim_count += 1
+            self.draft.textarea.enter_vim_normal_mode()
 
     def sync_popups(self, *, active_view_present: bool = False) -> None:
         self.sync_count += 1
@@ -1355,6 +1406,17 @@ class ChatComposer:
         normalized = _normalize_pasted_text(str(text))
         if not normalized or not self.input_enabled:
             return False
+        if (
+            normalized == "/"
+            and self.draft.textarea.is_vim_normal_mode()
+            and not self.current_text()
+        ):
+            # Rust ChatComposer owns this Normal-mode exception: `/` starts a
+            # slash command, opens completion, and transitions to Insert.
+            self.draft.textarea.set_text_clearing_elements("/")
+            self.draft.textarea.set_cursor(1)
+            self.draft.textarea.enter_vim_insert_mode()
+            return True
         if len(normalized) == 1:
             self.draft.textarea.input(normalized)
         else:
@@ -1632,7 +1694,9 @@ class ChatComposer:
                         self.clear_draft()
                         self.command_popup_state.hide()
                         self.active_popup = "none"
-                        return InputResult.Command(command)
+                        result = InputResult.Command(command)
+                        self.reset_vim_mode_after_successful_dispatch(result)
+                        return result
             popup_result = run_terminal_command_popup_input_action(
                 self.command_popup_state,
                 self.current_text(),
@@ -1643,6 +1707,7 @@ class ChatComposer:
             if isinstance(popup_result, InputResult):
                 self.record_submission(f"/{popup_result.command.command()}")
                 self.clear_draft()
+                self.reset_vim_mode_after_successful_dispatch(popup_result)
                 return popup_result
             if popup_result is not None:
                 if popup_result != self.current_text():
@@ -1652,7 +1717,7 @@ class ChatComposer:
         if popup_key in {"up", "down"} and self.navigate_history(popup_key):
             return TerminalComposerInputAction("render", self.current_text())
 
-        if detect_paste_bursts and kind == "enter":
+        if detect_paste_bursts and self.draft.textarea.allows_paste_burst() and kind == "enter":
             if self.draft.paste_burst.append_newline_if_active(timestamp):
                 return TerminalComposerInputAction("continue", self.current_text())
             if self.draft.paste_burst.newline_should_insert_instead_of_submit(timestamp):
@@ -1661,7 +1726,13 @@ class ChatComposer:
                 self.sync_popups(active_view_present=active_view_present)
                 return TerminalComposerInputAction("render", self.current_text())
 
-        if detect_paste_bursts and kind == "text" and len(text) == 1 and text >= " ":
+        if (
+            detect_paste_bursts
+            and self.draft.textarea.allows_paste_burst()
+            and kind == "text"
+            and len(text) == 1
+            and text >= " "
+        ):
             if self.current_text().startswith("/") or (not self.current_text() and text == "/"):
                 changed = self._flush_paste_before_modified_input() or changed
                 changed = self.insert_text(text) or changed
@@ -1688,6 +1759,8 @@ class ChatComposer:
             kind = text.lower().replace("_", "-")
         else:
             kind = kind.replace("_", "-")
+        if kind == "escape":
+            kind = "esc"
 
         key_event = KeyEvent.key(kind)
         if key_event.binding_key() in self.submit_keys:

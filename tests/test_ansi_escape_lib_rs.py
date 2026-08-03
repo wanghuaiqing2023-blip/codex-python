@@ -15,6 +15,18 @@ def test_ansi_escape_strips_sgr_and_preserves_rendered_lines():
     assert text.plain() == "RED\nplain"
 
 
+def test_ansi_escape_preserves_sgr_style_roles_for_ratatui_consumers():
+    # Rust ansi-to-tui keeps SGR style on returned ratatui spans; /diff relies
+    # on that contract when Git emits colorized unified diff lines.
+    text = ansi_escape("\x1b[31mdeleted\x1b[0m \x1b[38;5;2madded\x1b[0m")
+
+    assert [(span.text, span.style.fg) for span in text.lines[0].spans] == [
+        ("deleted", "red"),
+        (" ", None),
+        ("added", 2),
+    ]
+
+
 def test_ansi_escape_strips_osc_sequences_and_expands_tabs():
     # Rust: ansi_escape normalizes tabs before parsing ANSI content.
     text = ansi_escape("title\x1b]0;ignored\x07\tbody")

@@ -275,6 +275,23 @@ def test_typed_transcript_reflow_rerenders_markdown_source_for_current_width() -
     assert "".join(line.strip("\u2022 ") for line in narrow) != ""
 
 
+def test_typed_transcript_reflow_switches_between_rich_and_raw_markdown() -> None:
+    """Rust app::input reflows source-backed cells after every /raw toggle."""
+
+    source = "**BOLD-TOKEN** and *ITALIC-TOKEN*\n\n```python\nprint('RAW-CODE')\n```"
+    cell = AgentMarkdownCell.new(source, ".")
+
+    rich = render_terminal_typed_transcript_lines([cell], 80)
+    raw = render_terminal_typed_transcript_lines(
+        [cell],
+        80,
+        raw_output_mode=True,
+    )
+
+    assert "**BOLD-TOKEN**" not in "\n".join(rich)
+    assert raw == source.splitlines()
+
+
 def test_typed_transcript_keeps_rust_user_to_assistant_spacing() -> None:
     # Fixed Rust baseline 1c7832f:
     # - history_cell::messages::UserHistoryCell supplies its trailing blank.

@@ -14,6 +14,7 @@ from typing import Any, Iterable, List, MutableSequence, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..ratatui_bridge import Color as RatatuiColor
+from ..ratatui_bridge import Span as RatatuiSpan
 from ..ratatui_bridge import Rect
 from ..ratatui_bridge import Style as RatatuiStyle
 from .scroll_state import ScrollState
@@ -57,6 +58,7 @@ class Line:
 class TerminalPopupLine:
     text: str
     selected: bool = False
+    spans: Tuple[RatatuiSpan, ...] = ()
 
 
 TERMINAL_POPUP_SELECTED_ROW_STYLE = RatatuiStyle.default().with_fg(RatatuiColor.LightBlue)
@@ -71,10 +73,30 @@ def terminal_popup_line_style(*, selected: bool) -> RatatuiStyle:
 def terminal_popup_line_for_width(line: TerminalPopupLine, width: int) -> TerminalPopupLine:
     """Return a popup line clipped to the available terminal cell width."""
 
+    clipped_text = _truncate_terminal_popup_text(line.text, max(1, int(width)))
     return TerminalPopupLine(
-        _truncate_terminal_popup_text(line.text, max(1, int(width))),
+        clipped_text,
         line.selected,
+        _truncate_ratatui_spans(line.spans, max(1, int(width))),
     )
+
+
+def _truncate_ratatui_spans(
+    spans: Tuple[RatatuiSpan, ...],
+    width: int,
+) -> Tuple[RatatuiSpan, ...]:
+    if not spans:
+        return ()
+    remaining = max(int(width), 0)
+    result: list[RatatuiSpan] = []
+    for span in spans:
+        if remaining <= 0:
+            break
+        text = _truncate_terminal_popup_text(span.content, remaining)
+        if text:
+            result.append(RatatuiSpan.styled(text, span.style))
+            remaining -= _cell_width(text)
+    return tuple(result)
 
 
 def terminal_popup_lines_for_width(lines: Iterable[TerminalPopupLine], width: int) -> List[TerminalPopupLine]:

@@ -351,6 +351,28 @@ def _patch_terminal_input_source(monkeypatch: Any, source: Any) -> None:
     )
 
 
+def test_terminal_global_non_escape_key_clears_primed_backtrack(monkeypatch) -> None:
+    # Rust codex-tui::app::input clears a primed Esc-backtrack before every
+    # non-Esc Press/Repeat is forwarded to ChatComposer, including Vim `i`.
+    monkeypatch.setattr(
+        custom_terminal.shutil,
+        "get_terminal_size",
+        lambda fallback: os.terminal_size((96, 24)),
+    )
+    monkeypatch.setattr(custom_terminal, "terminal_size", lambda: os.terminal_size((96, 24)))
+    monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: os.terminal_size((96, 24)))
+    app_runtime = terminal_runtime.TuiAppRuntime(_FakeActiveThreadRuntime([]))
+    runner = terminal_runtime.TerminalTuiRunner(
+        app_runtime,
+        stdout=_TtyStringIO(),
+        stdin=_TtyStringIO(),
+    )
+    app_runtime.backtrack_state.primed = True
+
+    assert runner._handle_global_key("text", "i") is False
+    assert app_runtime.backtrack_state.primed is False
+
+
 def test_terminal_runtime_selects_history_mode_from_zellij_detection(monkeypatch) -> None:
     # Rust tui::Tui caches terminal_info().is_zellij(); stdout being a TTY is
     # not sufficient to select insert_history::ZellijRaw.
@@ -1912,7 +1934,7 @@ def test_terminal_runtime_writes_transcript_to_terminal_output() -> None:
     output = stdout.getvalue()
     assert ">_ OpenAI Codex" in output
     assert "\u203a hello?" in output
-    assert "\u2022 hello from model" in output
+    assert "\u2022 hello from model" in _strip_ansi_controls(output)
     assert "you\n" not in output
     assert "codex\n" not in output
     assert runtime.submitted
@@ -2174,7 +2196,7 @@ def test_terminal_runtime_terminal_footer_is_live_not_history(monkeypatch) -> No
     assert "\ngpt-test high" not in output
     final_screen = vt_screen_text(output, rows=24, cols=80)
     assert final_screen.count("\u203a hello?") == 1
-    assert "\u2022 hello from model" in output
+    assert "\u2022 hello from model" in _strip_ansi_controls(output)
     assert "gpt-test high fast" not in output
 
 
@@ -2387,7 +2409,7 @@ def test_terminal_runtime_reflows_bottom_pane_after_terminal_resize(monkeypatch)
     assert "\u203a" in resized
     assert "gpt-test high" in resized
     assert "\u203a hello?" in output
-    assert "\u2022 hello from model" in output
+    assert "\u2022 hello from model" in _strip_ansi_controls(output)
     assert "\x1b[1;30r\x1b[1;1H" in output
     assert RUST_RESIZE_CLEAR_MARKER in output
 
@@ -2433,12 +2455,13 @@ def test_terminal_runtime_resize_replays_visible_transcript_tail(monkeypatch) ->
     # last marker is the explicit terminal-resize replay under test here.
     resize_index = output.rfind(RUST_RESIZE_CLEAR_MARKER)
     assert resize_index >= 0
-    resize_output = output[resize_index:]
-    assert resize_output.count(">_ OpenAI Codex") == 1
+    resize_output = output[resize_index:]
+    plain_resize_output = _strip_ansi_controls(resize_output)
+    assert plain_resize_output.count(">_ OpenAI Codex") == 1
     assert "\x1b[1;30r\x1b[1;1H" in resize_output
-    assert ">_ OpenAI Codex" in resize_output
-    assert "\u203a hello?" in resize_output
-    assert "\u2022 hello from model" in resize_output
+    assert ">_ OpenAI Codex" in plain_resize_output
+    assert "\u203a hello?" in plain_resize_output
+    assert "\u2022 hello from model" in plain_resize_output
     resized_screen = vt_screen_text(resize_output, rows=30, cols=100)
     assert "\u203a Shutting down..." in resized_screen
     assert "gpt-test high" in resized_screen
@@ -2479,8 +2502,9 @@ def test_terminal_runtime_resize_shrink_clears_stale_visible_viewport(monkeypatc
 
     output = stdout.getvalue()
     assert output.count(RUST_RESIZE_CLEAR_MARKER) >= 2
-    final_replay = output[output.rfind(RUST_RESIZE_CLEAR_MARKER) :]
-    assert final_replay.count(">_ OpenAI Codex") == 1
+    final_replay = output[output.rfind(RUST_RESIZE_CLEAR_MARKER) :]
+    plain_final_replay = _strip_ansi_controls(final_replay)
+    assert plain_final_replay.count(">_ OpenAI Codex") == 1
     assert "\x1b[1;24r\x1b[1;1H" in final_replay
     final_screen = vt_screen_text(final_replay, rows=24, cols=80)
     assert "\u203a Shutting down..." in final_screen
@@ -2530,12 +2554,13 @@ def test_terminal_runtime_grow_shrink_replay_has_single_transcript_copy(monkeypa
 
     output = stdout.getvalue()
     assert output.count(RUST_RESIZE_CLEAR_MARKER) >= 2
-    final_replay = output[output.rfind(RUST_RESIZE_CLEAR_MARKER) :]
-    assert final_replay.count(">_ OpenAI Codex") == 1
+    final_replay = output[output.rfind(RUST_RESIZE_CLEAR_MARKER) :]
+    plain_final_replay = _strip_ansi_controls(final_replay)
+    assert plain_final_replay.count(">_ OpenAI Codex") == 1
     assert final_replay.count("Tip: Try the Codex App") == 1
-    assert final_replay.count("\u203a hello?") == 1
-    assert final_replay.count("\u2022 hello from model") == 1
-    assert final_replay.find("\u203a hello?") < final_replay.find("\u2022 hello from model")
+    assert plain_final_replay.count("\u203a hello?") == 1
+    assert plain_final_replay.count("\u2022 hello from model") == 1
+    assert plain_final_replay.find("\u203a hello?") < plain_final_replay.find("\u2022 hello from model")
     final_screen = vt_screen_text(final_replay, rows=24, cols=80)
     assert "\u203a Shutting down..." in final_screen
     assert "gpt-test high" in final_screen
@@ -2641,13 +2666,14 @@ def test_terminal_runtime_wraps_prefixed_history_cells_with_continuation_indent(
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    user_start = output.find("\r\n\u203a \u4f60\u597d\u4e16\u754c\u4e2d\u6587")
-    assistant_start = output.find("\u2022 ", user_start)
+    plain_output = _strip_ansi_controls(output)
+    user_start = plain_output.find("\n\u203a \u4f60\u597d\u4e16\u754c\u4e2d\u6587")
+    assistant_start = plain_output.find("\u2022 ", user_start)
     assert user_start >= 0
-    assert "\r\n  \u6362\u884c" in output[user_start:assistant_start]
-    assistant_index = output.find("\u2022 uvwxyzABCDEFG")
+    assert "\n  \u6362\u884c" in plain_output[user_start:assistant_start]
+    assistant_index = plain_output.find("\u2022 uvwxyzABCDEFG")
     assert assistant_index >= 0
-    assert "\r\n  HI" in output[assistant_index:]
+    assert "\n  HI" in plain_output[assistant_index:]
 
 
 def test_terminal_runtime_pending_partial_answer_keeps_working_and_footer(monkeypatch) -> None:
@@ -2686,7 +2712,7 @@ def test_terminal_runtime_pending_partial_answer_keeps_working_and_footer(monkey
     assert "gpt-test high" in captured
 
     output = stdout.getvalue()
-    assert "\u2022 streaming answer continues" in output
+    assert "\u2022 streaming answer continues" in _strip_ansi_controls(output)
     final_screen = vt_screen_text(output, rows=24, cols=80)
     assert "\u2022 streaming answer continues" in final_screen
     assert "gpt-test high" in final_screen
@@ -2805,8 +2831,9 @@ def test_terminal_runtime_terminal_shows_working_before_blocking_submit(monkeypa
     assert "gpt-test high" in screen_before_submit
     assert screen_before_submit.find("\u203a hello?") < screen_before_submit.find("Working (0s")
     assert output.find("\u203a hello?") < output.find("Working (0s")
-    assert output.find("Working (0s") < output.find("\u2022 hello from model")
-    assert output.rfind("gpt-test") > output.find("\u2022 hello from model")
+    plain_output = _strip_ansi_controls(output)
+    assert plain_output.find("Working (0s") < plain_output.find("\u2022 hello from model")
+    assert plain_output.rfind("gpt-test") > plain_output.find("\u2022 hello from model")
 
 
 def test_terminal_runtime_status_height_change_keeps_previous_answer_visible(monkeypatch) -> None:
@@ -2848,7 +2875,7 @@ def test_terminal_runtime_status_height_change_keeps_previous_answer_visible(mon
     assert "\u203a second?" in second_turn_screen
     assert "\u2022 Working (0s \u2022 esc to interrupt)" in second_turn_screen
     assert "gpt-test high" in second_turn_screen
-    assert "\u2022 second answer" in stdout.getvalue()
+    assert "\u2022 second answer" in _strip_ansi_controls(stdout.getvalue())
 
 
 def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(monkeypatch) -> None:
@@ -2882,7 +2909,7 @@ def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(
     for seconds, screen in enumerate(idle_screens):
         assert f"\u2022 Working ({seconds}s \u2022 esc to interrupt)" in screen
         assert "gpt-test high" in screen
-    assert "\u2022 after idle" in output
+    assert "\u2022 after idle" in _strip_ansi_controls(output)
 
 
 def test_terminal_runtime_restores_working_after_commentary_and_command(monkeypatch) -> None:
@@ -3111,7 +3138,7 @@ def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(mo
     assert "Working (" not in retry_screen
     assert "gpt-test high" in retry_screen
     output = stdout.getvalue()
-    assert "\u2022 recovered" in output
+    assert "\u2022 recovered" in _strip_ansi_controls(output)
     assert "\u203a hello?" in output
 
 
@@ -3163,7 +3190,7 @@ def test_terminal_runtime_terminal_retry_status_stays_in_bottom_pane(monkeypatch
         r"\x1b\[1;\d+r\x1b\[\d+;1H\r\n\u2022 Reconnecting\.\.\. 2/5",
         output,
     ) is None
-    assert "\u2022 recovered" in output
+    assert "\u2022 recovered" in _strip_ansi_controls(output)
 
 
 def test_terminal_runtime_ctrl_t_opens_typed_transcript_overlay_and_restores_composer(monkeypatch) -> None:

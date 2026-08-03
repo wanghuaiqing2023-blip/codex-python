@@ -1,4 +1,4 @@
-"""Tui Test Statusline scenarios extracted from the native comparison suite."""
+"""E2E coverage for the Rust-owned ``/statusline`` command contract."""
 
 from tests.e2e.tui._common import *  # noqa: F401,F403
 

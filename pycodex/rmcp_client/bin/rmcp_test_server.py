@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from typing import Any
 
 
@@ -42,6 +43,9 @@ class TestToolServer:
 
     def handle(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "initialize":
+            delay_ms = int(os.environ.get("PYCODEX_TEST_MCP_INITIALIZE_DELAY_MS", "0"))
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1_000)
             return {
                 "protocolVersion": "2025-06-18",
                 "capabilities": {"tools": {"listChanged": True}},

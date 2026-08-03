@@ -155,6 +155,60 @@ class AppEvent:
         return cls.of("OpenAgentPicker")
 
     @classmethod
+    def begin_windows_sandbox_elevated_setup(
+        cls,
+        preset: Any,
+        profile_selection: Any = None,
+    ) -> "AppEvent":
+        return cls.of(
+            "BeginWindowsSandboxElevatedSetup",
+            preset=preset,
+            profile_selection=profile_selection,
+        )
+
+    @classmethod
+    def enable_windows_sandbox_for_agent_mode(
+        cls,
+        preset: Any,
+        mode: WindowsSandboxEnableMode,
+        profile_selection: Any = None,
+    ) -> "AppEvent":
+        return cls.of(
+            "EnableWindowsSandboxForAgentMode",
+            preset=preset,
+            mode=mode,
+            profile_selection=profile_selection,
+        )
+
+    @classmethod
+    def open_windows_sandbox_fallback_prompt(
+        cls,
+        preset: Any,
+        profile_selection: Any = None,
+    ) -> "AppEvent":
+        return cls.of(
+            "OpenWindowsSandboxFallbackPrompt",
+            preset=preset,
+            profile_selection=profile_selection,
+        )
+
+    @classmethod
+    def begin_windows_sandbox_grant_read_root(cls, path: str) -> "AppEvent":
+        return cls.of("BeginWindowsSandboxGrantReadRoot", path=str(path))
+
+    @classmethod
+    def windows_sandbox_grant_read_root_completed(
+        cls,
+        path: Any,
+        error: Optional[str] = None,
+    ) -> "AppEvent":
+        return cls.of(
+            "WindowsSandboxGrantReadRootCompleted",
+            path=path,
+            error=error,
+        )
+
+    @classmethod
     def select_agent_thread(cls, thread_id: Any) -> "AppEvent":
         return cls.of("SelectAgentThread", thread_id=thread_id)
 

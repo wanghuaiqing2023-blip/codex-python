@@ -57,6 +57,32 @@ def test_terminal_controller_external_repaint_uses_live_viewport_lifecycle() -> 
     assert "\x1b[10;1H\u203a hello" in writer.getvalue()
 
 
+def test_terminal_controller_renders_rust_esc_hint_and_dim_placeholder() -> None:
+    """Rust BottomPane EscHint replaces the Vim footer after the first Esc."""
+
+    writer = io.StringIO()
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((80, 24)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+        footer_right_text=lambda: "cwd",
+    )
+    controller.set_vim_enabled(True)
+    controller.set_esc_backtrack_hint(True)
+
+    assert controller.render(check_resize=False) is True
+
+    output = writer.getvalue()
+    assert "\u203a " in output
+    assert "\x1b[2mAsk Codex to do anything\x1b[0m" in output
+    assert "\x1b[2mesc again to edit previous message\x1b[0m" in output
+    assert "Vim: Normal" not in output
+
+
 def test_terminal_controller_projects_active_view_action_required_title_state() -> None:
     # Fixed Rust commit 1c7832f, bottom_pane::BottomPane owns the active-view
     # terminal_title_requires_action signal; the terminal controller forwards

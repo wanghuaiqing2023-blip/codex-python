@@ -268,6 +268,34 @@ def test_terminal_command_popup_runner_applies_navigation_completion_and_model_v
     assert shown == [params]
 
 
+def test_terminal_command_popup_consumes_registered_view_empty_state_once() -> None:
+    # A registered view owner may render an informational empty state without
+    # returning a BottomPaneView. The composer must consume that outcome rather
+    # than returning InputResult::Command and dispatching the owner again.
+    from pycodex.tui.chatwidget.slash_dispatch import (
+        TerminalSlashCommandViewDispatchResult,
+    )
+
+    state = TerminalCommandPopupState.new()
+    calls: list[str] = []
+    assert state.sync_draft("/approve") is True
+
+    result = run_terminal_command_popup_input_action(
+        state,
+        "/approve",
+        "enter",
+        open_command_view=lambda command: (
+            calls.append(command)
+            or TerminalSlashCommandViewDispatchResult(True)
+        ),
+        show_view=lambda _view: None,
+    )
+
+    assert result == ""
+    assert calls == ["approve"]
+    assert state.visible is False
+
+
 def test_terminal_command_popup_runner_ignores_keys_when_popup_hidden() -> None:
     # Rust owner: codex-tui::bottom_pane::chat_composer::sync_popups owns
     # whether the command popup is active; terminal adapters should delegate
@@ -957,6 +985,84 @@ def test_terminal_composer_prompt_reader_binds_runtime_callbacks() -> None:
         "resize",
         "draft:",
     ]
+
+
+def test_terminal_composer_prompt_reader_polls_async_runtime_on_idle() -> None:
+    # Rust tui::event_stream multiplexes app-server events while the composer
+    # waits for input; a delayed MCP Ready must therefore be observable here.
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                None,
+                type("Event", (), {"kind": "text", "text": "ok"})(),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, _timeout: float):
+            return self.events.pop(0)
+
+    idle: list[str] = []
+    reader = TerminalComposerPromptReader(
+        terminal_active=lambda: True,
+        get_input_source=Source,
+        read_line=lambda: "",
+        write_nonterminal_prompt=lambda: None,
+        apply_draft=lambda _draft: None,
+        check_resize=lambda: None,
+        render=lambda: None,
+        clear_bottom_pane=lambda: None,
+        submit=lambda line: line,
+        interrupt=lambda: None,
+        eof=lambda: None,
+        on_idle=lambda: idle.append("poll-app-server"),
+    )
+
+    assert reader.read() == InputResult.Submitted("ok")
+    assert idle == ["poll-app-server"]
+
+
+def test_terminal_composer_vim_edits_use_real_textarea_state() -> None:
+    # Rust textarea::handle_vim_normal: i -> Insert, Esc -> Normal, then
+    # 0/w/x mutates the draft while leaving the cursor on the survivor.
+    composer = ChatComposer()
+    assert composer.toggle_vim_enabled() is True
+    for kind, text in (
+        ("text", "i"),
+        ("text", "alpha beta gamma"),
+        ("escape", ""),
+        ("text", "0"),
+        ("text", "w"),
+        ("text", "x"),
+    ):
+        composer.handle_terminal_event(kind, text, detect_paste_bursts=True)
+
+    assert composer.current_text() == "alpha eta gamma"
+    assert composer.cursor() == 6
+    assert composer.draft.textarea.vim_mode_label() == "Normal"
+
+
+def test_terminal_composer_vim_normal_slash_opens_popup_and_dispatches() -> None:
+    # Rust chat_composer::slash_command_can_be_typed_and_dispatched_after_vim_normal_slash:
+    # `/` is the Normal-mode exception that enters Insert, and successful
+    # command dispatch restores Normal mode.
+    composer = ChatComposer()
+    composer.set_vim_enabled(True)
+
+    composer.handle_terminal_event("text", "/", detect_paste_bursts=True)
+
+    assert composer.current_text() == "/"
+    assert composer.cursor() == 1
+    assert composer.command_popup_state.visible is True
+    assert composer.draft.textarea.vim_mode_label() == "Insert"
+
+    for character in "diff":
+        composer.handle_terminal_event("text", character, detect_paste_bursts=True)
+    result = composer.handle_terminal_event("enter", "", detect_paste_bursts=True)
+
+    assert result.kind == "Command"
+    assert result.command is SlashCommand.DIFF
+    assert composer.current_text() == ""
+    assert composer.draft.textarea.vim_mode_label() == "Normal"
 
 
 def test_terminal_composer_prompt_reader_records_canonical_submission() -> None:

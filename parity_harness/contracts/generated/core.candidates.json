@@ -3612,6 +3612,7 @@
           "owner": "pycodex/core/session/turn_context.py",
           "anchor_candidates": [
             "TurnContext",
+            "compact_prompt",
             "file_system_sandbox_policy",
             "goal_tools_enabled",
             "permission_profile",

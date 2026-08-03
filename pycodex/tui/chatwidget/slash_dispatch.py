@@ -9,6 +9,7 @@ inline-argument text-element remapping.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -32,6 +33,7 @@ SIDE_SLASH_COMMAND_UNAVAILABLE_HINT = "Press Ctrl+C to return to the main thread
 GOAL_USAGE = "Usage: /goal <objective>"
 GOAL_USAGE_HINT = "Example: /goal improve benchmark coverage"
 RAW_USAGE = "Usage: /raw [on|off]"
+KEYMAP_USAGE = "Usage: /keymap [debug]"
 
 
 class SlashCommandDispatchSource(Enum):
@@ -106,6 +108,20 @@ class TerminalPromptDispatchResult:
     view: Any = None
     operation: Any = None
     prepared_args: PreparedSlashCommandArgs | None = None
+
+
+@dataclass(frozen=True)
+class TerminalSlashCommandViewDispatchResult:
+    """Result of asking a registered command owner to open its view.
+
+    A view-opening command may be fully handled without returning a view, for
+    example when ``/approve`` reports that the thread has no recent denials.
+    Keep that distinct from an unregistered command so the composer does not
+    dispatch the same command twice or fall through to a compatibility effect.
+    """
+
+    handled: bool
+    view: Any = None
 
 
 @dataclass
@@ -208,9 +224,21 @@ class TerminalSlashCommandViewDispatcher:
             TerminalPermissionsPopupController,
         )
         from .review_popups import TerminalReviewPopupController
+        from .interaction import TerminalRenamePromptController
+        from .hooks import TerminalHooksPopupController
+        from .skills import TerminalSkillsPopupController
         from .settings_popups import TerminalSettingsPopupController
-        from .status_controls import TerminalStatusLineSetupController
+        from .settings_popups import TerminalExperimentalFeaturesPopupController
+        from .settings_popups import TerminalPersonalityPopupController
+        from .status_controls import (
+            TerminalStatusLineSetupController,
+            TerminalTitleSetupController,
+        )
+        from . import TerminalMemoriesPopupController
+        from .pets import TerminalPetsPickerController
         from ..resume_picker import TerminalResumePopupController
+        from ..theme_picker import TerminalThemePickerController
+        from ..bottom_pane.feedback_view import TerminalFeedbackPopupController
 
         review_submitter = submit_review or (
             lambda target, _summary: app_runtime.submit_op(_review_app_command(target))
@@ -219,27 +247,45 @@ class TerminalSlashCommandViewDispatcher:
             {
                 SlashCommand.MODEL: TerminalModelPopupController(app_runtime),
                 SlashCommand.REVIEW: TerminalReviewPopupController(app_runtime, review_submitter),
+                SlashCommand.RENAME: TerminalRenamePromptController(app_runtime),
                 SlashCommand.PERMISSIONS: TerminalPermissionsPopupController(app_runtime),
                 SlashCommand.AUTO_REVIEW: TerminalAutoReviewDenialsPopupController(app_runtime),
+                SlashCommand.MEMORIES: TerminalMemoriesPopupController(app_runtime),
+                SlashCommand.SKILLS: TerminalSkillsPopupController(app_runtime),
+                SlashCommand.HOOKS: TerminalHooksPopupController(app_runtime),
                 SlashCommand.KEYMAP: TerminalKeymapPopupController(app_runtime),
                 SlashCommand.SETTINGS: TerminalSettingsPopupController(app_runtime),
+                SlashCommand.EXPERIMENTAL: TerminalExperimentalFeaturesPopupController(
+                    app_runtime
+                ),
+                SlashCommand.PERSONALITY: TerminalPersonalityPopupController(app_runtime),
                 SlashCommand.STATUSLINE: TerminalStatusLineSetupController(app_runtime),
+                SlashCommand.TITLE: TerminalTitleSetupController(app_runtime),
+                SlashCommand.THEME: TerminalThemePickerController(app_runtime),
+                SlashCommand.PETS: TerminalPetsPickerController(app_runtime),
+                SlashCommand.FEEDBACK: TerminalFeedbackPopupController(app_runtime),
                 SlashCommand.RESUME: TerminalResumePopupController(app_runtime),
             },
             dispatch_app_event=getattr(app_runtime, "handle_app_event", None),
         )
 
     def open_command_view(self, command: str) -> Any:
+        return self.dispatch_command_view(command).view
+
+    def dispatch_command_view(
+        self,
+        command: str,
+    ) -> TerminalSlashCommandViewDispatchResult:
         cmd = terminal_slash_command_from_name(command)
         if cmd is None:
-            return None
+            return TerminalSlashCommandViewDispatchResult(False)
         handler = self._handlers.get(cmd)
         if handler is None:
-            return None
+            return TerminalSlashCommandViewDispatchResult(False)
         view = handler.open_view()
         if view is not None:
             self._active_handler = handler
-        return view
+        return TerminalSlashCommandViewDispatchResult(True, view)
 
     def handle_selection_events(self, events: tuple[object, ...]) -> Any:
         if self._active_handler is not None:
@@ -284,11 +330,22 @@ class TerminalSlashCommandRoute:
 _VIEW_COMMANDS = {
     SlashCommand.MODEL,
     SlashCommand.REVIEW,
+    SlashCommand.RENAME,
+    SlashCommand.RESUME,
     SlashCommand.PERMISSIONS,
     SlashCommand.AUTO_REVIEW,
+    SlashCommand.MEMORIES,
+    SlashCommand.SKILLS,
+    SlashCommand.HOOKS,
     SlashCommand.KEYMAP,
     SlashCommand.SETTINGS,
     SlashCommand.STATUSLINE,
+    SlashCommand.TITLE,
+    SlashCommand.EXPERIMENTAL,
+    SlashCommand.THEME,
+    SlashCommand.PETS,
+    SlashCommand.FEEDBACK,
+    SlashCommand.PERSONALITY,
 }
 
 _LOCAL_COMMANDS = {
@@ -302,9 +359,11 @@ _CORE_EFFECT_COMMANDS = {
     SlashCommand.COPY,
     SlashCommand.RAW,
     SlashCommand.DIFF,
-    SlashCommand.RENAME,
+    SlashCommand.IDE,
+    SlashCommand.VIM,
+    SlashCommand.ELEVATE_SANDBOX,
+    SlashCommand.SANDBOX_READ_ROOT,
     SlashCommand.NEW,
-    SlashCommand.RESUME,
     SlashCommand.FORK,
     SlashCommand.INIT,
     SlashCommand.COMPACT,
@@ -313,40 +372,28 @@ _CORE_EFFECT_COMMANDS = {
     SlashCommand.MENTION,
     SlashCommand.AGENT,
     SlashCommand.MULTI_AGENTS,
-}
-
-_DEFERRED_EXTENSION_COMMANDS = {
-    SlashCommand.IDE,
-    SlashCommand.SKILLS,
-    SlashCommand.HOOKS,
-    SlashCommand.MCP,
-    SlashCommand.APPS,
-    SlashCommand.PLUGINS,
-}
-
-_COMPATIBILITY_SHIM_COMMANDS = {
-    SlashCommand.VIM,
-    SlashCommand.ELEVATE_SANDBOX,
-    SlashCommand.SANDBOX_READ_ROOT,
-    SlashCommand.EXPERIMENTAL,
-    SlashCommand.MEMORIES,
     SlashCommand.SIDE,
     SlashCommand.BTW,
     SlashCommand.DEBUG_CONFIG,
-    SlashCommand.TITLE,
-    SlashCommand.THEME,
-    SlashCommand.PETS,
     SlashCommand.LOGOUT,
-    SlashCommand.FEEDBACK,
     SlashCommand.ROLLOUT,
     SlashCommand.PS,
     SlashCommand.STOP,
-    SlashCommand.PERSONALITY,
     SlashCommand.REALTIME,
     SlashCommand.TEST_APPROVAL,
     SlashCommand.MEMORY_DROP,
     SlashCommand.MEMORY_UPDATE,
 }
+
+_DEFERRED_EXTENSION_COMMANDS: set[SlashCommand] = set()
+
+_EXTENSION_EFFECT_COMMANDS = {
+    SlashCommand.MCP,
+    SlashCommand.APPS,
+    SlashCommand.PLUGINS,
+}
+
+_COMPATIBILITY_SHIM_COMMANDS: set[SlashCommand] = set()
 
 
 def terminal_slash_command_routes() -> Mapping[SlashCommand, TerminalSlashCommandRoute]:
@@ -366,6 +413,8 @@ def terminal_slash_command_routes() -> Mapping[SlashCommand, TerminalSlashComman
         routes[command] = _terminal_route(command, "core", "effect")
     for command in _DEFERRED_EXTENSION_COMMANDS:
         routes[command] = _terminal_route(command, "extension", "shim")
+    for command in _EXTENSION_EFFECT_COMMANDS:
+        routes[command] = _terminal_route(command, "extension", "effect")
     for command in _COMPATIBILITY_SHIM_COMMANDS:
         routes[command] = _terminal_route(command, "compatibility", "shim")
     missing = set(SlashCommand) - set(routes)
@@ -378,11 +427,39 @@ def terminal_slash_command_routes() -> Mapping[SlashCommand, TerminalSlashComman
 _VIEW_PYTHON_OWNERS = {
     SlashCommand.MODEL: "pycodex.tui.chatwidget.model_popups",
     SlashCommand.REVIEW: "pycodex.tui.chatwidget.review_popups",
-    SlashCommand.PERMISSIONS: "pycodex.tui.chatwidget.permissions_menu",
+    SlashCommand.RENAME: "pycodex.tui.chatwidget.interaction",
+    SlashCommand.PERMISSIONS: "pycodex.tui.chatwidget.permission_popups",
     SlashCommand.AUTO_REVIEW: "pycodex.tui.chatwidget.permission_popups",
+    SlashCommand.MEMORIES: (
+        "pycodex.tui.chatwidget + pycodex.tui.bottom_pane.memories_settings_view"
+    ),
+    SlashCommand.SKILLS: "pycodex.tui.chatwidget.skills",
+    SlashCommand.HOOKS: (
+        "pycodex.tui.chatwidget.hooks + "
+        "pycodex.tui.bottom_pane.hooks_browser_view"
+    ),
     SlashCommand.KEYMAP: "pycodex.tui.chatwidget.keymap_picker",
     SlashCommand.SETTINGS: "pycodex.tui.chatwidget.settings_popups",
     SlashCommand.STATUSLINE: "pycodex.tui.chatwidget.status_controls",
+    SlashCommand.TITLE: "pycodex.tui.chatwidget.status_controls",
+    SlashCommand.THEME: "pycodex.tui.theme_picker",
+    SlashCommand.PETS: "pycodex.tui.chatwidget.pets + pycodex.tui.pets.picker",
+    SlashCommand.APPS: "pycodex.tui.chatwidget.connectors",
+    SlashCommand.PLUGINS: "pycodex.tui.chatwidget.plugins",
+    SlashCommand.FEEDBACK: "pycodex.tui.bottom_pane.feedback_view",
+    SlashCommand.PERSONALITY: "pycodex.tui.chatwidget.settings_popups",
+    SlashCommand.IDE: "pycodex.tui.chatwidget.ide_context",
+    SlashCommand.VIM: "pycodex.tui.chatwidget.protocol",
+    SlashCommand.ELEVATE_SANDBOX: (
+        "pycodex.tui.chatwidget.slash_dispatch + pycodex.tui.app.event_dispatch"
+    ),
+    SlashCommand.SANDBOX_READ_ROOT: (
+        "pycodex.tui.chatwidget.slash_dispatch + pycodex.tui.app.event_dispatch"
+    ),
+    SlashCommand.EXPERIMENTAL: (
+        "pycodex.tui.chatwidget.settings_popups + "
+        "pycodex.tui.bottom_pane.experimental_features_view"
+    ),
     SlashCommand.RESUME: "pycodex.tui.resume_picker + pycodex.tui.chatwidget.slash_dispatch",
 }
 
@@ -391,7 +468,7 @@ def _terminal_route(command: SlashCommand, category: str, outcome: str) -> Termi
     guards = ["side-conversation availability", "active-task availability"]
     if command in {SlashCommand.SIDE, SlashCommand.BTW}:
         guards.append("review-mode availability")
-    if category == "extension":
+    if category == "extension" and outcome == "shim":
         effect = f"visible deferred-extension compatibility result for /{command.command()}"
     elif category == "compatibility":
         effect = f"visible compatibility result for /{command.command()}"
@@ -498,6 +575,84 @@ class TerminalSlashCommandEffectDispatcher:
             return self._raw(command, args)
         if command is SlashCommand.DIFF:
             return self._diff(command)
+        if command is SlashCommand.DEBUG_CONFIG:
+            return self._debug_config(command)
+        if command is SlashCommand.APPS:
+            from .connectors import TerminalConnectorsController
+
+            view = TerminalConnectorsController(self.app_runtime).run()
+            if view is None:
+                return self._handled(command)
+            return TerminalPromptDispatchResult(
+                "show_view",
+                command=command,
+                view=view,
+            )
+        if command is SlashCommand.PLUGINS:
+            from .plugins import TerminalPluginsController
+
+            view = TerminalPluginsController(self.app_runtime).run()
+            if view is None:
+                return self._handled(command)
+            return TerminalPromptDispatchResult(
+                "show_view",
+                command=command,
+                view=view,
+            )
+        if command is SlashCommand.MCP:
+            value = args.strip().lower()
+            if value not in {"", "verbose"}:
+                self._message("Usage: /mcp [verbose]", error=True)
+                return self._handled(command)
+            from ..history_cell.mcp import new_mcp_inventory_loading
+
+            config = getattr(
+                self.app_runtime.active_thread_runtime,
+                "session_config",
+                None,
+            )
+            self.app_runtime.insert_history_cell(
+                new_mcp_inventory_loading(
+                    bool(getattr(config, "animations", True))
+                )
+            )
+            self.app_runtime.handle_app_event(
+                AppEvent.of(
+                    "FetchMcpInventory",
+                    detail="full" if value == "verbose" else "tools_and_auth_only",
+                    thread_id=getattr(self.app_runtime.chat_widget, "thread_id", None),
+                )
+            )
+            return self._handled(command)
+        if command is SlashCommand.PETS:
+            normalized = args.strip().lower()
+            event = (
+                AppEvent.of("PetDisabled")
+                if normalized
+                in {"disable", "disabled", "hide", "hidden", "off", "none"}
+                else AppEvent.of("PetSelected", pet_id=args.strip())
+            )
+            self.app_runtime.handle_app_event(event)
+            return self._handled(command)
+        if command is SlashCommand.IDE:
+            return self._ide(command, args)
+        if command is SlashCommand.KEYMAP:
+            self._message(KEYMAP_USAGE, error=True)
+            return self._handled(command)
+        if command is SlashCommand.VIM:
+            toggle = getattr(
+                self.app_runtime.chat_widget,
+                "toggle_vim_mode_and_notify",
+                None,
+            )
+            if not callable(toggle):
+                raise RuntimeError("Vim mode controller is unavailable")
+            toggle()
+            return self._handled(command)
+        if command is SlashCommand.ELEVATE_SANDBOX:
+            return self._elevate_sandbox(command)
+        if command is SlashCommand.SANDBOX_READ_ROOT:
+            return self._sandbox_read_root(command, args)
         if command is SlashCommand.RENAME:
             return self._rename(command, args)
         if command is SlashCommand.COMPACT:
@@ -518,8 +673,135 @@ class TerminalSlashCommandEffectDispatcher:
         if command in {SlashCommand.AGENT, SlashCommand.MULTI_AGENTS}:
             self.app_runtime.handle_app_event(AppEvent.open_agent_picker())
             return self._handled(command)
+        if command in {SlashCommand.SIDE, SlashCommand.BTW}:
+            return self._side(command, args)
         if command in {SlashCommand.NEW, SlashCommand.RESUME, SlashCommand.FORK}:
             return self._session_command(command, args)
+        if command is SlashCommand.LOGOUT:
+            self.app_runtime.handle_app_event(AppEvent.logout())
+            return TerminalPromptDispatchResult("exit", command=command)
+        if command is SlashCommand.ROLLOUT:
+            rollout_path = getattr(self.app_runtime, "rollout_path", None)
+            self._message(
+                (
+                    f"Current rollout path: {rollout_path}"
+                    if rollout_path is not None
+                    else "Rollout path is not available yet."
+                )
+            )
+            return self._handled(command)
+        if command is SlashCommand.TEST_APPROVAL:
+            from ..approval_events import ApplyPatchApprovalRequestEvent
+            from ..diff_model import FileChange
+
+            self.app_runtime.chat_widget.on_apply_patch_approval_request(
+                "1",
+                ApplyPatchApprovalRequestEvent(
+                    call_id="1",
+                    turn_id="turn-1",
+                    changes={
+                        Path("/tmp/test.txt"): FileChange.add("test"),
+                        Path("/tmp/test2.txt"): FileChange.update(
+                            "+test\n-test2"
+                        ),
+                    },
+                    reason=None,
+                    grant_root=Path("/tmp"),
+                ),
+            )
+            return self._handled(command)
+        if command is SlashCommand.MEMORY_DROP:
+            self._message(
+                "Memory maintenance: Not available in TUI yet.",
+                error=True,
+            )
+            return self._handled(command)
+        if command is SlashCommand.MEMORY_UPDATE:
+            self._message(
+                "Memory maintenance: Not available in TUI yet.",
+                error=True,
+            )
+            return self._handled(command)
+        if command is SlashCommand.PS:
+            from ..history_cell.exec import (
+                UnifiedExecProcessDetails,
+                new_unified_exec_processes_output,
+            )
+
+            lifecycle = getattr(
+                self.app_runtime.chat_widget,
+                "command_lifecycle",
+                None,
+            )
+            processes = [
+                UnifiedExecProcessDetails(
+                    command_display=str(getattr(process, "command_display", "")),
+                    recent_chunks=list(getattr(process, "recent_chunks", ())),
+                )
+                for process in getattr(lifecycle, "unified_exec_processes", ())
+            ]
+            self.app_runtime.insert_history_cell(
+                new_unified_exec_processes_output(processes)
+            )
+            return self._handled(command)
+        if command is SlashCommand.STOP:
+            from ..app_command import AppCommand
+
+            result = self._submit_operation(
+                command,
+                "Stopping background terminals",
+                AppCommand.clean_background_terminals(),
+            )
+            lifecycle = getattr(
+                self.app_runtime.chat_widget,
+                "command_lifecycle",
+                None,
+            )
+            if lifecycle is not None:
+                lifecycle.unified_exec_processes.clear()
+                lifecycle.sync_unified_exec_footer()
+            self._message("Stopping all background terminals.")
+            return result
+        if command is SlashCommand.REALTIME:
+            from pycodex.features import Feature
+
+            from ..app_command import AppCommand
+            from .realtime import (
+                REALTIME_FOOTER_HINT_ITEMS,
+                RealtimeConversationPhase,
+                RealtimeConversationUiState,
+            )
+
+            config = getattr(
+                getattr(self.app_runtime, "active_thread_runtime", None),
+                "session_config",
+                None,
+            )
+            features = getattr(config, "features", None)
+            enabled = getattr(features, "enabled", None)
+            if not (callable(enabled) and enabled(Feature.REALTIME_CONVERSATION)):
+                return self._handled(command)
+            state = getattr(self.app_runtime, "realtime_conversation_ui_state", None)
+            if not isinstance(state, RealtimeConversationUiState):
+                state = RealtimeConversationUiState()
+                self.app_runtime.realtime_conversation_ui_state = state
+            if state.is_live():
+                state.requested_close = True
+                state.phase = RealtimeConversationPhase.STOPPING
+                self.app_runtime.footer_hint_override = None
+                return self._submit_operation(
+                    command,
+                    "Stopping realtime voice",
+                    AppCommand.realtime_conversation_close(),
+                )
+            state.phase = RealtimeConversationPhase.STARTING
+            state.requested_close = False
+            self.app_runtime.footer_hint_override = REALTIME_FOOTER_HINT_ITEMS
+            return self._submit_operation(
+                command,
+                "Starting realtime voice",
+                AppCommand.realtime_conversation_start(None, None),
+            )
         if command in _DEFERRED_EXTENSION_COMMANDS:
             self._message(
                 f"/{command.command()} is recognized, but this extension area is not enabled "
@@ -531,6 +813,102 @@ class TerminalSlashCommandEffectDispatcher:
             f"/{command.command()} is recognized, but its product effect is not yet available "
             "in the current PyCodex terminal runtime."
         )
+        return self._handled(command)
+
+    def _side(
+        self,
+        command: SlashCommand,
+        args: str,
+    ) -> TerminalPromptDispatchResult:
+        parent_thread_id = getattr(
+            getattr(self.app_runtime, "routing_state", None),
+            "active_thread_id",
+            None,
+        )
+        if parent_thread_id is None:
+            self._message(before_session_unavailable_message(command), error=True)
+            return self._handled(command)
+        side_state = getattr(self.app_runtime, "side_ui_state", None)
+        if side_state is not None:
+            side_state.side_context_label = SIDE_STARTING_CONTEXT_LABEL
+        self.app_runtime.handle_app_event(
+            AppEvent.start_side(parent_thread_id, args or None)
+        )
+        return self._handled(command)
+
+    def _ide(
+        self,
+        command: SlashCommand,
+        args: str,
+    ) -> TerminalPromptDispatchResult:
+        handler = getattr(self.app_runtime, "handle_ide_command_args", None)
+        if not callable(handler):
+            raise RuntimeError("IDE context controller is unavailable")
+        handler(args)
+        return self._handled(command)
+
+    def _elevate_sandbox(
+        self,
+        command: SlashCommand,
+    ) -> TerminalPromptDispatchResult:
+        if os.name != "nt":
+            return self._handled(command)
+        widget = self.app_runtime.chat_widget
+        if not bool(
+            getattr(widget.config, "windows_degraded_sandbox_active", False)
+        ):
+            return self._handled(command)
+
+        from pycodex.utils.approval_presets import builtin_approval_presets
+
+        preset = next(
+            (candidate for candidate in builtin_approval_presets() if candidate.id == "auto"),
+            None,
+        )
+        if preset is None:
+            self._message(
+                "Internal error: missing the 'auto' approval preset.",
+                error=True,
+            )
+            return self._handled(command)
+
+        permissions = getattr(widget.config, "permissions", None)
+        approval_constraint = getattr(permissions, "approval_policy", None)
+        can_set = getattr(approval_constraint, "can_set", None)
+        if callable(can_set):
+            try:
+                can_set(preset.approval)
+            except Exception as error:
+                self._message(str(error), error=True)
+                return self._handled(command)
+
+        tx = getattr(widget, "app_event_tx", None)
+        send = getattr(tx, "send", None)
+        event = AppEvent.begin_windows_sandbox_elevated_setup(preset)
+        if callable(send):
+            send(event)
+        else:
+            self.app_runtime.handle_app_event(event)
+        return self._handled(command)
+
+    def _sandbox_read_root(
+        self,
+        command: SlashCommand,
+        args: str,
+    ) -> TerminalPromptDispatchResult:
+        if not args:
+            self._message(
+                "Usage: /sandbox-add-read-dir <absolute-directory-path>",
+                error=True,
+            )
+            return self._handled(command)
+        event = AppEvent.begin_windows_sandbox_grant_read_root(args)
+        tx = getattr(self.app_runtime.chat_widget, "app_event_tx", None)
+        send = getattr(tx, "send", None)
+        if callable(send):
+            send(event)
+        else:
+            self.app_runtime.handle_app_event(event)
         return self._handled(command)
 
     def _raw(self, command: SlashCommand, args: str) -> TerminalPromptDispatchResult:
@@ -555,14 +933,38 @@ class TerminalSlashCommandEffectDispatcher:
         active = self.app_runtime.active_thread_runtime
         runner = active.workspace_command_runner()
         cwd = Path(getattr(getattr(active, "session_config", None), "cwd", None) or Path.cwd())
-        inside_repo, diff = _run_sync(get_git_diff(runner, cwd))
-        if not inside_repo:
-            self._message("Not inside a Git repository.", error=True)
-        elif diff:
-            self.app_runtime.insert_info_history_message(diff)
-        else:
-            self._message("No git changes found.")
-        widget.on_diff_complete(diff)
+        try:
+            inside_repo, diff = _run_sync(get_git_diff(runner, cwd))
+            text = diff if inside_repo else "`/diff` — _not inside a git repository_"
+        except Exception as error:
+            text = f"Failed to compute diff: {error}"
+        self.app_runtime.handle_app_event(AppEvent.diff_result(text))
+        return self._handled(command)
+
+    def _debug_config(
+        self,
+        command: SlashCommand,
+    ) -> TerminalPromptDispatchResult:
+        from ..debug_config import new_debug_config_output
+        from ..history_cell.base import PlainHistoryCell
+
+        active = self.app_runtime.active_thread_runtime
+        config = (
+            getattr(active, "session_config", None)
+            or getattr(active, "config", None)
+            or getattr(self.app_runtime.chat_widget, "config", None)
+        )
+        if config is None:
+            raise RuntimeError("active configuration is unavailable")
+        session_network_proxy = getattr(
+            active,
+            "session_network_proxy",
+            None,
+        )
+        output = new_debug_config_output(config, session_network_proxy)
+        self.app_runtime.insert_history_cell(
+            PlainHistoryCell.new(output.lines)
+        )
         return self._handled(command)
 
     def _rename(self, command: SlashCommand, args: str) -> TerminalPromptDispatchResult:
@@ -582,7 +984,9 @@ class TerminalSlashCommandEffectDispatcher:
         active = self.app_runtime.active_thread_runtime
         cwd = Path(getattr(getattr(active, "session_config", None), "cwd", None) or Path.cwd())
         if (cwd / "AGENTS.md").exists():
-            self._message("AGENTS.md already exists in this directory.")
+            self._message(
+                "AGENTS.md already exists here. Skipping /init to avoid overwriting it."
+            )
             return self._handled(command)
         prompt_path = Path(__file__).parents[3] / "codex" / "codex-rs" / "tui" / "prompt_for_init_command.md"
         prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else (
@@ -880,6 +1284,21 @@ def run_terminal_prompt_dispatch(
                     if open_command_with_args is not None
                     else None
                 )
+                if isinstance(view, TerminalSlashCommandViewDispatchResult):
+                    if view.view is not None:
+                        return TerminalPromptDispatchResult(
+                            "show_view",
+                            command=command,
+                            view=view.view,
+                            prepared_args=prepared_args,
+                        )
+                    if view.handled:
+                        return TerminalPromptDispatchResult(
+                            "handled",
+                            command=command,
+                            prepared_args=prepared_args,
+                        )
+                    view = None
                 if view is not None:
                     return TerminalPromptDispatchResult(
                         "show_view",
@@ -899,6 +1318,16 @@ def run_terminal_prompt_dispatch(
             if command_result:
                 return TerminalPromptDispatchResult("handled", command=command)
             view = open_command_view(command.command()) if open_command_view is not None else None
+            if isinstance(view, TerminalSlashCommandViewDispatchResult):
+                if view.view is not None:
+                    return TerminalPromptDispatchResult(
+                        "show_view",
+                        command=command,
+                        view=view.view,
+                    )
+                if view.handled:
+                    return TerminalPromptDispatchResult("handled", command=command)
+                view = None
             if view is not None:
                 return TerminalPromptDispatchResult("show_view", command=command, view=view)
             if dispatch_command is not None:
@@ -1035,6 +1464,7 @@ __all__ = [
     "TerminalPromptDispatchResult",
     "TerminalSlashCommandEffectDispatcher",
     "TerminalSlashCommandRoute",
+    "TerminalSlashCommandViewDispatchResult",
     "TerminalSlashCommandViewDispatcher",
     "TerminalSlashCommandViewHandler",
     "TextElement",

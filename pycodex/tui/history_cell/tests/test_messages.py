@@ -221,7 +221,7 @@ def test_agent_markdown_cell_preserves_soft_breaks_heading_and_table_layout() ->
     source = "## Heading\nfirst\nsecond\n\n| A | B |\n|---|---|\n| 1 | 2 |\n"
     rendered = texts(AgentMarkdownCell.new(source, ".").display_lines(40))
 
-    assert rendered[:3] == ["\u2022 ## Heading", "  first", "  second"]
+    assert rendered[:4] == ["\u2022 ## Heading", "  ", "  first", "  second"]
     assert any("A" in line and "B" in line for line in rendered)
     assert any("1" in line and "2" in line for line in rendered)
     assert not any("|---|" in line for line in rendered)

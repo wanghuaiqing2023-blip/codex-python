@@ -25,7 +25,7 @@
       "rust_root": "codex/codex-rs/analytics",
       "cargo_toml": "codex/codex-rs/analytics/Cargo.toml",
       "python_root": "pycodex/analytics",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "ansi-escape",
@@ -41,7 +41,7 @@
       "rust_root": "codex/codex-rs/codex-api",
       "cargo_toml": "codex/codex-rs/codex-api/Cargo.toml",
       "python_root": "pycodex/codex_api",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "app-server",
@@ -49,7 +49,7 @@
       "rust_root": "codex/codex-rs/app-server",
       "cargo_toml": "codex/codex-rs/app-server/Cargo.toml",
       "python_root": "pycodex/app_server",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "app-server-client",
@@ -73,7 +73,7 @@
       "rust_root": "codex/codex-rs/app-server-protocol",
       "cargo_toml": "codex/codex-rs/app-server-protocol/Cargo.toml",
       "python_root": "pycodex/app_server_protocol",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "app-server-test-client",
@@ -105,7 +105,7 @@
       "rust_root": "codex/codex-rs/apply-patch",
       "cargo_toml": "codex/codex-rs/apply-patch/Cargo.toml",
       "python_root": "pycodex/apply_patch",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "arg0",
@@ -129,7 +129,7 @@
       "rust_root": "codex/codex-rs/aws-auth",
       "cargo_toml": "codex/codex-rs/aws-auth/Cargo.toml",
       "python_root": "pycodex/aws_auth",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "backend-client",
@@ -137,7 +137,7 @@
       "rust_root": "codex/codex-rs/backend-client",
       "cargo_toml": "codex/codex-rs/backend-client/Cargo.toml",
       "python_root": "pycodex/backend_client",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "backend-openapi-models",
@@ -153,7 +153,7 @@
       "rust_root": "codex/codex-rs/bwrap",
       "cargo_toml": "codex/codex-rs/bwrap/Cargo.toml",
       "python_root": "pycodex/bwrap",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "chatgpt",
@@ -169,7 +169,7 @@
       "rust_root": "codex/codex-rs/cli",
       "cargo_toml": "codex/codex-rs/cli/Cargo.toml",
       "python_root": "pycodex/cli",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "client",
@@ -209,7 +209,7 @@
       "rust_root": "codex/codex-rs/cloud-tasks-mock-client",
       "cargo_toml": "codex/codex-rs/cloud-tasks-mock-client/Cargo.toml",
       "python_root": "pycodex/cloud_tasks_mock_client",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "code-mode",
@@ -217,7 +217,7 @@
       "rust_root": "codex/codex-rs/code-mode",
       "cargo_toml": "codex/codex-rs/code-mode/Cargo.toml",
       "python_root": "pycodex/code_mode",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "collaboration-mode-templates",
@@ -265,7 +265,7 @@
       "rust_root": "codex/codex-rs/core-plugins",
       "cargo_toml": "codex/codex-rs/core-plugins/Cargo.toml",
       "python_root": "pycodex/core_plugins",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "core-skills",
@@ -273,7 +273,7 @@
       "rust_root": "codex/codex-rs/core-skills",
       "cargo_toml": "codex/codex-rs/core-skills/Cargo.toml",
       "python_root": "pycodex/core_skills",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "core_test_support",
@@ -289,7 +289,7 @@
       "rust_root": "codex/codex-rs/debug-client",
       "cargo_toml": "codex/codex-rs/debug-client/Cargo.toml",
       "python_root": "pycodex/debug_client",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "exec",
@@ -297,7 +297,7 @@
       "rust_root": "codex/codex-rs/exec",
       "cargo_toml": "codex/codex-rs/exec/Cargo.toml",
       "python_root": "pycodex/exec",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "exec-server",
@@ -313,7 +313,7 @@
       "rust_root": "codex/codex-rs/execpolicy",
       "cargo_toml": "codex/codex-rs/execpolicy/Cargo.toml",
       "python_root": "pycodex/execpolicy",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "execpolicy-legacy",
@@ -321,7 +321,7 @@
       "rust_root": "codex/codex-rs/execpolicy-legacy",
       "cargo_toml": "codex/codex-rs/execpolicy-legacy/Cargo.toml",
       "python_root": "pycodex/execpolicy_legacy",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "experimental-api-macros",
@@ -337,7 +337,7 @@
       "rust_root": "codex/codex-rs/ext/extension-api",
       "cargo_toml": "codex/codex-rs/ext/extension-api/Cargo.toml",
       "python_root": "pycodex/ext/extension_api",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "external-agent-migration",
@@ -353,7 +353,7 @@
       "rust_root": "codex/codex-rs/external-agent-sessions",
       "cargo_toml": "codex/codex-rs/external-agent-sessions/Cargo.toml",
       "python_root": "pycodex/external_agent_sessions",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "features",
@@ -361,7 +361,7 @@
       "rust_root": "codex/codex-rs/features",
       "cargo_toml": "codex/codex-rs/features/Cargo.toml",
       "python_root": "pycodex/features",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "feedback",
@@ -369,7 +369,7 @@
       "rust_root": "codex/codex-rs/feedback",
       "cargo_toml": "codex/codex-rs/feedback/Cargo.toml",
       "python_root": "pycodex/feedback",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "file-search",
@@ -377,7 +377,7 @@
       "rust_root": "codex/codex-rs/file-search",
       "cargo_toml": "codex/codex-rs/file-search/Cargo.toml",
       "python_root": "pycodex/file_search",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "file-system",
@@ -401,7 +401,7 @@
       "rust_root": "codex/codex-rs/git-utils",
       "cargo_toml": "codex/codex-rs/git-utils/Cargo.toml",
       "python_root": "pycodex/git_utils",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "goal-extension",
@@ -409,7 +409,7 @@
       "rust_root": "codex/codex-rs/ext/goal",
       "cargo_toml": "codex/codex-rs/ext/goal/Cargo.toml",
       "python_root": "pycodex/ext/goal",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "guardian",
@@ -417,7 +417,7 @@
       "rust_root": "codex/codex-rs/ext/guardian",
       "cargo_toml": "codex/codex-rs/ext/guardian/Cargo.toml",
       "python_root": "pycodex/ext/guardian",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "hooks",
@@ -457,7 +457,7 @@
       "rust_root": "codex/codex-rs/lmstudio",
       "cargo_toml": "codex/codex-rs/lmstudio/Cargo.toml",
       "python_root": "pycodex/lmstudio",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "login",
@@ -473,7 +473,7 @@
       "rust_root": "codex/codex-rs/codex-mcp",
       "cargo_toml": "codex/codex-rs/codex-mcp/Cargo.toml",
       "python_root": "pycodex/codex_mcp",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "mcp-server",
@@ -481,7 +481,7 @@
       "rust_root": "codex/codex-rs/mcp-server",
       "cargo_toml": "codex/codex-rs/mcp-server/Cargo.toml",
       "python_root": "pycodex/mcp_server",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "mcp_test_support",
@@ -497,7 +497,7 @@
       "rust_root": "codex/codex-rs/ext/memories",
       "cargo_toml": "codex/codex-rs/ext/memories/Cargo.toml",
       "python_root": "pycodex/ext/memories",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "memories-read",
@@ -505,7 +505,7 @@
       "rust_root": "codex/codex-rs/memories/read",
       "cargo_toml": "codex/codex-rs/memories/read/Cargo.toml",
       "python_root": "pycodex/memories/read",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "memories-write",
@@ -529,7 +529,7 @@
       "rust_root": "codex/codex-rs/model-provider",
       "cargo_toml": "codex/codex-rs/model-provider/Cargo.toml",
       "python_root": "pycodex/model_provider",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "model-provider-info",
@@ -553,7 +553,7 @@
       "rust_root": "codex/codex-rs/network-proxy",
       "cargo_toml": "codex/codex-rs/network-proxy/Cargo.toml",
       "python_root": "pycodex/network_proxy",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "ollama",
@@ -561,7 +561,7 @@
       "rust_root": "codex/codex-rs/ollama",
       "cargo_toml": "codex/codex-rs/ollama/Cargo.toml",
       "python_root": "pycodex/ollama",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "otel",
@@ -577,7 +577,7 @@
       "rust_root": "codex/codex-rs/plugin",
       "cargo_toml": "codex/codex-rs/plugin/Cargo.toml",
       "python_root": "pycodex/plugin",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "process-hardening",
@@ -593,7 +593,7 @@
       "rust_root": "codex/codex-rs/protocol",
       "cargo_toml": "codex/codex-rs/protocol/Cargo.toml",
       "python_root": "pycodex/protocol",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "realtime-webrtc",
@@ -601,7 +601,7 @@
       "rust_root": "codex/codex-rs/realtime-webrtc",
       "cargo_toml": "codex/codex-rs/realtime-webrtc/Cargo.toml",
       "python_root": "pycodex/realtime_webrtc",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "response-debug-context",
@@ -617,7 +617,7 @@
       "rust_root": "codex/codex-rs/responses-api-proxy",
       "cargo_toml": "codex/codex-rs/responses-api-proxy/Cargo.toml",
       "python_root": "pycodex/responses_api_proxy",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "rmcp-client",
@@ -625,7 +625,7 @@
       "rust_root": "codex/codex-rs/rmcp-client",
       "cargo_toml": "codex/codex-rs/rmcp-client/Cargo.toml",
       "python_root": "pycodex/rmcp_client",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "rollout",
@@ -649,7 +649,7 @@
       "rust_root": "codex/codex-rs/sandboxing",
       "cargo_toml": "codex/codex-rs/sandboxing/Cargo.toml",
       "python_root": "pycodex/sandboxing",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "secrets",
@@ -657,7 +657,7 @@
       "rust_root": "codex/codex-rs/secrets",
       "cargo_toml": "codex/codex-rs/secrets/Cargo.toml",
       "python_root": "pycodex/secrets",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "shell-command",
@@ -673,7 +673,7 @@
       "rust_root": "codex/codex-rs/shell-escalation",
       "cargo_toml": "codex/codex-rs/shell-escalation/Cargo.toml",
       "python_root": "pycodex/shell_escalation",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "skills",
@@ -681,7 +681,7 @@
       "rust_root": "codex/codex-rs/skills",
       "cargo_toml": "codex/codex-rs/skills/Cargo.toml",
       "python_root": "pycodex/skills",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "state",
@@ -689,7 +689,7 @@
       "rust_root": "codex/codex-rs/state",
       "cargo_toml": "codex/codex-rs/state/Cargo.toml",
       "python_root": "pycodex/state",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "stdio-to-uds",
@@ -697,7 +697,7 @@
       "rust_root": "codex/codex-rs/stdio-to-uds",
       "cargo_toml": "codex/codex-rs/stdio-to-uds/Cargo.toml",
       "python_root": "pycodex/stdio_to_uds",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "terminal-detection",
@@ -729,7 +729,7 @@
       "rust_root": "codex/codex-rs/thread-store",
       "cargo_toml": "codex/codex-rs/thread-store/Cargo.toml",
       "python_root": "pycodex/thread_store",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "tools",
@@ -737,7 +737,7 @@
       "rust_root": "codex/codex-rs/tools",
       "cargo_toml": "codex/codex-rs/tools/Cargo.toml",
       "python_root": "pycodex/tools",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "tui",
@@ -753,7 +753,7 @@
       "rust_root": "codex/codex-rs/uds",
       "cargo_toml": "codex/codex-rs/uds/Cargo.toml",
       "python_root": "pycodex/uds",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-absolute-path",
@@ -761,7 +761,7 @@
       "rust_root": "codex/codex-rs/utils/absolute-path",
       "cargo_toml": "codex/codex-rs/utils/absolute-path/Cargo.toml",
       "python_root": "pycodex/utils/absolute_path",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-approval-presets",
@@ -793,7 +793,7 @@
       "rust_root": "codex/codex-rs/utils/cli",
       "cargo_toml": "codex/codex-rs/utils/cli/Cargo.toml",
       "python_root": "pycodex/utils/cli",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-elapsed",
@@ -825,7 +825,7 @@
       "rust_root": "codex/codex-rs/utils/image",
       "cargo_toml": "codex/codex-rs/utils/image/Cargo.toml",
       "python_root": "pycodex/utils/image",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-json-to-toml",
@@ -857,7 +857,7 @@
       "rust_root": "codex/codex-rs/utils/path-utils",
       "cargo_toml": "codex/codex-rs/utils/path-utils/Cargo.toml",
       "python_root": "pycodex/utils/path_utils",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-plugins",
@@ -873,7 +873,7 @@
       "rust_root": "codex/codex-rs/utils/pty",
       "cargo_toml": "codex/codex-rs/utils/pty/Cargo.toml",
       "python_root": "pycodex/utils/pty",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-readiness",
@@ -897,7 +897,7 @@
       "rust_root": "codex/codex-rs/utils/sandbox-summary",
       "cargo_toml": "codex/codex-rs/utils/sandbox-summary/Cargo.toml",
       "python_root": "pycodex/utils/sandbox_summary",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-sleep-inhibitor",
@@ -905,7 +905,7 @@
       "rust_root": "codex/codex-rs/utils/sleep-inhibitor",
       "cargo_toml": "codex/codex-rs/utils/sleep-inhibitor/Cargo.toml",
       "python_root": "pycodex/utils/sleep_inhibitor",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-stream-parser",
@@ -913,7 +913,7 @@
       "rust_root": "codex/codex-rs/utils/stream-parser",
       "cargo_toml": "codex/codex-rs/utils/stream-parser/Cargo.toml",
       "python_root": "pycodex/utils/stream_parser",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-string",
@@ -921,7 +921,7 @@
       "rust_root": "codex/codex-rs/utils/string",
       "cargo_toml": "codex/codex-rs/utils/string/Cargo.toml",
       "python_root": "pycodex/utils/string",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "utils-template",
@@ -945,7 +945,7 @@
       "rust_root": "codex/codex-rs/windows-sandbox-rs",
       "cargo_toml": "codex/codex-rs/windows-sandbox-rs/Cargo.toml",
       "python_root": "pycodex/windows_sandbox",
-      "disposition": "partial"
+      "disposition": "accepted"
     },
     {
       "scope": "web-search-extension",
@@ -953,7 +953,7 @@
       "rust_root": "codex/codex-rs/ext/web-search",
       "cargo_toml": "codex/codex-rs/ext/web-search/Cargo.toml",
       "python_root": "pycodex/ext/web_search",
-      "disposition": "partial"
+      "disposition": "accepted"
     }
   ]
 }

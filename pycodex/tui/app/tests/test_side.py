@@ -106,7 +106,7 @@ def test_side_thread_ui_sync_and_parent_status_transitions():
     assert state.rename_block_message == SIDE_RENAME_BLOCK_MESSAGE
     assert state.side_conversation_active is True
     assert state.interrupted_turn_notice_mode == "Suppress"
-    assert state.side_context_label == "Side from main thread | Ctrl+C to return"
+    assert state.side_context_label == "Side from main thread · Ctrl+C to return"
     assert active_side_parent_thread_id(state) == "main"
 
     assert set_side_parent_status(state, "main", SideParentStatus.NeedsApproval) is True

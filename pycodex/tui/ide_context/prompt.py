@@ -66,9 +66,16 @@ def apply_ide_context_to_user_input(context: Any, items: MutableSequence[Any]) -
         return True
 
     item = items[text_index]
-    text = str(_field(item, "text", ""))
-    text_elements = tuple(_coerce_text_element(element) for element in (_field(item, "text_elements", []) or []))
-    items[text_index] = prefixed_text_input(prefix, text, text_elements)
+    text, raw_text_elements = _text_input_parts(item)
+    text_elements = tuple(
+        _coerce_text_element(element) for element in raw_text_elements
+    )
+    prefixed = prefixed_text_input(prefix, text, text_elements)
+    items[text_index] = _replace_text_input(
+        item,
+        prefixed.text,
+        prefixed.text_elements,
+    )
     return True
 
 
@@ -160,9 +167,53 @@ def render_prompt_context(context: Any) -> str | None:
 def _is_text_input(item: Any) -> bool:
     if isinstance(item, UserInputText):
         return True
+    kind = str(_field(item, "kind", "") or _field(item, "type", "")).lower()
+    if kind == "text":
+        return True
     if isinstance(item, Mapping):
         return "text" in item and ("path" not in item or item.get("kind") == "text")
     return hasattr(item, "text")
+
+
+def _text_input_parts(item: Any) -> tuple[str, tuple[Any, ...]]:
+    payload = _field(item, "payload")
+    if isinstance(payload, Mapping):
+        return (
+            str(payload.get("text", "")),
+            tuple(payload.get("text_elements", ()) or ()),
+        )
+    return (
+        str(_field(item, "text", "")),
+        tuple(_field(item, "text_elements", ()) or ()),
+    )
+
+
+def _replace_text_input(
+    item: Any,
+    text: str,
+    text_elements: tuple[TextElement, ...],
+) -> Any:
+    payload = _field(item, "payload")
+    if isinstance(payload, Mapping) and hasattr(item, "kind"):
+        updated_payload = dict(payload)
+        updated_payload["text"] = text
+        updated_payload["text_elements"] = text_elements
+        try:
+            return replace(item, payload=updated_payload)
+        except TypeError:
+            pass
+    if isinstance(item, Mapping):
+        updated = dict(item)
+        if isinstance(payload, Mapping):
+            updated_payload = dict(payload)
+            updated_payload["text"] = text
+            updated_payload["text_elements"] = text_elements
+            updated["payload"] = updated_payload
+        else:
+            updated["text"] = text
+            updated["text_elements"] = text_elements
+        return updated
+    return UserInputText(text, text_elements)
 
 
 def _coerce_text_element(element: Any) -> TextElement:

@@ -29,7 +29,8 @@ RUST_MODULE = RustTuiModule(
     status="complete",
 )
 
-TARGET_FRAME_INTERVAL: float = 1.0 / 30.0
+# Rust ``tui.rs`` aliases ``frame_rate_limiter::MIN_FRAME_INTERVAL``.
+TARGET_FRAME_INTERVAL: float = 8_333_334 / 1_000_000_000
 
 
 class NotificationCondition(Enum):

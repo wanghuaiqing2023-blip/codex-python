@@ -7,7 +7,7 @@ hand-roll child-view completion rules.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import os
 from typing import Callable, Protocol, TypeAlias
 
@@ -50,10 +50,13 @@ from .mcp_server_elicitation import McpServerElicitationOverlay
 from .pending_thread_approvals import PendingThreadApprovals
 from .footer import (
     FooterMode,
+    FooterProps,
     ShortcutsState,
+    esc_hint_line,
     shortcut_overlay_lines,
     toggle_shortcut_mode,
 )
+from .terminal_action import TerminalStyledText
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -266,7 +269,7 @@ class TerminalBottomPaneRenderContext:
     popup_is_active_view: bool = False
     cursor_visible: bool = True
     popup_cursor: tuple[int, int] | None = None
-    active_tail_lines: tuple[str, ...] = ()
+    active_tail_lines: tuple[object, ...] = ()
     footer_lines: tuple[str, ...] = ()
     composer_height: int = 1
 
@@ -292,14 +295,26 @@ class TerminalBottomPaneViewState:
     composer: ChatComposer = field(default_factory=ChatComposer)
     view_stack: BottomPaneViewStack = field(default_factory=BottomPaneViewStack)
     selection_events: list[object] = field(default_factory=list)
-    active_tail_lines: tuple[str, ...] = ()
+    active_tail_lines: tuple[object, ...] = ()
     footer_mode: FooterMode = FooterMode.COMPOSER_EMPTY
     pending_thread_approvals: PendingThreadApprovals = field(
         default_factory=PendingThreadApprovals.new
     )
+    command_popup_flags: CommandPopupFlags = field(
+        default_factory=CommandPopupFlags
+    )
+
     @classmethod
-    def new(cls, command_popup_flags: CommandPopupFlags | None = None) -> "TerminalBottomPaneViewState":
-        return cls(composer=ChatComposer(command_popup_flags=command_popup_flags))
+    def new(cls, command_popup_flags: object | None = None) -> "TerminalBottomPaneViewState":
+        flags = (
+            command_popup_flags
+            if isinstance(command_popup_flags, CommandPopupFlags)
+            else CommandPopupFlags()
+        )
+        return cls(
+            composer=ChatComposer(command_popup_flags=flags),
+            command_popup_flags=flags,
+        )
 
     @property
     def draft(self) -> str:
@@ -362,11 +377,47 @@ class TerminalBottomPaneViewState:
 
         self.composer.configure_history(thread_id, log_id, entry_count, lookup)
 
-    def apply_active_tail(self, lines: tuple[str, ...]) -> None:
-        self.active_tail_lines = tuple(str(line) for line in lines)
+    def apply_active_tail(self, lines: tuple[object, ...]) -> None:
+        self.active_tail_lines = tuple(lines)
 
     def apply_pending_thread_approvals(self, approvals: list[str]) -> None:
         self.pending_thread_approvals.set_threads(list(approvals))
+
+    def set_esc_backtrack_hint(self, visible: bool) -> None:
+        """Apply Rust ``BottomPane::show/clear_esc_backtrack_hint``."""
+
+        if visible:
+            self.footer_mode = FooterMode.ESC_HINT
+        elif self.footer_mode is FooterMode.ESC_HINT:
+            self.footer_mode = (
+                FooterMode.COMPOSER_HAS_DRAFT
+                if self.composer.current_text()
+                else FooterMode.COMPOSER_EMPTY
+            )
+
+    def set_side_conversation_active(
+        self,
+        active: bool,
+        context_label: str | None = None,
+    ) -> None:
+        """Apply Rust ``BottomPane::set_side_conversation_active`` state."""
+
+        is_active = bool(active)
+        self.command_popup_flags = replace(
+            self.command_popup_flags,
+            side_conversation_active=is_active,
+        )
+        popup_state = self.composer.command_popup_state
+        popup_state.popup = CommandPopup.new(self.command_popup_flags)
+        popup_state.sync_draft(
+            self.composer.current_text(),
+            active_view_present=self.active_view is not None,
+        )
+        self.composer.placeholder_text = (
+            context_label or "Ask a side question"
+            if is_active
+            else "Ask Codex to do anything"
+        )
 
     def handle_composer_event(
         self,
@@ -520,9 +571,23 @@ class TerminalBottomPaneViewState:
                 (self.composer.history_search_footer_text(),)
                 if self.composer.history_search_footer_text() is not None
                 else (
-                    tuple(shortcut_overlay_lines(ShortcutsState()))
-                    if self.footer_mode is FooterMode.SHORTCUT_OVERLAY
-                    else ()
+                    (
+                        TerminalStyledText(
+                            esc_hint_line(FooterProps(esc_backtrack_hint=True)),
+                            (
+                                (
+                                    esc_hint_line(FooterProps(esc_backtrack_hint=True)),
+                                    "dim",
+                                ),
+                            ),
+                        ),
+                    )
+                    if self.footer_mode is FooterMode.ESC_HINT
+                    else (
+                        tuple(shortcut_overlay_lines(ShortcutsState()))
+                        if self.footer_mode is FooterMode.SHORTCUT_OVERLAY
+                        else ()
+                    )
                 )
             ),
             composer_height=composer_height,

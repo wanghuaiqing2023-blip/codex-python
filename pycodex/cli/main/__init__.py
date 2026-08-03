@@ -2449,6 +2449,17 @@ def _build_tui_core_active_thread_runtime(parsed: ParsedCli, *, stderr: TextIO) 
         bootstrap_plan,
         exec_policy_rules=exec_policy_rules,
     )
+    # Rust ``codex-tui::run_main`` applies the syntax theme only after the
+    # final config reload. Keep the same boundary so startup, resume, and the
+    # /theme picker all observe one active immutable theme.
+    from pycodex.tui.render.highlight import set_theme_override
+
+    theme_warning = set_theme_override(session_config.tui_theme, codex_home)
+    if theme_warning is not None:
+        session_config = replace(
+            session_config,
+            startup_warnings=(*session_config.startup_warnings, theme_warning),
+        )
     auth_json = read_auth_json()
     runtime_state = build_default_core_exec_runtime_state(
         session_config,

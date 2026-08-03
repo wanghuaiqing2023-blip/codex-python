@@ -8,11 +8,14 @@ contract: fetch request, cwd guard, success/error handling, and view opening.
 from __future__ import annotations
 
 from pathlib import Path
+import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 from .._porting import RustTuiModule
 from ..bottom_pane.hooks_browser_view import HooksBrowserView
 from ..hooks_rpc import hooks_list_entry_for_cwd
+from ..hooks_rpc import fetch_hooks_list
 
 
 RUST_MODULE = RustTuiModule(
@@ -64,6 +67,40 @@ def open_hooks_browser(widget: Any, entry: Any) -> None:
     widget.request_redraw()
 
 
+@dataclass
+class TerminalHooksPopupController:
+    """Terminal adapter for Rust ``ChatWidget::add_hooks_output``."""
+
+    app_runtime: Any
+
+    def open_view(self) -> HooksBrowserView:
+        cwd = Path(getattr(self.app_runtime, "cwd", Path.cwd()))
+        request_handle = getattr(self.app_runtime, "config_request_handle", None)
+        entry: Any = None
+        if request_handle is not None:
+            try:
+                response = asyncio.run(fetch_hooks_list(request_handle, cwd))
+                entry = hooks_list_entry_for_cwd(response, cwd)
+            except BaseException:
+                # Local terminal runtimes can expose only the config-write
+                # request boundary. An empty entry is the faithful result when
+                # that runtime has no hooks catalog backend.
+                entry = None
+        if entry is None:
+            from ..hooks_rpc import HooksListEntry
+
+            entry = HooksListEntry(cwd=cwd)
+        return HooksBrowserView.from_entry(
+            entry,
+            getattr(self.app_runtime, "app_event_sender", None),
+            getattr(self.app_runtime, "runtime_keymap", None),
+        )
+
+    def handle_events(self, events: tuple[object, ...]) -> None:
+        del events
+        return None
+
+
 def _send_event(widget: Any, event: dict[str, Any]) -> None:
     sender = getattr(widget, "app_event_tx")
     if hasattr(sender, "send"):
@@ -90,6 +127,7 @@ class HooksMixin:
 __all__ = [
     "HooksMixin",
     "RUST_MODULE",
+    "TerminalHooksPopupController",
     "add_hooks_output",
     "on_hooks_loaded",
     "open_hooks_browser",

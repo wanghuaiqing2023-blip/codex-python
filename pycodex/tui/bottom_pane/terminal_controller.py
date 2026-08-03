@@ -14,6 +14,7 @@ from typing import Any, Callable, TextIO, TypeVar
 
 from .chat_composer import TERMINAL_COMPOSER_SHUTDOWN_PLACEHOLDER
 from .terminal_projection import TerminalBottomPaneRequestRunner
+from .terminal_action import TerminalStyledText
 from .view_stack import (
     TerminalBottomPaneViewState,
     TerminalCommandViewFactory,
@@ -53,7 +54,25 @@ class TerminalBottomPaneController:
         self._on_selection_events = on_selection_events
         self._set_terminal_title_requires_action = set_terminal_title_requires_action or (lambda _required: None)
         composer_cursor_visible = cursor_visible or (lambda: True)
-        self._view_state = TerminalBottomPaneViewState.new(command_popup_flags)
+        self._view_state = TerminalBottomPaneViewState.new(
+            command_popup_flags
+        )
+
+        base_footer_right_text = footer_right_text or (lambda: "")
+
+        def composer_footer_right_text() -> str:
+            vim_label = self._view_state.composer.draft.textarea.vim_mode_label()
+            base = str(base_footer_right_text() or "")
+            spans: list[tuple[str, str | None]] = []
+            if vim_label:
+                spans.append(
+                    (f"Vim: {vim_label}", "magenta" if vim_label == "Normal" else "green")
+                )
+            if base:
+                if spans:
+                    spans.append(("  ", None))
+                spans.append((base, None))
+            return TerminalStyledText("".join(text for text, _style in spans), tuple(spans))
 
         def visible_live_status() -> TerminalLiveStatusSurface:
             if not self._view_state.status_indicator_visible:
@@ -104,7 +123,7 @@ class TerminalBottomPaneController:
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
                 footer_text=footer_text,
-                footer_right_text=footer_right_text or (lambda: ""),
+                footer_right_text=composer_footer_right_text,
             ),
         )
 
@@ -127,6 +146,34 @@ class TerminalBottomPaneController:
 
         self._view_state.composer.is_task_running = bool(running)
 
+    def set_vim_enabled(self, enabled: bool) -> None:
+        """Forward Rust ``BottomPane::set_vim_enabled`` to the composer owner."""
+
+        self._view_state.composer.set_vim_enabled(bool(enabled))
+
+    def set_esc_backtrack_hint(self, visible: bool) -> None:
+        """Forward the app-owned Esc backtrack hint into BottomPane state."""
+
+        self._view_state.set_esc_backtrack_hint(bool(visible))
+
+    def toggle_vim_enabled(self) -> bool:
+        """Toggle Rust-owned composer Vim state and return the new value."""
+
+        return bool(self._view_state.composer.toggle_vim_enabled())
+
+    def set_side_conversation_active(
+        self,
+        active: bool,
+        context_label: str | None = None,
+    ) -> None:
+        """Apply Rust ``BottomPane::set_side_conversation_active`` live state."""
+
+        self._view_state.set_side_conversation_active(
+            active,
+            context_label,
+        )
+        self.render_without_resize_check()
+
     def _record_submission(self, text: str) -> None:
         """Record a submitted composer entry through its Rust-owned history."""
 
@@ -143,7 +190,7 @@ class TerminalBottomPaneController:
 
         self._view_state.configure_history(thread_id, log_id, entry_count, lookup)
 
-    def sync_active_tail(self, lines: tuple[str, ...]) -> None:
+    def sync_active_tail(self, lines: tuple[object, ...]) -> None:
         """Apply chatwidget-owned mutable stream-tail frame input."""
 
         self._view_state.apply_active_tail(lines)

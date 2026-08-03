@@ -257,12 +257,19 @@ def _normalized_first_turn_request_context(request: dict[str, object]) -> dict[s
     )
     isolated_home_pattern = re.compile(r"pycodex-native-home-[^/\\\s)]+")
     goal_timestamp_pattern = re.compile(r'("(?:createdAt|updatedAt)"\s*:\s*)\d+')
+    environment_date_pattern = re.compile(
+        r"(<current_date>)\d{4}-\d{2}-\d{2}(</current_date>)"
+    )
 
     def normalize(value: object) -> object:
         if isinstance(value, str):
             normalized = value.replace("\r\n", "\n").replace("\r", "\n")
             normalized = uuid_pattern.sub("<uuid>", normalized)
             normalized = goal_timestamp_pattern.sub(r"\1<timestamp>", normalized)
+            normalized = environment_date_pattern.sub(
+                r"\1<date>\2",
+                normalized,
+            )
             return isolated_home_pattern.sub("pycodex-native-home-<temp>", normalized)
         if isinstance(value, list):
             return [normalize(item) for item in value]

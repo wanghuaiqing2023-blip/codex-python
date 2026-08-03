@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 from urllib.parse import unquote, urlparse
 
+from pycodex.vendor import import_vendored
+
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span, _display_width
 from ..terminal_hyperlinks import (
@@ -27,6 +29,7 @@ from ..terminal_hyperlinks import (
     TerminalHyperlink,
     annotate_web_urls_in_line,
     line_text,
+    remap_wrapped_line,
     visible_lines,
 )
 from ..wrapping import RtOptions, adaptive_wrap_line
@@ -41,8 +44,8 @@ RUST_MODULE = RustTuiModule(
 
 TABLE_COLUMN_GAP = 2
 TABLE_CELL_PADDING = 1
-TABLE_HEADER_SEPARATOR_CHAR = "─"
-TABLE_BODY_SEPARATOR_CHAR = "─"
+TABLE_HEADER_SEPARATOR_CHAR = "\u2501"
+TABLE_BODY_SEPARATOR_CHAR = "\u2500"
 
 COLON_LOCATION_SUFFIX_RE = re.compile(r":\d+(?::\d+)?(?:[-–]\d+(?::\d+)?)?$")
 HASH_LOCATION_SUFFIX_RE = re.compile(r"^L\d+(?:C\d+)?(?:-L\d+(?:C\d+)?)?$")
@@ -987,87 +990,445 @@ def make_body_row(*values: str) -> TableBodyRow:
 
 
 def _render_blocks(markdown: str, width: Optional[int], cwd: Optional[Path]) -> list[HyperlinkLine]:
-    raw_lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out: list[HyperlinkLine] = []
-    paragraph: list[str] = []
-    in_code = False
-    code_lines: list[str] = []
-    index = 0
+    markdown_it = import_vendored("markdown_it")
+    parser = markdown_it.MarkdownIt("commonmark").enable("strikethrough").enable("table")
+    tokens = parser.parse(markdown.replace("\r\n", "\n").replace("\r", "\n"))
+    return _MarkdownTokenRenderer(width, cwd).render(tokens)
 
-    def flush_paragraph() -> None:
-        if not paragraph:
+
+@dataclass
+class _BlockContext:
+    kind: str
+    initial: tuple[Span, ...]
+    subsequent: tuple[Span, ...]
+
+
+class _MarkdownTokenRenderer:
+    """CommonMark token consumer mirroring Rust ``markdown_render::Writer``.
+
+    ``markdown-it-py`` is only the event source.  Layout, semantic styles,
+    hyperlink columns, code highlighting and table policy remain Codex-owned.
+    """
+
+    def __init__(self, width: Optional[int], cwd: Optional[Path]) -> None:
+        self.width = width
+        self.cwd = cwd
+        self.out: list[HyperlinkLine] = []
+        self.contexts: list[_BlockContext] = []
+        self.lists: list[dict[str, Any]] = []
+        self.needs_blank = False
+
+    def render(self, tokens: Sequence[Any]) -> list[HyperlinkLine]:
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            kind = token.type
+
+            if kind == "blockquote_open":
+                self._start_outer_block()
+                self.contexts.append(
+                    _BlockContext("quote", (Span("> "),), (Span("> "),))
+                )
+                self.needs_blank = False
+                index += 1
+                continue
+            if kind == "blockquote_close":
+                self._pop_context("quote")
+                self.needs_blank = True
+                index += 1
+                continue
+            if kind in {"bullet_list_open", "ordered_list_open"}:
+                if not self.lists:
+                    self._start_outer_block()
+                ordered = kind == "ordered_list_open"
+                start = int((token.attrs or {}).get("start", 1)) if ordered else None
+                self.lists.append({"ordered": ordered, "next": start})
+                self.needs_blank = False
+                index += 1
+                continue
+            if kind in {"bullet_list_close", "ordered_list_close"}:
+                if self.lists:
+                    self.lists.pop()
+                if not self.lists:
+                    self.needs_blank = True
+                index += 1
+                continue
+            if kind == "list_item_open":
+                depth = max(1, len(self.lists))
+                list_state = self.lists[-1]
+                marker_width = depth * 4 - 3
+                if list_state["ordered"]:
+                    number = int(list_state["next"])
+                    list_state["next"] = number + 1
+                    marker = f"{number:>{marker_width}}. "
+                    marker_style = "light_blue"
+                else:
+                    marker = " " * max(0, marker_width - 1) + "- "
+                    marker_style = None
+                self.contexts.append(
+                    _BlockContext(
+                        "item",
+                        (Span(marker, marker_style),),
+                        (Span(" " * _display_width(marker)),),
+                    )
+                )
+                self.needs_blank = False
+                index += 1
+                continue
+            if kind == "list_item_close":
+                self._pop_context("item")
+                index += 1
+                continue
+            if kind == "paragraph_open":
+                self._start_content_block()
+                inline = tokens[index + 1] if index + 1 < len(tokens) else None
+                if inline is not None and inline.type == "inline":
+                    self._append_logical_lines(_render_inline_tokens(inline.children or (), self.cwd))
+                    index += 3
+                else:
+                    index += 1
+                self.needs_blank = True
+                continue
+            if kind == "heading_open":
+                self._start_content_block()
+                level = max(1, min(6, int(str(token.tag or "h1")[1:])))
+                heading_style = getattr(MarkdownStyles(), f"h{level}")
+                inline = tokens[index + 1] if index + 1 < len(tokens) else None
+                logical = _render_inline_tokens(
+                    inline.children or () if inline is not None else (),
+                    self.cwd,
+                    base_style=heading_style,
+                )
+                if not logical:
+                    logical = [HyperlinkLine.new("")]
+                logical[0] = _prepend_spans(
+                    logical[0], (Span("#" * level + " ", heading_style),)
+                )
+                self._append_logical_lines(logical)
+                self.needs_blank = True
+                index += 3
+                continue
+            if kind in {"fence", "code_block"}:
+                self._start_outer_block(force_blank=True)
+                info = str(getattr(token, "info", "") or "").strip()
+                language = re.split(r"[,\s]", info, maxsplit=1)[0] if info else None
+                code = str(token.content).replace("\r\n", "\n").replace("\r", "\n")
+                code_lines = code.split("\n")
+                if code_lines and code_lines[-1] == "":
+                    code_lines.pop()
+                self._append_logical_lines(
+                    _render_fenced_code_lines(code_lines, language),
+                    wrap=False,
+                )
+                self.needs_blank = True
+                index += 1
+                continue
+            if kind == "table_open":
+                self._start_outer_block(force_blank=True)
+                rendered, index = self._render_table_tokens(tokens, index)
+                self._append_logical_lines(rendered, prewrapped=True)
+                self.needs_blank = True
+                continue
+            if kind == "hr":
+                self._start_outer_block()
+                self._append_logical_lines([HyperlinkLine.new("鈥斺€斺€?")])
+                self.needs_blank = True
+                index += 1
+                continue
+            index += 1
+
+        while self.out and line_text(self.out[-1].line) == "":
+            self.out.pop()
+        return self.out
+
+    def _start_outer_block(self, *, force_blank: bool = False) -> None:
+        if self.out and (force_blank or self.needs_blank):
+            if line_text(self.out[-1].line) != "":
+                self.out.append(HyperlinkLine.new(""))
+
+    def _start_content_block(self) -> None:
+        if not self.lists:
+            self._start_outer_block()
+
+    def _pop_context(self, kind: str) -> None:
+        for index in range(len(self.contexts) - 1, -1, -1):
+            if self.contexts[index].kind == kind:
+                self.contexts.pop(index)
+                return
+
+    def _prefixes(self) -> tuple[tuple[Span, ...], tuple[Span, ...]]:
+        last_item = next(
+            (index for index in range(len(self.contexts) - 1, -1, -1) if self.contexts[index].kind == "item"),
+            None,
+        )
+        initial: list[Span] = []
+        subsequent: list[Span] = []
+        for index, context in enumerate(self.contexts):
+            if context.kind != "item" or index == last_item:
+                initial.extend(context.initial)
+                subsequent.extend(context.subsequent)
+        return tuple(initial), tuple(subsequent)
+
+    def _line_style(self, source: HyperlinkLine) -> Any:
+        if any(context.kind == "quote" for context in self.contexts):
+            return _merge_style_names(source.line.style, MarkdownStyles().blockquote)
+        return source.line.style
+
+    def _append_logical_lines(
+        self,
+        lines: Sequence[HyperlinkLine],
+        *,
+        wrap: bool = True,
+        prewrapped: bool = False,
+    ) -> None:
+        initial, subsequent = self._prefixes()
+        first = True
+        for source in lines:
+            first_prefix = initial if first else subsequent
+            laid_out = _layout_hyperlink_line(
+                source,
+                self.width if wrap and not prewrapped else None,
+                first_prefix,
+                subsequent,
+                self._line_style(source),
+            )
+            self.out.extend(laid_out)
+            first = False
+
+    def _render_table_tokens(
+        self, tokens: Sequence[Any], start: int
+    ) -> tuple[list[HyperlinkLine], int]:
+        header: list[TableCell] = []
+        rows: list[list[TableCell]] = []
+        current_row: list[TableCell] | None = None
+        in_header = False
+        alignments: list[str] = []
+        index = start + 1
+        while index < len(tokens):
+            token = tokens[index]
+            kind = token.type
+            if kind == "table_close":
+                break
+            if kind == "thead_open":
+                in_header = True
+            elif kind == "thead_close":
+                in_header = False
+            elif kind == "tr_open":
+                current_row = []
+            elif kind == "tr_close" and current_row is not None:
+                if in_header:
+                    header = current_row
+                else:
+                    rows.append(current_row)
+                current_row = None
+            elif kind in {"th_open", "td_open"}:
+                attrs = token.attrs or {}
+                style = str(attrs.get("style", ""))
+                if kind == "th_open":
+                    if "center" in style:
+                        alignments.append("center")
+                    elif "right" in style:
+                        alignments.append("right")
+                    else:
+                        alignments.append("left")
+                inline = tokens[index + 1] if index + 1 < len(tokens) else None
+                cell = TableCell(
+                    _render_inline_tokens(
+                        inline.children or () if inline is not None else (), self.cwd
+                    )
+                )
+                if current_row is not None:
+                    current_row.append(cell)
+            index += 1
+        initial, _ = self._prefixes()
+        prefix_width = sum(_display_width(span.content) for span in initial)
+        table_width = (
+            None if self.width is None else max(1, self.width - prefix_width)
+        )
+        return _render_rich_table(header, rows, alignments, table_width), index + 1
+
+
+def _merge_style_names(*styles: Any) -> Any:
+    values = [style for style in styles if style is not None]
+    if not values:
+        return None
+    if all(isinstance(style, str) for style in values):
+        tokens: list[str] = []
+        for style in values:
+            for token in str(style).split():
+                if token not in tokens:
+                    tokens.append(token)
+        return " ".join(tokens)
+    result = values[0]
+    for style in values[1:]:
+        patch = getattr(result, "patch", None)
+        if callable(patch) and type(result) is type(style):
+            result = patch(style)
+        elif isinstance(style, str):
+            result = {"base": result, **{token: True for token in style.split()}}
+        else:
+            result = style
+    return result
+
+
+def _append_hyperlink_line(target: HyperlinkLine, appended: HyperlinkLine) -> None:
+    shift = target.width()
+    target.line = Line(
+        (*target.line.spans, *appended.line.spans),
+        style=target.line.style,
+        alignment=target.line.alignment,
+    )
+    target.hyperlinks.extend(
+        TerminalHyperlink(
+            range(link.columns.start + shift, link.columns.stop + shift),
+            link.destination,
+        )
+        for link in appended.hyperlinks
+    )
+
+
+def _render_inline_tokens(
+    tokens: Sequence[Any], cwd: Optional[Path], base_style: Any = None
+) -> list[HyperlinkLine]:
+    lines = [HyperlinkLine.new("")]
+    style_stack: list[Any] = [base_style]
+    links: list[LinkState] = []
+
+    def current_style() -> Any:
+        return style_stack[-1]
+
+    def append_text(content: str, style: Any = None) -> None:
+        if not content:
             return
-        source_lines = [part for part in paragraph if part.strip()]
-        paragraph.clear()
-        for source_line in source_lines:
-            out.extend(
-                _wrap_hyperlink_line(
-                    _inline_hyperlink_line(source_line.strip(), cwd),
-                    width,
+        active_link = links[-1] if links else None
+        if active_link is not None and active_link.local_target_display is not None:
+            return
+        span = Span(content, current_style() if style is None else style)
+        annotated = HyperlinkLine.new(Line.from_spans((span,)))
+        if active_link is not None:
+            annotated.hyperlinks = [
+                TerminalHyperlink(range(0, _display_width(content)), active_link.destination)
+            ]
+        else:
+            annotated = annotate_web_urls_in_line(annotated.line)
+        _append_hyperlink_line(lines[-1], annotated)
+
+    for token in tokens:
+        kind = token.type
+        if kind in {"strong_open", "em_open", "s_open"}:
+            style = {
+                "strong_open": MarkdownStyles().strong,
+                "em_open": MarkdownStyles().emphasis,
+                "s_open": MarkdownStyles().strikethrough,
+            }[kind]
+            style_stack.append(_merge_style_names(current_style(), style))
+        elif kind in {"strong_close", "em_close", "s_close"}:
+            if len(style_stack) > 1:
+                style_stack.pop()
+        elif kind == "link_open":
+            destination = str((token.attrs or {}).get("href", ""))
+            links.append(
+                LinkState(
+                    destination,
+                    should_render_link_destination(destination),
+                    (
+                        render_local_link_target(destination, cwd)
+                        if is_local_path_like_link(destination)
+                        else None
+                    ),
                 )
             )
+        elif kind == "link_close":
+            if not links:
+                continue
+            link = links.pop()
+            if link.show_destination:
+                append_text(" (")
+                destination = HyperlinkLine.new("")
+                destination.push_span(
+                    Span(link.destination, MarkdownStyles().link), link.destination
+                )
+                _append_hyperlink_line(lines[-1], destination)
+                append_text(")")
+            elif link.local_target_display is not None:
+                append_text(
+                    link.local_target_display,
+                    _merge_style_names(current_style(), MarkdownStyles().code),
+                )
+        elif kind == "text":
+            append_text(str(token.content))
+        elif kind == "code_inline":
+            append_text(str(token.content), MarkdownStyles().code)
+        elif kind in {"softbreak", "hardbreak"}:
+            lines.append(HyperlinkLine.new(""))
+        elif kind in {"html_inline", "html_block"}:
+            append_text(str(token.content))
+        elif kind == "image":
+            append_text(str(token.content))
+    return lines
 
-    while index < len(raw_lines):
-        line = raw_lines[index]
-        stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            if in_code:
-                out.extend(HyperlinkLine.new(code_line) for code_line in code_lines)
-                code_lines = []
-                in_code = False
-            else:
-                flush_paragraph()
-                in_code = True
-            index += 1
-            continue
-        if in_code:
-            code_lines.append(line)
-            index += 1
-            continue
-        if not stripped:
-            flush_paragraph()
-            if out and line == "":
-                out.append(HyperlinkLine.new(""))
-            index += 1
-            continue
-        table = _try_parse_table(raw_lines, index)
-        if table is not None:
-            flush_paragraph()
-            header, rows, consumed = table
-            out.extend(_render_table(header, rows, width))
-            index += consumed
-            continue
-        if _split_table_row(line) is not None:
-            # pulldown-cmark keeps a speculative table header as a standalone
-            # paragraph until a delimiter confirms table structure.
-            flush_paragraph()
-            out.extend(_wrap_hyperlink_line(_inline_hyperlink_line(line.strip(), cwd), width))
-            index += 1
-            continue
-        list_match = re.match(r"^(\s*)((?:[-*+])|\d+[.)])\s+(.*)$", line)
-        if list_match:
-            flush_paragraph()
-            indent, marker, body = list_match.groups()
-            prefix = f"{indent}{marker} "
-            subsequent = " " * _display_width(prefix)
-            out.extend(_wrap_with_prefix(_inline_hyperlink_line(body, cwd), width, prefix, subsequent))
-            index += 1
-            continue
-        if stripped.startswith(">"):
-            flush_paragraph()
-            quote = re.sub(r"^>\s?", "", stripped)
-            out.extend(_wrap_with_prefix(_inline_hyperlink_line(quote, cwd), width, "> ", "> "))
-            index += 1
-            continue
-        paragraph.append(line)
-        index += 1
 
-    flush_paragraph()
-    if in_code:
-        out.extend(HyperlinkLine.new(code_line) for code_line in code_lines)
-    while out and line_text(out[-1].line) == "":
-        out.pop()
-    return out
+def _prepend_spans(line: HyperlinkLine, spans: Sequence[Span]) -> HyperlinkLine:
+    shift = sum(_display_width(span.content) for span in spans)
+    return HyperlinkLine(
+        Line((*spans, *line.line.spans), style=line.line.style),
+        [
+            TerminalHyperlink(
+                range(link.columns.start + shift, link.columns.stop + shift),
+                link.destination,
+            )
+            for link in line.hyperlinks
+        ],
+    )
+
+
+def _layout_hyperlink_line(
+    line: HyperlinkLine,
+    width: Optional[int],
+    initial_prefix: Sequence[Span],
+    subsequent_prefix: Sequence[Span],
+    line_style: Any,
+) -> list[HyperlinkLine]:
+    if width is None:
+        prefixed = _prepend_spans(line, initial_prefix)
+        prefixed.line = Line(prefixed.line.spans, style=line_style)
+        return [prefixed]
+    options = RtOptions.new(width).initial_indent(
+        Line.from_spans(initial_prefix)
+    ).subsequent_indent(Line.from_spans(subsequent_prefix))
+    wrapped = adaptive_wrap_line(line.line, options)
+    remapped = remap_wrapped_line(line, wrapped)
+    for item in remapped:
+        item.line = Line(item.line.spans, style=line_style)
+    return remapped
+
+
+def _render_fenced_code_lines(
+    code_lines: Sequence[str],
+    language: Optional[str],
+) -> list[HyperlinkLine]:
+    """Render a fenced block through Rust's active syntax-theme boundary."""
+
+    if not code_lines:
+        return []
+    if language:
+        from ..render.highlight import highlight_code_to_styled_spans
+
+        highlighted = highlight_code_to_styled_spans(
+            "\n".join(code_lines),
+            language,
+        )
+        if highlighted is not None:
+            return [
+                HyperlinkLine(
+                    Line.from_spans(
+                        Span(str(span.text), span.style)
+                        for span in highlighted_line
+                    )
+                )
+                for highlighted_line in highlighted
+            ]
+    return [HyperlinkLine.new(code_line) for code_line in code_lines]
 
 
 def _try_parse_table(lines: Sequence[str], index: int) -> Optional[tuple[list[str], list[list[str]], int]]:
@@ -1097,6 +1458,129 @@ def _split_table_row(line: str) -> Optional[list[str]]:
     if stripped.endswith("|"):
         stripped = stripped[:-1]
     return [cell.strip() for cell in stripped.split("|")]
+
+
+def _table_header_style() -> Any:
+    from ..render.highlight import SemanticStyle, foreground_style_for_scopes
+
+    scoped = foreground_style_for_scopes(
+        ["entity.name.type", "support.type", "variable"]
+    )
+    return SemanticStyle(
+        fg=None if scoped is None else scoped.fg,
+        bold=True,
+        italic=False,
+    )
+
+
+def _render_rich_table(
+    header: Sequence[TableCell],
+    rows: Sequence[Sequence[TableCell]],
+    alignments: Sequence[str],
+    width: Optional[int],
+) -> list[HyperlinkLine]:
+    if not header:
+        return []
+    writer = Writer("", width)
+    column_count = len(header)
+    normalized_rows = [writer.normalize_row(row, column_count) for row in rows]
+    header_text = [_cell_text(cell) for cell in header]
+    row_text = [[_cell_text(cell) for cell in row] for row in normalized_rows]
+    metrics = writer.collect_table_column_metrics(header_text, row_text)
+    gutters = column_count * TABLE_CELL_PADDING * 2 + max(0, column_count - 1) * TABLE_COLUMN_GAP
+    available = None if width is None else max(0, width - gutters)
+    column_widths = writer.compute_column_widths(
+        header_text,
+        row_text,
+        alignments,
+        available,
+    )
+    header_style = _table_header_style()
+    from ..style import table_separator_style
+
+    separator_style = table_separator_style()
+    if column_widths is None or should_render_records(
+        normalized_rows, column_widths or (), metrics
+    ):
+        return render_records(
+            header,
+            normalized_rows,
+            metrics,
+            width,
+            header_style,
+            separator_style,
+        )
+
+    def render_row(cells: Sequence[TableCell], row_style: Any) -> list[HyperlinkLine]:
+        wrapped = [wrap_cell(cell, cell_width) for cell, cell_width in zip(cells, column_widths)]
+        height = max((len(cell_lines) for cell_lines in wrapped), default=1)
+        rendered: list[HyperlinkLine] = []
+        for row_index in range(height):
+            last_visible = next(
+                (
+                    column
+                    for column in range(len(wrapped) - 1, -1, -1)
+                    if row_index < len(wrapped[column])
+                    and wrapped[column][row_index].width() > 0
+                ),
+                -1,
+            )
+            if last_visible < 0:
+                rendered.append(
+                    HyperlinkLine(Line.from_text("", style=row_style))
+                )
+                continue
+            out_line = HyperlinkLine.new("")
+            for column in range(last_visible + 1):
+                out_line.push_span(" " * TABLE_CELL_PADDING)
+                source = (
+                    wrapped[column][row_index]
+                    if row_index < len(wrapped[column])
+                    else HyperlinkLine.new("")
+                )
+                remaining = max(0, column_widths[column] - source.width())
+                alignment = alignments[column] if column < len(alignments) else "left"
+                if alignment == "right":
+                    left_padding, right_padding = remaining, 0
+                elif alignment == "center":
+                    left_padding = remaining // 2
+                    right_padding = remaining - left_padding
+                else:
+                    left_padding, right_padding = 0, remaining
+                if left_padding:
+                    out_line.push_span(" " * left_padding)
+                _append_hyperlink_line(out_line, source)
+                if column != last_visible:
+                    if right_padding:
+                        out_line.push_span(" " * right_padding)
+                    out_line.push_span(" " * (TABLE_CELL_PADDING + TABLE_COLUMN_GAP))
+            out_line.line = Line(out_line.line.spans, style=row_style)
+            rendered.append(out_line)
+        return rendered
+
+    out = render_row(header, header_style)
+    separator = (" " * TABLE_COLUMN_GAP).join(
+        TABLE_HEADER_SEPARATOR_CHAR * (column_width + TABLE_CELL_PADDING * 2)
+        for column_width in column_widths
+    )
+    out.append(
+        HyperlinkLine.new(
+            Line.from_spans((Span(separator, separator_style),))
+        )
+    )
+    for row_index, row in enumerate(normalized_rows):
+        out.extend(render_row(row, None))
+        if row_index + 1 < len(normalized_rows):
+            body_separator = (" " * TABLE_COLUMN_GAP).join(
+                TABLE_BODY_SEPARATOR_CHAR * (column_width + TABLE_CELL_PADDING * 2)
+                for column_width in column_widths
+            )
+            out.append(
+                HyperlinkLine.new(
+                    Line.from_spans((Span(body_separator, separator_style),))
+                )
+            )
+    return out
 
 
 def _render_table(header: Sequence[str], rows: Sequence[Sequence[str]], width: Optional[int]) -> list[HyperlinkLine]:

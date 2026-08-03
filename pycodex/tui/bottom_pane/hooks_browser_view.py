@@ -13,8 +13,10 @@ from textwrap import wrap
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from .bottom_pane_view import BottomPaneViewDefaults
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
+from .selection_popup_common import TerminalPopupLine
 
 
 RUST_MODULE = RustTuiModule(
@@ -140,7 +142,7 @@ class RenderedHooksBrowser:
     desired_height: int
 
 
-class HooksBrowserView:
+class HooksBrowserView(BottomPaneViewDefaults):
     def __init__(self, entry: HooksListEntry, app_event_tx: Optional[Any] = None, keymap: Optional[Any] = None) -> None:
         self.entry = normalize_entry(entry)
         self.entry.hooks.sort(key=lambda hook: int(get_value(hook, "display_order", 0)))
@@ -502,6 +504,16 @@ class HooksBrowserView:
     def render_lines(self, width: int = 80) -> List[str]:
         rendered = self.render(width)
         return [*rendered.lines, rendered.footer]
+
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        lines = self.render_lines(width=max(1, int(width)))
+        return [
+            TerminalPopupLine(
+                line,
+                index == 0 or line.startswith("> "),
+            )
+            for index, line in enumerate(lines)
+        ]
 
     def _emit(self, event: Dict[str, Any]) -> None:
         self.emitted_events.append(event)

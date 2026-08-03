@@ -47,11 +47,18 @@ def _completed_text_response(response_id: str, message_id: str, text: str) -> by
 
 
 class _SseFixtureServer:
-    def __init__(self, body: bytes | tuple[bytes, ...], *, response_delay_seconds: float = 0.0) -> None:
+    def __init__(
+        self,
+        body: bytes | tuple[bytes, ...],
+        *,
+        response_delay_seconds: float = 0.0,
+        response_headers: dict[str, str] | None = None,
+    ) -> None:
         self._bodies = (body,) if isinstance(body, bytes) else tuple(body)
         if not self._bodies:
             raise ValueError("at least one SSE fixture body is required")
         self._response_delay_seconds = float(response_delay_seconds)
+        self._response_headers = dict(response_headers or {})
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.requests: list[tuple[str, str]] = []
@@ -79,6 +86,8 @@ class _SseFixtureServer:
                 self.send_response(200)
                 self.send_header("content-type", "text/event-stream")
                 self.send_header("cache-control", "no-cache")
+                for name, value in outer._response_headers.items():
+                    self.send_header(str(name), str(value))
                 self.end_headers()
                 if outer._response_delay_seconds > 0:
                     time.sleep(outer._response_delay_seconds)

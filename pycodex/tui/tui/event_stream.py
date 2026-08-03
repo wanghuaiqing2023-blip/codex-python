@@ -23,6 +23,7 @@ import time
 from typing import Any, Callable, Deque, Iterable, List, Optional, Protocol, TextIO, Tuple
 
 from .._porting import RustTuiModule
+from .frame_rate_limiter import MIN_FRAME_INTERVAL
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -138,6 +139,7 @@ class LineTerminalInputSource(TerminalInputSource):
     def __init__(self, stdin: TextIO) -> None:
         self.stdin = stdin
         self._queue: queue.Queue[TerminalInputEvent] = queue.Queue()
+        self._deferred: Deque[TerminalInputEvent] = deque()
         self._thread = threading.Thread(target=self._read_lines, daemon=True)
         self._thread.start()
 
@@ -150,10 +152,17 @@ class LineTerminalInputSource(TerminalInputSource):
             self._queue.put(TerminalInputEvent("line", line))
 
     def poll(self, timeout: float) -> TerminalInputEvent | None:
+        if self._deferred:
+            return self._deferred.popleft()
         try:
             return self._queue.get(timeout=max(0.0, timeout))
         except queue.Empty:
             return None
+
+    def push_front(self, event: TerminalInputEvent) -> None:
+        """Return input that a raw-key-only view cannot consume."""
+
+        self._deferred.appendleft(event)
 
 
 class WindowsConsoleInputSource(TerminalInputSource):
@@ -200,7 +209,11 @@ class WindowsConsoleInputSource(TerminalInputSource):
                 if self._decoded_events:
                     return self._decoded_events.popleft()
                 return None
-            time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+            # Rust receives crossterm events asynchronously. Keep the Windows
+            # adapter within the same 120 FPS response budget rather than
+            # adding a separate 20 ms polling cadence.
+            poll_quantum = MIN_FRAME_INTERVAL / 1_000_000_000
+            time.sleep(min(poll_quantum, max(0.0, deadline - time.monotonic())))
 
     def _decode_bracketed_paste_event(self, event: Any) -> None:
         if isinstance(event, tuple) and event and event[0] == "paste":
@@ -690,6 +703,12 @@ class WindowsConsoleEventSource:
             if console_event is not None:
                 _trace_input_event("windows_console.return", {"event": _describe_event(console_event), "source": "console_record"})
                 return console_event
+            if self.console_handle is not None or callable(self.console_record_reader):
+                # ReadConsoleInputW and msvcrt read the same physical console
+                # through different buffering layers. Falling through to
+                # getwch() after consuming a console record can surface one
+                # physical Esc twice and incorrectly advance backtracking.
+                return None
             if self._pending_alt_prefix:
                 if not self.msvcrt_module.kbhit():
                     self._pending_alt_prefix = False

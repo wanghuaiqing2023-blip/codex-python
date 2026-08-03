@@ -1196,6 +1196,9 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
         "sync_draft",
         "sync_active_tail",
         "sync_pending_thread_approvals",
+        "set_keymap",
+        "set_task_running",
+        "set_side_conversation_active",
             "show_shutdown",
             "show_view",
             "dismiss_app_server_request",
@@ -1713,7 +1716,10 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     assert "TerminalSlashCommandViewDispatcher.for_model_popup" not in source
     assert "self._slash_command_views = TerminalSlashCommandViewDispatcher.for_runtime(" in source
     assert "submit_review=self._run_review_target" in source
-    assert "open_command_view=self._slash_command_views.open_command_view" in source
+    assert (
+        "open_command_view=self._slash_command_views.dispatch_command_view"
+        in source
+    )
     assert "on_selection_events=self._slash_command_views.handle_selection_events" in source
     assert "open_command_view=self._model_popup.open_command_view" not in source
     assert "on_selection_events=self._model_popup.handle_events" not in source
@@ -2069,7 +2075,9 @@ def test_stream_retry_chain_keeps_rust_module_ownership_and_multiline_status_lay
     py_status = (REPO_ROOT / "pycodex/tui/chatwidget/status_surfaces.py").read_text(encoding="utf-8-sig")
     py_footprint = (REPO_ROOT / "pycodex/tui/bottom_pane/terminal_footprint.py").read_text(encoding="utf-8-sig")
     py_terminal = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(encoding="utf-8-sig")
-    native_harness = (REPO_ROOT / "pycodex/tui/tests/harness/native_compare.py").read_text(encoding="utf-8-sig")
+    native_harness = (
+        REPO_ROOT / "tests/e2e/support/_native_tui.py"
+    ).read_text(encoding="utf-8-sig")
 
     assert "handle_retryable_response_stream_error" in rust_retry
     assert 'format!("Reconnecting... {retry_count}/{max_retries}")' in rust_retry

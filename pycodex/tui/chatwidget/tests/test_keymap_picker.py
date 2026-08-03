@@ -126,6 +126,22 @@ def test_return_to_keymap_picker_fallback_rebuilds_distinct_picker_params() -> N
     assert fallback_params.config == replaced_params.config == {"preset": "default"}
 
 
+def test_terminal_keymap_controller_only_accepts_debug_inline_arg() -> None:
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(tui_keymap={})
+        ),
+        chat_widget=SimpleNamespace(config=SimpleNamespace(tui_keymap={})),
+    )
+    controller = TerminalKeymapPopupController(app_runtime)
+
+    assert (
+        controller.handle_command_with_args("debug").lines(80)[0]
+        == "Keypress Inspector"
+    )
+    assert controller.handle_command_with_args("invalid") is None
+
+
 def test_terminal_keymap_controller_completes_capture_persist_and_live_refresh() -> None:
     # Rust baseline 1c7832f: app::event_dispatch::apply_keymap_capture validates,
     # persists, refreshes RuntimeKeymap, and returns to the edited picker row.

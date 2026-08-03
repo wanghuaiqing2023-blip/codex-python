@@ -180,9 +180,12 @@ class TerminalKeymapPopupController:
         return coerce_selection_view_params(params)
 
     def handle_command_with_args(self, args: str) -> Any:
-        if str(args).strip().lower() == "debug":
+        normalized = str(args).strip().lower()
+        if normalized == "debug":
             return keymap_setup.build_keymap_debug_view(self.runtime_keymap, self.keymap_config)
-        return self.open_view()
+        if normalized == "":
+            return self.open_view()
+        return None
 
     def handle_events(self, events: tuple[object, ...]) -> TerminalSelectionTransition | None:
         pending = [*events, *self._events]

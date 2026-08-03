@@ -16,6 +16,21 @@ from ..chatwidget.status_surfaces import TerminalLiveStatusSurface
 from ..tui import Rect
 
 
+class TerminalStyledText(str):
+    """String-compatible terminal text with semantic style runs."""
+
+    semantic_spans: tuple[tuple[str, str | None], ...]
+
+    def __new__(
+        cls,
+        text: str,
+        semantic_spans: tuple[tuple[str, str | None], ...] = (),
+    ) -> "TerminalStyledText":
+        value = str.__new__(cls, str(text))
+        value.semantic_spans = tuple(semantic_spans)
+        return value
+
+
 @dataclass(frozen=True)
 class TerminalBottomPaneState:
     draft: str = ""
@@ -26,7 +41,7 @@ class TerminalBottomPaneState:
     live_status_text: str | None = None
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = ()
     popup_cursor: tuple[int, int] | None = None
-    active_tail_lines: tuple[str, ...] = ()
+    active_tail_lines: tuple[object, ...] = ()
 
     @property
     def live_status_active(self) -> bool:
@@ -83,7 +98,7 @@ class TerminalBottomPaneRenderContextProtocol(Protocol):
     popup_is_active_view: bool
     popup_cursor: tuple[int, int] | None
     cursor_visible: bool
-    active_tail_lines: tuple[str, ...]
+    active_tail_lines: tuple[object, ...]
     composer_height: int
     footer_lines: tuple[str, ...]
     footer_height: int
@@ -162,7 +177,7 @@ class TerminalBottomPaneRenderRequest:
     clear_live_status_active: bool = False
     clear_live_status_height: int = 0
     clear_external_blank_rows: bool = False
-    active_tail_lines: tuple[str, ...] = ()
+    active_tail_lines: tuple[object, ...] = ()
     clear_active_tail_height: int = 0
     clear_composer_height: int = 1
     clear_footer_height: int = 1
@@ -364,7 +379,7 @@ def terminal_bottom_pane_render_plan(
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = (),
     popup_cursor: tuple[int, int] | None = None,
     live_status: TerminalLiveStatusSurface,
-    active_tail_lines: tuple[str, ...] = (),
+    active_tail_lines: tuple[object, ...] = (),
     footer_right_text: str = "",
     footer_lines: tuple[str, ...] = (),
 ) -> TerminalBottomPaneActionPlan:

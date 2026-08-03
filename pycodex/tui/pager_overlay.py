@@ -19,39 +19,56 @@ from .key_hint import KeyBinding as HintKeyBinding
 from .key_hint import KeyEvent as HintKeyEvent
 from .keymap import RuntimeKeymap
 from .ratatui_bridge import Rect
+from .ratatui_bridge.text import Line as StyledLine
+from .ratatui_bridge.text import Span as StyledSpan
 from .terminal_hyperlinks import visible_lines
 
 MAX_SCROLL = 2**63 - 1
+RenderedLine = str | StyledLine
 
 
 class Renderable(Protocol):
     def desired_height(self, width: int) -> int: ...
-    def render_lines(self, width: int) -> list[str]: ...
+    def render_lines(self, width: int) -> list[RenderedLine]: ...
+
+    def render_window(
+        self, width: int, offset: int, height: int
+    ) -> list[RenderedLine]: ...
 
 
 @dataclass
 class TextRenderable:
-    lines: list[str]
+    lines: list[RenderedLine]
+    _wrapped_width: int | None = field(default=None, init=False, repr=False)
+    _wrapped_lines: tuple[RenderedLine, ...] = field(
+        default=(), init=False, repr=False
+    )
+
+    def _lines_for_width(self, width: int) -> tuple[RenderedLine, ...]:
+        width = max(0, int(width))
+        if self._wrapped_width != width:
+            if width <= 0:
+                wrapped = list(self.lines)
+            else:
+                wrapped = []
+                for line in self.lines:
+                    wrapped.extend(_wrap_rendered_line(line, width))
+            self._wrapped_lines = tuple(wrapped or [""])
+            self._wrapped_width = width
+        return self._wrapped_lines
 
     def desired_height(self, width: int) -> int:
-        if width <= 0:
-            return len(self.lines)
-        total = 0
-        for line in self.lines:
-            total += max(1, (len(line) + width - 1) // width)
-        return total
+        return len(self._lines_for_width(width))
 
-    def render_lines(self, width: int) -> list[str]:
-        if width <= 0:
-            return list(self.lines)
-        out: list[str] = []
-        for line in self.lines:
-            if line == "":
-                out.append("")
-                continue
-            for start in range(0, len(line), width):
-                out.append(line[start : start + width])
-        return out or [""]
+    def render_lines(self, width: int) -> list[RenderedLine]:
+        return list(self._lines_for_width(width))
+
+    def render_window(
+        self, width: int, offset: int, height: int
+    ) -> list[RenderedLine]:
+        lines = self._lines_for_width(width)
+        start = max(0, int(offset))
+        return list(lines[start : start + max(0, int(height))])
 
 
 @dataclass
@@ -63,7 +80,7 @@ class HistoryCellRenderable:
     def desired_height(self, width: int) -> int:
         return desired_transcript_height(self.cell, max(1, int(width)))
 
-    def render_lines(self, width: int) -> list[str]:
+    def render_lines(self, width: int) -> list[RenderedLine]:
         width = max(1, int(width))
         lines = visible_lines(transcript_hyperlink_lines(self.cell, width))
         rendered: list[str] = []
@@ -71,6 +88,12 @@ class HistoryCellRenderable:
             text = "".join(span.content for span in line.spans)
             rendered.extend(_wrap_display_line(text, width))
         return rendered
+
+    def render_window(
+        self, width: int, offset: int, height: int
+    ) -> list[RenderedLine]:
+        start = max(0, int(offset))
+        return self.render_lines(width)[start : start + max(0, int(height))]
 
 
 @dataclass
@@ -85,6 +108,24 @@ class InsetRenderable:
 
     def render_lines(self, width: int) -> list[str]:
         return ([""] * max(0, int(self.top))) + self.renderable.render_lines(width)
+
+    def render_window(
+        self, width: int, offset: int, height: int
+    ) -> list[RenderedLine]:
+        offset = max(0, int(offset))
+        height = max(0, int(height))
+        top = max(0, int(self.top))
+        rows: list[RenderedLine] = []
+        if offset < top:
+            inset_rows = min(height, top - offset)
+            rows.extend("" for _ in range(inset_rows))
+            height -= inset_rows
+            offset = 0
+        else:
+            offset -= top
+        if height:
+            rows.extend(_renderable_window(self.renderable, width, offset, height))
+        return rows
 
 
 @dataclass
@@ -103,8 +144,13 @@ class CachedRenderable:
             self.last_width = width
         return self.height or 0
 
-    def render_lines(self, width: int) -> list[str]:
+    def render_lines(self, width: int) -> list[RenderedLine]:
         return self.renderable.render_lines(width)
+
+    def render_window(
+        self, width: int, offset: int, height: int
+    ) -> list[RenderedLine]:
+        return _renderable_window(self.renderable, width, offset, height)
 
 
 @dataclass
@@ -141,7 +187,7 @@ class PagerView:
             return self.last_content_height
         return self.content_area(viewport_area).height
 
-    def render(self, area: Rect) -> list[str]:
+    def render(self, area: Rect) -> list[RenderedLine]:
         content_area = self.content_area(area)
         self.update_last_content_height(content_area.height)
         total_height = self.content_height(content_area.width)
@@ -157,7 +203,7 @@ class PagerView:
             self.scroll_offset = min(max(self.scroll_offset, 0), max_scroll)
         return self.visible_content_lines(content_area)
 
-    def render_frame(self, area: Rect) -> list[str]:
+    def render_frame(self, area: Rect) -> list[RenderedLine]:
         """Render Rust's pager header, content area, and percentage bar."""
 
         if area.height <= 0:
@@ -167,7 +213,7 @@ class PagerView:
         percent = self.scroll_percent()
         separator = _pager_separator(area.width, percent)
         rows = [header, *content, separator]
-        return [_fit_display_width(row, area.width) for row in rows[: area.height]]
+        return [_fit_rendered_line(row, area.width) for row in rows[: area.height]]
 
     def scroll_percent(self) -> int:
         total = int(self.last_rendered_height or 0)
@@ -206,12 +252,30 @@ class PagerView:
             return False
         return True
 
-    def visible_content_lines(self, area: Rect) -> list[str]:
-        lines: list[str] = []
+    def visible_content_lines(self, area: Rect) -> list[RenderedLine]:
+        visible: list[RenderedLine] = []
+        viewport_start = max(0, self.scroll_offset)
+        viewport_end = viewport_start + max(0, area.height)
+        renderable_top = 0
         for renderable in self.renderables:
-            lines.extend(renderable.render_lines(area.width))
-        start = min(max(self.scroll_offset, 0), len(lines))
-        visible = lines[start : start + area.height]
+            renderable_height = max(0, int(renderable.desired_height(area.width)))
+            renderable_bottom = renderable_top + renderable_height
+            if renderable_bottom <= viewport_start:
+                renderable_top = renderable_bottom
+                continue
+            if renderable_top >= viewport_end:
+                break
+            offset = max(0, viewport_start - renderable_top)
+            height = min(
+                renderable_height - offset,
+                max(0, area.height - len(visible)),
+            )
+            visible.extend(
+                _renderable_window(renderable, area.width, offset, height)
+            )
+            renderable_top = renderable_bottom
+            if len(visible) >= area.height:
+                break
         if len(visible) < area.height:
             visible.extend("~" for _ in range(area.height - len(visible)))
         return visible
@@ -355,10 +419,10 @@ class TranscriptOverlay:
             self.live_tail = TextRenderable([str(line) for line in built])
         self.rebuild_renderables()
 
-    def render(self, area: Rect) -> list[str]:
+    def render(self, area: Rect) -> list[RenderedLine]:
         return self.view.render(area)
 
-    def render_frame(self, area: Rect) -> list[str]:
+    def render_frame(self, area: Rect) -> list[RenderedLine]:
         """Render the complete Rust transcript overlay frame."""
 
         top_height = max(0, area.height - 3)
@@ -416,15 +480,61 @@ class StaticOverlay:
     is_done_flag: bool = False
 
     @classmethod
-    def with_title(cls, lines: Sequence[str], title: str, keymap: Any | None = None) -> "StaticOverlay":
-        return cls(PagerView.new([TextRenderable([str(line) for line in lines])], title, 0, keymap))
+    def with_title(cls, lines: Sequence[RenderedLine], title: str, keymap: Any | None = None) -> "StaticOverlay":
+        normalized = [line if isinstance(line, StyledLine) else str(line) for line in lines]
+        return cls(PagerView.new([TextRenderable(normalized)], title, 0, keymap))
 
     @classmethod
     def with_renderables(cls, renderables: Sequence[Renderable], title: str, keymap: Any | None = None) -> "StaticOverlay":
         return cls(PagerView.new(list(renderables), title, 0, keymap))
 
-    def render(self, area: Rect) -> list[str]:
+    def render(self, area: Rect) -> list[RenderedLine]:
         return self.view.render(area)
+
+    def render_frame(self, area: Rect) -> list[RenderedLine]:
+        """Render Rust ``StaticOverlay`` with its shared three-row hint area."""
+
+        top_height = max(0, area.height - 3)
+        top = Rect(area.x, area.y, area.width, top_height)
+        rows = self.view.render_frame(top)
+        keymap = self.view.keymap or RuntimeKeymap.built_in_defaults().pager
+        hints = [
+            render_key_hints(
+                (
+                    (
+                        _first_binding_labels(keymap.scroll_up)
+                        + _first_binding_labels(keymap.scroll_down),
+                        "to scroll",
+                    ),
+                    (
+                        _first_binding_labels(keymap.page_up)
+                        + _first_binding_labels(keymap.page_down),
+                        "to page",
+                    ),
+                    (
+                        _first_binding_labels(keymap.jump_top)
+                        + _first_binding_labels(keymap.jump_bottom),
+                        "to jump",
+                    ),
+                )
+            ),
+            render_key_hints(((_first_binding_labels(keymap.close), "to quit"),)),
+            "",
+        ]
+        rows.extend(_fit_display_width(line, area.width) for line in hints)
+        return (rows + [""] * area.height)[: area.height]
+
+    def handle_input(self, event_kind: str, event_text: str, area: Rect) -> bool:
+        kind, text = _normalized_pager_input(event_kind, event_text)
+        keymap = self.view.keymap or RuntimeKeymap.built_in_defaults().pager
+        event = _pager_key_event(kind, text)
+        if kind in {"interrupt", "eof"} or (
+            event is not None and _pager_bindings_pressed(keymap.close, event)
+        ):
+            self.is_done_flag = True
+            return True
+        top = Rect(area.x, area.y, area.width, max(0, area.height - 3))
+        return self.view.handle_input(event_kind, event_text, top)
 
     def is_done(self) -> bool:
         return self.is_done_flag
@@ -575,6 +685,64 @@ def _wrap_display_line(text: str, width: int) -> list[str]:
     return rows or [""]
 
 
+def _rendered_line_width(line: RenderedLine) -> int:
+    if isinstance(line, StyledLine):
+        return sum(_display_width(span.content) for span in line.spans)
+    return _display_width(str(line))
+
+
+def _wrap_rendered_line(line: RenderedLine, width: int) -> list[RenderedLine]:
+    width = max(1, int(width))
+    if not isinstance(line, StyledLine):
+        return _wrap_display_line(str(line), width)
+    if not line.spans:
+        return [StyledLine()]
+    rows: list[StyledLine] = []
+    current: list[StyledSpan] = []
+    used = 0
+    for span in line.spans:
+        for char in span.content:
+            char_width = max(0, _display_width(char))
+            if current and used + char_width > width:
+                rows.append(StyledLine.from_spans(current))
+                current = []
+                used = 0
+            if current and current[-1].style == span.style:
+                previous = current[-1]
+                current[-1] = StyledSpan(previous.content + char, previous.style)
+            else:
+                current.append(StyledSpan(char, span.style))
+            used += char_width
+    if current:
+        rows.append(StyledLine.from_spans(current))
+    return rows or [StyledLine()]
+
+
+def _fit_rendered_line(line: RenderedLine, width: int) -> RenderedLine:
+    if not isinstance(line, StyledLine):
+        return _fit_display_width(str(line), width)
+    width = max(0, int(width))
+    if width == 0:
+        return StyledLine()
+    spans: list[StyledSpan] = []
+    used = 0
+    for span in line.spans:
+        content: list[str] = []
+        for char in span.content:
+            char_width = max(0, _display_width(char))
+            if used + char_width > width:
+                break
+            content.append(char)
+            used += char_width
+        if content:
+            spans.append(StyledSpan("".join(content), span.style))
+        if used >= width:
+            break
+    if used < width:
+        spans.append(StyledSpan(" " * (width - used)))
+    return StyledLine.from_spans(spans)
+
+
 def _fit_display_width(text: str, width: int) -> str:
     width = max(0, int(width))
     if width == 0:
@@ -630,8 +798,28 @@ def render_key_hints(pairs: Sequence[tuple[Sequence[str], str]]) -> str:
     return " " + "   ".join(parts)
 
 
-def render_offset_content(renderable: Renderable, width: int, offset: int, height: int) -> list[str]:
-    return renderable.render_lines(width)[offset : offset + height]
+def render_offset_content(
+    renderable: Renderable, width: int, offset: int, height: int
+) -> list[RenderedLine]:
+    return _renderable_window(renderable, width, offset, height)
+
+
+def _renderable_window(
+    renderable: Renderable, width: int, offset: int, height: int
+) -> list[RenderedLine]:
+    """Render only the rows intersecting the pager viewport.
+
+    Rust passes a clipped ``Rect`` to each ``Renderable``. The optional window
+    method is the Python adapter for that contract; legacy renderables retain
+    the full-render fallback.
+    """
+
+    start = max(0, int(offset))
+    count = max(0, int(height))
+    window = getattr(renderable, "render_window", None)
+    if callable(window):
+        return list(window(width, start, count))
+    return renderable.render_lines(width)[start : start + count]
 
 
 def paragraph_block(prefix: str, lines: int) -> TextRenderable:

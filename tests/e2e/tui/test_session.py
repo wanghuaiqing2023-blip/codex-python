@@ -720,7 +720,7 @@ def test_windows_conpty_native_and_python_local_sse_post_turn_current_screen_whe
                             ready_pattern=READY_COMPOSER_PATTERN,
                             ready_timeout=30.0,
                             ready_quiet_period=0.2,
-                            chunk_delay=0.01,
+                            atomic_write=True,
                         ),
                         ConptyInputStep(
                             "\r",
@@ -1108,6 +1108,7 @@ def test_windows_conpty_native_and_python_local_sse_hide_agent_reasoning_still_s
                             ready_timeout=30.0,
                             ready_quiet_period=0.2,
                             chunk_delay=0.01,
+                            atomic_write=True,
                         ),
                         ConptyInputStep(
                             "\r",

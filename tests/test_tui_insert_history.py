@@ -47,7 +47,7 @@ from pycodex.tui.insert_history import (
 from pycodex.tui.history_cell.messages import UserHistoryCell, new_user_prompt
 from pycodex.tui.line_truncation import Line as SemanticLine
 from pycodex.tui.line_truncation import Span as SemanticSpan
-from tests.e2e.support.vt_screen import vt_screen_text
+from tests.e2e.support.vt_screen import vt_screen_cells, vt_screen_text
 
 
 class FlushTrackingStringIO(StringIO):
@@ -77,6 +77,33 @@ def test_prepare_terminal_history_insert_sets_region_and_cursor():
     )
 
     assert writer.getvalue() == "\x1b[1;20r\x1b[18;1H"
+
+
+def test_write_history_line_preserves_sgr_styles_inside_osc8_hyperlink() -> None:
+    # Rust insert_history writes styled spans and terminal hyperlink metadata
+    # through the same line, rather than selecting one representation.
+    writer = StringIO()
+    line = HyperlinkLine(
+        Line(
+            (
+                Span("bold ", Style(add_modifier=Modifier.BOLD)),
+                Span(
+                    "link",
+                    Style(fg="cyan", add_modifier=Modifier.ITALIC),
+                ),
+            )
+        ),
+        (Hyperlink(5, 9, "https://example.com"),),
+    )
+
+    write_history_line(writer, line, 80)
+
+    ansi = writer.getvalue()
+    screen = vt_screen_cells(ansi, rows=2, cols=40)
+    assert "\x1b]8;;https://example.com\x07link\x1b]8;;\x07" in ansi
+    assert all(screen.rows[0][index].style.bold for index in range(0, 4))
+    assert all(screen.rows[0][index].style.italic for index in range(5, 9))
+    assert all(screen.rows[0][index].style.fg is not None for index in range(5, 9))
 
 
 def test_zellij_raw_history_insert_preserves_complete_multiline_cell_above_viewport() -> None:

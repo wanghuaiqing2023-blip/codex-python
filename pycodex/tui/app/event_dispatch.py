@@ -9,13 +9,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import time
 from typing import Any, Callable, Optional, Tuple, Union
+
+from pycodex.ansi_escape import AnsiStyle, ansi_escape_line
 
 from .._porting import RustTuiModule
 from ..custom_terminal import AlternateScreenRenderer
 from ..diff_render import create_diff_summary
-from ..pager_overlay import PagerView, TextRenderable
+from ..pager_overlay import StaticOverlay
 from ..ratatui_bridge import Rect
+from ..ratatui_bridge.style import Color, Modifier, Style
+from ..ratatui_bridge.text import Line, Span
+from ..tui.frame_rate_limiter import MIN_FRAME_INTERVAL
 
 
 RUST_MODULE = RustTuiModule(
@@ -47,6 +53,43 @@ class TerminalFullScreenApprovalController:
             return run_terminal_static_overlay(
                 lines=lines,
                 title=title,
+                source=self.get_input_source(),
+                writer=self.writer,
+                terminal_size=self.terminal_size,
+                keymap=self.keymap(),
+                poll_timeout=self.poll_timeout,
+            )
+
+        return bool(self.run_external_repaint(run))
+
+
+@dataclass(frozen=True)
+class TerminalDiffOverlayController:
+    """Apply Rust ``AppEvent::DiffResult`` through the shared static pager."""
+
+    get_input_source: Callable[[], Any]
+    writer: Any
+    terminal_size: Callable[[], Any]
+    keymap: Callable[[], Any | None]
+    run_external_repaint: Callable[[Callable[[], bool]], bool]
+    poll_timeout: float = 0.1
+
+    def __call__(self, text: str) -> bool:
+        raw_lines = str(text).splitlines()
+        lines: tuple[Line, ...]
+        if raw_lines:
+            lines = tuple(_bridge_ansi_line(raw) for raw in raw_lines)
+        else:
+            lines = (
+                Line.from_spans(
+                    (Span("No changes detected.", Style().italic()),)
+                ),
+            )
+
+        def run() -> bool:
+            return run_terminal_static_overlay(
+                lines=lines,
+                title="D I F F",
                 source=self.get_input_source(),
                 writer=self.writer,
                 terminal_size=self.terminal_size,
@@ -89,7 +132,7 @@ def full_screen_approval_projection(request: Any, width: int = 120) -> tuple[str
 
 def run_terminal_static_overlay(
     *,
-    lines: Tuple[str, ...],
+    lines: Tuple[object, ...],
     title: str,
     source: Any,
     writer: Any,
@@ -99,27 +142,87 @@ def run_terminal_static_overlay(
 ) -> bool:
     if source is None:
         return False
-    view = PagerView.new([TextRenderable(list(lines))], title, 0, keymap)
+    overlay = StaticOverlay.with_title(lines, title, keymap)
     renderer = AlternateScreenRenderer(writer)
+    target_frame_interval = MIN_FRAME_INTERVAL / 1_000_000_000
     renderer.enter()
     try:
+        dirty = True
+        next_frame_at = 0.0
         while True:
             size = terminal_size()
             area = Rect(0, 0, max(0, int(size.columns)), max(0, int(size.lines)))
-            renderer.render_lines(view.render_frame(area), size)
-            event = source.poll(max(0.0, float(poll_timeout)))
+            now = time.monotonic()
+            if dirty and now >= next_frame_at:
+                renderer.render_lines(overlay.render_frame(area), size)
+                dirty = False
+            wait = max(0.0, float(poll_timeout))
+            if dirty:
+                wait = min(wait, max(0.0, next_frame_at - now))
+            event = source.poll(wait)
             if event is None:
                 continue
             kind = str(getattr(event, "kind", "")).lower().replace("-", "_")
             text = str(getattr(event, "text", ""))
-            if kind in {"eof", "interrupt", "escape", "esc", "ctrl_t"} or (
-                kind == "text" and text.lower() in {"q", "\x1b"}
-            ):
+            if kind in {"escape", "esc", "ctrl_t"}:
                 return True
-            if kind != "resize":
-                view.handle_input(kind, text, area)
+            if kind in {"line", "eof"}:
+                # Cooked-line input is a compatibility path, not a Rust-like
+                # key stream. Leave the modal and return the command/EOF to the
+                # outer app loop instead of consuming it inside the pager.
+                push_front = getattr(source, "push_front", None)
+                if callable(push_front):
+                    push_front(event)
+                return True
+            if kind == "resize":
+                dirty = True
+                next_frame_at = 0.0
+            else:
+                handled = overlay.handle_input(kind, text, area)
+                if overlay.is_done():
+                    return True
+                if handled:
+                    dirty = True
+                    next_frame_at = time.monotonic() + target_frame_interval
     finally:
         renderer.leave()
+
+
+def _bridge_ansi_line(raw: str) -> Line:
+    parsed = ansi_escape_line(raw)
+    return Line.from_spans(
+        Span(span.text, _bridge_ansi_style(span.style))
+        for span in parsed.spans
+    )
+
+
+def _bridge_ansi_style(value: AnsiStyle) -> Style:
+    style = Style(
+        fg=_bridge_ansi_color(value.fg),
+        bg=_bridge_ansi_color(value.bg),
+    )
+    modifiers: list[Modifier] = []
+    if value.bold:
+        modifiers.append(Modifier.BOLD)
+    if value.dim:
+        modifiers.append(Modifier.DIM)
+    if value.italic:
+        modifiers.append(Modifier.ITALIC)
+    if value.underlined:
+        modifiers.append(Modifier.UNDERLINED)
+    if value.reversed:
+        modifiers.append(Modifier.REVERSED)
+    return style.add_modifier(*modifiers)
+
+
+def _bridge_ansi_color(value: object) -> Color | None:
+    if value is None:
+        return None
+    if isinstance(value, tuple) and len(value) == 3:
+        return Color.rgb(*value)
+    if isinstance(value, int):
+        return Color.indexed(value)
+    return Color.named(str(value))
 
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
@@ -432,6 +535,19 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
             updates=(("persist_model_selection", {"model": model, "effort": effort}),),
             schedule_frame=True,
         )
+    if variant == "SyntaxThemeSelected":
+        name = _payload_value(payload, "name", payload)
+        return EventDispatchPlan(
+            action="persist_syntax_theme",
+            updates=(("persist_syntax_theme", name),),
+            schedule_frame=True,
+        )
+    if variant == "SyntaxThemePreviewed":
+        return EventDispatchPlan(
+            action="refresh_syntax_theme_preview",
+            updates=(("refresh_syntax_theme_preview", None),),
+            schedule_frame=True,
+        )
     if variant == "StatusLineSetup":
         items = _payload_value(payload, "items", ())
         use_theme_colors = bool(_payload_value(payload, "use_theme_colors", False))
@@ -448,6 +564,26 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
         return EventDispatchPlan(
             action="cancel_status_line_setup",
             updates=(("cancel_status_line_setup", None),),
+            schedule_frame=True,
+        )
+    if variant == "TerminalTitleSetup":
+        items = _payload_value(payload, "items", ())
+        return EventDispatchPlan(
+            action="setup_terminal_title",
+            updates=(("setup_terminal_title", items),),
+            schedule_frame=True,
+        )
+    if variant == "TerminalTitleSetupPreview":
+        items = _payload_value(payload, "items", ())
+        return EventDispatchPlan(
+            action="preview_terminal_title",
+            updates=(("preview_terminal_title", items),),
+            schedule_frame=True,
+        )
+    if variant == "TerminalTitleSetupCancelled":
+        return EventDispatchPlan(
+            action="cancel_terminal_title_setup",
+            updates=(("cancel_terminal_title_setup", None),),
             schedule_frame=True,
         )
     if variant == "RefreshRateLimits":
@@ -471,6 +607,30 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
             updates=(("diff_result", text),),
             schedule_frame=True,
         )
+    if variant == "FetchMcpInventory":
+        request = {
+            "detail": _payload_value(payload, "detail", "tools_and_auth_only"),
+            "thread_id": _payload_value(payload, "thread_id", None),
+        }
+        return EventDispatchPlan(
+            action="fetch_mcp_inventory",
+            updates=(("fetch_mcp_inventory", request),),
+            schedule_frame=True,
+        )
+    if variant == "FetchConnectorsList":
+        force_refetch = bool(_payload_value(payload, "force_refetch", False))
+        return EventDispatchPlan(
+            action="fetch_connectors_list",
+            updates=(("fetch_connectors_list", {"force_refetch": force_refetch}),),
+            schedule_frame=True,
+        )
+    if variant == "FetchPluginsList":
+        cwd = _payload_value(payload, "cwd", None)
+        return EventDispatchPlan(
+            action="fetch_plugins_list",
+            updates=(("fetch_plugins_list", {"cwd": cwd}),),
+            schedule_frame=True,
+        )
 
     delegated_actions = {
         "OpenUrlInBrowser": "open_url_in_browser",
@@ -481,6 +641,7 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
         "ClearThreadGoal": "clear_thread_goal",
         "OpenResumePicker": "open_resume_picker",
         "OpenAgentPicker": "open_agent_picker",
+        "StartSide": "start_side",
         "ResumeSessionByIdOrName": "resume_session_by_id_or_name",
         "ForkCurrentSession": "fork_current_session",
         "ConsolidateAgentMessage": "consolidate_agent_message",
@@ -537,6 +698,7 @@ __all__ = [
     "AppRunControl",
     "EventDispatchPlan",
     "EventDispatchState",
+    "TerminalDiffOverlayController",
     "TerminalFullScreenApprovalController",
     "ExitMode",
     "ExitModePlan",

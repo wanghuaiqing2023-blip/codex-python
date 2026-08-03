@@ -13,7 +13,7 @@ Python-only shortcuts.
 - Porting methodology: [PORTING_PROJECT_PRINCIPLES.md](PORTING_PROJECT_PRINCIPLES.md)
 - Current snapshot: [PORTING_STATUS.md](PORTING_STATUS.md)
 - Crate structure entry point: [CRATE_COMPLETION_STATUS.md](CRATE_COMPLETION_STATUS.md)
-- Non-workspace Rust packages: [PORTING_NON_WORKSPACE_RUST_PACKAGES.md](PORTING_NON_WORKSPACE_RUST_PACKAGES.md)
+- Cargo adjunct and non-member packages: [PORTING_NON_WORKSPACE_RUST_PACKAGES.md](PORTING_NON_WORKSPACE_RUST_PACKAGES.md)
 
 ## Layout
 
@@ -43,6 +43,10 @@ python -B -m parity_harness audit
 Generated contract candidates are review artifacts. Accepted ownership lives
 under `parity_harness/contracts/accepted/` and must not be overwritten by a
 generator.
+
+A green structure gate proves reviewed module ownership and structural
+coverage. An `accepted` workspace classification does not by itself prove
+whole-product behavioral parity; see the current snapshot for that distinction.
 
 ## Tests
 

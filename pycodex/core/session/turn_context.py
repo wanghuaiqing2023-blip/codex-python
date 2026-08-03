@@ -91,6 +91,7 @@ class TurnContext:
     auth_manager: Any = None
     user_instructions: str | None = None
     developer_instructions: str | None = None
+    compact_prompt: str | None = None
     config: Any = None
     available_models: tuple[Any, ...] = ()
     permission_profile: PermissionProfile = field(default_factory=PermissionProfile.disabled)

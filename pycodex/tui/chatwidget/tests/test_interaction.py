@@ -9,6 +9,7 @@ from pycodex.tui.chatwidget.interaction import (
     FrameRequester,
     KeyBinding,
     KeyEvent,
+    TerminalRenamePromptController,
     active_view_key_has_priority,
     apply_external_edit,
     arm_quit_shortcut,
@@ -20,6 +21,7 @@ from pycodex.tui.chatwidget.interaction import (
     handle_paste_burst_tick,
     on_ctrl_c,
     on_ctrl_d,
+    rename_prompt_view,
     set_external_editor_state,
     show_selection_view,
 )
@@ -110,6 +112,7 @@ class Widget:
         self.turn_lifecycle = SimpleNamespace(agent_turn_running=False)
         self.current_goal_status = None
         self.thread_id = "thread"
+        self.thread_name = None
         self.app_event_tx = Tx()
         self.events = []
         self.history = []
@@ -239,6 +242,44 @@ def test_paste_and_selection_helpers_refresh_nudge_and_redraw() -> None:
     assert ("show_selection_view", {"items": []}) in widget.bottom_pane.events
     assert widget.external_editor_state == ExternalEditorState.OPEN
     assert ("refresh_plan_mode_nudge",) in widget.events
+
+
+def test_rename_prompt_matches_rust_empty_prefill_and_submission_contract() -> None:
+    widget = Widget()
+    submitted: list[str] = []
+
+    view = rename_prompt_view(widget, submitted.append)
+
+    assert view is not None
+    assert view.title == "Name thread"
+    assert view.placeholder == "Type a name and press Enter"
+    view.handle_paste("  Project title  ")
+    view.handle_key_event("enter")
+    assert submitted == ["Project title"]
+
+    widget.thread_name = "Current title"
+    view = rename_prompt_view(widget, submitted.append)
+    assert view is not None
+    assert view.title == "Rename thread"
+    assert view.textarea.text() == "Current title"
+
+
+def test_terminal_rename_prompt_controller_emits_set_thread_name_app_event() -> None:
+    widget = Widget()
+    events = []
+    runtime = SimpleNamespace(chat_widget=widget, handle_app_event=events.append)
+    controller = TerminalRenamePromptController(runtime)
+
+    view = controller.open_view()
+    assert view is not None
+    view.handle_paste("E2E title")
+    view.handle_key_event("enter")
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.kind == "CodexOp"
+    assert event.payload["op"].kind == "SetThreadName"
+    assert event.payload["op"].payload == {"name": "E2E title"}
 
 
 def test_paste_burst_tick_flushes_or_schedules_or_allows_render() -> None:

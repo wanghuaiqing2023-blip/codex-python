@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pycodex.tui.pager_overlay as pager_overlay_module
+
 from pycodex.tui.pager_overlay import (
     MAX_SCROLL,
     LiveTailKey,
@@ -234,6 +236,76 @@ def test_static_overlay_wraps_long_lines() -> None:
     ]
 
 
+def test_static_overlay_reuses_wrapped_diff_rows_while_scrolling(monkeypatch) -> None:
+    """A navigation frame must not wrap the complete Paragraph again."""
+
+    calls = 0
+    original = pager_overlay_module._wrap_rendered_line
+
+    def counting_wrap(line, width):
+        nonlocal calls
+        calls += 1
+        return original(line, width)
+
+    monkeypatch.setattr(pager_overlay_module, "_wrap_rendered_line", counting_wrap)
+    overlay = StaticOverlay.with_title(
+        [f"diff line {index:05d} " + ("x" * 180) for index in range(5_000)],
+        "D I F F",
+    )
+    area = Rect(0, 0, 120, 32)
+
+    overlay.render_frame(area)
+    initial_calls = calls
+    assert initial_calls == 5_000
+
+    for _ in range(50):
+        assert overlay.handle_input("down", "", area)
+        overlay.render_frame(area)
+
+    assert calls == initial_calls
+
+    overlay.render_frame(Rect(0, 0, 100, 32))
+    assert calls == initial_calls + 5_000
+
+
+def test_pager_renders_only_the_chunks_intersecting_the_viewport() -> None:
+    """Rust PagerView::render_content skips chunks outside the clipped Rect."""
+
+    class CountingRenderable:
+        def __init__(self, prefix: str, height: int) -> None:
+            self.prefix = prefix
+            self.height = height
+            self.full_render_calls = 0
+            self.window_calls: list[tuple[int, int]] = []
+
+        def desired_height(self, _width: int) -> int:
+            return self.height
+
+        def render_lines(self, _width: int) -> list[str]:
+            self.full_render_calls += 1
+            return [f"{self.prefix}-{index}" for index in range(self.height)]
+
+        def render_window(self, _width: int, offset: int, height: int) -> list[str]:
+            self.window_calls.append((offset, height))
+            return [
+                f"{self.prefix}-{index}"
+                for index in range(offset, offset + height)
+            ]
+
+    before = CountingRenderable("before", 10_000)
+    visible = CountingRenderable("visible", 100)
+    after = CountingRenderable("after", 10_000)
+    view = pager_view([before, visible, after], "D I F F", 10_000)
+
+    rows = view.render(Rect(0, 0, 80, 12))
+
+    assert rows[0] == "visible-0"
+    assert before.window_calls == []
+    assert visible.window_calls == [(0, 10)]
+    assert after.window_calls == []
+    assert before.full_render_calls == visible.full_render_calls == after.full_render_calls == 0
+
+
 def test_transcript_overlay_uses_history_cell_full_transcript_projection() -> None:
     """Rust pager_overlay::CellRenderable uses transcript_hyperlink_lines, not display lines."""
 
@@ -278,6 +350,24 @@ def test_transcript_overlay_renders_rust_key_hint_labels() -> None:
     rendered = "\n".join(overlay.render_frame(Rect(0, 0, 72, 12)))
 
     assert "↑/↓ to scroll" in rendered
+    assert "pgup/pgdn to page" in rendered
+    assert "home/end to jump" in rendered
+    assert "q to quit" in rendered
+
+
+def test_static_overlay_renders_rust_key_hint_labels() -> None:
+    """Rust ``pager_overlay::StaticOverlay::render_hints`` contract."""
+
+    overlay = StaticOverlay.with_title(
+        [f"line-{index}" for index in range(50)],
+        "D I F F",
+    )
+    rendered = "\n".join(
+        str(line) for line in overlay.render_frame(Rect(0, 0, 80, 16))
+    )
+
+    assert "D I F F" in rendered
+    assert "to scroll" in rendered
     assert "pgup/pgdn to page" in rendered
     assert "home/end to jump" in rendered
     assert "q to quit" in rendered

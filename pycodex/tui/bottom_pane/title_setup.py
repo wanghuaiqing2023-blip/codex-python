@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable
 
 from .._porting import RustTuiModule
+from .bottom_pane_view import BottomPaneViewDefaults
+from .multi_select_picker import MultiSelectItem, MultiSelectPicker
+from .selection_popup_common import TerminalPopupLine
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -33,7 +36,7 @@ class TerminalTitleItem(Enum):
     USED_TOKENS = "used-tokens"
     TOTAL_INPUT_TOKENS = "total-input-tokens"
     TOTAL_OUTPUT_TOKENS = "total-output-tokens"
-    SESSION_ID = "session-id"
+    SESSION_ID = "thread-id"
     FAST_MODE = "fast-mode"
     MODEL = "model"
     MODEL_WITH_REASONING = "model-with-reasoning"
@@ -119,16 +122,6 @@ _PREVIEW_ITEMS: dict[TerminalTitleItem, str] = {
 }
 
 
-@dataclass(frozen=True)
-class MultiSelectItem:
-    id: str
-    name: str
-    description: str | None
-    enabled: bool
-    orderable: bool = True
-    section_break_after: bool = False
-
-
 def preview_line_for_title_items(items: Iterable[TerminalTitleItem | str], preview_data: Any) -> str | None:
     parsed = [item if isinstance(item, TerminalTitleItem) else TerminalTitleItem.from_id(item) for item in items]
     if TerminalTitleItem.SPINNER in parsed:
@@ -186,11 +179,10 @@ def _preview_value(preview_data: Any, item: TerminalTitleItem) -> str | None:
 
 
 @dataclass
-class TerminalTitleSetupView:
-    items: list[MultiSelectItem]
+class TerminalTitleSetupView(BottomPaneViewDefaults):
+    picker: MultiSelectPicker
     preview_data: Any
-    emitted_events: list[dict[str, Any]] = field(default_factory=list)
-    complete: bool = False
+    emitted_events: list[dict[str, Any]]
 
     @classmethod
     def new(
@@ -200,7 +192,6 @@ class TerminalTitleSetupView:
         app_event_tx: Any = None,
         list_keymap: Any = None,
     ) -> "TerminalTitleSetupView":
-        del app_event_tx, list_keymap
         preview_data = {} if preview_data is None else preview_data
         selected: list[TerminalTitleItem] = []
         seen: set[TerminalTitleItem] = set()
@@ -218,7 +209,60 @@ class TerminalTitleSetupView:
             for item in TerminalTitleItem
             if item not in seen
         )
-        return cls(items=items, preview_data=preview_data)
+        emitted_events: list[dict[str, Any]] = []
+        event_target = emitted_events if app_event_tx is None else app_event_tx
+
+        def preview_builder(current_items: list[MultiSelectItem]) -> str | None:
+            parsed = parse_terminal_title_items(
+                item.id for item in current_items if item.enabled
+            )
+            if parsed is None:
+                return None
+            return preview_line_for_title_items(parsed, preview_data)
+
+        def on_change(current_items: list[MultiSelectItem], target: Any) -> None:
+            parsed = parse_terminal_title_items(
+                item.id for item in current_items if item.enabled
+            )
+            if parsed is not None:
+                _send(target, {"type": "TerminalTitleSetupPreview", "items": parsed})
+
+        def on_confirm(ids: list[str], target: Any) -> None:
+            parsed = parse_terminal_title_items(ids)
+            if parsed is not None:
+                _send(target, {"type": "TerminalTitleSetup", "items": parsed})
+
+        def on_cancel(target: Any) -> None:
+            _send(target, {"type": "TerminalTitleSetupCancelled"})
+
+        picker = (
+            MultiSelectPicker.builder(
+                "Configure Terminal Title",
+                "Select which items to display in the terminal title.",
+                event_target,
+            )
+            .list_keymap(list_keymap)
+            .items(items)
+            .enable_ordering()
+            .on_preview(preview_builder)
+            .on_change(on_change)
+            .on_confirm(on_confirm)
+            .on_cancel(on_cancel)
+            .build()
+        )
+        return cls(
+            picker=picker,
+            preview_data=preview_data,
+            emitted_events=emitted_events,
+        )
+
+    @property
+    def items(self) -> list[MultiSelectItem]:
+        return self.picker.items
+
+    @property
+    def complete(self) -> bool:
+        return self.picker.complete
 
     @staticmethod
     def title_select_item(item: TerminalTitleItem | str, enabled: bool, preview_data: Any) -> MultiSelectItem:
@@ -237,54 +281,35 @@ class TerminalTitleSetupView:
         )
 
     def preview(self) -> str | None:
-        items = parse_terminal_title_items(item.id for item in self.items if item.enabled)
-        if items is None:
-            return None
-        return preview_line_for_title_items(items, self.preview_data)
+        value = self.picker.preview_line
+        return None if value is None else str(value)
 
     def confirm(self) -> None:
-        items = parse_terminal_title_items(item.id for item in self.items if item.enabled)
-        if items is None:
-            return
-        self.emitted_events.append({"type": "TerminalTitleSetup", "items": items})
-        self.complete = True
+        self.picker.confirm_selection()
 
     def cancel(self) -> None:
-        self.emitted_events.append({"type": "TerminalTitleSetupCancelled"})
-        self.complete = True
+        self.picker.close()
 
     def handle_key_event(self, key_event: Any) -> None:
-        if str(key_event).lower() in {"esc", "ctrl-c", "ctrl_c"}:
-            self.cancel()
+        self.picker.handle_key_event(key_event)
 
     def is_complete(self) -> bool:
-        return self.complete
+        return self.picker.is_complete()
 
     def on_ctrl_c(self) -> str:
-        self.cancel()
-        return "Handled"
+        return self.picker.on_ctrl_c()
 
-    def render_lines(self) -> list[str]:
-        lines = ["Configure Terminal Title", "Select which items to display in the terminal title."]
-        preview = self.preview()
-        if preview:
-            lines.append(preview)
-        lines.extend(
-            f"[{'x' if item.enabled else ' '}] {item.name} - {item.description or ''}"
-            for item in self.items
-        )
-        return lines
+    def render_lines(self, width: int = 80) -> list[str]:
+        return [line.text for line in self.picker.terminal_lines(width=width)]
 
     def render(self, area: Any = None, buf: Any = None) -> list[str]:
-        del area
-        lines = self.render_lines()
-        if isinstance(buf, list):
-            buf.extend(lines)
-        return lines
+        return self.picker.render(area, buf)
 
     def desired_height(self, width: int) -> int:
-        del width
-        return len(self.render_lines())
+        return self.picker.desired_height(width)
+
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        return self.picker.terminal_lines(width=width)
 
 
 def _rate_limit_item_name(preview_data: Any, preview_item: str | None, default: str) -> str:
@@ -330,8 +355,18 @@ def desired_height(view: TerminalTitleSetupView, width: int) -> int:
 
 
 def render_lines(view: TerminalTitleSetupView, width: int | None = None) -> str:
-    del width
-    return "\n".join(view.render_lines())
+    return "\n".join(view.render_lines(80 if width is None else width))
+
+
+def _send(target: Any, event: dict[str, Any]) -> None:
+    if target is None:
+        return
+    if hasattr(target, "send"):
+        target.send(event)
+    elif callable(target):
+        target(event)
+    elif isinstance(target, list):
+        target.append(event)
 
 
 __all__ = [

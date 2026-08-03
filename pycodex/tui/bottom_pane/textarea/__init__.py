@@ -310,6 +310,8 @@ class TextArea:
             self.move_cursor_left()
         elif key == "l":
             self.move_cursor_right()
+        elif key == "w":
+            self.set_cursor(self.beginning_of_next_word())
         elif key == "0":
             self.move_cursor_to_beginning_of_line(False)
         elif key == "$":
@@ -628,8 +630,20 @@ class TextArea:
         return max(self.beginning_of_current_line(), self.end_of_current_line() - 1)
 
     def beginning_of_next_word(self) -> int:
-        match = re.search(r"\S+", self.text_value[self.cursor_pos_value + 1 :])
-        return len(self.text_value) if not match else self.cursor_pos_value + 1 + match.start()
+        cursor = self.cursor_pos_value
+        first_non_ws = re.search(r"\S", self.text_value[cursor:])
+        if first_non_ws is None:
+            return len(self.text_value)
+        word_start = cursor + first_non_ws.start()
+        if word_start != cursor:
+            return self.adjust_pos_out_of_elements(word_start, True)
+        end = self.end_of_next_word()
+        if end >= len(self.text_value):
+            return len(self.text_value)
+        next_non_ws = re.search(r"\S", self.text_value[end:])
+        if next_non_ws is None:
+            return len(self.text_value)
+        return self.adjust_pos_out_of_elements(end + next_non_ws.start(), True)
 
     def adjust_pos_out_of_elements(self, pos: int, prefer_start: bool) -> int:
         for elem in self.elements:

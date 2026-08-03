@@ -15,13 +15,17 @@ from .._porting import RustTuiModule
 from ..bottom_pane.chat_composer import terminal_composer_projection
 from ..bottom_pane.footer import terminal_footer_projection
 from ..bottom_pane.selection_popup_common import terminal_popup_line_style, terminal_popup_lines_for_width
-from ..bottom_pane.terminal_action import TerminalBottomPaneState
+from ..bottom_pane.terminal_action import TerminalBottomPaneState, TerminalStyledText
 from ..bottom_pane.terminal_footprint import terminal_bottom_pane_layout_rows
 from ..custom_terminal import live_viewport_buffer_area_for_rows
 from ..ratatui_bridge import Buffer as RatatuiBuffer
 from ..ratatui_bridge import Line as RatatuiLine
 from ..ratatui_bridge import Rect
+from ..ratatui_bridge import Color as RatatuiColor
+from ..ratatui_bridge import Modifier as RatatuiModifier
 from ..ratatui_bridge import Span as RatatuiSpan
+from ..ratatui_bridge import Style as RatatuiStyle
+from ..terminal_hyperlinks import HyperlinkLine, line_text
 from ..render.renderable import EmptyRenderable, FlexRenderable, InsetRenderable, Insets
 from .status_surfaces import terminal_live_status_projection
 
@@ -47,6 +51,7 @@ class TerminalBottomPaneFrameWrite:
     column: int
     text: str
     selected: bool = False
+    spans: tuple[RatatuiSpan, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -65,11 +70,14 @@ class TerminalBottomPaneFrameProjection:
     buffer: RatatuiBuffer
 
 
-def active_history_cell_lines(cell: object | None, width: int) -> tuple[str, ...]:
+def active_history_cell_lines(cell: object | None, width: int) -> tuple[object, ...]:
     """Project a Rust ``ChatWidget::active_cell`` into live-frame rows."""
 
     if cell is None:
         return ()
+    display = getattr(cell, "display_hyperlink_lines", None)
+    if callable(display):
+        return tuple(display(max(1, int(width))))
     display = getattr(cell, "display_lines", None)
     if not callable(display):
         return ()
@@ -86,6 +94,122 @@ def active_history_cell_lines(cell: object | None, width: int) -> tuple[str, ...
             )
         )
     return tuple(rows)
+
+
+def _ratatui_style_from_semantic(value: object) -> RatatuiStyle:
+    if isinstance(value, RatatuiStyle):
+        return value
+    if value is None:
+        return RatatuiStyle()
+    if isinstance(value, str):
+        tokens = {token.lower().replace("-", "_") for token in value.split()}
+        named = next(
+            (
+                color
+                for color in (
+                    "black", "red", "green", "yellow", "blue", "magenta",
+                    "cyan", "white", "gray", "dark_gray", "light_red",
+                    "light_green", "light_yellow", "light_blue",
+                    "light_magenta", "light_cyan",
+                )
+                if color in tokens
+            ),
+            None,
+        )
+        modifiers = {
+            RatatuiModifier(token)
+            for token in tokens
+            if token in {item.value for item in RatatuiModifier}
+        }
+        return RatatuiStyle(
+            fg=None if named is None else RatatuiColor.named(named),
+            modifiers=frozenset(modifiers),
+        )
+
+    raw_fg = getattr(value, "fg", None)
+    fg = None
+    if raw_fg is not None:
+        kind = getattr(raw_fg, "kind", None)
+        payload = getattr(raw_fg, "value", raw_fg)
+        if kind == "rgb" and payload is not None:
+            fg = RatatuiColor.rgb(*payload)
+        elif kind == "indexed":
+            fg = RatatuiColor.indexed(int(payload))
+        elif kind == "named":
+            fg = RatatuiColor.named(str(payload))
+
+    names = {
+        str(getattr(item, "value", item)).lower().replace("-", "_")
+        for item in (getattr(value, "modifiers", ()) or ())
+    }
+    for name in ("bold", "dim", "italic", "underlined", "reversed", "crossed_out"):
+        attribute = getattr(value, name, False)
+        if not callable(attribute) and bool(attribute):
+            names.add(name)
+    modifiers = frozenset(
+        RatatuiModifier(name)
+        for name in names
+        if name in {item.value for item in RatatuiModifier}
+    )
+    return RatatuiStyle(fg=fg, modifiers=modifiers)
+
+
+def _active_tail_frame_write(row: int, value: object) -> TerminalBottomPaneFrameWrite:
+    if not isinstance(value, HyperlinkLine) and getattr(value, "line", None) is None:
+        return TerminalBottomPaneFrameWrite(row, 1, str(value))
+    source = value if isinstance(value, HyperlinkLine) else HyperlinkLine.new(value)
+    line_style = _ratatui_style_from_semantic(source.line.style)
+    spans = tuple(
+        RatatuiSpan.styled(
+            span.content,
+            line_style.patch(_ratatui_style_from_semantic(span.style)),
+        )
+        for span in source.line.spans
+    )
+    return TerminalBottomPaneFrameWrite(
+        row,
+        1,
+        line_text(source.line),
+        spans=spans,
+    )
+
+
+def _footer_frame_write(
+    row: int,
+    line: str,
+    right_text: str,
+) -> TerminalBottomPaneFrameWrite:
+    if not isinstance(right_text, TerminalStyledText) or not right_text.semantic_spans:
+        return TerminalBottomPaneFrameWrite(row, 1, line)
+    right_start = line.rfind(str(right_text))
+    if right_start < 0:
+        return TerminalBottomPaneFrameWrite(row, 1, line)
+    spans: list[RatatuiSpan] = []
+    if right_start:
+        spans.append(RatatuiSpan.raw(line[:right_start]))
+    spans.extend(
+        RatatuiSpan.styled(content, _ratatui_style_from_semantic(style))
+        for content, style in right_text.semantic_spans
+    )
+    return TerminalBottomPaneFrameWrite(row, 1, line, spans=tuple(spans))
+
+
+def _semantic_frame_write(
+    row: int,
+    line: str,
+    semantic_spans: tuple[tuple[str, str | None], ...],
+) -> TerminalBottomPaneFrameWrite:
+    if not semantic_spans:
+        return TerminalBottomPaneFrameWrite(row, 1, line)
+    return TerminalBottomPaneFrameWrite(
+        row,
+        1,
+        line,
+        spans=tuple(
+            RatatuiSpan.styled(content, _ratatui_style_from_semantic(style))
+            for content, style in semantic_spans
+        ),
+    )
 
 
 def terminal_bottom_pane_frame(
@@ -131,29 +255,51 @@ def terminal_bottom_pane_frame(
     live_status_projection = terminal_live_status_projection(state.live_status_text, columns)
     visible_tail = state.active_tail_lines[-len(layout.active_tail_rows) :]
     for row, line in zip(layout.active_tail_rows, visible_tail):
-        writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
+        writes.append(_active_tail_frame_write(row, line))
     for row, line in zip(layout.live_status_rows, live_status_projection.lines):
         writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
 
-    for row, line in zip(layout.composer_rows, composer_projection.lines):
-        writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
+    composer_semantic_spans = tuple(
+        getattr(composer_projection, "line_semantic_spans", ())
+    )
+    for index, (row, line) in enumerate(zip(layout.composer_rows, composer_projection.lines)):
+        semantic_spans = (
+            composer_semantic_spans[index]
+            if index < len(composer_semantic_spans)
+            else ()
+        )
+        writes.append(_semantic_frame_write(row, line, semantic_spans))
     if state.popup_lines:
         popup_lines = terminal_popup_lines_for_width(state.popup_lines, max(1, columns - 1))
         for row, line in zip(layout.popup_rows, popup_lines):
-            writes.append(TerminalBottomPaneFrameWrite(row, 1, line.text, line.selected))
+            writes.append(
+                TerminalBottomPaneFrameWrite(
+                    row,
+                    1,
+                    line.text,
+                    line.selected,
+                    line.spans,
+                )
+            )
     if state.footer_lines and not state.popup_lines:
         for row, line in zip(layout.footer_rows, state.footer_lines):
-            writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
+            semantic_spans = (
+                line.semantic_spans
+                if isinstance(line, TerminalStyledText)
+                else ()
+            )
+            writes.append(_semantic_frame_write(row, str(line), semantic_spans))
     elif state.footer_text and not state.popup_lines:
+        footer_line = terminal_footer_projection(
+            state.footer_text,
+            columns,
+            state.footer_right_text,
+        ).line
         writes.append(
-            TerminalBottomPaneFrameWrite(
+            _footer_frame_write(
                 layout.footer_row,
-                1,
-                terminal_footer_projection(
-                    state.footer_text,
-                    columns,
-                    state.footer_right_text,
-                ).line,
+                footer_line,
+                state.footer_right_text,
             )
         )
 
@@ -191,7 +337,17 @@ def terminal_bottom_pane_frame_buffer(size: os.terminal_size, frame: TerminalBot
         x = max(0, write.column - 1)
         y = max(0, write.row - 1)
         style = terminal_popup_line_style(selected=write.selected)
-        line = RatatuiLine.from_spans((RatatuiSpan.styled(write.text, style),))
+        if write.spans:
+            spans = tuple(
+                RatatuiSpan.styled(
+                    span.content,
+                    style.patch(span.style) if write.selected else span.style,
+                )
+                for span in write.spans
+            )
+            line = RatatuiLine.from_spans(spans)
+        else:
+            line = RatatuiLine.from_spans((RatatuiSpan.styled(write.text, style),))
         buffer.set_line(x, y, line, max_width=max(0, size.columns - x))
     return buffer
 

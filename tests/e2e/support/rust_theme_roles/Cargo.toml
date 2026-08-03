@@ -1,0 +1,12 @@
+[package]
+name = "codex-rust-theme-role-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syntect = "5.3.0"
+two-face = { version = "0.5.1", default-features = false, features = ["syntect-default-onig"] }
+

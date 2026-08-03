@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 from pycodex.tui.bottom_pane.chat_composer import terminal_composer_line_text
 from pycodex.tui.bottom_pane.selection_popup_common import TerminalPopupLine
-from pycodex.tui.bottom_pane.terminal_action import TerminalBottomPaneState
+from pycodex.tui.bottom_pane.terminal_action import (
+    TerminalBottomPaneState,
+    TerminalStyledText,
+)
 from pycodex.tui.chatwidget.rendering import (
     BottomPaneComposerReserveRenderable,
     Rect,
@@ -21,6 +24,10 @@ from pycodex.tui.chatwidget.rendering import (
     terminal_bottom_pane_frame_buffer,
 )
 from pycodex.tui.ratatui_bridge import Color as RatatuiColor
+from pycodex.tui.ratatui_bridge import Modifier as RatatuiModifier
+from pycodex.tui.line_truncation import Line as SemanticLine
+from pycodex.tui.line_truncation import Span as SemanticSpan
+from pycodex.tui.terminal_hyperlinks import HyperlinkLine
 
 
 class Cell:
@@ -126,6 +133,32 @@ def test_terminal_bottom_pane_frame_buffer_projects_frame_writes_into_cells() ->
     assert buffer.cell(0, 9).style.fg == RatatuiColor.LightBlue
 
 
+def test_terminal_bottom_pane_live_tail_keeps_markdown_span_styles() -> None:
+    state = TerminalBottomPaneState(
+        draft="",
+        active_tail_lines=(
+            HyperlinkLine.new(
+                SemanticLine.from_spans(
+                    (
+                        SemanticSpan("bold", "bold"),
+                        SemanticSpan(" italic", "italic cyan"),
+                    )
+                )
+            ),
+        ),
+    )
+
+    frame = terminal_bottom_pane_frame(os.terminal_size((80, 12)), state)
+    tail_write = next(write for write in frame.writes if write.text == "bold italic")
+    buffer = terminal_bottom_pane_frame_buffer(os.terminal_size((80, 12)), frame)
+
+    assert tail_write.spans
+    row = tail_write.row - 1
+    assert RatatuiModifier.BOLD in buffer.cell(0, row).style.modifiers
+    assert RatatuiModifier.ITALIC in buffer.cell(5, row).style.modifiers
+    assert buffer.cell(5, row).style.fg == RatatuiColor.Cyan
+
+
 def test_terminal_bottom_pane_frame_composes_owner_projections() -> None:
     # Rust owner: codex-tui::chatwidget::rendering composes bottom-pane
     # renderable content before custom_terminal projects it into terminal
@@ -169,6 +202,30 @@ def test_terminal_bottom_pane_frame_right_aligns_goal_footer_indicator() -> None
     assert footer.text.startswith("gpt-test low · ~\\repo")
     assert footer.text.endswith("Goal achieved (1m)")
     assert len(footer.text) == 47
+
+
+def test_terminal_bottom_pane_frame_preserves_vim_normal_indicator_color() -> None:
+    # Rust ChatComposer::vim_mode_indicator_span renders Normal magenta.
+    size = os.terminal_size((48, 12))
+    frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(
+            draft="",
+            footer_text="gpt-test high",
+            footer_right_text=TerminalStyledText(
+                "Vim: Normal",
+                (("Vim: Normal", "magenta"),),
+            ),
+        ),
+    )
+    buffer = terminal_bottom_pane_frame_buffer(size, frame)
+    footer_row = frame.writes[-1].row - 1
+    start = frame.writes[-1].text.index("Vim: Normal")
+
+    assert all(
+        buffer.cell(column, footer_row).style.fg == RatatuiColor.Magenta
+        for column in range(start, start + len("Vim: Normal"))
+    )
 
 
 def test_terminal_bottom_pane_frame_renders_multiline_shortcut_footer() -> None:

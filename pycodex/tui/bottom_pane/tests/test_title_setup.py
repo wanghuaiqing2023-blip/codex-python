@@ -51,7 +51,7 @@ def test_parse_accepts_all_kebab_case_variants_from_rust_test():
         "used-tokens",
         "total-input-tokens",
         "total-output-tokens",
-        "session-id",
+        "thread-id",
         "fast-mode",
     ]
     assert parse_terminal_title_items(ids) == [
@@ -116,6 +116,14 @@ def test_title_setup_view_orders_configured_unique_items_before_disabled_remaind
     assert [item.enabled for item in view.items[:3]] == [True, True, True]
     assert all(isinstance(item, MultiSelectItem) for item in view.items)
     assert view.items[0].description == TerminalTitleItem.PROJECT.description()
+    terminal_lines = view.terminal_lines(width=80)
+    assert terminal_lines[0].text == "  Configure Terminal Title"
+    assert terminal_lines[3].text == "  Type to search"
+    assert terminal_lines[4].text == "  > "
+    assert terminal_lines[-2].text == "  [ ! ] Action Required | repo | Ready"
+    assert len(terminal_lines[5:13]) == 8
+    assert terminal_lines[5].selected is True
+    assert terminal_lines[6].selected is False
 
 
 def test_title_select_item_uses_rate_limit_preview_names_and_descriptions():
@@ -141,3 +149,32 @@ def test_confirm_and_cancel_emit_semantic_events():
     cancelled = TerminalTitleSetupView.new([], {})
     assert cancelled.on_ctrl_c() == "Handled"
     assert cancelled.emitted_events == [{"type": "TerminalTitleSetupCancelled"}]
+
+
+def test_title_setup_search_toggle_preview_navigation_and_confirm_match_picker_contract():
+    view = TerminalTitleSetupView.new(
+        ["activity", "project-name"],
+        {"ProjectName": "repo", "AppName": "Codex"},
+    )
+
+    for char in "app-name":
+        view.handle_key_event(char)
+    lines = view.terminal_lines(width=100)
+    assert any(line.text == "  > app-name" for line in lines)
+    assert any("› [ ] app-name" in line.text for line in lines)
+    assert not any("project-name" in line.text for line in lines)
+
+    view.handle_key_event("space")
+    assert view.preview() == "[ ! ] Action Required | repo | Codex"
+    assert view.emitted_events[-1] == {
+        "type": "TerminalTitleSetupPreview",
+        "items": [
+            TerminalTitleItem.SPINNER,
+            TerminalTitleItem.PROJECT,
+            TerminalTitleItem.APP_NAME,
+        ],
+    }
+
+    view.handle_key_event("enter")
+    assert view.is_complete()
+    assert view.emitted_events[-1]["type"] == "TerminalTitleSetup"

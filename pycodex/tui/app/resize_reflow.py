@@ -56,9 +56,18 @@ class HistoryLineWrapPolicy(str, Enum):
 @dataclass(frozen=True, eq=True)
 class HyperlinkLine:
     text: str
+    source: Any = field(default=None, compare=False, repr=False)
 
     @classmethod
     def new(cls, value: Any) -> "HyperlinkLine":
+        if isinstance(value, cls):
+            return value
+        line = getattr(value, "line", None)
+        if line is not None:
+            return cls(terminal_line_text(line), value)
+        spans = getattr(value, "spans", None)
+        if spans is not None:
+            return cls(terminal_line_text(value), value)
         return cls(str(value))
 
 
@@ -98,7 +107,7 @@ def _display_cell_lines(cell: Any, width: int, mode: Any = None) -> List[Hyperli
         return _coerce_lines(legacy(width, mode))
     render_mode = HistoryRenderMode.RAW if mode is HistoryRenderMode.RAW else HistoryRenderMode.RICH
     return [
-        HyperlinkLine.new(terminal_line_text(line))
+        HyperlinkLine.new(line)
         for line in display_hyperlink_lines_for_mode(cell, width, render_mode)
     ]
 
@@ -203,6 +212,11 @@ def render_transcript_lines_for_reflow(
     """Render transcript tail with Rust row-cap and separator semantics."""
 
     cells = list(transcript_cells)
+    render_mode = (
+        HistoryRenderMode.RAW
+        if state is not None and state.raw_output_mode
+        else HistoryRenderMode.RICH
+    )
     cell_displays: deque[ReflowCellDisplay] = deque()
     rendered_rows = 0
     start = len(cells)
@@ -210,7 +224,7 @@ def render_transcript_lines_for_reflow(
     while start > 0:
         start -= 1
         cell = cells[start]
-        lines = _display_cell_lines(cell, width, None)
+        lines = _display_cell_lines(cell, width, render_mode)
         rendered_rows += len(lines)
         cell_displays.appendleft(ReflowCellDisplay(lines, _is_stream_continuation(cell)))
         if row_cap is not None and rendered_rows > row_cap:
@@ -221,7 +235,7 @@ def render_transcript_lines_for_reflow(
         cell = cells[start]
         cell_displays.appendleft(
             ReflowCellDisplay(
-                _display_cell_lines(cell, width, None),
+                _display_cell_lines(cell, width, render_mode),
                 _is_stream_continuation(cell),
             )
         )
@@ -460,6 +474,13 @@ class TerminalResizeCoordinator:
         self.pending = True
         return self._run_due_resize_reflow()
 
+    def reflow_transcript_now(self) -> bool:
+        """Immediately rebuild retained transcript cells in their current mode."""
+
+        self.transcript_reflow.schedule_immediate()
+        self.pending = True
+        return self._run_due_resize_reflow()
+
     def run_conditional_stream_reflow(self) -> bool:
         needs_resize_reflow = self.transcript_reflow.take_stream_finish_reflow_needed()
         if needs_resize_reflow or self.pending:
@@ -493,10 +514,11 @@ class TerminalResizeHistoryReplayer:
     live_status_footprint_active: Callable[[], bool]
     history_bottom_row: Callable[[], int]
     terminal_columns: Callable[[], int]
-    insert_replayed_history_lines: Callable[[list[str], bool], None]
+    insert_replayed_history_lines: Callable[[list[object], bool], None]
     apply_history_state: Callable[[TerminalHistoryState], None]
     render_bottom_pane: Callable[[], None]
     transcript_cells: Callable[[], Sequence[Any]] | None = None
+    raw_output_mode: Callable[[], bool] = lambda: False
 
     def repaint_viewport(self) -> bool:
         return self._repaint_viewport(reserve_active_bottom_pane=False)
@@ -515,6 +537,7 @@ class TerminalResizeHistoryReplayer:
                 terminal_active=self.terminal_active(),
                 history_bottom_row=bottom_row,
                 terminal_columns=self.terminal_columns,
+                raw_output_mode=self.raw_output_mode(),
             )
         state = self.history_state()
         painted = run_terminal_history_state_viewport_repaint_for_width(
@@ -537,6 +560,7 @@ class TerminalResizeHistoryReplayer:
                 insert_replayed_history_lines=self.insert_replayed_history_lines,
                 apply_history_state=self.apply_history_state,
                 history_state=self.history_state(),
+                raw_output_mode=self.raw_output_mode(),
             )
         return run_terminal_history_state_scrollback_replay_insert_for_resize_width(
             self.writer,
@@ -856,12 +880,35 @@ def render_history_projection_lines(
 def render_terminal_typed_transcript_lines(
     transcript_cells: Sequence[Any],
     width: int,
+    *,
+    raw_output_mode: bool = False,
 ) -> list[str]:
     """Render app-owned typed HistoryCell values for terminal replay."""
 
-    state = ResizeReflowState(transcript_cells=list(transcript_cells))
+    return [
+        terminal_line_text(getattr(line, "line", line))
+        if not isinstance(line, str)
+        else line
+        for line in render_terminal_typed_transcript_hyperlink_lines(
+            transcript_cells, width, raw_output_mode=raw_output_mode
+        )
+    ]
+
+
+def render_terminal_typed_transcript_hyperlink_lines(
+    transcript_cells: Sequence[Any],
+    width: int,
+    *,
+    raw_output_mode: bool = False,
+) -> list[object]:
+    """Render retained transcript cells without discarding span/link metadata."""
+
+    state = ResizeReflowState(
+        transcript_cells=list(transcript_cells),
+        raw_output_mode=bool(raw_output_mode),
+    )
     rendered = state.render_transcript_lines_for_reflow(max(1, int(width)))
-    return [str(line.text) for line in rendered.lines]
+    return [line.source if line.source is not None else str(line.text) for line in rendered.lines]
 
 
 def run_terminal_typed_transcript_viewport_repaint(
@@ -872,12 +919,17 @@ def run_terminal_typed_transcript_viewport_repaint(
     terminal_active: bool,
     history_bottom_row: Callable[[], int],
     terminal_columns: Callable[[], int],
+    raw_output_mode: bool = False,
 ) -> bool:
     if not terminal_active:
         return False
     painted = repaint_terminal_history_viewport(
         writer,
-        render_terminal_typed_transcript_lines(transcript_cells, width),
+        render_terminal_typed_transcript_lines(
+            transcript_cells,
+            width,
+            raw_output_mode=raw_output_mode,
+        ),
         bottom_row=history_bottom_row(),
         columns=terminal_columns(),
     )
@@ -893,9 +945,10 @@ def run_terminal_typed_transcript_scrollback_replay(
     width: int,
     *,
     live_status_footprint_active: bool,
-    insert_replayed_history_lines: Callable[[list[str], bool], None],
+    insert_replayed_history_lines: Callable[[list[object], bool], None],
     apply_history_state: Callable[[TerminalHistoryState], None],
     history_state: TerminalHistoryState,
+    raw_output_mode: bool = False,
 ) -> bool:
     replay_state = terminal_history_state_for_resize_replay(history_state)
     apply_history_state(replay_state)
@@ -903,7 +956,11 @@ def run_terminal_typed_transcript_scrollback_replay(
     flush = getattr(writer, "flush", None)
     if callable(flush):
         flush()
-    lines = render_terminal_typed_transcript_lines(transcript_cells, width)
+    lines = render_terminal_typed_transcript_hyperlink_lines(
+        transcript_cells,
+        width,
+        raw_output_mode=raw_output_mode,
+    )
     if not lines:
         return False
     insert_replayed_history_lines(lines, live_status_footprint_active)

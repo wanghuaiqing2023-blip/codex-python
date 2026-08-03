@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pycodex.app_server_protocol.account import RateLimitSnapshot, RateLimitWindow
 from pycodex.protocol import CollaborationMode, CollaborationModeMask, ModeKind, Settings
 from pycodex.tui.chatwidget.constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from pycodex.tui.bottom_pane.footer import terminal_idle_footer_right_text_from_runtime
@@ -28,6 +29,52 @@ from pycodex.tui.chatwidget.protocol import (
     terminal_notification_effect_plan,
     terminal_turn_close_effect_plan,
 )
+from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, compose_rate_limit_data_many
+
+
+def test_vim_toggle_uses_bound_bottom_pane_owner() -> None:
+    runtime = ChatWidgetProtocolRuntime()
+    calls: list[str] = []
+    runtime.bind_vim_mode_toggle_sink(lambda: calls.append("toggle") or True)
+
+    assert runtime.toggle_vim_mode_and_notify() == "Vim mode enabled."
+    assert runtime.vim_enabled is True
+    assert calls == ["toggle"]
+
+
+def test_thread_rate_limits_notification_caches_display_snapshot_at_receipt() -> None:
+    # Rust: codex-tui::chatwidget::rate_limits::ChatWidget::on_rate_limit_snapshot
+    # converts the protocol RateLimitSnapshot with Local::now() before caching it.
+    # This guards the real /side -> ThreadRateLimitsUpdated -> /status path.
+    runtime = ChatWidgetProtocolRuntime()
+    raw = RateLimitSnapshot(
+        limit_id="codex-spark",
+        limit_name="GPT-5.3-Codex-Spark",
+        primary=RateLimitWindow(25, 300),
+    )
+
+    runtime.handle(ServerNotification("ThreadRateLimitsUpdated", {"rate_limits": raw}))
+
+    cached = runtime.rate_limit_snapshots_by_limit_id["codex-spark"]
+    assert isinstance(cached, RateLimitSnapshotDisplay)
+    assert cached.limit_name == "GPT-5.3-Codex-Spark"
+    assert cached.captured_at.tzinfo is not None
+    assert cached.primary is not None
+    assert cached.primary.used_percent == 25.0
+    assert compose_rate_limit_data_many([cached], cached.captured_at).kind == "available"
+
+
+def test_settled_mcp_startup_hides_stale_status_indicator() -> None:
+    runtime = ChatWidgetProtocolRuntime()
+    runtime.mcp_startup.set_mcp_startup_expected_servers(["delayed"])
+
+    runtime.on_mcp_server_status_updated({"name": "delayed", "status": "starting"})
+    assert runtime.turn.bottom_pane.task_running is True
+
+    runtime.on_mcp_server_status_updated({"name": "delayed", "status": "ready"})
+    assert runtime.turn.bottom_pane.task_running is False
+    assert runtime.streaming.task_running is False
+    assert runtime.streaming.status_indicator_visible is False
 
 
 class Lifecycle:

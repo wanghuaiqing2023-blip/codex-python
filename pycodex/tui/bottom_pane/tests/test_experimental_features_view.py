@@ -1,6 +1,7 @@
 ﻿from pycodex.tui.bottom_pane.experimental_features_view import ExperimentalFeatureItem
 from pycodex.tui.bottom_pane.experimental_features_view import ExperimentalFeaturesView
 from pycodex.tui.bottom_pane.experimental_features_view import experimental_popup_hint_line
+from pycodex.tui.app_event import AppEvent
 
 
 def _items(count=3):
@@ -74,10 +75,15 @@ def test_on_ctrl_c_saves_updates_and_completes_only_when_features_exist():
     assert view.on_ctrl_c() == "Handled"
     assert view.is_complete()
     assert events == [
-        {
-            "type": "UpdateFeatureFlags",
-            "updates": [("feature-0", True), ("feature-1", False)],
-        }
+        AppEvent(
+            "UpdateFeatureFlags",
+            {
+                "updates": [
+                    ("feature-0", True),
+                    ("feature-1", False),
+                ]
+            },
+        )
     ]
 
     empty_events = []
@@ -109,6 +115,14 @@ def test_render_zero_area_is_noop_and_buf_receives_lines():
 
     lines = view.render((0, 0, 40, 10), buf)
     assert buf == lines
+
+
+def test_terminal_projection_counts_description_lines_before_footer():
+    view = ExperimentalFeaturesView.new(_items(2))
+
+    lines = view.terminal_lines(width=80)
+
+    assert lines[-1].text == experimental_popup_hint_line()
 
 
 def test_keymap_bindings_are_honored_before_default_fallbacks():

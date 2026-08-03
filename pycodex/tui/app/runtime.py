@@ -22,13 +22,15 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock, Thread, current_thread
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, MutableMapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, Protocol
 
 from pycodex.core.config.edit import (
     ConfigEdit,
     ConfigEditsBuilder,
     status_line_items_edit,
     status_line_use_colors_edit,
+    syntax_theme_edit,
+    terminal_title_items_edit,
 )
 from pycodex.app_server.bespoke_event_handling import turn_plan_updated_notification
 from pycodex.exec.local_runtime import (
@@ -56,12 +58,17 @@ from pycodex.protocol.request_permissions import (
 from pycodex.utils.approval_presets import builtin_approval_presets
 
 from ..app_command import AppCommand
-from ..app_event import AppEvent, RateLimitRefreshOrigin
+from ..app_event import (
+    AppEvent,
+    RateLimitRefreshOrigin,
+    WindowsSandboxEnableMode,
+)
 from ..app_event_sender import AppEventSender
 from ..app_backtrack import (
     BacktrackState,
     handle_backtrack_esc_key_state,
     open_backtrack_preview_state,
+    reset_backtrack_state,
 )
 from ..app_server_session import app_server_rate_limit_snapshots
 from ..chatwidget.input_submission import UserMessage, UserMessageHistoryRecord, submit_user_message_with_history_record
@@ -70,7 +77,12 @@ from ..chatwidget.protocol import ChatWidgetProtocolRuntime, HistoryProjectionSi
 from ..chatwidget.protocol_requests import ServerRequest
 from ..chatwidget.replay import ReplayKind as ChatWidgetReplayKind
 from ..chatwidget.replay import replay_thread_turns
-from ..config_update import build_model_selection_edits, write_config_batch
+from ..config_update import (
+    build_feature_enabled_edit,
+    build_memory_settings_edits,
+    build_model_selection_edits,
+    write_config_batch,
+)
 from ..history_cell.notices import new_error_event, new_info_event
 from ..keymap import RuntimeKeymap
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, rate_limit_snapshot_display_for_limit
@@ -98,10 +110,15 @@ from .thread_routing import (
 )
 from .thread_events import ThreadBufferedEvent, ThreadEventSnapshot, ThreadEventStore
 from .side import (
+    SIDE_NO_STARTED_CONVERSATION_MESSAGE,
     SideThreadState,
     SideUiState,
     active_side_parent_thread_id as side_active_parent_thread_id,
+    side_boundary_prompt_item,
+    side_developer_instructions,
+    side_start_block_message,
     side_thread_to_discard_after_switch,
+    sync_side_thread_ui,
 )
 
 RUST_MODULE_CRATE = "codex-tui"
@@ -645,6 +662,21 @@ def _closed_event_stream() -> QueueActiveThreadEventStream:
     return QueueActiveThreadEventStream(queue)
 
 
+def _thread_name_updated_event_stream(
+    thread_id: str,
+    name: str,
+) -> QueueActiveThreadEventStream:
+    queue: Queue[Any] = Queue()
+    queue.put(
+        ServerNotification(
+            "ThreadNameUpdated",
+            {"thread_id": str(thread_id), "thread_name": str(name)},
+        )
+    )
+    queue.put(_EOF)
+    return QueueActiveThreadEventStream(queue)
+
+
 def _apply_override_turn_context_to_runtime(runtime: Any, op: AppCommand) -> None:
     """Apply Rust ``AppCommand::OverrideTurnContext`` to cached session state.
 
@@ -1036,6 +1068,11 @@ class ExecFunctionActiveThreadRuntime:
     def submit_thread_op(self, thread_id: str, op: AppCommand) -> ActiveThreadEventStream:
         if op.kind == "Interrupt":
             return _closed_event_stream()
+        if op.kind == "SetThreadName":
+            return _thread_name_updated_event_stream(
+                thread_id,
+                str(op.payload.get("name", "")),
+            )
         if op.kind == "CleanBackgroundTerminals":
             _clean_background_terminals_for_runtime(self)
             return _closed_event_stream()
@@ -1763,6 +1800,80 @@ class CoreExecActiveThreadRuntime:
             turns=turns,
         )
 
+    def fork_side_thread(self) -> dict[str, Any]:
+        """Fork the active thread with Rust ``App::side_fork_config`` policy."""
+
+        history = self._model_history_snapshot()
+        if not history:
+            raise ValueError(SIDE_NO_STARTED_CONVERSATION_MESSAGE)
+        config = self.session_config
+        parent_state = {
+            "thread_id": self.thread_id,
+            "history": history,
+            "rollout_path": self.rollout_path,
+            "session_config": config,
+        }
+        side_config = replace(
+            config,
+            developer_instructions=side_developer_instructions(
+                getattr(config, "developer_instructions", None)
+            ),
+            ephemeral=True,
+        )
+        self.session_config = side_config
+        try:
+            started = self.fork_current_thread()
+        except BaseException:
+            self.session_config = config
+            raise
+        return {"started": started, "parent_state": parent_state}
+
+    def inject_thread_items(
+        self,
+        thread_id: str,
+        items: Iterable[ResponseItem | Mapping[str, Any]],
+    ) -> None:
+        """Inject prompt-visible items without creating a model turn."""
+
+        if str(thread_id) != str(self.thread_id):
+            raise ValueError("cannot inject items into an inactive thread")
+        response_items = tuple(
+            item
+            if isinstance(item, ResponseItem)
+            else ResponseItem.from_mapping(dict(item))
+            for item in items
+        )
+        with self._model_history_lock:
+            self._model_history_items.extend(response_items)
+        # The local active-thread adapter owns one core session at a time.
+        # Rebuild it from the injected prompt-visible snapshot so the boundary
+        # precedes the first child turn and cannot be mistaken for queued input.
+        self._shutdown_core_session_sync()
+        if isinstance(self.session_config, ExecSessionConfig):
+            self._ensure_core_session_sync(thread_id=str(thread_id))
+        if self._core_session is None:
+            raise RuntimeError("active core session is unavailable")
+
+    def restore_side_parent_thread(self, parent_state: Mapping[str, Any]) -> None:
+        """Restore the parent snapshot after an ephemeral side conversation."""
+
+        thread_id = str(parent_state.get("thread_id") or "")
+        if not thread_id:
+            raise ValueError("side parent snapshot has no thread id")
+        parent_config = parent_state.get("session_config")
+        if parent_config is not None:
+            self.session_config = parent_config
+        rollout_path = parent_state.get("rollout_path")
+        self._activate_thread_state(
+            thread_id,
+            history=tuple(parent_state.get("history", ())),
+            rollout_path=(
+                Path(rollout_path)
+                if rollout_path is not None
+                else None
+            ),
+        )
+
     def _activate_thread_state(
         self,
         thread_id: str,
@@ -1958,6 +2069,15 @@ class CoreExecActiveThreadRuntime:
             if active_turn is not None:
                 active_turn.interrupt()
             return _closed_event_stream()
+        if op.kind == "SetThreadName":
+            name = str(op.payload.get("name", ""))
+            if self.codex_home is not None:
+                from pycodex.rollout.session_index import append_thread_name
+
+                append_thread_name(Path(self.codex_home), thread_id, name)
+            return _thread_name_updated_event_stream(thread_id, name)
+        if op.kind == "Compact":
+            return self._submit_compact_thread_op(thread_id)
         if op.kind == "UserInputAnswer":
             sub_id = str(op.payload.get("id", ""))
             response = op.payload.get("response")
@@ -2327,6 +2447,185 @@ class CoreExecActiveThreadRuntime:
         Thread(target=worker, name="pycodex-tui-core-active-thread", daemon=True).start()
         return QueueActiveThreadEventStream(queue)
 
+    def _submit_compact_thread_op(
+        self,
+        thread_id: str,
+    ) -> ActiveThreadEventStream:
+        """Run Rust ``Op::Compact`` through the core compaction owner."""
+
+        queue: Queue[Any] = Queue()
+        turn_id = "terminal-compact"
+        active_turn = _ActiveCoreTurn(
+            thread_id=thread_id,
+            turn_id=turn_id,
+            queue=queue,
+        )
+        with self._active_turn_lock:
+            self._active_turn = active_turn
+
+        def worker() -> None:
+            pending_commands: dict[str, dict[str, Any]] = {}
+            completed_commands: set[str] = set()
+
+            def observe_session_event(event: Any) -> None:
+                for notification in _server_notifications_from_session_event(
+                    event,
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    pending_commands=pending_commands,
+                    completed_commands=completed_commands,
+                ):
+                    if notification.kind != "TurnCompleted":
+                        active_turn.put(notification)
+
+            async def run_compaction() -> None:
+                from pycodex.core.compact import (
+                    SUMMARIZATION_PROMPT,
+                    run_compact_task,
+                )
+                from pycodex.core.client import (
+                    http_transport_config_from_provider,
+                    send_prepared_http_sampling_request_live,
+                )
+                from pycodex.core.client_common import Prompt
+                from pycodex.core.session.turn.sampler import PreparedSamplingRequest
+                from pycodex.protocol import BaseInstructions
+
+                if self._core_session is None:
+                    raise RuntimeError("compact operation requires an active core session")
+                session = self._core_session
+                session.event_observer = observe_session_event
+                turn_context = await session.new_default_turn()
+                prompt = getattr(turn_context, "compact_prompt", None)
+                if not isinstance(prompt, str) or not prompt:
+                    prompt = SUMMARIZATION_PROMPT
+
+                runtime = self
+                model_client = self.model_client
+                provider = self.provider
+
+                class CompactClientSession:
+                    async def stream(
+                        self,
+                        compact_request: Mapping[str, Any],
+                        model_info: Any,
+                        _telemetry: Any,
+                        effort: Any,
+                        summary: Any,
+                        service_tier: Any,
+                        _turn_metadata_header: Any,
+                    ) -> Any:
+                        base = compact_request.get("base_instructions")
+                        if not isinstance(base, BaseInstructions):
+                            base = BaseInstructions(
+                                "" if base is None else str(base)
+                            )
+                        request = model_client.build_responses_request(
+                            provider,
+                            Prompt(
+                                input=list(compact_request.get("input", ())),
+                                base_instructions=base,
+                                personality=compact_request.get("personality"),
+                            ),
+                            model_info,
+                            effort,
+                            summary,
+                            service_tier,
+                        )
+                        model_session = model_client.new_session()
+                        prepared = PreparedSamplingRequest(
+                            sampling_request=SimpleNamespace(
+                                stream_event_observer=None
+                            ),
+                            prepared_request=model_session.prepare_http_request(
+                                request
+                            ),
+                        )
+                        transport = http_transport_config_from_provider(
+                            model_client,
+                            provider,
+                            auth=runtime.auth,
+                            endpoint=runtime.endpoint,
+                            timeout=runtime.timeout,
+                        )
+                        result = await send_prepared_http_sampling_request_live(
+                            prepared,
+                            transport,
+                            opener=runtime.opener,
+                        )
+
+                        async def events() -> Any:
+                            for event in result.stream_events:
+                                yield event
+
+                        return events()
+
+                class CompactModelClient:
+                    def new_session(self) -> CompactClientSession:
+                        return CompactClientSession()
+
+                    def current_window_id(self) -> str:
+                        current = getattr(model_client, "current_window_id", None)
+                        return current() if callable(current) else ""
+
+                services = session.services
+                previous_model_client = services.model_client
+                services.model_client = CompactModelClient()
+                try:
+                    await run_compact_task(
+                        session,
+                        turn_context,
+                        [UserInput.text_input(prompt)],
+                    )
+                finally:
+                    services.model_client = previous_model_client
+
+            try:
+                if self._core_session is None and isinstance(
+                    self.session_config,
+                    ExecSessionConfig,
+                ):
+                    self._ensure_core_session_sync()
+                self._session_async_runtime().run(run_compaction())
+                active_turn.finish(
+                    _turn_completed_notification(
+                        thread_id,
+                        turn_id,
+                        SimpleNamespace(),
+                    )
+                )
+            except BaseException as exc:
+                self._last_worker_error = exc
+                active_turn.finish(
+                    _turn_failed_notification(
+                        thread_id,
+                        turn_id,
+                        str(exc),
+                        exit_code=1,
+                    )
+                )
+            finally:
+                with self._active_turn_lock:
+                    if self._active_turn is active_turn:
+                        self._active_turn = None
+                self._internal_operation_ready.set()
+                if not active_turn.is_terminal_sent():
+                    active_turn.finish(
+                        _turn_failed_notification(
+                            thread_id,
+                            turn_id,
+                            "compact event stream closed before turn completed",
+                            exit_code=1,
+                        )
+                    )
+
+        Thread(
+            target=worker,
+            name="pycodex-tui-compact",
+            daemon=True,
+        ).start()
+        return QueueActiveThreadEventStream(queue)
+
     def shutdown_thread(self, thread_id: str) -> ActiveThreadEventStream:
         with self._active_turn_lock:
             active_turn = self._active_turn
@@ -2614,6 +2913,7 @@ class TuiAppRuntime:
     world_writable_scan_plans: list[WorldWritableScanPlan] = field(default_factory=list)
     history_cell_sink: Callable[[object], Any] | None = None
     pending_history_cells: list[object] = field(default_factory=list)
+    raw_output_reflow_sink: Callable[[bool], Any] | None = None
     active_view_sink: Callable[[object], Any] | None = None
     pending_active_views: list[object] = field(default_factory=list)
     internal_operation_sink: Callable[[str, AppCommand], Any] | None = None
@@ -2622,7 +2922,10 @@ class TuiAppRuntime:
     pending_app_server_requests: PendingAppServerRequests = field(default_factory=PendingAppServerRequests)
     app_server_request_dismiss_sink: Callable[[object], bool] | None = None
     full_screen_approval_sink: Callable[[object], Any] | None = None
+    diff_overlay_sink: Callable[[str], Any] | None = None
     session_changed_sink: Callable[[], Any] | None = None
+    side_ui_sink: Callable[[bool, str | None], Any] | None = None
+    backtrack_hint_sink: Callable[[bool], Any] | None = None
     thread_event_stores: dict[str, ThreadEventStore] = field(default_factory=dict)
     replayed_interactive_request_ids: set[Any] = field(default_factory=set)
     projected_interactive_request_ids: set[Any] = field(default_factory=set)
@@ -2634,13 +2937,17 @@ class TuiAppRuntime:
     active_collaboration_mode: Any = None
     config_request_handle: Any = None
     open_url_sink: Callable[[str], Any] = field(default_factory=lambda: webbrowser.open)
+    _side_parent_runtime_states: dict[str, Any] = field(default_factory=dict, repr=False)
+    _side_parent_ui_states: dict[str, Any] = field(default_factory=dict, repr=False)
     _status_rate_limit_request_id: int = 0
+    ide_context_state: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Rust ``App::run`` gives every view an AppEventSender backed by the
         # app loop's unbounded channel. Keep callbacks enqueue-only so the
         # bottom pane can finish its input/completion pass before dispatch.
         self.app_event_sender = AppEventSender(self.pending_app_events)
+        self.ide_context_state = _new_ide_context_widget_state(self.cwd)
         if self.config_request_handle is None:
             self.config_request_handle = _config_request_handle_from_runtime(self.active_thread_runtime)
         if self.thread_id and (
@@ -2769,6 +3076,11 @@ class TuiAppRuntime:
         for cell in pending:
             sink(cell)
 
+    def bind_raw_output_reflow_sink(self, sink: Callable[[bool], Any]) -> None:
+        """Bind Rust ``App::reflow_transcript_now`` to the terminal surface."""
+
+        self.raw_output_reflow_sink = sink
+
     def bind_active_view_sink(self, sink: Callable[[object], Any]) -> None:
         """Bind Rust ``ChatWidget::show_*`` active views to BottomPane."""
 
@@ -2815,6 +3127,11 @@ class TuiAppRuntime:
     def bind_full_screen_approval_sink(self, sink: Callable[[object], Any]) -> None:
         self.full_screen_approval_sink = sink
 
+    def bind_diff_overlay_sink(self, sink: Callable[[str], Any]) -> None:
+        """Bind Rust ``AppEvent::DiffResult`` to the terminal static overlay."""
+
+        self.diff_overlay_sink = sink
+
     def bind_app_server_request_dismiss_sink(self, sink: Callable[[object], bool]) -> None:
         """Bind Rust ``BottomPane::dismiss_app_server_request`` to the app owner."""
 
@@ -2822,6 +3139,19 @@ class TuiAppRuntime:
 
     def bind_session_changed_sink(self, sink: Callable[[], Any]) -> None:
         self.session_changed_sink = sink
+
+    def bind_side_ui_sink(
+        self,
+        sink: Callable[[bool, str | None], Any],
+    ) -> None:
+        """Bind ``app::side`` state to the active bottom-pane frame owner."""
+
+        self.side_ui_sink = sink
+
+    def bind_backtrack_hint_sink(self, sink: Callable[[bool], Any]) -> None:
+        """Bind Rust ``ChatWidget::show/clear_esc_backtrack_hint``."""
+
+        self.backtrack_hint_sink = sink
 
     def dispatch_app_event(self, event: Any) -> Any:
         """Dispatch one event received from the Rust-aligned app event bus."""
@@ -2935,12 +3265,32 @@ class TuiAppRuntime:
             transcript_cells=transcript_cells,
         )
         if plan.action != "open_preview":
+            if plan.action == "prime" and self.backtrack_hint_sink is not None:
+                self.backtrack_hint_sink(bool(plan.prime and plan.prime.show_hint))
             return plan.action
 
+        if self.backtrack_hint_sink is not None:
+            self.backtrack_hint_sink(False)
         preview = open_backtrack_preview_state(self.backtrack_state, transcript_cells)
         if preview.info_message:
             self.insert_info_history_message(preview.info_message)
         return preview.action
+
+    def clear_primed_backtrack_for_non_escape_key(self, key_event: object) -> bool:
+        """Apply Rust ``app::input`` cancellation before forwarding a key."""
+
+        code = str(getattr(key_event, "code", "")).lower()
+        kind = str(getattr(key_event, "kind", "press")).lower()
+        if (
+            code == "esc"
+            or kind not in {"press", "repeat"}
+            or not self.backtrack_state.primed
+        ):
+            return False
+        reset_backtrack_state(self.backtrack_state)
+        if self.backtrack_hint_sink is not None:
+            self.backtrack_hint_sink(False)
+        return True
 
     def insert_error_history_message(self, message: str) -> None:
         self.chat_widget.error_messages.append(str(message))
@@ -2995,6 +3345,20 @@ class TuiAppRuntime:
             if runtime_config is not None and hasattr(runtime_config, name):
                 setattr(target, name, getattr(runtime_config, name))
         setattr(target, "tui_keymap", keymap_config)
+        windows_sandbox_level = getattr(
+            runtime_config,
+            "windows_sandbox_level",
+            WindowsSandboxLevel.DISABLED,
+        )
+        if not isinstance(windows_sandbox_level, WindowsSandboxLevel):
+            windows_sandbox_level = WindowsSandboxLevel.parse(
+                str(windows_sandbox_level)
+            )
+        setattr(
+            target,
+            "windows_degraded_sandbox_active",
+            windows_sandbox_level is WindowsSandboxLevel.RESTRICTED_TOKEN,
+        )
         for name in (
             "hide_agent_reasoning",
             "show_raw_agent_reasoning",
@@ -3074,7 +3438,31 @@ class TuiAppRuntime:
             reasoning_effort=_runtime_reasoning_effort_for_user_turn(self),
             service_tier=_runtime_turn_context_value(self, "service_tier"),
             collaboration_mode=collaboration_mode,
+            ide_context_apply=self.maybe_apply_ide_context,
         )
+
+    def handle_ide_command_args(self, args: str) -> None:
+        """Run Rust ``chatwidget::ide_context`` command semantics."""
+
+        self.ide_context_state.handle_ide_command_args(args)
+        self._flush_ide_context_projection()
+
+    def maybe_apply_ide_context(self, items: list[Any]) -> None:
+        """Inject fresh IDE context into a user turn when `/ide` is enabled."""
+
+        self.ide_context_state.maybe_apply_ide_context(items)
+        self._flush_ide_context_projection()
+
+    def _flush_ide_context_projection(self) -> None:
+        state = self.ide_context_state
+        for message, hint in tuple(state.info_messages):
+            self.insert_info_history_message(message, hint)
+        state.info_messages.clear()
+        for message in tuple(state.error_messages):
+            self.insert_history_cell(new_error_event(message))
+        state.error_messages.clear()
+        self.chat_widget.ide_context_active = state.ide_context.is_enabled()
+        self.chat_widget.request_redraw()
 
     def enqueue_user_turn(self, prompt: str) -> AppCommand:
         """Queue a user turn through Rust's production ``CodexOpTarget::AppEvent`` path."""
@@ -3320,6 +3708,70 @@ class TuiAppRuntime:
                 bool(use_theme_colors),
             )
         self.chat_widget.setup_status_line(item_values, bool(use_theme_colors))
+        return True
+
+    def persist_terminal_title_setup(self, items: Any) -> bool:
+        """Persist and apply Rust ``AppEvent::TerminalTitleSetup`` atomically."""
+
+        item_values = [str(item) for item in (items or ())]
+        config = _config_from_runtime(self.active_thread_runtime)
+        try:
+            if config is not None and _config_has_write_target(config):
+                (
+                    ConfigEditsBuilder.for_config(config)
+                    .with_edits([terminal_title_items_edit(item_values)])
+                    .apply_blocking()
+                )
+        except Exception as exc:
+            self.chat_widget.revert_terminal_title_setup_preview()
+            self.chat_widget.add_error_message(
+                f"Failed to save terminal title items: {exc}"
+            )
+            return False
+
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.active_thread_runtime, "config", None),
+        ):
+            _set_runtime_field(source, "tui_terminal_title", list(item_values))
+        self.chat_widget.setup_terminal_title(item_values)
+        return True
+
+    def persist_syntax_theme(self, name: str) -> bool:
+        """Persist and apply Rust ``AppEvent::SyntaxThemeSelected``."""
+
+        from ..render.highlight import set_theme_override
+
+        theme_name = str(name)
+        config = _config_from_runtime(self.active_thread_runtime)
+        codex_home = _runtime_codex_home(self.active_thread_runtime, config)
+        try:
+            if config is not None and _config_has_write_target(config):
+                (
+                    ConfigEditsBuilder.for_config(config)
+                    .with_edits([syntax_theme_edit(theme_name)])
+                    .apply_blocking()
+                )
+            warning = set_theme_override(theme_name, codex_home)
+            if warning is not None:
+                raise ValueError(warning)
+        except Exception as exc:
+            self.chat_widget.add_error_message(
+                f"Failed to save syntax theme: {exc}"
+            )
+            return False
+
+        _apply_session_config_updates(
+            self.active_thread_runtime,
+            {"tui_theme": theme_name},
+        )
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "config", None),
+            getattr(self.chat_widget, "config", None),
+        ):
+            _set_runtime_field(source, "tui_theme", theme_name)
         return True
 
     def persist_world_writable_warning_acknowledged(self) -> None:
@@ -3634,6 +4086,11 @@ class TuiAppRuntime:
             model = payload.get("model") if isinstance(payload, Mapping) else None
             effort = payload.get("effort") if isinstance(payload, Mapping) else None
             self.persist_model_selection(model, effort)
+        elif plan.action == "persist_syntax_theme":
+            name = plan.updates[0][1] if plan.updates else ""
+            self.persist_syntax_theme(str(name))
+        elif plan.action == "refresh_syntax_theme_preview":
+            pass
         elif plan.action == "setup_status_line":
             payload = plan.updates[0][1] if plan.updates else {}
             self.persist_status_line_setup(
@@ -3642,6 +4099,14 @@ class TuiAppRuntime:
             )
         elif plan.action == "cancel_status_line_setup":
             self.chat_widget.cancel_status_line_setup()
+        elif plan.action == "setup_terminal_title":
+            items = plan.updates[0][1] if plan.updates else ()
+            self.persist_terminal_title_setup(items)
+        elif plan.action == "preview_terminal_title":
+            items = plan.updates[0][1] if plan.updates else ()
+            self.chat_widget.preview_terminal_title(items)
+        elif plan.action == "cancel_terminal_title_setup":
+            self.chat_widget.cancel_terminal_title_setup()
         elif plan.action == "refresh_rate_limits":
             origin = plan.updates[0][1] if plan.updates else None
             self.refresh_rate_limits(origin)
@@ -3655,9 +4120,23 @@ class TuiAppRuntime:
             self.apply_raw_output_mode(enabled)
         elif plan.action == "diff_result":
             text = plan.updates[0][1] if plan.updates else ""
-            self.chat_widget.on_diff_complete(text)
+            self.chat_widget.on_diff_complete()
+            if self.diff_overlay_sink is not None:
+                self.diff_overlay_sink(str(text))
+        elif plan.action == "fetch_mcp_inventory":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self.fetch_mcp_inventory(
+                _field(payload, "detail", "tools_and_auth_only"),
+                _field(payload, "thread_id", None),
+            )
         elif plan.action == "open_agent_picker":
             self.open_agent_picker()
+        elif plan.action == "start_side":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self.start_side_conversation(
+                _field(payload, "parent_thread_id", None),
+                _field(payload, "user_message", None),
+            )
         elif plan.action == "submit_user_message_with_mode":
             payload = plan.updates[0][1] if plan.updates else {}
             self.chat_widget.submit_user_message_with_mode(
@@ -3705,7 +4184,531 @@ class TuiAppRuntime:
             )
         elif plan.action == "handle_persist_world_writable_warning_acknowledged":
             self.persist_world_writable_warning_acknowledged()
+        elif plan.action == "handle_begin_windows_sandbox_elevated_setup":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._begin_windows_sandbox_elevated_setup(payload)
+        elif plan.action == "handle_enable_windows_sandbox_for_agent_mode":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._enable_windows_sandbox_for_agent_mode(payload)
+        elif plan.action == "handle_open_windows_sandbox_fallback_prompt":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._open_windows_sandbox_fallback_prompt(payload)
+        elif plan.action == "handle_begin_windows_sandbox_grant_read_root":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._begin_windows_sandbox_grant_read_root(payload)
+        elif plan.action == "handle_windows_sandbox_grant_read_root_completed":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._windows_sandbox_grant_read_root_completed(payload)
+        elif plan.action == "handle_update_feature_flags":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._update_feature_flags(payload)
+        elif plan.action == "handle_update_memory_settings":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._update_memory_settings(payload)
+        elif plan.action == "handle_reset_memories":
+            self._reset_memories()
         return plan
+
+    def fetch_mcp_inventory(self, detail: Any, thread_id: Any = None) -> None:
+        """Render `/mcp` from the active core session's MCP manager."""
+
+        del thread_id
+        from ..history_cell.mcp import (
+            empty_mcp_output,
+            new_mcp_tools_output_from_statuses,
+        )
+
+        config = getattr(self.active_thread_runtime, "session_config", None)
+        server_names = tuple(
+            refresh_mcp_startup_expected_servers_from_config(config)
+        )
+        if not server_names:
+            self.insert_history_cell(empty_mcp_output())
+            return
+
+        core_session = getattr(self.active_thread_runtime, "_core_session", None)
+        ensure_core_session = getattr(
+            self.active_thread_runtime,
+            "_ensure_core_session_sync",
+            None,
+        )
+        if core_session is None and callable(ensure_core_session):
+            core_session = ensure_core_session()
+        manager = getattr(
+            getattr(core_session, "services", None),
+            "mcp_connection_manager",
+            None,
+        )
+        if manager is None:
+            self.insert_history_cell(
+                new_mcp_tools_output_from_statuses(
+                    [{"name": name} for name in server_names],
+                    detail,
+                )
+            )
+            return
+
+        async def collect_statuses() -> list[dict[str, Any]]:
+            tools_by_server: dict[str, dict[str, Any]] = {
+                name: {} for name in server_names
+            }
+            for info in await manager.list_all_tools():
+                server_name = str(getattr(info, "server_name", ""))
+                tool = getattr(info, "tool", None)
+                tool_name = str(
+                    getattr(tool, "name", None)
+                    or getattr(info, "tool_name", None)
+                    or ""
+                )
+                if server_name and tool_name:
+                    tools_by_server.setdefault(server_name, {})[tool_name] = tool
+            include_resources = str(
+                getattr(detail, "value", detail)
+            ).lower() == "full"
+            resources = (
+                await manager.list_all_resources()
+                if include_resources
+                else {}
+            )
+            templates = (
+                await manager.list_all_resource_templates()
+                if include_resources
+                else {}
+            )
+            return [
+                {
+                    "name": name,
+                    "tools": tools_by_server.get(name, {}),
+                    "resources": resources.get(name, ()),
+                    "resource_templates": templates.get(name, ()),
+                    "auth_status": "Unsupported",
+                }
+                for name in server_names
+            ]
+
+        async_runtime = getattr(
+            self.active_thread_runtime,
+            "_session_async_runtime",
+            None,
+        )
+        try:
+            statuses = (
+                async_runtime().run(collect_statuses())
+                if callable(async_runtime)
+                else _run_coro_blocking(collect_statuses())
+            )
+            self.insert_history_cell(
+                new_mcp_tools_output_from_statuses(statuses, detail)
+            )
+        except Exception as error:
+            self.insert_error_history_message(
+                f"Failed to load MCP inventory: {error}"
+            )
+
+    def _begin_windows_sandbox_elevated_setup(self, payload: Any) -> None:
+        """Run Rust's elevated Windows sandbox setup from its AppEvent owner."""
+
+        if os.name != "nt":
+            return
+        from pycodex.core.windows_sandbox import (
+            WindowsSandboxSetupMode,
+            WindowsSandboxSetupRequest,
+            run_windows_sandbox_setup,
+            sandbox_setup_is_complete,
+        )
+
+        preset = _field(payload, "preset", None)
+        profile_selection = _field(payload, "profile_selection", None)
+        if preset is None:
+            self.insert_error_history_message(
+                "Failed to prepare Windows sandbox: missing approval preset."
+            )
+            return
+        session_config = getattr(self.active_thread_runtime, "session_config", None)
+        codex_home = _runtime_codex_home(self.active_thread_runtime, session_config)
+        if codex_home is None:
+            self.insert_error_history_message(
+                "Failed to prepare Windows sandbox: CODEX_HOME is unavailable."
+            )
+            return
+        cwd = Path(_field(session_config, "cwd", self.cwd))
+        request = WindowsSandboxSetupRequest(
+            mode=WindowsSandboxSetupMode.ELEVATED,
+            permission_profile=_field(
+                preset,
+                "permission_profile",
+                PermissionProfile.workspace_write(),
+            ),
+            permission_profile_cwd=cwd,
+            command_cwd=cwd,
+            env_map=dict(os.environ),
+            codex_home=codex_home,
+        )
+
+        def setup_complete() -> None:
+            self.app_event_sender.send(
+                AppEvent.enable_windows_sandbox_for_agent_mode(
+                    preset,
+                    WindowsSandboxEnableMode.ELEVATED,
+                    profile_selection,
+                )
+            )
+
+        if sandbox_setup_is_complete(codex_home):
+            try:
+                _run_coro_blocking(run_windows_sandbox_setup(request))
+            except Exception as error:
+                self.insert_error_history_message(
+                    f"Failed to enable the Windows sandbox feature: {error}"
+                )
+                return
+            setup_complete()
+            return
+
+        self.chat_widget.add_info_message(
+            "Setting up sandbox...",
+            "Hang tight, this may take a few minutes",
+        )
+        self.windows_sandbox.setup_started_at = time.monotonic()
+
+        def worker() -> None:
+            try:
+                asyncio.run(run_windows_sandbox_setup(request))
+            except Exception:
+                self.app_event_sender.send(
+                    AppEvent.open_windows_sandbox_fallback_prompt(
+                        preset,
+                        profile_selection,
+                    )
+                )
+            else:
+                setup_complete()
+
+        Thread(
+            target=worker,
+            name="pycodex-windows-sandbox-elevated-setup",
+            daemon=True,
+        ).start()
+
+    def _enable_windows_sandbox_for_agent_mode(self, payload: Any) -> None:
+        preset = _field(payload, "preset", None)
+        mode = _field(payload, "mode", WindowsSandboxEnableMode.ELEVATED)
+        if isinstance(mode, str):
+            mode = WindowsSandboxEnableMode(mode)
+        level = (
+            WindowsSandboxLevel.ELEVATED
+            if mode is WindowsSandboxEnableMode.ELEVATED
+            else WindowsSandboxLevel.RESTRICTED_TOKEN
+        )
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.chat_widget, "config", None),
+        ):
+            if source is not None:
+                _set_runtime_field(source, "windows_sandbox_level", level)
+        self.chat_widget.config.windows_degraded_sandbox_active = (
+            level is WindowsSandboxLevel.RESTRICTED_TOKEN
+        )
+        if preset is not None:
+            operation = AppCommand.override_turn_context(
+                approval_policy=_field(preset, "approval", None),
+                permission_profile=_field(preset, "permission_profile", None),
+                active_permission_profile=_field(
+                    preset,
+                    "active_permission_profile",
+                    None,
+                ),
+                windows_sandbox_level=level,
+            )
+            self.submit_op(operation)
+        self.windows_sandbox.setup_started_at = None
+        self.chat_widget.add_info_message(
+            "Sandbox ready",
+            "Codex can now safely edit files and execute commands in your computer",
+        )
+
+    def _open_windows_sandbox_fallback_prompt(self, payload: Any) -> None:
+        from ..bottom_pane.list_selection_view import (
+            SelectionItem,
+            SelectionViewParams,
+        )
+        from ..chatwidget.windows_sandbox_prompts import (
+            windows_sandbox_fallback_prompt_plan,
+        )
+
+        preset = _field(payload, "preset", None)
+        profile_selection = _field(payload, "profile_selection", None)
+        prompt = windows_sandbox_fallback_prompt_plan()
+
+        def event_for(action: str) -> AppEvent:
+            if action == "telemetry_fallback_retry_elevated":
+                return AppEvent("Noop")
+            if action == "begin_windows_sandbox_elevated_setup":
+                return AppEvent.begin_windows_sandbox_elevated_setup(
+                    preset,
+                    profile_selection,
+                )
+            if action == "telemetry_fallback_use_legacy":
+                return AppEvent("Noop")
+            if action == "begin_windows_sandbox_legacy_setup":
+                return AppEvent(
+                    "BeginWindowsSandboxLegacySetup",
+                    {
+                        "preset": preset,
+                        "profile_selection": profile_selection,
+                    },
+                )
+            if action == "telemetry_fallback_prompt_quit":
+                return AppEvent("Noop")
+            if action == "exit_shutdown_first":
+                from ..app_event import ExitMode
+
+                return AppEvent.exit(ExitMode.SHUTDOWN_FIRST)
+            raise ValueError(f"unknown sandbox fallback action: {action}")
+
+        self.show_active_view(
+            SelectionViewParams(
+                header=prompt.header_lines,
+                footer_hint=prompt.footer_hint,
+                title=prompt.title,
+                items=[
+                    SelectionItem(
+                        name=item.name,
+                        description=item.description,
+                        actions=[event_for(action) for action in item.actions],
+                        dismiss_on_select=item.dismiss_on_select,
+                    )
+                    for item in prompt.items
+                ],
+            )
+        )
+
+    def _begin_windows_sandbox_grant_read_root(self, payload: Any) -> None:
+        """Run Rust's non-elevated read-root refresh from the App owner."""
+
+        path = str(_field(payload, "path", ""))
+        self.chat_widget.add_info_message(
+            f"Granting sandbox read access to {path} ...",
+            None,
+        )
+        if os.name != "nt":
+            return
+        from pycodex.core.windows_sandbox_read_grants import (
+            grant_read_root_non_elevated,
+        )
+
+        session_config = getattr(self.active_thread_runtime, "session_config", None)
+        permission_profile = _field(
+            session_config,
+            "permission_profile",
+            PermissionProfile.read_only(),
+        )
+        cwd = Path(_field(session_config, "cwd", self.cwd))
+        codex_home = _runtime_codex_home(self.active_thread_runtime, session_config)
+        if codex_home is None:
+            self.app_event_sender.send(
+                AppEvent.windows_sandbox_grant_read_root_completed(
+                    Path(path),
+                    "CODEX_HOME is unavailable",
+                )
+            )
+            return
+
+        requested_path = Path(path)
+        if (
+            not requested_path.is_absolute()
+            or not requested_path.exists()
+            or not requested_path.is_dir()
+        ):
+            try:
+                grant_read_root_non_elevated(
+                    permission_profile,
+                    cwd,
+                    cwd,
+                    dict(os.environ),
+                    codex_home,
+                    requested_path,
+                )
+            except Exception as error:
+                self.app_event_sender.send(
+                    AppEvent.windows_sandbox_grant_read_root_completed(
+                        requested_path,
+                        str(error),
+                    )
+                )
+            return
+
+        def worker() -> None:
+            try:
+                canonical = grant_read_root_non_elevated(
+                    permission_profile,
+                    cwd,
+                    cwd,
+                    dict(os.environ),
+                    codex_home,
+                    requested_path,
+                )
+            except Exception as error:
+                event = AppEvent.windows_sandbox_grant_read_root_completed(
+                    requested_path,
+                    str(error),
+                )
+            else:
+                event = AppEvent.windows_sandbox_grant_read_root_completed(
+                    canonical
+                )
+            self.app_event_sender.send(event)
+
+        Thread(
+            target=worker,
+            name="pycodex-windows-sandbox-read-root",
+            daemon=True,
+        ).start()
+
+    def _windows_sandbox_grant_read_root_completed(self, payload: Any) -> None:
+        path = Path(_field(payload, "path", ""))
+        error = _field(payload, "error", None)
+        if error:
+            self.insert_error_history_message(f"Error: {error}")
+            return
+        self.chat_widget.add_info_message(
+            f"Sandbox read access granted for {path}",
+            None,
+        )
+
+    def _update_feature_flags(self, payload: Any) -> None:
+        """Persist and apply Rust ``AppEvent::UpdateFeatureFlags`` updates."""
+
+        from pycodex.features import Feature, Features
+
+        raw_updates = _field(payload, "updates", ()) or ()
+        updates: list[tuple[Feature, bool]] = []
+        for raw_feature, enabled in raw_updates:
+            feature = (
+                raw_feature
+                if isinstance(raw_feature, Feature)
+                else Feature(str(raw_feature))
+            )
+            updates.append((feature, bool(enabled)))
+        if not updates:
+            return
+        try:
+            if self.config_request_handle is None:
+                raise RuntimeError("missing app-server config request handle")
+            _run_coro_blocking(
+                write_config_batch(
+                    self.config_request_handle,
+                    [
+                        build_feature_enabled_edit(feature.key(), enabled)
+                        for feature, enabled in updates
+                    ],
+                )
+            )
+        except BaseException as error:
+            self.insert_error_history_message(
+                f"Failed to update experimental features: {error}"
+            )
+            return
+
+        for source in (
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.chat_widget, "config", None),
+        ):
+            features = getattr(source, "features", None)
+            if not isinstance(features, Features):
+                continue
+            for feature, enabled in updates:
+                features.set_enabled(feature, enabled)
+
+    def _update_memory_settings(self, payload: Any) -> None:
+        """Persist and apply Rust ``AppEvent::UpdateMemorySettings``."""
+
+        use_memories = bool(_field(payload, "use_memories", False))
+        generate_memories = bool(_field(payload, "generate_memories", False))
+        session_config = getattr(self.active_thread_runtime, "session_config", None)
+        previous_generate = bool(
+            _field(_field(session_config, "memories", None), "generate_memories", False)
+        )
+        try:
+            if self.config_request_handle is None:
+                raise RuntimeError("missing app-server config request handle")
+            _run_coro_blocking(
+                write_config_batch(
+                    self.config_request_handle,
+                    build_memory_settings_edits(use_memories, generate_memories),
+                )
+            )
+        except BaseException as error:
+            self.chat_widget.add_error_message(
+                f"Failed to save memory settings: {error}"
+            )
+            return
+
+        for config in (
+            session_config,
+            getattr(self.chat_widget, "config", None),
+        ):
+            if config is None:
+                continue
+            memories = _field(config, "memories", None)
+            if memories is None:
+                memories = SimpleNamespace()
+                _set_attr_or_key_silent(config, "memories", memories)
+            _set_attr_or_key_silent(memories, "use_memories", use_memories)
+            _set_attr_or_key_silent(
+                memories,
+                "generate_memories",
+                generate_memories,
+            )
+
+        if previous_generate == generate_memories:
+            return
+        mode = "enabled" if generate_memories else "disabled"
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "app_server_session", None),
+            getattr(self.active_thread_runtime, "app_server", None),
+        ):
+            setter = getattr(source, "thread_memory_mode_set", None)
+            if not callable(setter):
+                continue
+            try:
+                result = setter(self.current_displayed_thread_id(), mode)
+                if hasattr(result, "__await__"):
+                    _run_coro_blocking(result)
+            except BaseException as error:
+                self.chat_widget.add_error_message(
+                    "Saved memory settings, but failed to update the current "
+                    f"thread: {error}"
+                )
+            break
+
+    def _reset_memories(self) -> None:
+        """Execute Rust ``AppEvent::ResetMemories`` through app-server."""
+
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "app_server_session", None),
+            getattr(self.active_thread_runtime, "app_server", None),
+        ):
+            reset = getattr(source, "memory_reset", None)
+            if not callable(reset):
+                continue
+            try:
+                result = reset()
+                if hasattr(result, "__await__"):
+                    _run_coro_blocking(result)
+            except BaseException as error:
+                self.chat_widget.add_error_message(
+                    f"Failed to reset memories: {error}"
+                )
+                return
+            self.chat_widget.add_info_message("Reset local memories.", None)
+            return
+        self.chat_widget.add_error_message(
+            "Failed to reset memories: app-server memory/reset is unavailable"
+        )
 
     def open_agent_picker(self) -> object:
         """Apply Rust ``app::session_lifecycle::open_agent_picker``."""
@@ -4030,11 +5033,14 @@ class TuiAppRuntime:
         self.chat_widget.request_redraw()
 
     def apply_raw_output_mode(self, enabled: Any) -> None:
+        enabled = bool(enabled)
         setter = getattr(self.chat_widget, "set_raw_output_mode", None)
         if callable(setter):
-            setter(bool(enabled))
+            setter(enabled)
         else:
-            setattr(self.chat_widget, "raw_mode", bool(enabled))
+            setattr(self.chat_widget, "raw_mode", enabled)
+        if self.raw_output_reflow_sink is not None:
+            self.raw_output_reflow_sink(enabled)
         self.chat_widget.request_redraw()
 
     def update_model(self, model: Any) -> None:
@@ -4212,6 +5218,127 @@ class TuiAppRuntime:
         self.side_ui_state.active_thread_id = self.routing_state.active_thread_id
         self.side_ui_state.primary_thread_id = self.routing_state.primary_thread_id
 
+    def _apply_side_ui_state(self) -> None:
+        self._sync_side_routing_state()
+        labels = {
+            thread_id: self.thread_label(thread_id)
+            for thread_id in self.side_ui_state.side_threads
+        }
+        sync_side_thread_ui(self.side_ui_state, labels)
+        self.chat_widget.active_side_conversation = (
+            self.side_ui_state.side_conversation_active
+        )
+        if self.side_ui_sink is not None:
+            self.side_ui_sink(
+                self.side_ui_state.side_conversation_active,
+                self.side_ui_state.side_context_label,
+            )
+        self.chat_widget.request_redraw()
+
+    def start_side_conversation(
+        self,
+        parent_thread_id: Any,
+        user_message: Any = None,
+    ) -> str | None:
+        """Execute Rust ``App::handle_start_side`` through the active runtime."""
+
+        parent_id = str(parent_thread_id or "").strip()
+        self._sync_side_routing_state()
+        blocked = side_start_block_message(
+            self.side_ui_state.primary_thread_id,
+            self.side_ui_state.side_threads,
+        )
+        if blocked is not None:
+            self.side_ui_state.side_context_label = None
+            self.insert_error_history_message(blocked)
+            self._apply_side_ui_state()
+            return None
+        if not parent_id:
+            self.side_ui_state.side_context_label = None
+            self.insert_error_history_message(
+                "'/side' is unavailable before the session starts."
+            )
+            self._apply_side_ui_state()
+            return None
+
+        fork = getattr(self.active_thread_runtime, "fork_side_thread", None)
+        if not callable(fork):
+            self.side_ui_state.side_context_label = None
+            self.insert_error_history_message(
+                "Failed to start side conversation: "
+                "active thread runtime does not support side forks"
+            )
+            self._apply_side_ui_state()
+            return None
+
+        parent_ui_state = {
+            "history": list(getattr(self.chat_widget, "history", ())),
+            "streaming_history": list(
+                getattr(
+                    getattr(self.chat_widget, "streaming", None),
+                    "history",
+                    (),
+                )
+            ),
+            "thread_name": getattr(self.chat_widget, "thread_name", None),
+            "forked_from": getattr(self.chat_widget, "forked_from", None),
+        }
+        try:
+            forked = fork()
+            if hasattr(forked, "__await__"):
+                forked = _run_coro_blocking(forked)
+            started = _field(forked, "started", forked)
+            parent_state = _field(forked, "parent_state", None)
+            session = _field(started, "session", None)
+            if session is None:
+                session = _field(started, "thread", started)
+            child_thread_id = (
+                _field(session, "thread_id", None)
+                or _field(session, "id", None)
+                or _field(started, "thread_id", None)
+                or _field(started, "id", None)
+            )
+            if child_thread_id is None:
+                raise RuntimeError("side fork returned no child thread id")
+            child_id = str(child_thread_id)
+            inject = getattr(self.active_thread_runtime, "inject_thread_items", None)
+            if not callable(inject):
+                raise RuntimeError(
+                    "active thread runtime does not support item injection"
+                )
+            injected = inject(child_id, (side_boundary_prompt_item(),))
+            if hasattr(injected, "__await__"):
+                _run_coro_blocking(injected)
+        except BaseException as error:
+            self.side_ui_state.side_context_label = None
+            self.insert_error_history_message(
+                str(error)
+                if str(error) == SIDE_NO_STARTED_CONVERSATION_MESSAGE
+                else f"Failed to start side conversation: {error}"
+            )
+            self._apply_side_ui_state()
+            return None
+
+        self._side_parent_runtime_states[child_id] = parent_state
+        self._side_parent_ui_states[child_id] = parent_ui_state
+        self.thread_id = child_id
+        self.chat_widget.thread_id = child_id
+        self.routing_state.active_thread_id = child_id
+        self.register_side_thread(child_id, parent_id)
+        self.upsert_agent_picker_thread(child_id, agent_nickname="Side")
+        self.chat_widget.history.clear()
+        streaming_history = getattr(
+            getattr(self.chat_widget, "streaming", None),
+            "history",
+            None,
+        )
+        if isinstance(streaming_history, list):
+            streaming_history.clear()
+        self._apply_side_ui_state()
+        if user_message is not None:
+            self.enqueue_user_turn(str(user_message))
+        return child_id
+
     def register_side_thread(self, thread_id: str, parent_thread_id: str) -> None:
         self.side_ui_state.side_threads[str(thread_id)] = SideThreadState.new(
             str(parent_thread_id)
@@ -4372,6 +5499,63 @@ class TuiAppRuntime:
         parent_thread_id = self.active_side_parent_thread_id()
         if parent_thread_id is None:
             return False
+        side_thread_id = str(self.routing_state.active_thread_id or "")
+        parent_state = self._side_parent_runtime_states.pop(
+            side_thread_id,
+            None,
+        )
+        restore = getattr(
+            self.active_thread_runtime,
+            "restore_side_parent_thread",
+            None,
+        )
+        if parent_state is not None and callable(restore):
+            try:
+                restored = restore(parent_state)
+                if hasattr(restored, "__await__"):
+                    _run_coro_blocking(restored)
+            except BaseException as error:
+                self._side_parent_runtime_states[side_thread_id] = parent_state
+                self.chat_widget.add_error_message(
+                    f"Failed to close side conversation {side_thread_id}; "
+                    f"it is still open: {error}"
+                )
+                return True
+            self.routing_state.active_thread_id = parent_thread_id
+            self.thread_id = parent_thread_id
+            self.chat_widget.thread_id = parent_thread_id
+            self.side_ui_state.side_threads.pop(side_thread_id, None)
+            ui_state = self._side_parent_ui_states.pop(side_thread_id, {})
+            history = getattr(self.chat_widget, "history", None)
+            if isinstance(history, list):
+                history[:] = list(_field(ui_state, "history", ()))
+            streaming_history = getattr(
+                getattr(self.chat_widget, "streaming", None),
+                "history",
+                None,
+            )
+            if isinstance(streaming_history, list):
+                streaming_history[:] = list(
+                    _field(ui_state, "streaming_history", ())
+                )
+            self.chat_widget.thread_name = _field(
+                ui_state,
+                "thread_name",
+                None,
+            )
+            setattr(
+                self.chat_widget,
+                "forked_from",
+                _field(ui_state, "forked_from", None),
+            )
+            try:
+                self.agent_navigation.remove(side_thread_id)
+            except (TypeError, ValueError, AttributeError):
+                pass
+            self._apply_side_ui_state()
+            self.sync_active_agent_label()
+            self.refresh_pending_thread_approvals()
+            return True
         plan = self.select_agent_thread_and_discard_side(parent_thread_id)
         return plan.action in {"select_agent_thread", "select_agent_thread_current"}
 
@@ -4523,6 +5707,7 @@ def app_command_for_prompt(
     reasoning_effort: Any = None,
     service_tier: Any = None,
     collaboration_mode: Any = None,
+    ide_context_apply: Callable[[list[Any]], Any] | None = None,
 ) -> AppCommand:
     widget = _TerminalInputSubmissionWidget(
         cwd=Path(cwd),
@@ -4532,6 +5717,7 @@ def app_command_for_prompt(
         reasoning_effort=reasoning_effort,
         service_tier=service_tier,
         collaboration_mode=collaboration_mode,
+        ide_context_apply=ide_context_apply,
     )
     accepted = submit_user_message_with_history_record(
         widget,
@@ -4541,6 +5727,24 @@ def app_command_for_prompt(
     if not accepted or not widget.ops:
         raise ValueError("terminal user input was not accepted for submission")
     return widget.ops[-1]
+
+
+def _new_ide_context_widget_state(cwd: Path) -> Any:
+    from ..chatwidget.ide_context import IdeContextDeps, IdeContextWidgetState
+    from ..ide_context.ipc import fetch_ide_context
+    from ..ide_context.prompt import (
+        apply_ide_context_to_user_input,
+        has_prompt_context,
+    )
+
+    return IdeContextWidgetState(
+        cwd=Path(cwd),
+        deps=IdeContextDeps(
+            fetch_ide_context=fetch_ide_context,
+            apply_ide_context_to_user_input=apply_ide_context_to_user_input,
+            has_prompt_context=has_prompt_context,
+        ),
+    )
 
 
 def _runtime_turn_context_value(app_runtime: TuiAppRuntime, name: str, default: Any = None) -> Any:
@@ -5138,16 +6342,29 @@ def _server_notifications_from_session_event(
         return (ServerNotification("ResponseStarted", {"thread_id": thread_id, "turn_id": turn_id}),)
     if event_type == "token_count":
         token_usage = _thread_token_usage_from_token_count_event(payload)
+        rate_limits = _field(payload, "rate_limits", None)
+        notifications: list[ServerNotification] = []
         if token_usage is not None:
-            return (
+            notifications.append(
                 ServerNotification(
                     "ThreadTokenUsageUpdated",
                     {
                         "thread_id": thread_id,
                         "token_usage": token_usage,
                     },
-                ),
+                )
             )
+        if rate_limits is not None:
+            notifications.append(
+                ServerNotification(
+                    "ThreadRateLimitsUpdated",
+                    {
+                        "thread_id": thread_id,
+                        "rate_limits": rate_limits,
+                    },
+                )
+            )
+        return tuple(notifications)
     if event_type == "thread_goal_updated":
         goal = _field(payload, "goal", None)
         return (
@@ -5582,6 +6799,7 @@ class _TerminalInputSubmissionWidget:
     reasoning_effort: Any = None
     service_tier: Any = None
     collaboration_mode: Any = None
+    ide_context_apply: Callable[[list[Any]], Any] | None = None
     ops: list[AppCommand] = field(default_factory=list)
     bottom_pane: _TerminalBottomPane = field(default_factory=_TerminalBottomPane)
     input_queue: _TerminalInputQueue = field(default_factory=_TerminalInputQueue)
@@ -5620,8 +6838,9 @@ class _TerminalInputSubmissionWidget:
     def service_tier_update_for_core(self) -> Any:
         return self.service_tier
 
-    def maybe_apply_ide_context(self, _items: Any) -> None:
-        return None
+    def maybe_apply_ide_context(self, items: list[Any]) -> None:
+        if self.ide_context_apply is not None:
+            self.ide_context_apply(items)
 
     def plugins_for_mentions(self) -> None:
         return None

@@ -4,7 +4,7 @@
   "python_root": "pycodex/agent_graph_store",
   "check_item_ownership": true,
   "include_inline_modules": true,
-  "coverage_expectation": "partial",
+  "coverage_expectation": "verified",
   "uncovered_rust_modules": [],
   "uncovered_python_files": [],
   "allowed_unowned": []
