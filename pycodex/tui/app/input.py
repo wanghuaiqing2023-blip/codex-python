@@ -64,6 +64,36 @@ class KeyEvent:
     modifiers: Tuple[str, ...] = ()
 
 
+def key_event_from_terminal_input(
+    event_kind: str,
+    event_text: str = "",
+) -> KeyEvent | None:
+    """Translate the event-stream vocabulary at the Rust ``app::input`` edge."""
+
+    kind = str(event_kind).lower()
+    if kind.startswith("ctrl_") and len(kind) == len("ctrl_") + 1:
+        return KeyEvent(kind[-1], modifiers=("control",))
+    if kind == "text" and len(event_text) == 1:
+        return KeyEvent(event_text)
+    named = {
+        "enter": "enter",
+        "escape": "esc",
+        "backspace": "backspace",
+        "delete": "delete",
+        "up": "up",
+        "down": "down",
+        "left": "left",
+        "right": "right",
+        "home": "home",
+        "end": "end",
+        "page_up": "pageup",
+        "page_down": "pagedown",
+        "tab": "tab",
+    }
+    code = named.get(kind)
+    return None if code is None else KeyEvent(code)
+
+
 @dataclass(frozen=True, eq=True)
 class InputActionPlan:
     action: str
@@ -257,6 +287,7 @@ __all__ = [
     "app_keymap_shortcuts_available",
     "apply_raw_output_mode",
     "handle_key_event",
+    "key_event_from_terminal_input",
     "keymap_command_for_event",
     "launch_external_editor",
     "refresh_status_line",

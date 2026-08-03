@@ -1,5 +1,6 @@
 ﻿"""Parity tests for codex-rs/tui/src/bottom_pane/memories_settings_view.rs."""
 
+from pycodex.tui.app_event import AppEvent
 from pycodex.tui.bottom_pane.memories_settings_view import (
     MEMORIES_DOC_URL,
     MemoriesAction,
@@ -43,17 +44,18 @@ def test_toggle_selected_only_changes_setting_rows():
     assert view.current_setting(MemoriesSetting.GENERATE) is True
 
 
-def test_movement_pages_and_jumps_are_clamped_to_visible_rows():
+def test_movement_wraps_while_pages_and_jumps_are_clamped_to_visible_rows():
     view = MemoriesSettingsView.new(use_memories=True, generate_memories=False)
 
     view.move_up()
-    assert view.state.selected_idx == 0
+    assert view.state.selected_idx == 2
 
+    view.jump_top()
     view.page_down()
     assert view.state.selected_idx == 2
 
     view.move_down()
-    assert view.state.selected_idx == 2
+    assert view.state.selected_idx == 0
 
     view.jump_top()
     assert view.state.selected_idx == 0
@@ -75,11 +77,13 @@ def test_save_settings_emits_update_event_and_completes():
 
     assert view.is_complete() is True
     assert sent == [
-        {
-            "type": "UpdateMemorySettings",
-            "use_memories": False,
-            "generate_memories": False,
-        }
+        AppEvent(
+            "UpdateMemorySettings",
+            {
+                "use_memories": False,
+                "generate_memories": False,
+            },
+        )
     ]
     assert view.emitted_events == sent
 
@@ -98,7 +102,7 @@ def test_reset_action_opens_confirmation_and_can_emit_reset_event():
     view.save()
 
     assert view.is_complete() is True
-    assert view.emitted_events == [{"type": "ResetMemories"}]
+    assert view.emitted_events == [AppEvent("ResetMemories")]
 
 
 def test_reset_confirmation_go_back_returns_to_main_reset_row():

@@ -202,6 +202,29 @@ def test_persist_model_selection_dispatches_to_config_write_plan():
     )
 
 
+def test_syntax_theme_events_dispatch_to_persistence_and_redraw_plans():
+    """Rust app::event_dispatch owns SyntaxThemeSelected and preview redraw."""
+
+    state = EventDispatchState(active_thread_id="thread-theme")
+
+    selected = dispatch_event_plan(
+        state,
+        {"type": "SyntaxThemeSelected", "name": "nord"},
+    )
+    assert selected == EventDispatchPlan(
+        action="persist_syntax_theme",
+        updates=(("persist_syntax_theme", "nord"),),
+        schedule_frame=True,
+    )
+
+    previewed = dispatch_event_plan(state, {"type": "SyntaxThemePreviewed"})
+    assert previewed == EventDispatchPlan(
+        action="refresh_syntax_theme_preview",
+        updates=(("refresh_syntax_theme_preview", None),),
+        schedule_frame=True,
+    )
+
+
 def test_status_line_setup_dispatches_to_rust_owned_config_write_plan():
     """Rust codex-tui app::event_dispatch handles StatusLineSetup explicitly."""
 

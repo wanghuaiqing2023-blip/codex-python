@@ -7,6 +7,7 @@ rows instead of ratatui buffer mutation.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Tuple, Union
 
@@ -270,7 +271,13 @@ def command_popup_flags_from_config(config: Any) -> CommandPopupFlags:
         goal_command_enabled=feature_enabled(Feature.GOALS),
         personality_command_enabled=feature_enabled(Feature.PERSONALITY),
         realtime_conversation_enabled=feature_enabled(Feature.REALTIME_CONVERSATION),
-        audio_device_selection_enabled=bool(getattr(config, "audio_device_selection_enabled", False)),
+        audio_device_selection_enabled=(
+            bool(getattr(config, "audio_device_selection_enabled", False))
+            or (
+                feature_enabled(Feature.REALTIME_CONVERSATION)
+                and sys.platform != "linux"
+            )
+        ),
         windows_degraded_sandbox_active=bool(getattr(config, "windows_degraded_sandbox_active", False)),
         side_conversation_active=bool(getattr(config, "side_conversation_active", False)),
     )

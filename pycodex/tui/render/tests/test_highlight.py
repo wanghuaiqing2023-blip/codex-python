@@ -112,7 +112,7 @@ def test_custom_tmtheme_parser_extracts_scope_styles_and_diff_backgrounds(tmp_pa
     assert theme.token_styles["keyword"] == SemanticStyle(
         fg=SemanticColor("rgb", (170, 187, 204)),
         bold=True,
-        italic=True,
+        italic=False,
     )
     assert diff_scope_background_rgbs_for_theme(theme).inserted == (16, 32, 48)
     assert diff_scope_background_rgbs_for_theme(theme).deleted == (64, 80, 96)
@@ -144,14 +144,16 @@ def test_find_syntax_aliases_and_unknown_language_fallback() -> None:
 
 
 def test_semantic_highlighting_styles_rust_keywords() -> None:
-    """Python semantic slice: known languages return styled spans and preserve content."""
+    """Rust: syntax colors come from the selected theme without invented bold."""
     lines = highlight_code_to_styled_spans("fn main() { let answer = 42; }", "rust")
 
     assert lines is not None
     assert reconstructed(lines) == "fn main() { let answer = 42; }"
-    styled_tokens = [span.text for line in lines for span in line if span.style.bold]
-    assert "fn" in styled_tokens
-    assert "let" in styled_tokens
+    by_text = {span.text: span.style for line in lines for span in line}
+    assert by_text["fn"].fg == SemanticColor("rgb", (203, 166, 247))
+    assert by_text["let"].fg == SemanticColor("rgb", (203, 166, 247))
+    assert by_text["fn"].bold is False
+    assert by_text["fn"].italic is False
 
 
 def test_highlight_limits_and_content_preserving_fallback() -> None:

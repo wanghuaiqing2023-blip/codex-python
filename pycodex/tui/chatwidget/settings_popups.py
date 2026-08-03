@@ -30,6 +30,8 @@ __all__ = [
     "SelectionItem",
     "SelectionViewParams",
     "TerminalSettingsPopupController",
+    "TerminalExperimentalFeaturesPopupController",
+    "TerminalPersonalityPopupController",
     "open_experimental_popup",
     "open_personality_popup",
     "open_realtime_audio_device_selection",
@@ -149,6 +151,116 @@ class TerminalSettingsPopupController:
     def handle_events(self, events: Tuple[object, ...]) -> None:
         del events
         return None
+
+
+@dataclass
+class TerminalExperimentalFeaturesPopupController:
+    """Terminal active-view adapter for Rust ``/experimental`` dispatch."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from pycodex.features import FEATURES, Features
+        from ..bottom_pane.experimental_features_view import (
+            ExperimentalFeatureItem as BottomPaneExperimentalFeatureItem,
+            ExperimentalFeaturesView as BottomPaneExperimentalFeaturesView,
+        )
+
+        config = getattr(
+            getattr(self.app_runtime, "active_thread_runtime", None),
+            "session_config",
+            None,
+        )
+        features = getattr(config, "features", None)
+        if not isinstance(features, Features):
+            features = Features.with_defaults()
+        items = []
+        for spec in FEATURES:
+            name = spec.stage.experimental_menu_name()
+            description = spec.stage.experimental_menu_description()
+            if name is None or description is None:
+                continue
+            items.append(
+                BottomPaneExperimentalFeatureItem(
+                    feature=spec.id,
+                    name=name,
+                    description=description,
+                    enabled=features.enabled(spec.id),
+                )
+            )
+        return BottomPaneExperimentalFeaturesView.new(
+            items,
+            app_event_tx=self.app_runtime.app_event_sender,
+            keymap=getattr(self.app_runtime, "runtime_keymap", None),
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> None:
+        del events
+        return None
+
+
+@dataclass
+class TerminalPersonalityPopupController:
+    """Open ``/personality`` through the Rust startup/model guards."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from types import SimpleNamespace
+
+        from ..bottom_pane.list_selection_view import coerce_selection_view_params
+
+        widget = self.app_runtime.chat_widget
+        configured = getattr(widget, "is_session_configured", None)
+        if callable(configured) and not configured():
+            self.app_runtime.insert_info_history_message(
+                "Personality selection is disabled until startup completes."
+            )
+            return None
+        supports = getattr(widget, "current_model_supports_personality", None)
+        if not (callable(supports) and supports()):
+            config = getattr(
+                getattr(self.app_runtime, "active_thread_runtime", None),
+                "session_config",
+                None,
+            )
+            model = getattr(config, "model", None) or getattr(widget, "model", "")
+            self.app_runtime.insert_error_history_message(
+                f"Current model ({model}) doesn't support personalities. "
+                "Try /model to pick a different model."
+            )
+            return None
+
+        captured: list[SelectionViewParams] = []
+        adapter = SimpleNamespace(
+            config=SimpleNamespace(
+                personality=getattr(
+                    getattr(
+                        getattr(self.app_runtime, "active_thread_runtime", None),
+                        "session_config",
+                        None,
+                    ),
+                    "personality",
+                    None,
+                )
+            ),
+            current_model_supports_personality=lambda: True,
+            bottom_pane=SimpleNamespace(show_selection_view=captured.append),
+        )
+        return coerce_selection_view_params(
+            open_personality_popup_for_current_model(adapter)
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> None:
+        from ..app_event import AppEvent as RuntimeAppEvent
+
+        for event in events:
+            kind = getattr(event, "kind", None)
+            payload = getattr(event, "payload", {})
+            if kind is not None:
+                self.app_runtime.handle_app_event(
+                    RuntimeAppEvent.of(str(kind), **dict(payload))
+                )
 
 
 def open_theme_picker(widget: Any) -> Any:

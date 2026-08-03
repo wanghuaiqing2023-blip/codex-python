@@ -449,6 +449,8 @@ def test_protocol_item_completed_agent_message_without_deltas_is_visible() -> No
     assert runtime.assistant_text() == "done-only answer"
     assert ("agent_message", "done-only answer") in runtime.streaming.consolidation_events
     assert ("agent_markdown", "done-only answer") in runtime.streaming.history
+    assert runtime.transcript.last_agent_markdown == "done-only answer"
+    assert runtime.transcript.agent_turn_markdowns[-1].markdown == "done-only answer"
 
 
 def test_protocol_item_completed_user_message_records_without_duplicate_answer() -> None:

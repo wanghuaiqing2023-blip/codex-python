@@ -6,10 +6,13 @@ Python port of Rust ``codex-tui::bottom_pane::experimental_features_view``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..app_event import AppEvent
+from .bottom_pane_view import BottomPaneViewDefaults
 from .popup_consts import MAX_POPUP_ROWS
+from .selection_popup_common import TerminalPopupLine
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -41,7 +44,7 @@ class DisplayLine:
 
 
 @dataclass
-class ExperimentalFeaturesView:
+class ExperimentalFeaturesView(BottomPaneViewDefaults):
     features: List[ExperimentalFeatureItem]
     app_event_tx: Any = None
     keymap: Any = None
@@ -174,10 +177,15 @@ class ExperimentalFeaturesView:
         if self.features:
             _send(
                 self.app_event_tx,
-                {
-                    "type": "UpdateFeatureFlags",
-                    "updates": [(item.feature, item.enabled) for item in self.features],
-                },
+                AppEvent(
+                    "UpdateFeatureFlags",
+                    {
+                        "updates": [
+                            (item.feature, item.enabled)
+                            for item in self.features
+                        ]
+                    },
+                ),
             )
         self.complete = True
         return "Handled"
@@ -213,6 +221,29 @@ class ExperimentalFeaturesView:
         if buf is not None and hasattr(buf, "extend"):
             buf.extend(rendered)
         return rendered
+
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        visible_rows = self.build_rows()[:MAX_POPUP_ROWS]
+        rendered_height = (
+            len(self.header)
+            + 1
+            + (
+                sum(1 + int(bool(row.description)) for row in visible_rows)
+                if visible_rows
+                else 1
+            )
+            + 1
+        )
+        height = max(1, self.desired_height(width), rendered_height)
+        return [
+            TerminalPopupLine(
+                line.text,
+                line.style in {"title", "selected"},
+            )
+            for line in self.render(
+                {"width": max(1, int(width)), "height": height}
+            )
+        ]
 
     def _ensure_visible(self, length: int) -> None:
         if self.selected_idx is None:
@@ -265,7 +296,7 @@ def _key_name(key_event: Any) -> str:
     return text if text == " " else text.lower()
 
 
-def _send(target: Any, event: Dict[str, Any]) -> None:
+def _send(target: Any, event: Any) -> None:
     if target is None:
         return
     if hasattr(target, "send"):

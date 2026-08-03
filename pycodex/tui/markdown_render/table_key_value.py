@@ -12,7 +12,13 @@ from typing import Any, Iterable, Sequence
 
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span, _display_width
-from ..terminal_hyperlinks import HyperlinkLine, TerminalHyperlink, line_text
+from ..terminal_hyperlinks import (
+    HyperlinkLine,
+    TerminalHyperlink,
+    line_text,
+    remap_wrapped_line,
+)
+from ..wrapping import RtOptions, word_wrap_line
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -304,24 +310,8 @@ def _coerce_span(value: Span | str | Any) -> Span:
 
 
 def _wrap_hyperlink_line(source: HyperlinkLine, width: int) -> list[HyperlinkLine]:
-    text = line_text(source.line)
-    segments = _wrap_plain_text(text, width)
-    out: list[HyperlinkLine] = []
-    source_column = 0
-    for segment in segments:
-        line = HyperlinkLine.new(segment)
-        segment_start = source_column
-        segment_end = source_column + _display_width(segment)
-        for link in source.hyperlinks:
-            start = max(link.columns.start, segment_start) - segment_start
-            stop = min(link.columns.stop, segment_end) - segment_start
-            if stop > start:
-                line.hyperlinks.append(TerminalHyperlink(range(start, stop), link.destination))
-        out.append(line)
-        source_column = segment_end
-        while source_column < _display_width(text) and text[_column_to_index(text, source_column)].isspace():
-            source_column += 1
-    return out
+    rendered = word_wrap_line(source.line, RtOptions.new(max(1, int(width))))
+    return remap_wrapped_line(source, rendered)
 
 
 def _wrap_plain_text(text: str, width: int) -> list[str]:

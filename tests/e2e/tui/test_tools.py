@@ -668,12 +668,13 @@ def test_windows_conpty_native_and_python_first_request_context_and_tools_match_
                 transcript = run_windows_conpty_tui_command(
                     command,
                     input_steps=(
-                        ConptyInputStep(
-                            prompt,
-                            ready_pattern=READY_COMPOSER_PATTERN,
-                            ready_timeout=30.0,
-                            ready_quiet_period=0.2,
-                        ),
+                            ConptyInputStep(
+                                prompt,
+                                ready_pattern=READY_COMPOSER_PATTERN,
+                                ready_timeout=30.0,
+                                ready_quiet_period=0.2,
+                                atomic_write=True,
+                            ),
                         ConptyInputStep("\r", ready_text=prompt, ready_timeout=10.0),
                         ConptyInputStep("", ready_text=answer, ready_timeout=40.0, ready_quiet_period=0.3),
                         ConptyInputStep("/quit\r", ready_timeout=0.2, chunk_delay=0.02),

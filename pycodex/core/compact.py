@@ -601,6 +601,8 @@ def _stream_max_retries(turn_context: Any) -> int:
 def _compact_prompt(turn_context: Any) -> str:
     prompt = getattr(turn_context, "compact_prompt", None)
     value = prompt() if callable(prompt) else prompt
+    if value is None:
+        return SUMMARIZATION_PROMPT
     if not isinstance(value, str):
         raise TypeError("turn_context.compact_prompt must be a string or callable returning a string")
     return value

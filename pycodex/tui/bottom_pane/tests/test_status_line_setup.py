@@ -138,8 +138,8 @@ def test_status_line_view_implements_terminal_bottom_pane_projection():
 
     lines = view.terminal_lines(width=80)
 
-    assert lines[0].text == "Configure Status Line"
-    assert lines[1].text == "Select which items to display in the status line."
+    assert lines[0].text == "  Configure Status Line"
+    assert lines[1].text == "  Select which items to display in the status line."
     assert any("Use theme colors" in line.text for line in lines)
 
 

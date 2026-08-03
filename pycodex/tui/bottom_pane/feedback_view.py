@@ -333,6 +333,28 @@ def feedback_selection_params(app_event_tx: Any) -> SelectionViewParams:
     )
 
 
+@dataclass
+class TerminalFeedbackPopupController:
+    """Open the Rust-owned feedback category or disabled selection view."""
+
+    app_runtime: Any
+
+    def open_view(self) -> SelectionViewParams:
+        config = getattr(
+            getattr(self.app_runtime, "active_thread_runtime", None),
+            "session_config",
+            None,
+        )
+        if not bool(getattr(config, "feedback_enabled", True)):
+            return feedback_disabled_params()
+        return feedback_selection_params(
+            getattr(self.app_runtime, "handle_app_event", None)
+        )
+
+    def handle_events(self, _events: tuple[object, ...]) -> None:
+        return None
+
+
 def feedback_disabled_params() -> SelectionViewParams:
     return SelectionViewParams(
         title="Sending feedback is disabled",
@@ -519,6 +541,7 @@ __all__ = [
     "GUTTER",
     "RUST_MODULE",
     "SimpleTextArea",
+    "TerminalFeedbackPopupController",
     "WebHyperlinkHistoryCell",
     "cursor_pos",
     "desired_height",

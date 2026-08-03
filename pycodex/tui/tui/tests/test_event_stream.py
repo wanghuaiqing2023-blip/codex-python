@@ -203,6 +203,35 @@ def test_windows_console_source_maps_virtual_return_without_unicode_char() -> No
     assert stream.poll_next() is None
 
 
+def test_windows_console_source_does_not_echo_console_record_through_msvcrt() -> None:
+    # Rust crossterm yields one logical key event for one physical Esc. The
+    # Windows adapter must choose the ConsoleInput record source exclusively;
+    # reading getwch() as a fallback can expose the same Esc a second time.
+    class FakeMsvcrt:
+        def __init__(self) -> None:
+            self.chars = ["\x1b"]
+
+        def kbhit(self) -> bool:
+            return bool(self.chars)
+
+        def getwch(self) -> str:
+            return self.chars.pop(0)
+
+    msvcrt = FakeMsvcrt()
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": 0x1B, "char": "\x1b"},
+        {"kind": "key", "key_down": False, "virtual_key": 0x1B, "char": ""},
+    ]
+    source = WindowsConsoleInputSource(
+        msvcrt,
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("escape")
+    assert source.poll(0.0) is None
+    assert msvcrt.chars == ["\x1b"]
+
+
 def test_windows_console_source_maps_virtual_arrow_with_nul_unicode_char() -> None:
     # Rust source/product contract:
     # - crossterm reports arrow keys as key codes even when Windows console
@@ -718,6 +747,39 @@ def test_windows_console_input_source_maps_event_source_payloads_to_terminal_inp
     assert source.poll(0.0) == event_stream.TerminalInputEvent("enter")
     assert source.poll(0.0) == event_stream.TerminalInputEvent("down")
     assert source.poll(0.0) == event_stream.TerminalInputEvent("tab")
+
+
+def test_windows_console_input_poll_uses_rust_frame_interval(monkeypatch) -> None:
+    """Windows polling must not exceed Rust's 120 FPS input/frame budget."""
+
+    sleeps: list[float] = []
+
+    class EmptyEventSource:
+        def poll_next(self) -> None:
+            return None
+
+    times = iter((10.0, 10.0, 10.0, 10.02))
+    monkeypatch.setattr(event_stream.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(event_stream.time, "sleep", sleeps.append)
+    source = WindowsConsoleInputSource(
+        msvcrt_module=object(), event_source=EmptyEventSource()
+    )
+
+    assert source.poll(0.02) is None
+    assert sleeps == [event_stream.MIN_FRAME_INTERVAL / 1_000_000_000]
+
+
+def test_line_input_source_can_return_unconsumed_modal_input() -> None:
+    """Cooked-line fallback preserves input rejected by a key-only overlay."""
+
+    source = LineTerminalInputSource(io.StringIO("/quit\n"))
+    event = source.poll(1.0)
+    assert event == event_stream.TerminalInputEvent("line", "/quit\n")
+
+    source.push_front(event)
+
+    assert source.poll(0.0) == event
+    assert source.poll(1.0) == event_stream.TerminalInputEvent("eof")
 
 
 def test_windows_console_input_source_maps_ime_multichar_key_payload_to_text() -> None:

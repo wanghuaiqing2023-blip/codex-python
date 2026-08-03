@@ -98,6 +98,33 @@ def test_view_stack_replaces_and_tracks_active_view() -> None:
     assert stack.active_view() is second
 
 
+def test_bottom_pane_view_state_owns_side_conversation_popup_and_placeholder() -> None:
+    state = TerminalBottomPaneViewState.new()
+    state.composer.set_text_content("/model")
+
+    state.set_side_conversation_active(True, "Side thread")
+
+    assert state.command_popup_flags.side_conversation_active is True
+    assert state.composer.placeholder_text == "Side thread"
+    side_commands = [
+        item.value for item in state.command_popup_state.popup.commands
+    ]
+    assert side_commands
+    assert all(
+        command.available_in_side_conversation()
+        for command in side_commands
+    )
+
+    state.set_side_conversation_active(False)
+
+    assert state.command_popup_flags.side_conversation_active is False
+    assert state.composer.placeholder_text == "Ask Codex to do anything"
+    assert any(
+        item.value.command() == "model"
+        for item in state.command_popup_state.popup.commands
+    )
+
+
 def test_bottom_pane_user_input_requests_queue_fifo_and_external_resolution_advances() -> None:
     # Fixed Rust commit 1c7832f:
     # bottom_pane::BottomPane::push_user_input_request offers a second request

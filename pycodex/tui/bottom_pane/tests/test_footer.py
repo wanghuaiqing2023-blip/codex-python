@@ -314,6 +314,14 @@ def test_terminal_idle_footer_right_text_projects_goal_and_agent_priority():
     runtime.chat_widget.active_agent_label = "Robie [explorer]"
     assert terminal_idle_footer_right_text_from_runtime(runtime) == "Robie [explorer]"
 
+    runtime.ide_context_state = SimpleNamespace(
+        ide_context=SimpleNamespace(is_enabled=lambda: True)
+    )
+    assert (
+        terminal_idle_footer_right_text_from_runtime(runtime)
+        == "Robie [explorer] · IDE context"
+    )
+
 
 def test_goal_status_indicator_line_matches_rust_footer_labels():
     # Rust source: codex-tui/src/bottom_pane/footer.rs::goal_status_indicator_line.

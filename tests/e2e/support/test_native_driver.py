@@ -4,8 +4,10 @@ from tests.e2e.tui._common import *  # noqa: F401,F403
 from tests.e2e.support._native_tui import (
     _NATIVE_E2E_STACK_RESERVE,
     _native_codex_with_e2e_stack,
+    _wait_for_windows_conpty_screen_pattern,
     _windows_pe_stack_reserve,
 )
+from tests.e2e.support.vt_screen import VtColor, vt_screen_cells
 
 pytestmark = pytest.mark.e2e_support
 
@@ -226,6 +228,23 @@ def test_normalize_tui_text_strips_ansi_and_stabilizes_newlines() -> None:
     assert normalize_tui_text("\x1b]0;codex-python\x07\x1b[32mReady\x1b[0m  \r\nnext\r\n") == "Ready\nnext"
 
 
+def test_vt_projection_preserves_osc8_hyperlink_label_and_style() -> None:
+    raw = (
+        "before "
+        "\x1b]8;id=probe;https://example.com\x1b\\"
+        "\x1b[36;4mLINK-TOKEN\x1b[0m"
+        "\x1b]8;;\x1b\\"
+        " after"
+    )
+
+    assert normalize_tui_text(raw) == "before LINK-TOKEN after"
+    screen = vt_screen_cells(raw, rows=1, cols=40)
+    assert screen.text() == "before LINK-TOKEN after"
+    link_cells = screen.rows[0][7:17]
+    assert all(cell.style.fg == VtColor("ansi", 6) for cell in link_cells)
+    assert all(cell.style.underline for cell in link_cells)
+
+
 def test_vt_screen_text_projects_current_cells_after_redraws() -> None:
     # Rust-derived harness contract:
     # codex-tui renders through Ratatui/crossterm cell updates. Native
@@ -244,6 +263,57 @@ def test_vt_screen_text_projects_current_cells_after_redraws() -> None:
     assert vt_screen_text(raw, rows=4, cols=12) == "new\nkeXp\nabc  f\nwide"
 
 
+def test_vt_screen_cells_retains_final_sgr_styles_after_incremental_redraw() -> None:
+    raw = (
+        "\x1b[31mold\x1b[0m"
+        "\x1b[1;1H\x1b[38;2;10;20;30;1mnew\x1b[0m"
+        "\x1b[2;1H\x1b[38;5;42;48;5;3;2midx\x1b[0m"
+    )
+
+    screen = vt_screen_cells(raw, rows=3, cols=8)
+
+    assert screen.text() == "new\nidx"
+    assert screen.rows[0][0].style.fg == VtColor("rgb", (10, 20, 30))
+    assert screen.rows[0][0].style.bold is True
+    assert screen.rows[1][0].style.fg == VtColor("indexed", 42)
+    assert screen.rows[1][0].style.bg == VtColor("ansi", 3)
+    assert screen.rows[1][0].style.dim is True
+
+
+def test_vt_screen_cells_tracks_crossed_out_and_reset() -> None:
+    screen = vt_screen_cells("\x1b[9mstrike\x1b[29m plain", rows=1, cols=20)
+
+    assert all(cell.style.crossed_out for cell in screen.rows[0][:6])
+    assert all(not cell.style.crossed_out for cell in screen.rows[0][6:])
+
+
+def test_vt_screen_cells_normalizes_named_and_low_index_palette_colors() -> None:
+    raw = "\x1b[31mA\x1b[38;5;1mB\x1b[91mC\x1b[38;5;9mD\x1b[0mE"
+
+    screen = vt_screen_cells(raw, rows=1, cols=8)
+
+    assert [cell.style.fg for cell in screen.rows[0][:5]] == [
+        VtColor("ansi", 1),
+        VtColor("ansi", 1),
+        VtColor("ansi", 9),
+        VtColor("ansi", 9),
+        None,
+    ]
+
+
+def test_vt_screen_cells_tracks_wide_ime_characters_by_terminal_columns() -> None:
+    raw = "主题\x1b[1;5HOK"
+
+    screen = vt_screen_cells(raw, rows=1, cols=8)
+
+    assert screen.rows[0][0].char == "主"
+    assert screen.rows[0][1].char == " "
+    assert screen.rows[0][2].char == "题"
+    assert screen.rows[0][3].char == " "
+    assert screen.rows[0][4].char == "O"
+    assert screen.rows[0][5].char == "K"
+
+
 def test_conpty_screen_wait_reconstructs_cells_preserved_by_diff_draw() -> None:
     # Rust's ratatui backend skips unchanged cells with cursor movement. The
     # second ``n`` is retained from ``Working`` rather than emitted again.
@@ -256,6 +326,17 @@ def test_conpty_screen_wait_reconstructs_cells_preserved_by_diff_draw() -> None:
         size=TerminalSize(rows=1, cols=40),
     )
     assert "Reconnecting... 1/1" not in normalize_tui_text(raw)
+
+
+def test_conpty_screen_pattern_wait_matches_final_selected_row() -> None:
+    raw = "  old\r\n  target\x1b[2;1H› target"
+
+    assert _wait_for_windows_conpty_screen_pattern(
+        [raw.encode("utf-8")],
+        r"(?:›|>)\s*target",
+        timeout=0.0,
+        size=TerminalSize(rows=2, cols=20),
+    )
 
 
 def test_vt_screen_text_models_insert_history_scroll_region() -> None:
@@ -305,6 +386,7 @@ def test_process_transcript_persists_session_comparison_artifacts(tmp_path) -> N
         "rust.stderr.raw.txt",
         "rust.stdout.normalized.txt",
         "rust.screen.txt",
+        "rust.screen.styles.json",
     }
     assert (tmp_path / "rust.stdout.raw.txt").read_bytes().decode("utf-8") == transcript.stdout
     assert (tmp_path / "rust.screen.txt").read_text(encoding="utf-8") == "top\nsecond"

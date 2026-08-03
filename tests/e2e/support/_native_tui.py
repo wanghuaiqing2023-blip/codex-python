@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -41,7 +42,13 @@ DEFAULT_NATIVE_CODEX_EXE = Path(
 )
 _NATIVE_E2E_STACK_RESERVE = 64 * 1024 * 1024
 
-_OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+# OSC payloads end at BEL or ST (ESC + backslash).  Keep the match bounded to
+# the *first* terminator so OSC-8 hyperlink labels between open/close sequences
+# remain visible terminal cells.
+_OSC_RE = re.compile(
+    r"\x1b\](?:(?!\x07|\x1b\\).)*(?:\x07|\x1b\\)",
+    re.DOTALL,
+)
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016
 _EXTENDED_STARTUPINFO_PRESENT = 0x00080000
@@ -54,6 +61,12 @@ _INFINITE = 0xFFFFFFFF
 _ERROR_BROKEN_PIPE = 109
 _ERROR_HANDLE_EOF = 38
 _ERROR_NO_DATA = 232
+
+
+def _terminal_char_width(char: str) -> int:
+    if not char or unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
 
 
 def _timing_trace(event: str, **fields: object) -> None:
@@ -78,6 +91,117 @@ class TuiComparisonCommand:
 
 
 @dataclass(frozen=True)
+class VtColor:
+    """Terminal-independent color recorded from an SGR sequence."""
+
+    kind: str
+    value: int | tuple[int, int, int]
+
+
+@dataclass(frozen=True)
+class VtStyle:
+    """Visual attributes active when one terminal cell was written."""
+
+    fg: VtColor | None = None
+    bg: VtColor | None = None
+    bold: bool = False
+    dim: bool = False
+    italic: bool = False
+    underline: bool = False
+    crossed_out: bool = False
+    reverse: bool = False
+
+
+@dataclass(frozen=True)
+class VtCell:
+    char: str = " "
+    style: VtStyle = VtStyle()
+    continuation: bool = False
+
+
+@dataclass(frozen=True)
+class VtScreen:
+    """Final styled cell projection of an incremental VT output stream."""
+
+    rows: tuple[tuple[VtCell, ...], ...]
+    cursor_row: int = 0
+    cursor_col: int = 0
+
+    def text(self) -> str:
+        return "\n".join(
+            _screen_row_text(row)
+            for row in self.rows
+        ).rstrip()
+
+    def line(self, index: int) -> tuple[VtCell, ...]:
+        return self.rows[index]
+
+    def styled_rows(self) -> list[dict[str, object]]:
+        """Return compact, terminal-independent styled evidence for artifacts."""
+
+        result: list[dict[str, object]] = []
+        for row_index, cells in enumerate(self.rows):
+            text = "".join(cell.char for cell in cells).rstrip()
+            runs: list[dict[str, object]] = []
+            start = 0
+            while start < len(text):
+                style = cells[start].style
+                end = start + 1
+                while end < len(text) and cells[end].style == style:
+                    end += 1
+                runs.append(
+                    {
+                        "start": start,
+                        "end": end,
+                        "fg": _vt_color_json(style.fg),
+                        "bg": _vt_color_json(style.bg),
+                        "modifiers": [
+                            name
+                            for name in (
+                                "bold",
+                                "dim",
+                                "italic",
+                                "underline",
+                                "crossed_out",
+                                "reverse",
+                            )
+                            if getattr(style, name)
+                        ],
+                    }
+                )
+                start = end
+            if text:
+                result.append({"row": row_index, "text": text, "runs": runs})
+        return result
+
+
+def _vt_color_json(color: VtColor | None) -> object:
+    if color is None:
+        return "default"
+    value: object = color.value
+    if isinstance(value, tuple):
+        value = list(value)
+    return {"kind": color.kind, "value": value}
+
+
+def _screen_row_text(row: tuple[VtCell, ...]) -> str:
+    """Project terminal cells to text without wide-glyph continuation cells."""
+
+    result: list[str] = []
+    skip_continuation = False
+    for cell in row:
+        if skip_continuation and (cell.continuation or cell.char == " "):
+            skip_continuation = False
+            continue
+        skip_continuation = False
+        if cell.continuation:
+            continue
+        result.append(cell.char)
+        skip_continuation = _terminal_char_width(cell.char) == 2
+    return "".join(result).rstrip()
+
+
+@dataclass(frozen=True)
 class TuiProcessTranscript:
     """Captured process result with normalized text helpers."""
 
@@ -86,6 +210,7 @@ class TuiProcessTranscript:
     stdout: str
     stderr: str
     observed_ready_sequences: tuple[tuple[str, ...], ...] = ()
+    screen_checkpoints: tuple[tuple[str, str], ...] = ()
 
     def normalized_stdout(self) -> str:
         return normalize_tui_text(self.stdout)
@@ -108,6 +233,25 @@ class TuiProcessTranscript:
 
         return vt_screen_text(self.stdout, rows=rows, cols=cols)
 
+    def checkpoint_screen(self, name: str, *, rows: int, cols: int) -> str:
+        """Project the terminal screen captured at a named staged-input boundary."""
+
+        for checkpoint_name, raw_stdout in self.screen_checkpoints:
+            if checkpoint_name == name:
+                return vt_screen_text(raw_stdout, rows=rows, cols=cols)
+        raise KeyError(f"unknown ConPTY screen checkpoint: {name}")
+
+    def checkpoint_stdout(self, name: str) -> str:
+        for checkpoint_name, raw_stdout in self.screen_checkpoints:
+            if checkpoint_name == name:
+                return raw_stdout
+        raise KeyError(f"unknown ConPTY screen checkpoint: {name}")
+
+    def checkpoint_cells(self, name: str, *, rows: int, cols: int) -> VtScreen:
+        """Return the final styled cells at a staged-input checkpoint."""
+
+        return vt_screen_cells(self.checkpoint_stdout(name), rows=rows, cols=cols)
+
     def write_artifacts(
         self,
         directory: str | Path,
@@ -125,7 +269,26 @@ class TuiProcessTranscript:
             f"{prefix}.stderr.raw.txt": self.stderr,
             f"{prefix}.stdout.normalized.txt": self.normalized_stdout(),
             f"{prefix}.screen.txt": self.screen_stdout(rows=rows, cols=cols),
+            f"{prefix}.screen.styles.json": json.dumps(
+                vt_screen_cells(self.stdout, rows=rows, cols=cols).styled_rows(),
+                indent=2,
+                ensure_ascii=False,
+            ) + "\n",
         }
+        for name, raw_stdout in self.screen_checkpoints:
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "checkpoint"
+            checkpoint = vt_screen_cells(raw_stdout, rows=rows, cols=cols)
+            artifacts[f"{prefix}.{safe_name}.stdout.raw.txt"] = raw_stdout
+            artifacts[f"{prefix}.{safe_name}.screen.txt"] = vt_screen_text(
+                raw_stdout,
+                rows=rows,
+                cols=cols,
+            )
+            artifacts[f"{prefix}.{safe_name}.screen.styles.json"] = json.dumps(
+                checkpoint.styled_rows(),
+                indent=2,
+                ensure_ascii=False,
+            ) + "\n"
         paths: list[Path] = []
         for name, content in artifacts.items():
             path = target / name
@@ -146,11 +309,14 @@ class ConptyInputStep:
     ready_pattern: str | None = None
     ready_text: str | None = None
     ready_screen_text: str | None = None
+    ready_screen_pattern: str | None = None
     ready_text_sequence: tuple[str, ...] = ()
     ready_timeout: float = 0.2
     chunk_delay: float = 0.01
     ready_quiet_period: float = 0.0
     atomic_write: bool = False
+    resize_settle_time: float = 0.1
+    capture_name: str | None = None
 
 
 class NativeComparisonLayer(Enum):
@@ -189,7 +355,7 @@ def normalize_tui_text(value: str) -> str:
     return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
-def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
+def _legacy_vt_screen_text(value: str, *, rows: int, cols: int) -> str:
     """Render a conservative VT screen snapshot from a captured text stream.
 
     Rust-focused evidence:
@@ -335,11 +501,320 @@ def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
             col = max(col - 1, 0)
         elif ch >= " ":
             screen[row][col] = ch
-            if col < col_count - 1:
-                col += 1
+            width = _terminal_char_width(ch)
+            if width == 2 and col + 1 < col_count:
+                screen[row][col + 1] = " "
+            col = min(col + max(width, 1), col_count - 1)
         index += 1
 
     return "\n".join("".join(line).rstrip() for line in screen).rstrip()
+
+
+def _ansi_color(index: int) -> VtColor:
+    return VtColor("ansi", int(index))
+
+
+def _apply_sgr(style: VtStyle, raw_params: str) -> VtStyle:
+    """Apply the SGR subset emitted by crossterm and the Python bridge."""
+
+    params: list[int] = []
+    if not raw_params:
+        params = [0]
+    else:
+        # Crossterm currently emits semicolon-separated SGR. Accept the common
+        # colon form too, including the optional empty color-space field in
+        # ``38:2::r:g:b``.
+        normalized = raw_params.replace("::", ":")
+        for part in re.split(r"[;:]", normalized):
+            try:
+                params.append(int(part) if part else 0)
+            except ValueError:
+                params.append(0)
+
+    fg = style.fg
+    bg = style.bg
+    bold = style.bold
+    dim = style.dim
+    italic = style.italic
+    underline = style.underline
+    crossed_out = style.crossed_out
+    reverse = style.reverse
+    index = 0
+    while index < len(params):
+        code = params[index]
+        if code == 0:
+            fg = None
+            bg = None
+            bold = dim = italic = underline = crossed_out = reverse = False
+        elif code == 1:
+            bold = True
+        elif code == 2:
+            dim = True
+        elif code == 3:
+            italic = True
+        elif code == 4:
+            underline = True
+        elif code == 7:
+            reverse = True
+        elif code == 9:
+            crossed_out = True
+        elif code == 22:
+            bold = False
+            dim = False
+        elif code == 23:
+            italic = False
+        elif code == 24:
+            underline = False
+        elif code == 27:
+            reverse = False
+        elif code == 29:
+            crossed_out = False
+        elif 30 <= code <= 37:
+            fg = _ansi_color(code - 30)
+        elif 90 <= code <= 97:
+            fg = _ansi_color(code - 90 + 8)
+        elif code == 39:
+            fg = None
+        elif 40 <= code <= 47:
+            bg = _ansi_color(code - 40)
+        elif 100 <= code <= 107:
+            bg = _ansi_color(code - 100 + 8)
+        elif code == 49:
+            bg = None
+        elif code in {38, 48} and index + 1 < len(params):
+            target_fg = code == 38
+            mode = params[index + 1]
+            if mode == 5 and index + 2 < len(params):
+                palette_index = max(0, min(params[index + 2], 255))
+                color = (
+                    _ansi_color(palette_index)
+                    if palette_index < 16
+                    else VtColor("indexed", palette_index)
+                )
+                if target_fg:
+                    fg = color
+                else:
+                    bg = color
+                index += 2
+            elif mode == 2 and index + 4 < len(params):
+                color = VtColor(
+                    "rgb",
+                    tuple(max(0, min(value, 255)) for value in params[index + 2 : index + 5]),
+                )
+                if target_fg:
+                    fg = color
+                else:
+                    bg = color
+                index += 4
+        index += 1
+
+    return VtStyle(
+        fg=fg,
+        bg=bg,
+        bold=bold,
+        dim=dim,
+        italic=italic,
+        underline=underline,
+        crossed_out=crossed_out,
+        reverse=reverse,
+    )
+
+
+def vt_screen_cells(value: str, *, rows: int, cols: int) -> VtScreen:
+    """Project a VT stream into final character and style cells.
+
+    This mirrors :func:`_legacy_vt_screen_text` cursor/erase behavior while
+    retaining SGR state. Native theme comparisons therefore inspect the final
+    frame rather than matching color escapes left behind by an older frame.
+    """
+
+    row_count = max(int(rows), 1)
+    col_count = max(int(cols), 1)
+    blank = VtCell()
+    screen = [[blank for _ in range(col_count)] for _ in range(row_count)]
+    row = 0
+    col = 0
+    scroll_top = 0
+    scroll_bottom = row_count - 1
+    saved_cursor = (0, 0)
+    style = VtStyle()
+    stream = _OSC_RE.sub("", value)
+    stream_index = 0
+
+    def clamp_cursor() -> None:
+        nonlocal row, col
+        row = min(max(row, 0), row_count - 1)
+        col = min(max(col, 0), col_count - 1)
+
+    def blank_cell() -> VtCell:
+        return VtCell(" ", style)
+
+    def erase_display(mode: int) -> None:
+        if mode == 2:
+            for target_row in range(row_count):
+                screen[target_row] = [blank_cell() for _ in range(col_count)]
+        elif mode == 0:
+            for target_row in range(row, row_count):
+                start = col if target_row == row else 0
+                for target_col in range(start, col_count):
+                    screen[target_row][target_col] = blank_cell()
+        elif mode == 1:
+            for target_row in range(0, row + 1):
+                end = col if target_row == row else col_count - 1
+                for target_col in range(0, min(end + 1, col_count)):
+                    screen[target_row][target_col] = blank_cell()
+
+    def erase_line(mode: int) -> None:
+        if mode == 2:
+            start, end = 0, col_count
+        elif mode == 1:
+            start, end = 0, min(col + 1, col_count)
+        else:
+            start, end = col, col_count
+        for target_col in range(start, end):
+            screen[row][target_col] = blank_cell()
+
+    def scroll_up(top: int, bottom: int) -> None:
+        for target_row in range(top, bottom):
+            screen[target_row] = list(screen[target_row + 1])
+        screen[bottom] = [blank_cell() for _ in range(col_count)]
+
+    def scroll_down(top: int, bottom: int) -> None:
+        for target_row in range(bottom, top, -1):
+            screen[target_row] = list(screen[target_row - 1])
+        screen[top] = [blank_cell() for _ in range(col_count)]
+
+    def line_feed() -> None:
+        nonlocal row
+        if scroll_top <= row <= scroll_bottom and row == scroll_bottom:
+            scroll_up(scroll_top, scroll_bottom)
+        elif row == row_count - 1:
+            scroll_up(0, row_count - 1)
+        else:
+            row += 1
+
+    def parse_params(raw: str) -> list[int | None]:
+        if not raw:
+            return []
+        values: list[int | None] = []
+        for part in raw.split(";"):
+            if part == "" or part.startswith("?"):
+                values.append(None)
+                continue
+            try:
+                values.append(int(part))
+            except ValueError:
+                values.append(None)
+        return values
+
+    while stream_index < len(stream):
+        ch = stream[stream_index]
+        if ch == "\x1b" and stream_index + 1 < len(stream) and stream[stream_index + 1] == "M":
+            if scroll_top <= row <= scroll_bottom and row == scroll_top:
+                scroll_down(scroll_top, scroll_bottom)
+            else:
+                row = max(row - 1, 0)
+            stream_index += 2
+            continue
+        if ch == "\x1b" and stream_index + 1 < len(stream) and stream[stream_index + 1] == "[":
+            match = re.match(r"\x1b\[([0-?]*)([ -/]*)([@-~])", stream[stream_index:])
+            if not match:
+                stream_index += 1
+                continue
+            raw_params = match.group(1)
+            params = parse_params(raw_params)
+            final = match.group(3)
+            first = params[0] if params and params[0] is not None else None
+            count = max(int(first or 1), 1)
+            if final in {"H", "f"}:
+                target_row = params[0] if len(params) >= 1 and params[0] is not None else 1
+                target_col = params[1] if len(params) >= 2 and params[1] is not None else 1
+                row = int(target_row) - 1
+                col = int(target_col) - 1
+                clamp_cursor()
+            elif final == "A":
+                row -= count
+                clamp_cursor()
+            elif final == "B":
+                row += count
+                clamp_cursor()
+            elif final == "C":
+                col += count
+                clamp_cursor()
+            elif final == "D":
+                col -= count
+                clamp_cursor()
+            elif final == "E":
+                row += count
+                col = 0
+                clamp_cursor()
+            elif final == "F":
+                row -= count
+                col = 0
+                clamp_cursor()
+            elif final == "G":
+                col = count - 1
+                clamp_cursor()
+            elif final == "J":
+                erase_display(int(first or 0))
+            elif final == "K":
+                erase_line(int(first or 0))
+            elif final == "X":
+                for target_col in range(col, min(col + count, col_count)):
+                    screen[row][target_col] = blank_cell()
+            elif final == "S":
+                for _ in range(count):
+                    scroll_up(scroll_top, scroll_bottom)
+            elif final == "T":
+                for _ in range(count):
+                    scroll_down(scroll_top, scroll_bottom)
+            elif final == "r":
+                top = params[0] if len(params) >= 1 and params[0] is not None else 1
+                bottom = params[1] if len(params) >= 2 and params[1] is not None else row_count
+                scroll_top = min(max(int(top) - 1, 0), row_count - 1)
+                scroll_bottom = min(max(int(bottom) - 1, scroll_top), row_count - 1)
+            elif final == "m":
+                style = _apply_sgr(style, raw_params)
+            elif final == "s":
+                saved_cursor = (row, col)
+            elif final == "u":
+                row, col = saved_cursor
+                clamp_cursor()
+            stream_index += len(match.group(0))
+            continue
+        if ch == "\x1b" and stream_index + 1 < len(stream) and stream[stream_index + 1] in {"7", "8"}:
+            if stream[stream_index + 1] == "7":
+                saved_cursor = (row, col)
+            else:
+                row, col = saved_cursor
+                clamp_cursor()
+            stream_index += 2
+            continue
+        if ch == "\r":
+            col = 0
+        elif ch == "\n":
+            line_feed()
+        elif ch == "\b":
+            col = max(col - 1, 0)
+        elif ch >= " ":
+            screen[row][col] = VtCell(ch, style)
+            width = _terminal_char_width(ch)
+            if width == 2 and col + 1 < col_count:
+                screen[row][col + 1] = VtCell(" ", style, continuation=True)
+            col = min(col + max(width, 1), col_count - 1)
+        stream_index += 1
+
+    return VtScreen(
+        tuple(tuple(line) for line in screen),
+        cursor_row=row,
+        cursor_col=col,
+    )
+
+
+def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
+    """Return the text projection of the styled final-screen model."""
+
+    return vt_screen_cells(value, rows=rows, cols=cols).text()
 
 
 def native_comparison_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -965,6 +1440,34 @@ def _wait_for_windows_conpty_screen_text(
     return needle in screen
 
 
+def _wait_for_windows_conpty_screen_pattern(
+    chunks: Sequence[bytes],
+    pattern: str,
+    *,
+    timeout: float,
+    size: TerminalSize,
+) -> bool:
+    """Wait until a regex matches the reconstructed current VT screen."""
+
+    compiled = re.compile(pattern)
+    deadline = time.monotonic() + max(float(timeout), 0.0)
+    while time.monotonic() < deadline:
+        screen = vt_screen_text(
+            _captured_windows_pipe_text(chunks),
+            rows=size.rows,
+            cols=size.cols,
+        )
+        if compiled.search(screen):
+            return True
+        time.sleep(0.05)
+    screen = vt_screen_text(
+        _captured_windows_pipe_text(chunks),
+        rows=size.rows,
+        cols=size.cols,
+    )
+    return compiled.search(screen) is not None
+
+
 def _semantic_contains_ordered(value: str, needles: Sequence[str]) -> bool:
     text = _semantic_conpty_text(value)
     position = 0
@@ -1058,6 +1561,7 @@ def run_windows_conpty_tui_command(
     process_info = _PROCESS_INFORMATION()
     output_chunks: list[bytes] = []
     observed_ready_sequences: list[tuple[str, ...]] = []
+    screen_checkpoints: list[tuple[str, str]] = []
     reader_errors: list[str] = []
     reader: threading.Thread | None = None
 
@@ -1155,6 +1659,7 @@ def run_windows_conpty_tui_command(
                 step.ready_pattern is not None
                 or step.ready_text is not None
                 or step.ready_screen_text is not None
+                or step.ready_screen_pattern is not None
                 or step.ready_text_sequence
             ):
                 if step.ready_pattern is not None:
@@ -1178,6 +1683,13 @@ def run_windows_conpty_tui_command(
                         timeout=float(step.ready_timeout),
                         size=active_size,
                     )
+                elif step.ready_screen_pattern is not None:
+                    ready = _wait_for_windows_conpty_screen_pattern(
+                        output_chunks,
+                        step.ready_screen_pattern,
+                        timeout=float(step.ready_timeout),
+                        size=active_size,
+                    )
                 else:
                     ready = _wait_for_windows_conpty_semantic_text(
                         output_chunks,
@@ -1192,6 +1704,8 @@ def run_windows_conpty_tui_command(
                         expected = " -> ".join(step.ready_text_sequence)
                     elif step.ready_screen_text is not None:
                         expected = step.ready_screen_text
+                    elif step.ready_screen_pattern is not None:
+                        expected = step.ready_screen_pattern
                     else:
                         expected = step.ready_text
                     input_error = f"ConPTY ready condition timed out: {expected}"
@@ -1203,6 +1717,8 @@ def run_windows_conpty_tui_command(
                     observed_ready_sequences.append(tuple(step.ready_text_sequence))
                 elif step.ready_screen_text is not None:
                     observed_ready_sequences.append((step.ready_screen_text,))
+                elif step.ready_screen_pattern is not None:
+                    observed_ready_sequences.append((step.ready_screen_pattern,))
                 else:
                     observed_ready_sequences.append((step.ready_text or "",))
                 if step.ready_quiet_period > 0 and not _wait_for_windows_conpty_quiet(
@@ -1215,9 +1731,21 @@ def run_windows_conpty_tui_command(
                     break
             elif step.ready_timeout > 0:
                 time.sleep(float(step.ready_timeout))
+            if step.capture_name is not None:
+                screen_checkpoints.append(
+                    (
+                        str(step.capture_name),
+                        _captured_windows_pipe_text(output_chunks),
+                    )
+                )
             if step.resize is not None:
                 _resize_windows_conpty(hpc, step.resize)
                 active_size = step.resize
+                # ResizePseudoConsole may return before the child console has
+                # observed its new dimensions. Keep staged input from racing
+                # the asynchronous Windows console-size notification.
+                if step.resize_settle_time > 0:
+                    time.sleep(float(step.resize_settle_time))
             if step.text:
                 search_offset = len(_captured_windows_pipe_text(output_chunks))
                 _write_windows_conpty_text(
@@ -1275,6 +1803,7 @@ def run_windows_conpty_tui_command(
             stdout=raw_output,
             stderr=stderr,
             observed_ready_sequences=tuple(observed_ready_sequences),
+            screen_checkpoints=tuple(screen_checkpoints),
         )
     finally:
         if attr_buffer is not None and os.name == "nt" and ctypes is not None:

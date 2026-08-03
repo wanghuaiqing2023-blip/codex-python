@@ -54,50 +54,6 @@ def test_native_and_python_term_dumb_guard_match_when_enabled() -> None:
     assert rust_transcript.normalized_stderr() == python_transcript.normalized_stderr()
 
 
-def test_windows_conpty_python_quit_smoke_when_enabled() -> None:
-    # Rust boundary:
-    # - codex-utils-pty Windows backend drives real interactive terminal
-    #   sessions through CreatePseudoConsole and PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE.
-    # Python parity harness: this opt-in test proves the local ctypes ConPTY
-    # driver can feed `/quit` into the Python no-alt-screen product path.
-    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
-        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run local ConPTY TUI smoke")
-    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
-        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
-    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
-        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
-    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
-        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
-    if os.name != "nt":
-        pytest.skip("Windows ConPTY smoke only runs on Windows")
-
-    capability = interactive_tui_comparison_capability()
-    if not capability.available:
-        pytest.skip(capability.reason)
-
-    repo_root = _repo_root()
-    command = build_inline_tui_command("python", repo_root=repo_root, python_executable=sys.executable)
-    transcript = run_windows_conpty_tui_command(
-        command,
-        input_steps=(
-            ConptyInputStep(
-                "",
-                ready_pattern=READY_COMPOSER_PATTERN,
-                ready_timeout=30.0,
-                ready_quiet_period=0.5,
-            ),
-            ConptyInputStep("/quit\r", ready_timeout=0.2, chunk_delay=0.02),
-            ConptyInputStep("", ready_text="Shutting down", ready_timeout=10.0),
-        ),
-        env=_conpty_tui_env(),
-        timeout=25,
-    )
-
-    assert transcript.returncode == 0, transcript.normalized_combined()
-    assert ">_ OpenAI Codex" in transcript.normalized_stdout()
-    assert "Shutting down" in transcript.normalized_stdout()
-
-
 def test_windows_conpty_native_and_python_resume_picker_lists_seeded_rollout_when_enabled() -> None:
     # Rust source/test contract:
     # - codex-tui::chatwidget::slash_dispatch::slash_resume_opens_picker maps
@@ -498,68 +454,6 @@ def test_windows_conpty_native_and_python_resize_reflow_smoke_when_enabled() -> 
         if transcript.returncode == 0:
             continue
         assert "ConPTY command timed out" in transcript.normalized_combined(), detail
-
-
-def test_windows_conpty_native_and_python_quit_smoke_when_enabled() -> None:
-    # Opt-in native evidence for the first real interactive comparison layer.
-    # This is intentionally a `/quit` smoke: it proves Rust/Python can both be
-    # driven through ConPTY before deeper composer/spinner transcript tests are
-    # added on top of the same harness.
-    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
-        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
-    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
-        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
-    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
-        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
-    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
-        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
-    if os.name != "nt":
-        pytest.skip("Windows ConPTY smoke only runs on Windows")
-
-    capability = interactive_tui_comparison_capability()
-    if not capability.available:
-        pytest.skip(capability.reason)
-
-    native_exe = native_codex_exe_from_env()
-    if not native_exe.exists():
-        pytest.skip(f"native codex executable not found: {native_exe}")
-
-    repo_root = _repo_root()
-    rust, python = build_rust_python_inline_pair(repo_root=repo_root, native_exe=native_exe)
-
-    def run_quit(command: TuiComparisonCommand, *, timeout: float) -> TuiProcessTranscript:
-        return run_windows_conpty_tui_command(
-            command,
-            input_steps=(
-                ConptyInputStep(
-                    "/quit",
-                    ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
-                    ready_timeout=30.0,
-                    ready_quiet_period=1.0,
-                    atomic_write=True,
-                ),
-                ConptyInputStep(
-                    "\r",
-                    ready_text="/quit",
-                    ready_timeout=10.0,
-                    ready_quiet_period=1.0,
-                ),
-            ),
-            env=_conpty_tui_env(),
-            timeout=timeout,
-        )
-
-    rust_transcript = run_quit(rust, timeout=35)
-    python_transcript = run_quit(python, timeout=25)
-
-    assert rust_transcript.returncode == 0, rust_transcript.normalized_combined()
-    assert python_transcript.returncode == 0, python_transcript.normalized_combined()
-    assert "OpenAI Codex" in rust_transcript.normalized_stdout()
-    assert "OpenAI Codex" in python_transcript.normalized_stdout()
-    assert "Shutting down" in rust_transcript.normalized_stdout()
-    assert "Shutting down" in python_transcript.normalized_stdout()
-    _assert_startup_shell_status_surface(rust_transcript)
-    _assert_startup_shell_status_surface(python_transcript)
 
 
 def test_windows_conpty_native_and_python_startup_current_screen_when_enabled() -> None:

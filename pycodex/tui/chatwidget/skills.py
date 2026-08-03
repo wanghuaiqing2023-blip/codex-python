@@ -168,6 +168,55 @@ def open_skills_menu(widget: Any) -> SelectionViewParams:
     return params
 
 
+@dataclass
+class TerminalSkillsPopupController:
+    """Terminal adapter for Rust ``ChatWidget::open_skills_menu``."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from ..app_event import AppEvent
+        from ..bottom_pane.list_selection_view import (
+            SelectionItem as BottomPaneSelectionItem,
+            SelectionViewParams as BottomPaneSelectionViewParams,
+        )
+
+        return BottomPaneSelectionViewParams(
+            title="Skills",
+            subtitle="Choose an action",
+            items=[
+                BottomPaneSelectionItem(
+                    name="List skills",
+                    description="Tip: press $ to open this list directly.",
+                    actions=[AppEvent("OpenSkillsList")],
+                    dismiss_on_select=True,
+                ),
+                BottomPaneSelectionItem(
+                    name="Enable/Disable Skills",
+                    description="Enable or disable skills.",
+                    actions=[AppEvent("OpenManageSkillsPopup")],
+                    dismiss_on_select=True,
+                ),
+            ],
+        )
+
+    def handle_events(self, events: tuple[object, ...]) -> Any:
+        from ..bottom_pane.view_stack import TerminalSelectionTransition
+
+        for event in events:
+            if getattr(event, "kind", None) not in {
+                "OpenSkillsList",
+                "OpenManageSkillsPopup",
+            }:
+                continue
+
+            def apply(selected: Any = event) -> None:
+                self.app_runtime.handle_app_event(selected)
+
+            return TerminalSelectionTransition(after_pop=apply)
+        return None
+
+
 def open_manage_skills_popup(widget: Any) -> Optional[SkillsToggleView]:
     if not widget.skills_all:
         widget.add_info_message("No skills available.", None)
@@ -531,6 +580,7 @@ __all__ = [
     "SkillsListResponse",
     "SkillsToggleItem",
     "SkillsToggleView",
+    "TerminalSkillsPopupController",
     "ToolMentions",
     "annotate_skill_reads_in_parsed_cmd",
     "app_id_from_path",

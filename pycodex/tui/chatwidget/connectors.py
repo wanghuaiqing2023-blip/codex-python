@@ -387,6 +387,42 @@ class ConnectorsWidgetState:
         self.redraws += 1
 
 
+@dataclass
+class TerminalConnectorsController:
+    """Run ``/apps`` through the Rust-owned connectors feature/account guard."""
+
+    app_runtime: Any
+
+    def run(self) -> Any:
+        from pycodex.features import Feature
+
+        from ..app_event import AppEvent
+        from ..bottom_pane.list_selection_view import coerce_selection_view_params
+
+        config = getattr(
+            getattr(self.app_runtime, "active_thread_runtime", None),
+            "session_config",
+            None,
+        )
+        features = getattr(config, "features", None)
+        enabled = getattr(features, "enabled", None)
+        apps_enabled = bool(enabled(Feature.APPS)) if callable(enabled) else False
+        has_chatgpt_account = bool(
+            getattr(self.app_runtime.chat_widget, "has_chatgpt_account", False)
+        )
+        if not connectors_enabled(apps_enabled, has_chatgpt_account):
+            self.app_runtime.insert_info_history_message(
+                "Apps are disabled.",
+                "Enable the apps feature to use $ or /apps.",
+            )
+            return None
+
+        self.app_runtime.handle_app_event(
+            AppEvent.of("FetchConnectorsList", force_refetch=True)
+        )
+        return coerce_selection_view_params(connectors_loading_popup_params())
+
+
 def _coerce_snapshot(value: Union[ConnectorsSnapshot, Iterable[Any]]) -> ConnectorsSnapshot:
     if isinstance(value, ConnectorsSnapshot):
         return value
@@ -417,6 +453,7 @@ __all__ = [
     "ConnectorsSnapshot",
     "ConnectorsState",
     "ConnectorsWidgetState",
+    "TerminalConnectorsController",
     "RUST_MODULE",
     "connector_brief_description",
     "connector_description",

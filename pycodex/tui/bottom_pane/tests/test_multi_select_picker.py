@@ -87,7 +87,7 @@ def test_section_break_after_item_builds_separator_row():
 
     rows = picker.build_rows()
 
-    assert [row.name for row in rows.rows] == ["> [ ] theme-colors", SECTION_BREAK_ROW, "  [ ] model"]
+    assert [row.name for row in rows.rows] == ["› [ ] theme-colors", SECTION_BREAK_ROW, "  [ ] model"]
     assert rows.state.selected_idx == 0
 
 
@@ -199,13 +199,13 @@ def test_terminal_projection_matches_rust_picker_layout_and_visible_window():
     lines = picker.terminal_lines(width=100)
     texts = [line.text for line in lines]
 
-    assert texts[:5] == ["Configure", "Choose items.", "", "Type to search", "> "]
+    assert texts[:5] == ["  Configure", "  Choose items.", "", "  Type to search", "  > "]
     assert len([text for text in texts if "[ ] item-" in text or "[x] theme-colors" in text]) == 7
     assert "  -----------------------" in texts
     assert not any("item-7" in text for text in texts)
     assert next(line for line in lines if "theme-colors" in line.text).selected is True
-    assert texts[-2] == "preview-value"
+    assert texts[-2] == "  preview-value"
     assert texts[-1] == (
-        "Press space to toggle; \u2190/\u2192 to move; "
+        "  Press space to toggle; \u2190/\u2192 to move; "
         "enter to confirm and close; esc to close"
     )

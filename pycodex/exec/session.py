@@ -367,6 +367,7 @@ class ExecSessionConfig:
     show_raw_agent_reasoning: bool = False
     tui_status_line: tuple[str, ...] | None = None
     tui_status_line_use_colors: bool = True
+    tui_theme: str | None = None
     tui_terminal_title: tuple[str, ...] | None = None
     tui_keymap: Mapping[str, JsonValue] | None = None
     tui_alternate_screen: AltScreenMode = AltScreenMode.AUTO
@@ -1239,6 +1240,7 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "tuiAlternateScreen": config.tui_alternate_screen.value,
             "tuiStatusLine": list(config.tui_status_line) if config.tui_status_line is not None else None,
             "tuiStatusLineUseColors": config.tui_status_line_use_colors,
+            "tuiTheme": config.tui_theme,
             "tuiTerminalTitle": list(config.tui_terminal_title) if config.tui_terminal_title is not None else None,
             "tuiKeymap": _to_json(config.tui_keymap),
         }

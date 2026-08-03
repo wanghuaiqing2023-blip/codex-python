@@ -1053,17 +1053,14 @@ def test_windows_conpty_native_and_python_permissions_session_grant_reused_next_
                         ),
                         ConptyInputStep(
                             "",
-                            ready_pattern=(
-                                rf"(?ms){re.escape(first_answer)}.*?"
-                                r"(?:^>\s*$|^\s*\u203a(?:\s+.+)?$)"
-                            ),
+                            ready_text=first_answer,
                             ready_timeout=40.0,
-                            ready_quiet_period=0.2,
+                            ready_quiet_period=0.7,
                         ),
                         ConptyInputStep(
                             "reuse the same network permission now",
                             ready_timeout=0.2,
-                            chunk_delay=0.02,
+                            atomic_write=True,
                         ),
                         ConptyInputStep("\r", ready_text="reuse the same network permission now", ready_timeout=10.0),
                         ConptyInputStep(
@@ -1075,7 +1072,7 @@ def test_windows_conpty_native_and_python_permissions_session_grant_reused_next_
                         ConptyInputStep(
                             "request a materially different file write permission now",
                             ready_timeout=0.2,
-                            chunk_delay=0.02,
+                            atomic_write=True,
                         ),
                         ConptyInputStep(
                             "\r",

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from pycodex.tui.chatwidget.input_submission import UserInput as SubmissionUserInput
 from pycodex.tui.ide_context.prompt import (
     ByteRange,
     MAX_ACTIVE_SELECTION_CHARS,
@@ -104,6 +105,30 @@ def test_apply_ide_context_uses_desktop_prompt_request_delimiter():
             (TextElement(ByteRange(prefix_len + 4, prefix_len + 10), "$figma"),),
         ),
     ]
+
+
+def test_apply_ide_context_preserves_product_submission_input_shape() -> None:
+    context = IdeContext(
+        active_file=ActiveFile(
+            descriptor("lib.rs", "src/lib.rs"),
+            Range(Position(0, 0), Position(0, 0)),
+            "",
+            [],
+        ),
+        open_tabs=[],
+    )
+    items = [
+        SubmissionUserInput(
+            "Text",
+            {"text": "Inspect this", "text_elements": ()},
+        )
+    ]
+
+    assert apply_ide_context_to_user_input(context, items)
+    assert isinstance(items[0], SubmissionUserInput)
+    assert items[0].kind == "Text"
+    assert items[0].payload["text"].startswith("# Context from my IDE setup:")
+    assert items[0].payload["text"].endswith("Inspect this")
 
 
 def test_apply_ide_context_inserts_text_item_when_request_has_no_text():

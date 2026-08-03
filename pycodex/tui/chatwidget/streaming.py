@@ -21,7 +21,7 @@ from ..streaming.chunking import AdaptiveChunkingPolicy
 from ..streaming.commit_tick import CommitTickScope as ControllerCommitTickScope
 from ..streaming.commit_tick import run_commit_tick
 from ..streaming.controller import StreamController
-from ..terminal_hyperlinks import line_text
+from ..terminal_hyperlinks import HyperlinkLine, line_text
 from .status_state import StatusIndicatorState, StatusState, TerminalTitleStatusKind
 
 RUST_MODULE = RustTuiModule(
@@ -106,12 +106,12 @@ class TerminalChatWidgetStreamingRuntime:
         [str, str | Path, ConsolidationScrollbackReflow, AgentMessageCell | None],
         Any,
     ]
-    apply_live_tail: Callable[[tuple[str, ...]], Any]
+    apply_live_tail: Callable[[tuple[HyperlinkLine, ...]], Any]
     render_frame: Callable[[], Any]
     hide_status_indicator: Callable[[], Any] = lambda: None
     controller: StreamController | None = None
     chunking: AdaptiveChunkingPolicy = field(default_factory=AdaptiveChunkingPolicy)
-    _tail_lines: tuple[str, ...] = ()
+    _tail_lines: tuple[HyperlinkLine, ...] = ()
     _visible_output: bool = False
 
     @property
@@ -189,6 +189,9 @@ class TerminalChatWidgetStreamingRuntime:
         return bool(output.cells or tail_changed)
 
     def active_tail_projection(self) -> tuple[str, ...]:
+        return tuple(line_text(line) for line in self._tail_lines)
+
+    def active_tail_styled_lines(self) -> tuple[HyperlinkLine, ...]:
         return self._tail_lines
 
     def finalize(self) -> Any:
@@ -227,7 +230,7 @@ class TerminalChatWidgetStreamingRuntime:
             controller.current_tail_lines(),
             controller.tail_starts_stream(),
         )
-        lines = tuple(line_text(line) for line in tail.display_lines(self.width()))
+        lines = tuple(tail.display_hyperlink_lines(self.width()))
         if lines:
             self._mark_output_visible()
         return self._apply_tail(lines)
@@ -238,8 +241,8 @@ class TerminalChatWidgetStreamingRuntime:
         self._visible_output = True
         self.hide_status_indicator()
 
-    def _apply_tail(self, lines: tuple[str, ...]) -> bool:
-        normalized = tuple(str(line) for line in lines)
+    def _apply_tail(self, lines: tuple[HyperlinkLine, ...]) -> bool:
+        normalized = tuple(lines)
         if normalized == self._tail_lines:
             return False
         self._tail_lines = normalized

@@ -27,10 +27,13 @@ from ..app.resize_reflow import (
     TerminalResizeCoordinator,
     TerminalResizeHistoryReplayer,
 )
-from ..app.event_dispatch import TerminalFullScreenApprovalController
+from ..app.event_dispatch import (
+    TerminalDiffOverlayController,
+    TerminalFullScreenApprovalController,
+)
 from ..app.input import (
-    KeyEvent as AppInputKeyEvent,
     MISSING_EDITOR_MESSAGE,
+    key_event_from_terminal_input,
     keymap_command_for_event,
 )
 from ..app.agent_message_consolidation import (
@@ -67,6 +70,7 @@ from ..chatwidget.slash_dispatch import (
 from ..chatwidget.status_surfaces import (
     TerminalStatusSurfaceWriter,
     refresh_runtime_status_surfaces,
+    runtime_terminal_title_text,
 )
 from ..chatwidget.status_controls import TerminalStatusCommandController
 from ..chatwidget.turn_runtime import TerminalTurnSubmissionRunner
@@ -99,35 +103,6 @@ from .event_stream import (
     TerminalTurnEventStreamProtocol,
     terminal_stdin_is_terminal,
 )
-
-
-def _app_input_key_event(
-    event_kind: str,
-    event_text: str = "",
-) -> AppInputKeyEvent | None:
-    kind = str(event_kind).lower()
-    if kind.startswith("ctrl_") and len(kind) == len("ctrl_") + 1:
-        return AppInputKeyEvent(kind[-1], modifiers=("control",))
-    if kind == "text" and len(event_text) == 1:
-        return AppInputKeyEvent(event_text)
-    named = {
-        "enter": "enter",
-        "escape": "esc",
-        "backspace": "backspace",
-        "delete": "delete",
-        "up": "up",
-        "down": "down",
-        "left": "left",
-        "right": "right",
-        "home": "home",
-        "end": "end",
-        "page_up": "pageup",
-        "page_down": "pagedown",
-        "tab": "tab",
-    }
-    code = named.get(kind)
-    return None if code is None else AppInputKeyEvent(code)
-
 
 def run_terminal_tui(
     *,
@@ -198,11 +173,17 @@ class TerminalTuiRunner:
             resize=lambda: self._resize.check_size_change(),
             footer_text=self._idle_footer.text,
             footer_right_text=self._idle_footer.right_text,
-            open_command_view=self._slash_command_views.open_command_view,
+            open_command_view=self._slash_command_views.dispatch_command_view,
             on_selection_events=self._slash_command_views.handle_selection_events,
             cursor_visible=self._status.composer_cursor_visible,
             set_terminal_title_requires_action=self._status.set_terminal_title_requires_action,
             command_popup_flags=command_popup_flags_from_config(self.app_runtime.chat_widget.config),
+        )
+        self.app_runtime.bind_side_ui_sink(
+            self._bottom_pane.set_side_conversation_active
+        )
+        self.app_runtime.bind_backtrack_hint_sink(
+            self._bottom_pane.set_esc_backtrack_hint
         )
         history_metadata = getattr(self.app_runtime.chat_widget, "bottom_history_metadata", None)
         history_lookup = getattr(self.app_runtime.active_thread_runtime, "lookup_message_history_entry", None)
@@ -225,6 +206,11 @@ class TerminalTuiRunner:
         self._status.bind_status_indicator_visible(
             lambda: not self._bottom_pane.has_active_view()
         )
+        self.app_runtime.chat_widget.bind_terminal_title_refresh(
+            lambda: self._status.set_terminal_title_text(
+                runtime_terminal_title_text(self.app_runtime)
+            )
+        )
         self._transcript = TerminalTranscriptState()
         self._transcript_overlay = TerminalTranscriptOverlayController(
             cells=lambda: tuple(self._transcript.cells),
@@ -235,6 +221,13 @@ class TerminalTuiRunner:
             run_external_repaint=self._bottom_pane.run_external_repaint,
         )
         self._full_screen_approval = TerminalFullScreenApprovalController(
+            get_input_source=self._input_source_provider.get,
+            writer=self.stdout,
+            terminal_size=terminal_size,
+            keymap=self._pager_keymap,
+            run_external_repaint=self._bottom_pane.run_external_repaint,
+        )
+        self._diff_overlay = TerminalDiffOverlayController(
             get_input_source=self._input_source_provider.get,
             writer=self.stdout,
             terminal_size=terminal_size,
@@ -270,6 +263,9 @@ class TerminalTuiRunner:
             apply_history_state=self._history.apply_state,
             render_bottom_pane=self._bottom_pane.render_after_history_repaint,
             transcript_cells=lambda: tuple(self._transcript.cells),
+            raw_output_mode=lambda: bool(
+                getattr(self.app_runtime.chat_widget, "raw_mode", False)
+            ),
         )
         self._resize = TerminalResizeCoordinator(
             terminal_active=lambda: self._stdin_is_terminal,
@@ -284,6 +280,9 @@ class TerminalTuiRunner:
             run_external_repaint=self._bottom_pane.run_external_repaint,
             render_after_external_repaint=self._bottom_pane.render_after_history_repaint,
             on_width_change=lambda width: self._assistant_stream.set_width(width),
+        )
+        self.app_runtime.bind_raw_output_reflow_sink(
+            lambda _enabled: self._resize.reflow_transcript_now()
         )
         self._agent_message_consolidation = TerminalAgentMessageConsolidator(
             transcript=self._transcript,
@@ -368,11 +367,12 @@ class TerminalTuiRunner:
             handle_event=self._handle_bottom_pane_composer_event,
             handle_global_key=self._handle_global_key,
             record_submission=self._bottom_pane._record_submission,
+            on_idle=self._poll_idle_app_server_events,
         )
         self._turn_idle = TerminalTurnIdleTicker(
             check_resize=self._resize.check_size_change,
             commit_stream=self._assistant_stream.commit_tick,
-            refresh_turn_status=self._status.refresh_turn_status_if_due,
+            refresh_turn_status=self._refresh_turn_status_and_terminal_title,
         )
         self._turn_events = TerminalTurnEventLoopRunner(
             on_event=self._protocol.handle_event,
@@ -408,7 +408,7 @@ class TerminalTuiRunner:
         )
         self._prompt_dispatch = TerminalPromptDispatcher(
             run_local_command=self._local_commands.run,
-            open_command_view=self._slash_command_views.open_command_view,
+            open_command_view=self._slash_command_views.dispatch_command_view,
             open_command_with_args=self._slash_command_views.open_command_with_args,
             dispatch_command=self._slash_command_effects.dispatch,
             guard_command=self._slash_command_effects.guard,
@@ -429,6 +429,7 @@ class TerminalTuiRunner:
             self._bottom_pane.dismiss_app_server_request
         )
         self.app_runtime.bind_full_screen_approval_sink(self._full_screen_approval)
+        self.app_runtime.bind_diff_overlay_sink(self._diff_overlay)
         self.app_runtime.chat_widget.bind_history_projection(
             HistoryProjectionSink(
                 insert_cell=self.app_runtime.insert_history_cell,
@@ -453,6 +454,14 @@ class TerminalTuiRunner:
         self.app_runtime.chat_widget.bind_pending_thread_approvals_sink(
             self._bottom_pane.sync_pending_thread_approvals
         )
+        self.app_runtime.chat_widget.bind_vim_mode_toggle_sink(
+            self._bottom_pane.toggle_vim_enabled
+        )
+        initial_vim_enabled = bool(
+            getattr(self.app_runtime.chat_widget.config, "tui_vim_mode_default", False)
+        )
+        self._bottom_pane.set_vim_enabled(initial_vim_enabled)
+        self.app_runtime.chat_widget.vim_enabled = initial_vim_enabled
         self.app_runtime.chat_widget.bind_interactive_request_sinks(
             user_input=RequestUserInputViewProjector(
                 app_event_sender=bottom_pane_event_sender,
@@ -495,6 +504,10 @@ class TerminalTuiRunner:
         self._slash_command_views.clear_active_handler()
         return self._bottom_pane.show_view(view)
 
+    def _refresh_turn_status_and_terminal_title(self) -> None:
+        self._status.refresh_turn_status_if_due()
+        self.app_runtime.chat_widget.refresh_terminal_title()
+
     def run(self) -> int:
         if self._stdin_is_terminal:
             enable_bracketed_paste(self.stdout)
@@ -506,6 +519,7 @@ class TerminalTuiRunner:
             self.app_runtime.chat_widget,
             self.app_runtime,
         )
+        self.app_runtime.chat_widget.refresh_terminal_title()
         while True:
             try:
                 prompt = (
@@ -538,19 +552,34 @@ class TerminalTuiRunner:
             self._user_prompt_output.write(prompt)
             self._run_turn(prompt)
 
-    def _drain_startup_app_server_events(self) -> None:
+    def _drain_startup_app_server_events(self) -> int:
         next_event = getattr(
             self.app_runtime.active_thread_runtime,
             "next_app_server_event",
             None,
         )
         if not callable(next_event):
-            return
+            return 0
+        handled = 0
         while True:
             event = next_event(0)
             if event is None:
-                return
+                return handled
             self.app_runtime.handle_app_server_event(event)
+            handled += 1
+
+    def _poll_idle_app_server_events(self) -> None:
+        """Multiplex asynchronous app-server events while the composer is idle."""
+
+        if self._drain_startup_app_server_events() == 0:
+            return
+        self._project_chatwidget_status()
+        refresh_runtime_status_surfaces(
+            self.app_runtime.chat_widget,
+            self.app_runtime,
+        )
+        self.app_runtime.chat_widget.refresh_terminal_title()
+        self._bottom_pane.render_without_resize_check()
 
     def _read_prompt(self) -> str | None:
         return self._composer_prompt.read()
@@ -593,7 +622,18 @@ class TerminalTuiRunner:
     def _handle_global_key(self, event_kind: str, event_text: str) -> bool:
         """Route Rust app-level shortcuts before composer key handling."""
 
-        key_event = _app_input_key_event(event_kind, event_text)
+        if str(event_kind).lower() in {"interrupt", "ctrl_d"}:
+            side_active = bool(
+                getattr(
+                    self.app_runtime.chat_widget,
+                    "active_side_conversation",
+                    False,
+                )
+            )
+            if side_active:
+                self.app_runtime.maybe_return_from_side()
+                return True
+        key_event = key_event_from_terminal_input(event_kind, event_text)
         if key_event is None:
             return False
         if active_view_key_has_priority(
@@ -604,6 +644,11 @@ class TerminalTuiRunner:
             # key and returns before app/global shortcuts such as Esc backtrack.
             return False
         if key_event.code == "esc":
+            textarea = self._bottom_pane.composer.draft.textarea
+            if textarea.uses_vim_insert_cursor():
+                # Rust app::input must let the composer consume Insert ->
+                # Normal before considering transcript backtrack.
+                return False
             action = self.app_runtime.handle_backtrack_escape(
                 composer_is_empty=not bool(self._bottom_pane.composer.current_text()),
                 overlay_open=False,
@@ -613,6 +658,11 @@ class TerminalTuiRunner:
                 self._transcript_overlay.open()
             if action != "noop":
                 return True
+        else:
+            # Rust app::input cancels an Esc-primed backtrack on every
+            # non-Esc press before the key reaches the composer. Keep this in
+            # the app owner so terminal input cannot leak stale global state.
+            self.app_runtime.clear_primed_backtrack_for_non_escape_key(key_event)
         runtime_keymap = getattr(self.app_runtime, "runtime_keymap", None)
         if runtime_keymap is None:
             runtime_keymap = RuntimeKeymap.built_in_defaults()
@@ -628,11 +678,7 @@ class TerminalTuiRunner:
             self._clear_ui.run()
             return True
         if command == "toggle_vim_mode":
-            enabled = not bool(getattr(self.app_runtime.chat_widget, "vim_enabled", False))
-            setattr(self.app_runtime.chat_widget, "vim_enabled", enabled)
-            self._history.write_cell(
-                "Vim mode enabled." if enabled else "Vim mode disabled."
-            )
+            self.app_runtime.chat_widget.toggle_vim_mode_and_notify()
             return True
         if command == "copy":
             last_agent = str(

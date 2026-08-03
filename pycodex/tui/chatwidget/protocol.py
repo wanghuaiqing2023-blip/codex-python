@@ -28,6 +28,7 @@ from ..history_cell.notices import (
 from ..history_cell.patches import new_patch_apply_failure, new_patch_event
 from ..history_cell.plans import new_plan_update, new_proposed_plan
 from ..history_cell.separators import FinalMessageSeparator
+from ..git_action_directives import parse_assistant_markdown
 from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
 from .command_lifecycle import CommandLifecycleState
@@ -42,6 +43,7 @@ from .constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from .goal_status import GoalStatusState
 from .mcp_startup import McpServerStatusUpdatedNotification, McpStartupModel
 from .notifications import Notification, NotificationCoalescer
+from .rate_limits import rate_limit_snapshot_cache_entry
 from .status_surfaces import run_state_status_text
 from .status_state import StatusIndicatorState, TerminalTitleStatusKind
 from .streaming import MessagePhase, StreamingWidgetState
@@ -308,7 +310,13 @@ class ChatWidgetProtocolRuntime:
         self.clipboard_lease: Any = None
         self.info_messages: list[tuple[str, Optional[str]]] = []
         self.info_message_sink: Optional[Callable[[str, Optional[str]], Any]] = None
+        self.vim_enabled = False
+        self.vim_mode_toggle_sink: Callable[[], bool] | None = None
         self.status_line_invalid_items_warned = False
+        self.terminal_title_invalid_items_warned = False
+        self.terminal_title_setup_original_items: list[Any] | None = None
+        self.terminal_title_setup_active = False
+        self.terminal_title_refresh_sink: Callable[[], Any] | None = None
         self.tool_request_status_sink: Optional[Callable[[StatusIndicatorState], Any]] = None
         self.tool_request_status_header_sink: Optional[Callable[[str], Any]] = None
         self.notification_projection_sink: Optional[Callable[[str], Any]] = None
@@ -334,8 +342,21 @@ class ChatWidgetProtocolRuntime:
         self._active_view_sink = sink
         self.turn.bottom_pane.selection_view_sink = sink
 
+    def bind_terminal_title_refresh(self, sink: Callable[[], Any] | None) -> None:
+        self.terminal_title_refresh_sink = sink
+
+    def refresh_terminal_title(self) -> None:
+        if self.terminal_title_refresh_sink is not None:
+            self.terminal_title_refresh_sink()
+        self.request_redraw()
+
     def bind_user_message_submission_sink(self, sink: Callable[[str], Any] | None) -> None:
         self._user_message_submission_sink = sink
+
+    def bind_vim_mode_toggle_sink(self, sink: Callable[[], bool] | None) -> None:
+        """Bind Rust ``BottomPane::toggle_vim_enabled`` to slash dispatch."""
+
+        self.vim_mode_toggle_sink = sink
 
     def collaboration_modes_enabled(self) -> bool:
         return self._collaboration_modes_enabled
@@ -549,6 +570,7 @@ class ChatWidgetProtocolRuntime:
         self.streaming.status_state.pending_status_indicator_restore = False
         self.streaming.status_state.terminal_title_status_kind = TerminalTitleStatusKind.Working
         self.streaming.set_status_header("Working")
+        self.refresh_terminal_title()
         self.streaming.request_redraw()
 
     def on_agent_message_delta(self, delta: str | None) -> None:
@@ -644,9 +666,13 @@ class ChatWidgetProtocolRuntime:
     def set_token_info(self, info: Optional[TokenUsageInfo]) -> None:
         self.token_info = info
         self.turn.token_info = info
+        self.refresh_status_surfaces()
 
     def on_thread_name_updated(self, _thread_id: str, thread_name: Optional[str]) -> None:
+        if thread_name is not None:
+            self.add_info_message(f"Thread renamed to {thread_name}")
         self.thread_name = thread_name
+        self.refresh_status_surfaces()
 
     def on_thread_goal_updated(self, goal: Any, turn_id: Optional[str] = None) -> None:
         if goal is None:
@@ -681,7 +707,7 @@ class ChatWidgetProtocolRuntime:
         self.selected_model = str(model)
         setattr(self.config, "model", self.selected_model)
         self.refresh_effective_service_tier()
-        self.streaming.request_redraw()
+        self.refresh_status_surfaces()
 
     def current_model(self) -> str:
         if self.selected_model:
@@ -710,14 +736,16 @@ class ChatWidgetProtocolRuntime:
 
     def set_reasoning_effort(self, effort: Any | None) -> None:
         setattr(self.config, "model_reasoning_effort", effort)
-        self.streaming.request_redraw()
+        self.refresh_status_surfaces()
 
     def on_rate_limit_snapshot(self, snapshot: Any) -> None:
         if snapshot is None:
             return
-        limit_id = _get(snapshot, "limit_id", None) or _get(snapshot, "limit_name", None) or "codex"
-        self.rate_limit_snapshots_by_limit_id[str(limit_id)] = snapshot
-        self.streaming.request_redraw()
+        raw_limit_id = _get(snapshot, "limit_id", None) or "codex"
+        previous = self.rate_limit_snapshots_by_limit_id.get(str(raw_limit_id))
+        limit_id, display = rate_limit_snapshot_cache_entry(snapshot, previous=previous)
+        self.rate_limit_snapshots_by_limit_id[limit_id] = display
+        self.refresh_status_surfaces()
 
     def add_refreshing_status_output(self, request_id: int, handle: Any) -> None:
         self.refreshing_status_outputs.append((int(request_id), handle))
@@ -753,11 +781,23 @@ class ChatWidgetProtocolRuntime:
         if callable(self.info_message_sink):
             self.info_message_sink(text, hint)
 
+    def toggle_vim_mode_and_notify(self) -> str:
+        if callable(self.vim_mode_toggle_sink):
+            enabled = bool(self.vim_mode_toggle_sink())
+        else:
+            enabled = not bool(getattr(self, "vim_enabled", False))
+        self.vim_enabled = enabled
+        notice = "Vim mode enabled." if enabled else "Vim mode disabled."
+        self.add_info_message(notice)
+        self.request_redraw()
+        return notice
+
     def add_error_message(self, message: str) -> None:
         self.error_messages.append(str(message))
 
     def refresh_status_surfaces(self) -> None:
         self.request_redraw()
+        self.refresh_terminal_title()
 
     def setup_status_line(self, items: Any, use_theme_colors: bool) -> None:
         from .status_controls import setup_status_line
@@ -768,6 +808,26 @@ class ChatWidgetProtocolRuntime:
         from .status_controls import cancel_status_line_setup
 
         cancel_status_line_setup(self)
+
+    def preview_terminal_title(self, items: Any) -> None:
+        from .status_controls import preview_terminal_title
+
+        preview_terminal_title(self, items)
+
+    def revert_terminal_title_setup_preview(self) -> None:
+        from .status_controls import revert_terminal_title_setup_preview
+
+        revert_terminal_title_setup_preview(self)
+
+    def cancel_terminal_title_setup(self) -> None:
+        from .status_controls import cancel_terminal_title_setup
+
+        cancel_terminal_title_setup(self)
+
+    def setup_terminal_title(self, items: Any) -> None:
+        from .status_controls import setup_terminal_title
+
+        setup_terminal_title(self, items)
 
     def on_mcp_server_status_updated(self, payload: Any) -> None:
         """Apply Rust ``chatwidget::mcp_startup`` state to protocol runtime."""
@@ -790,6 +850,7 @@ class ChatWidgetProtocolRuntime:
         if self.mcp_startup.startup_status is None and self.turn.bottom_pane.task_running:
             self.streaming.restore_reasoning_status_header()
             self.turn.set_status_header(self.streaming.status_state.current_status.header)
+        self._sync_streaming_task_state()
         self.request_redraw()
 
     def handle_thread_item(self, item: Any, _turn_id: str | None, _source: ThreadItemRenderSource) -> None:
@@ -809,11 +870,14 @@ class ChatWidgetProtocolRuntime:
     ) -> None:
         text = _agent_message_item_text(item)
         phase = _message_phase(_get(item, "phase", None))
+        visible = parse_assistant_markdown(text).visible_markdown
         if not from_replay:
             self._insert_final_message_separator_if_needed()
-        self.streaming.on_agent_message_item_completed(text, phase, from_replay)
-        if text.strip():
-            self._assistant_text = text.strip()
+        self.streaming.on_agent_message_item_completed(visible, phase, from_replay)
+        if (phase is MessagePhase.FinalAnswer or phase is None) and visible:
+            self.turn.record_agent_markdown(visible)
+        if visible.strip():
+            self._assistant_text = visible.strip()
         self._sync_streaming_task_state()
 
     def on_task_complete(
@@ -827,12 +891,14 @@ class ChatWidgetProtocolRuntime:
         self._sync_collaboration_mode_state()
         self.turn.on_task_complete(last_agent_message, duration_ms, from_replay)
         self._sync_streaming_task_state()
+        self.refresh_terminal_title()
 
     def finalize_turn(self) -> None:
         self.streaming.flush_answer_stream_with_separator()
         self.streaming.on_agent_reasoning_final()
         self.turn.finalize_turn()
         self._sync_streaming_task_state()
+        self.refresh_terminal_title()
 
     def request_redraw(self) -> None:
         self.turn.request_redraw()
@@ -1007,6 +1073,8 @@ def handle_server_notification(
             "set_token_info",
             token_usage_info_from_app_server(_get(payload, "token_usage")),
         )
+    elif kind == "ThreadRateLimitsUpdated":
+        _call(widget, "on_rate_limit_snapshot", _get(payload, "rate_limits"))
     elif kind == "ThreadNameUpdated":
         thread_id = _get(payload, "thread_id")
         if thread_id:

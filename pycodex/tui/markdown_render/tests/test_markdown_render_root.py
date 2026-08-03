@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from pycodex.tui.markdown_render import (
+    TABLE_HEADER_SEPARATOR_CHAR,
     TableColumnKind,
     collect_table_column_metrics,
     display_local_link_path,
@@ -46,6 +47,7 @@ def test_render_markdown_text_preserves_list_and_blockquote_indents() -> None:
         "- alpha",
         "  beta",
         "  gamma",
+        "",
         "> quoted",
         "> words",
     ]
@@ -86,7 +88,78 @@ def test_pipe_table_uses_columnar_rows_when_scannable() -> None:
     # Contract: table rows preserve a columnar form while values remain scannable.
     rendered = render_markdown_text("| Name | Value |\n| --- | --- |\n| A | 1 |")
 
-    assert lines_to_strings(rendered) == ["Name  Value", "────  ─────", "A     1"]
+    assert lines_to_strings(rendered) == [
+        " Name    Value",
+        f"{TABLE_HEADER_SEPARATOR_CHAR * 6}  {TABLE_HEADER_SEPARATOR_CHAR * 7}",
+        " A       1",
+    ]
+
+
+def test_rich_inline_styles_compose_and_links_keep_styled_destination() -> None:
+    # Rust markdown_render::{start_heading,push_inline_style,pop_link}.
+    lines = render_markdown_lines_with_width_and_cwd(
+        "## Head\n\n**bold** *italic* ***both*** `code` [link](https://example.com)",
+        120,
+        None,
+    )
+
+    heading = lines[0]
+    paragraph = lines[2]
+    styles = {
+        span.content: span.style
+        for span in paragraph.line.spans
+        if span.content.strip()
+    }
+    assert all(span.style == "bold" for span in heading.line.spans)
+    assert styles["bold"] == "bold"
+    assert styles["italic"] == "italic"
+    assert set(styles["both"].split()) == {"bold", "italic"}
+    assert styles["code"] == "cyan"
+    assert styles["https://example.com"] == "cyan underlined"
+    assert {link.destination for link in paragraph.hyperlinks} == {
+        "https://example.com"
+    }
+
+
+def test_blockquote_table_and_python_fence_keep_rust_owned_styles() -> None:
+    from pycodex.tui.render.highlight import configured_theme_name, set_theme_override
+
+    original = configured_theme_name()
+    try:
+        set_theme_override("monokai-extended")
+        lines = render_markdown_lines_with_width_and_cwd(
+            "> quote\n\n| Name | Value |\n| --- | --- |\n| row | 1 |\n\n"
+            "```python\ndef probe(value: int) -> str:\n    return f\"x-{value}\"\n```",
+            120,
+            None,
+        )
+    finally:
+        set_theme_override(original)
+
+    quote = next(line for line in lines if line_text(line.line) == "> quote")
+    header = next(line for line in lines if "Name" in line_text(line.line))
+    code = next(line for line in lines if "def probe" in line_text(line.line))
+    assert quote.line.style == "green"
+    assert header.line.style.bold is True
+    assert header.line.style.fg is not None
+    assert any(span.style.fg is not None for span in code.line.spans)
+
+
+def test_table_body_cells_preserve_nested_inline_styles() -> None:
+    lines = render_markdown_lines_with_width_and_cwd(
+        "| Name | Value |\n| --- | --- |\n| **strong** | `code` |",
+        120,
+        None,
+    )
+
+    body = next(line for line in lines if "strong" in line_text(line.line))
+    styles = {
+        span.content.strip(): span.style
+        for span in body.line.spans
+        if span.content.strip()
+    }
+    assert styles["strong"] == "bold"
+    assert styles["code"] == "cyan"
 
 
 def test_table_column_metrics_classify_token_heavy_paths() -> None:
@@ -103,3 +176,28 @@ def test_fenced_code_preserves_c_include_angle_brackets_and_spacing() -> None:
     rendered = render_markdown_text("```c\n#include <stdio.h>\n```")
 
     assert lines_to_strings(rendered) == ["#include <stdio.h>"]
+
+
+def test_fenced_rust_code_uses_the_active_syntax_theme() -> None:
+    # Rust markdown_render::Writer::end_codeblock calls
+    # render::highlight::highlight_code_to_lines using the current theme.
+    from pycodex.tui.render.highlight import configured_theme_name, set_theme_override
+
+    original = configured_theme_name()
+    try:
+        set_theme_override("nord")
+        nord = render_markdown_text(
+            "```rust\nfn applied_theme() -> usize { 42 }\n```"
+        )
+        set_theme_override("dracula")
+        dracula = render_markdown_text(
+            "```rust\nfn applied_theme() -> usize { 42 }\n```"
+        )
+    finally:
+        set_theme_override(original)
+
+    nord_fn = nord.lines[0].spans[0]
+    dracula_fn = dracula.lines[0].spans[0]
+    assert nord_fn.content == dracula_fn.content == "fn"
+    assert nord_fn.style.fg.value == (129, 161, 193)
+    assert dracula_fn.style.fg.value == (139, 233, 253)

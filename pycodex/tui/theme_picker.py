@@ -9,7 +9,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 
 from .render import highlight
 from .ratatui_bridge import Buffer, Color, Line, Rect, Span, Style
@@ -57,7 +57,7 @@ WIDE_PREVIEW_LEFT_INSET = 2
 PREVIEW_FRAME_PADDING = 1
 PREVIEW_FALLBACK_SUBTITLE = "Move up/down to live preview themes"
 DEFAULT_TERMINAL_WIDTH = 80
-DEFAULT_BUNDLED_THEMES = ("light-plus", "dark-plus", "github-light", "github-dark")
+DEFAULT_BUNDLED_THEMES = tuple(highlight.BUILTIN_THEME_NAMES)
 
 
 @dataclass(frozen=True)
@@ -180,17 +180,45 @@ def _semantic_style_to_bridge(style: object) -> Style:
     return bridge
 
 
+def _diff_color_to_bridge(value: object) -> Optional[Color]:
+    if isinstance(value, tuple) and len(value) == 2 and value[0] == "indexed":
+        return Color.indexed(int(value[1]))
+    if isinstance(value, tuple) and len(value) == 4 and value[0] == "rgb":
+        return Color.rgb(int(value[1]), int(value[2]), int(value[3]))
+    if isinstance(value, str):
+        return Color.named(value)
+    return None
+
+
+def _preview_diff_styles(diff_type: DiffLineType) -> Tuple[Style, Style]:
+    """Return marker/content styles from the Rust-owned diff style context."""
+
+    from .diff_render import DiffTheme, current_diff_render_style_context
+
+    context = current_diff_render_style_context()
+    if diff_type == DiffLineType.INSERT:
+        background = _diff_color_to_bridge(context.diff_backgrounds.add)
+        content = Style.default()
+        if context.theme == DiffTheme.Dark:
+            content = content.with_fg("green")
+        if background is not None:
+            content = content.with_bg(background)
+        return Style.default().with_fg("green"), content
+    if diff_type == DiffLineType.DELETE:
+        background = _diff_color_to_bridge(context.diff_backgrounds.delete)
+        content = Style.default().dim()
+        if context.theme == DiffTheme.Dark:
+            content = content.with_fg("red")
+        if background is not None:
+            content = content.with_bg(background)
+        return Style.default().with_fg("red"), content
+    return Style.default(), Style.default()
+
+
 def preview_line_to_bridge_line(line: RenderedPreviewLine, syntax_spans: Optional[List[object]] = None) -> Line:
     base = Style.default()
     line_no_style = base.dim()
-    marker_style = base
-    code_style = base
-    if line.diff_type == DiffLineType.INSERT:
-        marker_style = base.with_fg("green").bold()
-        code_style = base.with_fg("green")
-    elif line.diff_type == DiffLineType.DELETE:
-        marker_style = base.with_fg("red").bold()
-        code_style = base.with_fg("red").dim()
+    marker_style, code_style = _preview_diff_styles(line.diff_type)
     spans = [
         Span.raw(" " * line.x),
         Span.styled(str(line.line_no), line_no_style),
@@ -198,11 +226,16 @@ def preview_line_to_bridge_line(line: RenderedPreviewLine, syntax_spans: Optiona
         Span.styled(line.marker, marker_style),
     ]
     if syntax_spans:
+        syntax_base = Style.default()
+        if code_style.bg is not None:
+            syntax_base = syntax_base.with_bg(code_style.bg)
+        if line.diff_type == DiffLineType.DELETE:
+            syntax_base = syntax_base.dim()
         for span in syntax_spans:
             text = getattr(span, "text", "")
             if text:
                 syntax_style = _semantic_style_to_bridge(getattr(span, "style", object()))
-                spans.append(Span.styled(text, code_style.patch(syntax_style)))
+                spans.append(Span.styled(text, syntax_base.patch(syntax_style)))
     else:
         spans.append(Span.styled(line.code, code_style))
     return Line.from_spans(spans)
@@ -229,6 +262,12 @@ def render_preview_to_buffer(
     for index, preview_line in enumerate(preview_lines):
         syntax_spans = syntax_lines[index] if syntax_lines is not None and index < len(syntax_lines) else None
         line = preview_line_to_bridge_line(preview_line, syntax_spans)
+        _, background_style = _preview_diff_styles(preview_line.diff_type)
+        if background_style.bg is not None:
+            buf.set_style(
+                Rect(area.x, area.y + preview_line.y, area.width, 1),
+                Style.default().with_bg(background_style.bg),
+            )
         buf.set_line(area.x, area.y + preview_line.y, line, max_width=area.width)
 
 
@@ -332,7 +371,7 @@ def list_available_themes(codex_home: Optional[Union[str, Path]] = None) -> List
 
 
 def configured_theme_name() -> str:
-    return DEFAULT_BUNDLED_THEMES[0]
+    return highlight.configured_theme_name()
 
 
 def build_theme_picker_params(
@@ -388,6 +427,88 @@ def build_theme_picker_params(
     )
 
 
+@dataclass
+class TerminalThemePickerController:
+    """Open ``/theme`` through the active bottom-pane selection framework."""
+
+    app_runtime: Any
+    original_theme: Any = None
+
+    def open_view(self) -> Any:
+        from .app_event import AppEvent
+        from .bottom_pane.list_selection_view import (
+            SelectionItem as BottomPaneSelectionItem,
+            SelectionViewParams as BottomPaneSelectionViewParams,
+            SideContentWidth,
+        )
+
+        thread_runtime = getattr(self.app_runtime, "active_thread_runtime", None)
+        config = getattr(thread_runtime, "session_config", None)
+        current_name = getattr(config, "tui_theme", None)
+        codex_home = (
+            getattr(thread_runtime, "codex_home", None)
+            or getattr(config, "codex_home", None)
+            or getattr(self.app_runtime, "codex_home", None)
+        )
+        params = build_theme_picker_params(current_name, codex_home, None)
+        self.original_theme = highlight.current_syntax_theme()
+        preview_names = [item.search_value for item in params.items]
+
+        def selected_action(name: str) -> Callable[[Any], None]:
+            def send(events: Any) -> None:
+                events.append(AppEvent.syntax_theme_selected(name))
+
+            return send
+
+        def preview(index: int, events: Any) -> None:
+            if not (0 <= index < len(preview_names)):
+                return
+            name = preview_names[index]
+            if name is None:
+                return
+            theme = highlight.resolve_theme_by_name(name, codex_home)
+            if theme is not None:
+                highlight.set_syntax_theme(theme)
+                events.append(AppEvent.of("SyntaxThemePreviewed"))
+
+        def cancel(events: Any) -> None:
+            if self.original_theme is not None:
+                highlight.set_syntax_theme(self.original_theme)
+            events.append(AppEvent.of("SyntaxThemePreviewed"))
+
+        return BottomPaneSelectionViewParams(
+            title=params.title,
+            subtitle=params.subtitle,
+            footer_hint=params.footer_hint,
+            items=[
+                BottomPaneSelectionItem(
+                    name=item.name,
+                    is_current=item.is_current,
+                    dismiss_on_select=item.dismiss_on_select,
+                    search_value=item.search_value,
+                    actions=[selected_action(item.search_value or item.name)],
+                )
+                for item in params.items
+            ],
+            is_searchable=params.is_searchable,
+            search_placeholder=params.search_placeholder,
+            initial_selected_idx=params.initial_selected_idx,
+            side_content=params.side_content,
+            side_content_width=SideContentWidth.half(),
+            side_content_min_width=params.side_content_min_width,
+            stacked_side_content=params.stacked_side_content,
+            preserve_side_content_bg=params.preserve_side_content_bg,
+            on_selection_changed=preview,
+            on_cancel=cancel,
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> None:
+        dispatch = getattr(self.app_runtime, "handle_app_event", None)
+        if callable(dispatch):
+            for event in events:
+                dispatch(event)
+
+
 def preview_line_number(line: str) -> Optional[int]:
     stripped = line.lstrip()
     digits = ""
@@ -423,6 +544,7 @@ __all__ = [
     "ThemeEntry",
     "ThemePreviewNarrowRenderable",
     "ThemePreviewWideRenderable",
+    "TerminalThemePickerController",
     "WIDE_PREVIEW_LEFT_INSET",
     "WIDE_PREVIEW_MIN_WIDTH",
     "WIDE_PREVIEW_ROWS",

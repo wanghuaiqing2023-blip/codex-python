@@ -150,6 +150,16 @@ class SessionHistory:
 
     items: list[ResponseItem] = field(default_factory=list)
 
+    def record_items(
+        self,
+        items: list[ResponseItem],
+        _truncation_policy: object = None,
+    ) -> None:
+        self.items.extend(items)
+
+    def raw_items(self) -> list[ResponseItem]:
+        return list(self.items)
+
     def for_prompt(self, modalities: object = None) -> list[ResponseItem]:
         return list(normalize_history_for_prompt(self.items, modalities))
 
@@ -394,6 +404,7 @@ class Session:
             auth_manager=self.auth_manager,
             user_instructions=self.user_instructions,
             developer_instructions=self.developer_instructions,
+            compact_prompt=getattr(turn_config, "compact_prompt", None),
             config=turn_config,
             available_models=available_models,
             permission_profile=self.permission_profile,

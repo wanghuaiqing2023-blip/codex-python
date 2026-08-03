@@ -83,7 +83,9 @@ class RateLimitWindowDisplay:
         return cls(
             used_percent=float(_get(window, "used_percent", 0.0)),
             resets_at=reset_text,
-            window_minutes=_optional_int(_get(window, "window_duration_mins")),
+            window_minutes=_optional_int(
+                _get(window, "window_duration_mins", _get(window, "window_minutes"))
+            ),
         )
 
 

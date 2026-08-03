@@ -37,7 +37,18 @@ TERMINAL_LIVE_STATUS_PREFIX = "\u2022 "
 TERMINAL_LIVE_STATUS_DETAIL_PREFIX = "  \u2502 "
 TERMINAL_TURN_INTERRUPT_HINT = "esc to interrupt"
 
-TERMINAL_TITLE_SPINNER_FRAMES = ("⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈", "⠐", "⠠")
+TERMINAL_TITLE_SPINNER_FRAMES = (
+    "\u2839",
+    "\u2838",
+    "\u283c",
+    "\u2834",
+    "\u2826",
+    "\u2827",
+    "\u2807",
+    "\u280f",
+    "\u280b",
+    "\u2819",
+)
 TERMINAL_TITLE_SPINNER_INTERVAL = timedelta(milliseconds=100)
 TERMINAL_TITLE_ACTION_REQUIRED_INTERVAL = timedelta(seconds=1)
 TERMINAL_TITLE_ACTION_REQUIRED_PREFIX = "[ ! ] Action Required"
@@ -151,6 +162,98 @@ def refresh_runtime_status_surfaces(widget: Any, app_runtime: Any) -> StatusSurf
 
         widget.add_to_history(new_warning_event(message))
     return selections
+
+
+def runtime_terminal_title_text(app_runtime: Any) -> str | None:
+    """Render the configured terminal title from the live app runtime.
+
+    This is the terminal-adapter projection of Rust
+    ``ChatWidget::terminal_title_text_for_selections``.  It preserves configured
+    ordering, omits unavailable values, and uses the same separator rule as the
+    Rust ``TerminalTitleItem`` implementation.
+    """
+
+    from ..bottom_pane.status_line_setup import StatusLineItem
+    from ..runtime_projection import (
+        _display_directory_for_path,
+        _runtime_cwd,
+        _runtime_display_model,
+        _runtime_model_with_reasoning,
+        _runtime_status_line_value,
+    )
+
+    widget = getattr(app_runtime, "chat_widget", None)
+    configured = getattr(getattr(widget, "config", None), "tui_terminal_title", None)
+    ids = DEFAULT_TERMINAL_TITLE_ITEMS if configured is None else configured
+    items, _invalid = parse_terminal_title_items_with_invalids(ids)
+    if not items:
+        return None
+
+    cwd = _runtime_cwd(app_runtime)
+    task_running = bool(
+        getattr(getattr(getattr(widget, "turn", None), "bottom_pane", None), "task_running", False)
+    )
+    status_kind = getattr(
+        getattr(getattr(widget, "streaming", None), "status_state", None),
+        "terminal_title_status_kind",
+        TerminalTitleStatusKind.Working,
+    )
+    status = run_state_status_text(status_kind, task_running=task_running)
+
+    status_items = {
+        TerminalTitleItem.STATUS: StatusLineItem.STATUS,
+        TerminalTitleItem.THREAD: StatusLineItem.THREAD_TITLE,
+        TerminalTitleItem.CONTEXT_REMAINING: StatusLineItem.CONTEXT_REMAINING,
+        TerminalTitleItem.CONTEXT_USED: StatusLineItem.CONTEXT_USED,
+        TerminalTitleItem.FIVE_HOUR_LIMIT: StatusLineItem.FIVE_HOUR_LIMIT,
+        TerminalTitleItem.WEEKLY_LIMIT: StatusLineItem.WEEKLY_LIMIT,
+        TerminalTitleItem.CODEX_VERSION: StatusLineItem.CODEX_VERSION,
+        TerminalTitleItem.USED_TOKENS: StatusLineItem.USED_TOKENS,
+        TerminalTitleItem.TOTAL_INPUT_TOKENS: StatusLineItem.TOTAL_INPUT_TOKENS,
+        TerminalTitleItem.TOTAL_OUTPUT_TOKENS: StatusLineItem.TOTAL_OUTPUT_TOKENS,
+        TerminalTitleItem.SESSION_ID: StatusLineItem.SESSION_ID,
+        TerminalTitleItem.FAST_MODE: StatusLineItem.FAST_MODE,
+        TerminalTitleItem.TASK_PROGRESS: StatusLineItem.TASK_PROGRESS,
+    }
+
+    def value_for(item: TerminalTitleItem) -> str | None:
+        if item is TerminalTitleItem.APP_NAME:
+            return "codex"
+        if item is TerminalTitleItem.PROJECT:
+            return cwd.name or str(cwd)
+        if item is TerminalTitleItem.CURRENT_DIR:
+            return truncate_terminal_title_part(_display_directory_for_path(cwd), 32)
+        if item is TerminalTitleItem.SPINNER:
+            animations = bool(getattr(getattr(widget, "config", None), "animations", True))
+            if not task_running or not animations:
+                return None
+            return terminal_title_spinner_frame_at(timedelta(seconds=time.monotonic()))
+        if item is TerminalTitleItem.GIT_BRANCH:
+            branch = getattr(widget, "status_line_branch", None)
+            return None if branch is None else truncate_terminal_title_part(str(branch), 32)
+        if item is TerminalTitleItem.MODEL:
+            return truncate_terminal_title_part(_runtime_display_model(app_runtime), 32)
+        if item is TerminalTitleItem.MODEL_WITH_REASONING:
+            return truncate_terminal_title_part(_runtime_model_with_reasoning(app_runtime), 32)
+        status_item = status_items.get(item)
+        if status_item is None:
+            return None
+        value = _runtime_status_line_value(app_runtime, status_item, status)
+        if value is None:
+            return None
+        max_chars = 48 if item is TerminalTitleItem.THREAD else 32
+        return truncate_terminal_title_part(str(value), max_chars)
+
+    previous: TerminalTitleItem | None = None
+    parts: list[str] = []
+    for item in items:
+        value = value_for(item)
+        if value is None:
+            continue
+        parts.append(item.separator_from_previous(previous) + value)
+        previous = item
+    title = "".join(parts)
+    return title or None
 
 
 def five_hour_status_window(
@@ -667,6 +770,7 @@ class TerminalStatusSurfaceWriter:
     check_resize: Callable[[], None] = lambda: None
     render_bottom_pane: Callable[[], None] = lambda: None
     terminal_title_requires_action: bool = False
+    managed_terminal_title: str | None = None
     animations_enabled: bool = True
     status_indicator: StatusIndicatorWidget | None = None
     status_indicator_visible: Callable[[], bool] = lambda: True
@@ -702,8 +806,24 @@ class TerminalStatusSurfaceWriter:
         self.terminal_title_requires_action = required
         if required:
             set_terminal_title(TERMINAL_TITLE_ACTION_REQUIRED_PREFIX, stdout=self.writer)
+        elif self.managed_terminal_title:
+            set_terminal_title(self.managed_terminal_title, stdout=self.writer)
         else:
             clear_terminal_title(stdout=self.writer)
+
+    def set_terminal_title_text(self, title: str | None) -> None:
+        """Cache and emit the normal managed title unless a modal overrides it."""
+
+        normalized = None if title is None or not str(title).strip() else str(title)
+        if normalized == self.managed_terminal_title:
+            return
+        self.managed_terminal_title = normalized
+        if self.terminal_title_requires_action:
+            return
+        if normalized is None:
+            clear_terminal_title(stdout=self.writer)
+        else:
+            set_terminal_title(normalized, stdout=self.writer)
 
     def start_turn(self, started_at: float) -> None:
         self.turn_started_at = float(started_at)
@@ -1167,6 +1287,7 @@ __all__ = [
     "parse_terminal_title_items_with_invalids",
     "permissions_display",
     "run_state_status_text",
+    "runtime_terminal_title_text",
     "run_terminal_live_status_action_plan",
     "run_terminal_live_status_hide",
     "run_terminal_live_status_show",

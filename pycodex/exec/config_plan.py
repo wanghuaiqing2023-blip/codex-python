@@ -195,6 +195,7 @@ class ExecConfigBootstrapPlan:
     request_permissions_tool_enabled: bool = False
     tui_status_line: tuple[str, ...] | None = None
     tui_status_line_use_colors: bool = True
+    tui_theme: str | None = None
     tui_terminal_title: tuple[str, ...] | None = None
     tui_keymap: Mapping[str, JsonValue] | None = None
     tui_alternate_screen: AltScreenMode = AltScreenMode.AUTO
@@ -262,6 +263,7 @@ class ExecConfigBootstrapPlan:
             "requestPermissionsToolEnabled": self.request_permissions_tool_enabled,
             "tuiStatusLine": list(self.tui_status_line) if self.tui_status_line is not None else None,
             "tuiStatusLineUseColors": self.tui_status_line_use_colors,
+            "tuiTheme": self.tui_theme,
             "tuiTerminalTitle": list(self.tui_terminal_title) if self.tui_terminal_title is not None else None,
             "tuiKeymap": copy.deepcopy(dict(self.tui_keymap)) if self.tui_keymap is not None else None,
             "tuiAlternateScreen": self.tui_alternate_screen.value,
@@ -1693,6 +1695,7 @@ def build_exec_config_bootstrap_plan(
         request_permissions_tool_enabled=features.enabled(Feature.REQUEST_PERMISSIONS_TOOL),
         tui_status_line=_tui_config_str_tuple(effective_config, "status_line"),
         tui_status_line_use_colors=_tui_config_bool(effective_config, "status_line_use_colors", True),
+        tui_theme=_tui_config_str(effective_config, "theme"),
         tui_terminal_title=_tui_config_str_tuple(effective_config, "terminal_title"),
         tui_keymap=_tui_config_keymap(effective_config),
         tui_alternate_screen=_tui_config_alt_screen_mode(effective_config),
@@ -1751,6 +1754,7 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         show_raw_agent_reasoning=bool(harness.show_raw_agent_reasoning),
         tui_status_line=plan.tui_status_line,
         tui_status_line_use_colors=plan.tui_status_line_use_colors,
+        tui_theme=plan.tui_theme,
         tui_terminal_title=plan.tui_terminal_title,
         tui_keymap=plan.tui_keymap,
         tui_alternate_screen=plan.tui_alternate_screen,
@@ -1882,6 +1886,11 @@ def _tui_config_str_tuple(config_toml: Mapping[str, JsonValue], key: str) -> tup
     if not isinstance(value, (list, tuple)):
         return None
     return tuple(str(item) for item in value)
+
+
+def _tui_config_str(config_toml: Mapping[str, JsonValue], key: str) -> str | None:
+    value = _tui_config_mapping(config_toml).get(key)
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def _tui_config_bool(config_toml: Mapping[str, JsonValue], key: str, default: bool) -> bool:
@@ -2225,6 +2234,7 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "tuiAlternateScreen": config.tui_alternate_screen.value,
         "tuiStatusLine": list(config.tui_status_line) if config.tui_status_line is not None else None,
         "tuiStatusLineUseColors": config.tui_status_line_use_colors,
+        "tuiTheme": config.tui_theme,
         "tuiTerminalTitle": list(config.tui_terminal_title) if config.tui_terminal_title is not None else None,
         "allowLoginShell": config.allow_login_shell,
         "execPermissionApprovalsEnabled": config.exec_permission_approvals_enabled,

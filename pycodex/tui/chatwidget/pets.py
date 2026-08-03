@@ -10,7 +10,7 @@ leaving real image loading/rendering as injectable dependency boundaries.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, List, Optional, Set
+from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
 from .._porting import RustTuiModule
 from ..pets import DEFAULT_PET_ID, DISABLED_PET_ID, PET_PICKER_VIEW_ID, PetPickerPreviewState
@@ -251,6 +251,97 @@ class ChatWidgetPetsModel:
         self.redraw_requests += 1
 
 
+@dataclass
+class TerminalPetsPickerController:
+    """Open bare ``/pets`` through the active bottom-pane picker framework."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from ..app_event import AppEvent
+        from ..bottom_pane.list_selection_view import (
+            SelectionItem,
+            SelectionViewParams,
+            SideContentWidth,
+        )
+        from ..pets.picker import build_pet_picker_params
+        from ..pets.preview import PetPickerPreviewState
+        from ..pets.image_protocol import detect_pet_image_support
+        from ..history_cell.notices import new_warning_event
+
+        thread_runtime = getattr(self.app_runtime, "active_thread_runtime", None)
+        config = getattr(thread_runtime, "session_config", None)
+        support = getattr(
+            getattr(self.app_runtime, "chat_widget", None),
+            "pet_image_support_override",
+            None,
+        ) or detect_pet_image_support()
+        unsupported_message = getattr(support, "unsupported_message", None)
+        warning = unsupported_message() if callable(unsupported_message) else None
+        if warning is not None:
+            self.app_runtime.insert_history_cell(new_warning_event(warning))
+            return None
+        codex_home = (
+            getattr(thread_runtime, "codex_home", None)
+            or getattr(config, "codex_home", None)
+            or getattr(self.app_runtime, "codex_home", None)
+        )
+        if codex_home is None:
+            raise RuntimeError("codex_home is required to open the pets picker")
+        params = build_pet_picker_params(
+            getattr(config, "tui_pet", None),
+            codex_home,
+            PetPickerPreviewState(),
+        )
+
+        def event_action(kind: str, payload: dict[str, str]) -> Callable[[Any], None]:
+            def send(events: Any) -> None:
+                events.append(AppEvent.of(kind, **payload))
+
+            return send
+
+        def preview(index: int, events: Any) -> None:
+            event = params.selection_changed_event(index)
+            if event is not None:
+                events.append(AppEvent.of(event.event, **event.payload))
+
+        return SelectionViewParams(
+            view_id=params.view_id,
+            title=params.title,
+            subtitle=params.subtitle,
+            footer_hint="enter select   esc cancel",
+            items=[
+                SelectionItem(
+                    name=item.name,
+                    description=item.description,
+                    is_current=item.is_current,
+                    dismiss_on_select=item.dismiss_on_select,
+                    search_value=item.search_value,
+                    actions=[
+                        event_action(action.event, action.payload)
+                        for action in item.actions
+                    ],
+                )
+                for item in params.items
+            ],
+            is_searchable=params.is_searchable,
+            search_placeholder=params.search_placeholder,
+            initial_selected_idx=params.initial_selected_idx,
+            side_content=params.side_content,
+            side_content_width=SideContentWidth.fixed(params.side_content_width[1]),
+            side_content_min_width=params.side_content_min_width,
+            stacked_side_content=object() if params.stacked_side_content else None,
+            preserve_side_content_bg=params.preserve_side_content_bg,
+            on_selection_changed=preview,
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> None:
+        dispatch = getattr(self.app_runtime, "handle_app_event", None)
+        if callable(dispatch):
+            for event in events:
+                dispatch(event)
+
+
 def load_ambient_pet(config: Any, frame_requester: Any, *, loader: Optional[Callable[..., Any]] = None) -> Optional[Any]:
     selected_pet = getattr(config, "tui_pet", None)
     if selected_pet is None or selected_pet == DISABLED_PET_ID:
@@ -322,6 +413,7 @@ __all__ = [
     "PetsConfig",
     "RUST_MODULE",
     "SelectionViewParamsPlan",
+    "TerminalPetsPickerController",
     "load_ambient_pet",
     "spawn_pet_load",
     "start_configured_pet_load_if_needed",

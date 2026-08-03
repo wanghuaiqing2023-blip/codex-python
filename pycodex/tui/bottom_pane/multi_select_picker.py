@@ -13,7 +13,10 @@ from typing import Any, Callable, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..keymap import RuntimeKeymap, primary_binding
+from ..ratatui_bridge import Color as RatatuiColor
 from ..ratatui_bridge import Rect
+from ..ratatui_bridge import Span as RatatuiSpan
+from ..ratatui_bridge import Style as RatatuiStyle
 from .popup_consts import MAX_POPUP_ROWS, key_binding_hint
 from .scroll_state import ScrollState
 from .selection_popup_common import (
@@ -34,6 +37,8 @@ ITEM_NAME_TRUNCATE_LEN = 21
 SEARCH_PLACEHOLDER = "Type to search"
 SEARCH_PROMPT_PREFIX = "> "
 SECTION_BREAK_ROW = "  -----------------------"
+SELECTED_ROW_PREFIX = "›"
+SURFACE_INSET = "  "
 
 
 class Direction(Enum):
@@ -136,7 +141,7 @@ class MultiSelectPicker:
                 continue
             item = self.items[actual_idx]
             visible_to_row.append(len(rows))
-            prefix = ">" if self.state.selected_idx == visible_idx else " "
+            prefix = SELECTED_ROW_PREFIX if self.state.selected_idx == visible_idx else " "
             marker = "x" if item.enabled else " "
             item_name = truncate_text(item.name, ITEM_NAME_TRUNCATE_LEN)
             rows.append(GenericDisplayRow(name="{} [{}] {}".format(prefix, marker, item_name), description=item.description))
@@ -268,22 +273,56 @@ class MultiSelectPicker:
         rows = self.build_rows()
         preview_height = 1 if self.preview_line is not None else 0
         subtitle_height = 1 if self.subtitle else 0
-        return 1 + subtitle_height + self.rows_height(rows) + 3 + 2 + 1 + preview_height
+        return 1 + subtitle_height + self.rows_height(rows) + 3 + 2 + preview_height
 
     def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
         """Project the Rust picker layout into the terminal live pane."""
 
-        lines = [TerminalPopupLine(self.title)]
+        lines = [
+            TerminalPopupLine(
+                f"{SURFACE_INSET}{self.title}",
+                spans=(
+                    RatatuiSpan.raw(SURFACE_INSET),
+                    RatatuiSpan.styled(self.title, RatatuiStyle.default().bold()),
+                ),
+            )
+        ]
         if self.subtitle:
-            lines.append(TerminalPopupLine(self.subtitle))
+            lines.append(
+                TerminalPopupLine(
+                    f"{SURFACE_INSET}{self.subtitle}",
+                    spans=(
+                        RatatuiSpan.raw(SURFACE_INSET),
+                        RatatuiSpan.styled(self.subtitle, RatatuiStyle.default().dim()),
+                    ),
+                )
+            )
         lines.extend(
             [
                 TerminalPopupLine(""),
-                TerminalPopupLine(SEARCH_PLACEHOLDER),
                 TerminalPopupLine(
-                    SEARCH_PROMPT_PREFIX
-                    if not self.search_query
-                    else f"{SEARCH_PROMPT_PREFIX}{self.search_query}"
+                    f"{SURFACE_INSET}{SEARCH_PLACEHOLDER}",
+                    spans=(
+                        RatatuiSpan.raw(SURFACE_INSET),
+                        RatatuiSpan.styled(SEARCH_PLACEHOLDER, RatatuiStyle.default().dim()),
+                    ),
+                ),
+                TerminalPopupLine(
+                    SURFACE_INSET
+                    + (
+                        SEARCH_PROMPT_PREFIX
+                        if not self.search_query
+                        else f"{SEARCH_PROMPT_PREFIX}{self.search_query}"
+                    ),
+                    spans=(
+                        RatatuiSpan.raw(SURFACE_INSET),
+                        RatatuiSpan.styled(
+                            SEARCH_PROMPT_PREFIX
+                            if not self.search_query
+                            else f"{SEARCH_PROMPT_PREFIX}{self.search_query}",
+                            RatatuiStyle.default().dim(),
+                        ),
+                    ),
                 ),
             ]
         )
@@ -299,17 +338,39 @@ class MultiSelectPicker:
             rows_height,
             "no matches",
         )
-        lines.extend(
-            TerminalPopupLine(
-                row.text,
-                row.text.lstrip().startswith(">"),
+        for row in row_buffer:
+            selected = row.text.lstrip().startswith(SELECTED_ROW_PREFIX)
+            spans = tuple(
+                RatatuiSpan.styled(
+                    span.text,
+                    RatatuiStyle.default().with_fg(RatatuiColor.Cyan).bold()
+                    if selected
+                    else RatatuiStyle.default()
+                    if "dim" not in span.style
+                    else RatatuiStyle.default().dim(),
+                )
+                for span in row.spans
             )
-            for row in row_buffer
-        )
+            lines.append(TerminalPopupLine(row.text, selected, spans))
 
         if self.preview_line is not None:
-            lines.append(TerminalPopupLine(_line_text(self.preview_line)))
-        lines.append(TerminalPopupLine(self.footer_hint))
+            lines.append(TerminalPopupLine(""))
+            preview = _line_text(self.preview_line)
+            lines.append(
+                TerminalPopupLine(
+                    f"{SURFACE_INSET}{preview}",
+                    spans=(RatatuiSpan.raw(SURFACE_INSET), RatatuiSpan.raw(preview)),
+                )
+            )
+        lines.append(
+            TerminalPopupLine(
+                f"{SURFACE_INSET}{self.footer_hint}",
+                spans=(
+                    RatatuiSpan.raw(SURFACE_INSET),
+                    RatatuiSpan.styled(self.footer_hint, RatatuiStyle.default().dim()),
+                ),
+            )
+        )
         return lines
 
     def render(self, area: Any = None, buf: Any = None) -> Dict[str, Any]:
@@ -547,7 +608,7 @@ def horizontal_list_keys_reorder_orderable_items() -> bool:
 def section_break_after_item_renders_separator_row() -> bool:
     picker = test_picker([item("theme-colors", orderable=False, section_break_after=True), item("model")])
     rows = picker.build_rows()
-    return [row.name for row in rows.rows] == ["> [ ] theme-colors", SECTION_BREAK_ROW, "  [ ] model"] and rows.state.selected_idx == 0
+    return [row.name for row in rows.rows] == ["› [ ] theme-colors", SECTION_BREAK_ROW, "  [ ] model"] and rows.state.selected_idx == 0
 
 
 def searchable_plain_j_updates_query_instead_of_navigating() -> bool:

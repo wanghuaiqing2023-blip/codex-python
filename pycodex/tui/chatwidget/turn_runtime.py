@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, List, Optional, Set, Tuple
+from typing import Any, Callable, List, Optional, Set
 
 from pycodex.protocol import ModeKind
 
@@ -21,6 +21,7 @@ from ..collaboration_modes import default_mode_mask
 from ..token_usage import TokenUsageInfo
 from .mcp_startup import MCP_STARTUP_MULTI_HEADER_PREFIX, MCP_STARTUP_SINGLE_HEADER_PREFIX
 from .plan_implementation import PLAN_IMPLEMENTATION_TITLE, selection_view_params
+from .transcript import TranscriptState
 from .rate_limits import (
     RateLimitErrorKind,
     app_server_rate_limit_error_kind,
@@ -151,27 +152,6 @@ class BottomPane:
         self.selection_views.append(params)
         if self.selection_view_sink is not None:
             self.selection_view_sink(params)
-
-
-@dataclass
-class TranscriptState:
-    saw_copy_source_this_turn: bool = False
-    saw_plan_item_this_turn: bool = False
-    saw_plan_update_this_turn: bool = False
-    latest_proposed_plan_markdown: Optional[str] = None
-    last_plan_progress: Optional[Tuple[int, int]] = None
-    needs_final_message_separator: bool = False
-    had_work_activity: bool = False
-    reset_turn_flags_count: int = 0
-
-    def reset_turn_flags(self) -> None:
-        self.saw_copy_source_this_turn = False
-        self.saw_plan_item_this_turn = False
-        self.saw_plan_update_this_turn = False
-        self.last_plan_progress = None
-        self.needs_final_message_separator = False
-        self.had_work_activity = False
-        self.reset_turn_flags_count += 1
 
 
 @dataclass
@@ -595,8 +575,8 @@ class SemanticTurnRuntime:
             self.unified_exec_wait_flushes += 1
 
     def record_agent_markdown(self, message: str) -> None:
-        setattr(self.transcript, "last_agent_markdown", message)
-        self.transcript.saw_copy_source_this_turn = True
+        if message:
+            self.transcript.record_agent_markdown(message)
 
     def refresh_pending_input_preview(self) -> None:
         self.pending_input_preview_refreshes += 1

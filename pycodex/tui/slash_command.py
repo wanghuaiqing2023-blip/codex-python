@@ -220,7 +220,6 @@ _ALIASES.update(
         "clean": SlashCommand.STOP,
         "pet": SlashCommand.PETS,
         "approve": SlashCommand.AUTO_REVIEW,
-        "multi-agents": SlashCommand.MULTI_AGENTS,
         "subagents": SlashCommand.MULTI_AGENTS,
     }
 )

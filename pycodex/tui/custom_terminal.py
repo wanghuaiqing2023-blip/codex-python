@@ -23,6 +23,7 @@ from .ratatui_bridge.buffer import Buffer as _BridgeBuffer
 from .ratatui_bridge.layout import Position as _BridgePosition
 from .ratatui_bridge.layout import Rect as _BridgeRect
 from .ratatui_bridge.text import Span as _BridgeSpan
+from .ratatui_bridge.text import Line as _BridgeLine
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -990,13 +991,16 @@ class AlternateScreenRenderer:
         self._buffer_state.reset()
         self.active = True
 
-    def render_lines(self, lines: Iterable[str], size: os.terminal_size) -> None:
+    def render_lines(self, lines: Iterable[object], size: os.terminal_size) -> None:
         width = max(0, int(size.columns))
         height = max(0, int(size.lines))
         area = _BridgeRect.new(0, 0, width, height)
         buffer = _BridgeBuffer.empty(area)
         for y, line in enumerate(tuple(lines)[:height]):
-            buffer.set_span(0, y, _BridgeSpan(str(line)), width)
+            if isinstance(line, _BridgeLine):
+                buffer.set_line(0, y, line, width)
+            else:
+                buffer.set_span(0, y, _BridgeSpan(str(line)), width)
         previous = self._buffer_state.previous
         full_redraw = live_viewport_requires_full_redraw(previous, buffer)
         if previous is not None and full_redraw:

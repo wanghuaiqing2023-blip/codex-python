@@ -553,12 +553,25 @@ def terminal_footer_projection(
 def terminal_idle_footer_right_text_from_runtime(app_runtime: Any) -> str:
     """Project the Rust footer's primary right-side indicator from runtime state."""
 
+    side_state = getattr(app_runtime, "side_ui_state", None)
+    side_context_label = getattr(side_state, "side_context_label", None)
+    if side_context_label:
+        return str(side_context_label)
     widget = getattr(app_runtime, "chat_widget", None)
     active_agent_label = getattr(widget, "active_agent_label", None)
-    if active_agent_label:
-        return str(active_agent_label)
     indicator = getattr(widget, "current_goal_status_indicator", None)
-    return goal_status_indicator_line(indicator) if indicator is not None else ""
+    primary = (
+        str(active_agent_label)
+        if active_agent_label
+        else goal_status_indicator_line(indicator) if indicator is not None else ""
+    )
+    ide_state = getattr(app_runtime, "ide_context_state", None)
+    ide_context_active = bool(
+        getattr(getattr(ide_state, "ide_context", None), "is_enabled", lambda: False)()
+    )
+    return " · ".join(
+        part for part in (primary, "IDE context" if ide_context_active else "") if part
+    )
 
 
 def terminal_idle_footer_data_from_runtime(
@@ -625,6 +638,12 @@ class TerminalIdleFooterTextProvider:
     app_runtime: Any
 
     def text(self) -> str:
+        override = getattr(self.app_runtime, "footer_hint_override", None)
+        if override:
+            return "  ".join(
+                f"{key} {description}".strip()
+                for key, description in override
+            )
         from ..chatwidget.status_surfaces import runtime_status_line_text
 
         return runtime_status_line_text(self.app_runtime)

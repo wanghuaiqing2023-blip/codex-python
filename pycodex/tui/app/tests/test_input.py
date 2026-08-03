@@ -13,6 +13,7 @@ from pycodex.tui.app.input import (
     reset_external_editor_state,
     apply_raw_output_mode,
     handle_key_event,
+    key_event_from_terminal_input,
     launch_external_editor,
     keymap_command_for_event,
     refresh_status_line,
@@ -140,6 +141,17 @@ def test_keymap_command_for_event_uses_runtime_app_bindings() -> None:
     assert keymap_command_for_event(keymap, KeyEvent("l", modifiers=("control",))) == "clear_terminal"
     assert keymap_command_for_event(keymap, KeyEvent("o", modifiers=("control",))) == "copy"
     assert keymap_command_for_event(keymap, KeyEvent("t", modifiers=("control",))) == "open_transcript"
+
+
+def test_terminal_input_event_translation_is_owned_by_app_input() -> None:
+    assert key_event_from_terminal_input("text", "x") == KeyEvent("x")
+    assert key_event_from_terminal_input("ctrl_g") == KeyEvent(
+        "g",
+        modifiers=("control",),
+    )
+    assert key_event_from_terminal_input("escape") == KeyEvent("esc")
+    assert key_event_from_terminal_input("page_up") == KeyEvent("pageup")
+    assert key_event_from_terminal_input("paste", "many") is None
 
 
 def test_enter_confirms_primed_backtrack_only_with_selection_and_empty_composer():

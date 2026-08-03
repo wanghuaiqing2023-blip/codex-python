@@ -15,6 +15,11 @@ import textwrap
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
+from ..ratatui_bridge import Buffer as RatatuiBuffer
+from ..ratatui_bridge import Line as RatatuiLine
+from ..ratatui_bridge import Rect as RatatuiRect
+from ..ratatui_bridge import Span as RatatuiSpan
+from ..ratatui_bridge import Style as RatatuiStyle
 from .bottom_pane_view import ViewCompletion
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
@@ -24,6 +29,7 @@ from .selection_popup_common import (
     GenericDisplayRow,
     TerminalPopupLine,
     render_terminal_popup_lines,
+    terminal_popup_line_style,
 )
 from .selection_tabs import SelectionTab, StyledSpan
 
@@ -190,6 +196,40 @@ def coerce_selection_view_params(value: Any) -> SelectionViewParams:
             (candidate for candidate in SelectionRowDisplay if candidate.value.replace("_", "").lower() == normalized),
             SelectionRowDisplay.WRAPPED,
         )
+    raw_side_width = field("side_content_width", SideContentWidth.fixed(32))
+    if not isinstance(raw_side_width, SideContentWidth):
+        normalized_side_width = str(raw_side_width).strip().lower()
+        if normalized_side_width == "half":
+            raw_side_width = SideContentWidth.half()
+        else:
+            try:
+                raw_side_width = SideContentWidth.fixed(int(raw_side_width))
+            except (TypeError, ValueError):
+                raw_side_width = SideContentWidth.fixed(32)
+    raw_on_selection_changed = field("on_selection_changed")
+    on_selection_changed = raw_on_selection_changed
+    if callable(raw_on_selection_changed):
+        def adapted_selection_changed(index: int, events: Any) -> None:
+            try:
+                result = raw_on_selection_changed(index, events)
+            except TypeError:
+                result = raw_on_selection_changed(index)
+            if result is not None and hasattr(events, "append"):
+                events.append(result)
+
+        on_selection_changed = adapted_selection_changed
+    raw_on_cancel = field("on_cancel")
+    on_cancel = raw_on_cancel
+    if callable(raw_on_cancel):
+        def adapted_cancel(events: Any) -> None:
+            try:
+                result = raw_on_cancel(events)
+            except TypeError:
+                result = raw_on_cancel()
+            if result is not None and hasattr(events, "append"):
+                events.append(result)
+
+        on_cancel = adapted_cancel
 
     return SelectionViewParams(
         view_id=field("view_id"),
@@ -208,6 +248,13 @@ def coerce_selection_view_params(value: Any) -> SelectionViewParams:
         name_column_width=field("name_column_width"),
         header=field("header"),
         initial_selected_idx=field("initial_selected_idx"),
+        side_content=field("side_content"),
+        side_content_width=raw_side_width,
+        side_content_min_width=max(int(field("side_content_min_width", 0) or 0), 0),
+        stacked_side_content=field("stacked_side_content"),
+        preserve_side_content_bg=bool(field("preserve_side_content_bg", False)),
+        on_selection_changed=on_selection_changed,
+        on_cancel=on_cancel,
     )
 
 
@@ -413,11 +460,19 @@ class ListSelectionView:
                 prefix = " " * (row_number_width + 2)
             selected = self.state.selected_idx == visible_idx
             cursor = "> " if selected else "  "
-            marker = "* " if item.is_current else ("d " if item.is_default else "  ")
+            if self.is_searchable:
+                # Rust reserves number shortcuts for search input and renders
+                # only the selection cursor in searchable views.
+                prefix = ""
+                marker = " (current)" if item.is_current else (" (default)" if item.is_default else "")
+                name = f"{cursor}{prefix}{item.name}{marker}"
+            else:
+                marker = "* " if item.is_current else ("d " if item.is_default else "  ")
+                name = f"{cursor}{prefix}{marker}{item.name}"
             desc = item.selected_description if selected and item.selected_description is not None else item.description
             rows.append(
                 GenericDisplayRow(
-                    name=f"{cursor}{prefix}{marker}{item.name}",
+                    name=name,
                     name_prefix_spans=list(item.name_prefix_spans),
                     display_shortcut=item.display_shortcut,
                     description=desc,
@@ -577,10 +632,71 @@ class ListSelectionView:
         header, row construction, visible windowing, and selected-row styling.
         """
 
+        # The terminal composer reserves one cursor column before it hands the
+        # width to active views. Rust's side panel is laid out against the full
+        # bottom-pane width, so restore that column only for side-content views.
+        outer_width = max(1, int(width) + (1 if self.side_content is not None else 0))
+        content_width = max(outer_width - MENU_SURFACE_HORIZONTAL_INSET, 1)
+        widths = side_by_side_layout_widths(
+            content_width,
+            self.side_content_width,
+            self.side_content_min_width,
+        )
+        if widths is not None and self.side_content is not None:
+            list_width, side_width = widths
+            primary = self._primary_terminal_lines(list_width)
+            footer_height = len(
+                _selection_footer_lines(
+                    self.footer_note,
+                    self.active_footer_hint(),
+                    width=max(1, list_width),
+                )
+            )
+            if footer_height:
+                footer_height += 1
+            preview = _render_side_content_lines(
+                self.side_content,
+                width=side_width,
+                height=max(len(primary) - footer_height, 1),
+            )
+            joined = _join_popup_columns(primary, preview, list_width, side_width)
+            return [_inset_popup_line(line, MENU_SURFACE_HORIZONTAL_INSET // 2) for line in joined]
+
+        primary = self._primary_terminal_lines(content_width)
+        stacked = self.stacked_side_content()
+        if stacked is not None:
+            desired = getattr(stacked, "desired_height", None)
+            height = int(desired(content_width)) if callable(desired) else 0
+            if height > 0:
+                rendered = _render_side_content_lines(
+                    stacked,
+                    width=content_width,
+                    height=height,
+                )
+                if any(line.text.rstrip() for line in rendered):
+                    primary.append(TerminalPopupLine("", False))
+                    primary.extend(rendered)
+            else:
+                marker = _renderable_marker(stacked)
+                if marker:
+                    primary.extend((TerminalPopupLine("", False), TerminalPopupLine(marker, False)))
+        return primary
+
+    def _primary_terminal_lines(self, width: int) -> List[TerminalPopupLine]:
         header_lines = _selection_header_lines(self.active_header())
         lines = [TerminalPopupLine(header_line, False) for header_line in header_lines]
         if header_lines:
             lines.append(TerminalPopupLine("", False))
+        if self.is_searchable:
+            search_text = self.search_query or self.search_placeholder or ""
+            search_style = RatatuiStyle.default() if self.search_query else RatatuiStyle.default().dim()
+            lines.append(
+                TerminalPopupLine(
+                    search_text,
+                    False,
+                    (RatatuiSpan.styled(search_text, search_style),),
+                )
+            )
         lines.extend(
             render_terminal_popup_lines(
                 self.build_rows(),
@@ -689,6 +805,8 @@ def _handle_key_event(view: ListSelectionView, key_event: Any) -> None:
         view.switch_tab((view.active_tab_idx or 0) + 1)
     elif key == "backtab" and view.tabs:
         view.switch_tab((view.active_tab_idx or 0) - 1)
+    elif key == "backspace" and view.is_searchable:
+        view.set_search_query(view.search_query[:-1])
     elif key == "space" and view.is_searchable:
         view.set_search_query(view.search_query + " ")
     elif key == "space":
@@ -764,7 +882,7 @@ def on_ctrl_c(view: ListSelectionView) -> None:
 
 
 def desired_height(view: ListSelectionView, width: int = 80) -> int:
-    return max(1, len(render_lines_with_width(view, width).splitlines()))
+    return max(1, len(view.terminal_lines(width=max(1, width))))
 
 
 def render(view: ListSelectionView, area: Any = None, buf: Any = None) -> List[str]:
@@ -786,6 +904,98 @@ class StyledMarkerRenderable:
     marker: str = ""
     height: int = 1
     style: Any = None
+
+
+def _buffer_row_spans(
+    buffer: RatatuiBuffer,
+    y: int,
+    width: int,
+) -> Tuple[RatatuiSpan, ...]:
+    spans: list[RatatuiSpan] = []
+    current_style: RatatuiStyle | None = None
+    current_text: list[str] = []
+    for x in range(max(int(width), 0)):
+        cell = buffer.cell(buffer.area.x + x, buffer.area.y + y)
+        if cell.skip:
+            continue
+        if current_style is None or cell.style == current_style:
+            current_style = cell.style
+            current_text.append(cell.symbol)
+            continue
+        spans.append(RatatuiSpan.styled("".join(current_text), current_style))
+        current_style = cell.style
+        current_text = [cell.symbol]
+    if current_text and current_style is not None:
+        spans.append(RatatuiSpan.styled("".join(current_text), current_style))
+    return tuple(spans)
+
+
+def _render_side_content_lines(
+    renderable: Any,
+    *,
+    width: int,
+    height: int,
+) -> List[TerminalPopupLine]:
+    width = max(int(width), 1)
+    height = max(int(height), 1)
+    buffer = RatatuiBuffer.empty(RatatuiRect(0, 0, width, height))
+    render_method = getattr(renderable, "render", None)
+    if callable(render_method):
+        render_method(buffer.area, buffer)
+        result: list[TerminalPopupLine] = []
+        for y in range(height):
+            spans = _buffer_row_spans(buffer, y, width)
+            text = "".join(span.content for span in spans)
+            result.append(TerminalPopupLine(text, False, spans))
+        return result
+    marker = _renderable_marker(renderable)
+    return [TerminalPopupLine(marker, False)] if marker else []
+
+
+def _popup_line_spans(line: TerminalPopupLine, width: int) -> Tuple[RatatuiSpan, ...]:
+    row_style = terminal_popup_line_style(selected=line.selected)
+    source = line.spans or (RatatuiSpan.raw(line.text),)
+    result: list[RatatuiSpan] = []
+    used = 0
+    for span in source:
+        if used >= width:
+            break
+        text = span.content[: max(width - used, 0)]
+        if not text:
+            continue
+        style = row_style.patch(span.style) if line.selected else span.style
+        result.append(RatatuiSpan.styled(text, style))
+        used += len(text)
+    if used < width:
+        result.append(RatatuiSpan.styled(" " * (width - used), row_style))
+    return tuple(result)
+
+
+def _inset_popup_line(line: TerminalPopupLine, inset: int) -> TerminalPopupLine:
+    if inset <= 0:
+        return line
+    prefix = RatatuiSpan.raw(" " * inset)
+    spans = (prefix, *(line.spans or (RatatuiSpan.raw(line.text),)))
+    return TerminalPopupLine(" " * inset + line.text, line.selected, tuple(spans))
+
+
+def _join_popup_columns(
+    primary: List[TerminalPopupLine],
+    side: List[TerminalPopupLine],
+    list_width: int,
+    side_width: int,
+) -> List[TerminalPopupLine]:
+    rows: list[TerminalPopupLine] = []
+    height = max(len(primary), len(side), 1)
+    for index in range(height):
+        left = primary[index] if index < len(primary) else TerminalPopupLine("")
+        right = side[index] if index < len(side) else TerminalPopupLine("")
+        spans = list(_popup_line_spans(left, list_width))
+        spans.append(RatatuiSpan.raw(" " * SIDE_CONTENT_GAP))
+        spans.extend(_popup_line_spans(right, side_width))
+        text = "".join(span.content for span in spans)
+        rows.append(TerminalPopupLine(text, False, tuple(spans)))
+    return rows
 
 
 def new_view(params: SelectionViewParams, app_event_tx: Any = None, keymap: Any = None) -> ListSelectionView:

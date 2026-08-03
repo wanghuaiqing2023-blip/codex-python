@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
 from .._porting import RustTuiModule
+from ..status.rate_limits import (
+    RateLimitSnapshotDisplay,
+    rate_limit_snapshot_display_for_limit,
+)
 
 RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::rate_limits", source="codex/codex-rs/tui/src/chatwidget/rate_limits.rs")
 
@@ -78,6 +83,35 @@ class RateLimitErrorKind(Enum):
     SERVER_OVERLOADED = "server_overloaded"
     USAGE_LIMIT = "usage_limit"
     GENERIC = "generic"
+
+
+def rate_limit_snapshot_cache_entry(
+    snapshot: Any,
+    *,
+    captured_at: datetime | None = None,
+    previous: RateLimitSnapshotDisplay | None = None,
+) -> tuple[str, RateLimitSnapshotDisplay]:
+    """Convert a protocol snapshot at the ChatWidget receipt boundary.
+
+    Rust ``ChatWidget::on_rate_limit_snapshot`` stores only
+    ``RateLimitSnapshotDisplay`` values.  In particular, ``captured_at`` is the
+    notification receipt time, not the later time at which ``/status`` happens
+    to render the cache.
+    """
+
+    if isinstance(snapshot, RateLimitSnapshotDisplay):
+        return snapshot.limit_name, snapshot
+
+    limit_id = _get(snapshot, "limit_id") or "codex"
+    limit_label = _get(snapshot, "limit_name") or limit_id
+    display = rate_limit_snapshot_display_for_limit(
+        snapshot,
+        str(limit_label),
+        captured_at or datetime.now().astimezone(),
+    )
+    if display.credits is None and previous is not None and previous.credits is not None:
+        display = replace(display, credits=previous.credits)
+    return str(limit_id), display
 
 
 def limit_label_for_window(window_minutes: int | None, is_secondary: bool) -> str:
@@ -187,4 +221,5 @@ __all__ = [
     "is_app_server_cyber_policy_error",
     "is_approximate_window",
     "limit_label_for_window",
+    "rate_limit_snapshot_cache_entry",
 ]

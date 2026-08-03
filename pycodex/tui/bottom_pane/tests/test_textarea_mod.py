@@ -96,3 +96,13 @@ def test_vim_mode_public_state_contracts():
     assert textarea.should_handle_vim_insert_escape("esc")
     textarea.handle_vim_insert("esc")
     assert textarea.vim_mode is VimMode.Normal
+
+
+def test_vim_word_forward_moves_to_the_next_word_start():
+    # Rust TextArea::beginning_of_next_word moves across the entire current
+    # word before skipping whitespace.
+    textarea = TextArea.new()
+    textarea.set_text_clearing_elements("alpha beta gamma")
+    textarea.set_cursor(0)
+
+    assert textarea.beginning_of_next_word() == 6

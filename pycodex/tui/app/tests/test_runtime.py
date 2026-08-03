@@ -92,6 +92,7 @@ from pycodex.tui.app.thread_events import ThreadBufferedEvent, ThreadEventSnapsh
 from pycodex.tui.app.pending_interactive_replay import ServerRequest as ReplayServerRequest
 from pycodex.login.auth.storage import AuthDotJson
 from pycodex.tui.app.agent_navigation import AgentNavigationDirection
+from pycodex.tui.app_backtrack import user_cell
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.app_event import AppEvent, PermissionProfileSelection, RateLimitRefreshOrigin, ThreadGoalSetMode
 from pycodex.tui.bottom_pane.footer import run_terminal_idle_footer_text_from_runtime
@@ -219,6 +220,34 @@ def test_status_line_setup_persists_and_refreshes_live_runtime(tmp_path: Path) -
         "current-dir",
     ]
     assert saved["tui"]["status_line_use_colors"] is False
+
+
+def test_syntax_theme_selection_persists_and_refreshes_live_runtime(tmp_path: Path) -> None:
+    # Rust source: codex-tui/src/app/event_dispatch.rs
+    # SyntaxThemeSelected writes tui.theme and refreshes both Config copies.
+    from pycodex.core.config.edit import read_toml_mapping
+    from pycodex.tui.render.highlight import configured_theme_name, set_theme_override
+
+    original_theme = configured_theme_name()
+    active = ExecFunctionActiveThreadRuntime(lambda _prompt: 0)
+    active.session_config = SimpleNamespace(
+        codex_home=tmp_path,
+        config_layer_stack=None,
+        tui_theme="catppuccin-mocha",
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active)
+
+    try:
+        plan = runtime.handle_app_event(AppEvent.syntax_theme_selected("nord"))
+
+        assert plan.action == "persist_syntax_theme"
+        assert active.session_config.tui_theme == "nord"
+        assert runtime.chat_widget.config.tui_theme == "nord"
+        assert configured_theme_name() == "nord"
+        saved = read_toml_mapping(tmp_path / "config.toml")
+        assert saved["tui"]["theme"] == "nord"
+    finally:
+        set_theme_override(original_theme)
 
 
 def test_startup_sync_projects_status_line_config_into_chatwidget() -> None:
@@ -2768,12 +2797,15 @@ def test_tui_app_runtime_diff_result_completes_chatwidget_diff_cell() -> None:
     #   completing that diff cell through ChatWidget::on_diff_complete.
     runtime = TuiAppRuntime(active_thread_runtime=SimpleNamespace())
     runtime.chat_widget.add_diff_in_progress()
+    overlays = []
+    runtime.bind_diff_overlay_sink(overlays.append)
 
     plan = runtime.handle_app_event(AppEvent.diff_result("diff --git a/a b/a\n"))
 
     assert plan.action == "diff_result"
     assert runtime.chat_widget.active_cell is None
     assert runtime.chat_widget.history == []
+    assert overlays == ["diff --git a/a b/a\n"]
     assert runtime.chat_widget.turn.redraw_requests > 0
 
 
@@ -3450,6 +3482,32 @@ def test_terminal_prompt_uses_input_submission_user_input_shape() -> None:
     assert type(op.payload["items"][0]).__name__ == "UserInput"
     assert user_turn_prompt(op) == "hello from terminal"
     assert tuple(item.text for item in user_inputs_for_app_command(op)) == ("hello from terminal",)
+
+
+def test_tui_app_runtime_injects_enabled_ide_context_before_user_turn() -> None:
+    runtime = TuiAppRuntime(
+        ExecFunctionActiveThreadRuntime(lambda _prompt: "ok"),
+        cwd=Path("C:/repo"),
+    )
+    runtime.ide_context_state.deps.fetch_ide_context = lambda _cwd: {
+        "active_file": {
+            "descriptor": {"label": "lib.py", "path": "src/lib.py"},
+            "selection": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 0, "character": 0},
+            },
+            "active_selection_content": "",
+            "selections": [],
+        },
+        "open_tabs": [],
+    }
+    runtime.ide_context_state.ide_context.enable()
+
+    op = runtime.user_turn_command("inspect this")
+
+    assert user_turn_prompt(op).startswith("# Context from my IDE setup:")
+    assert user_turn_prompt(op).endswith("inspect this")
+    assert runtime.chat_widget.ide_context_active is True
 
 
 def test_tui_app_runtime_accepts_response_started_without_text() -> None:
@@ -5613,3 +5671,50 @@ def test_backtrack_escape_without_previous_message_uses_app_backtrack_chain() ->
     ) == "no_target"
     assert len(history) == 1
     assert "No previous message to edit." in str(history[0])
+
+
+def test_backtrack_escape_projects_and_clears_rust_footer_hint() -> None:
+    """Rust app_backtrack drives ChatWidget's EscHint footer lifecycle."""
+
+    app = TuiAppRuntime(ExecFunctionActiveThreadRuntime(lambda _prompt: 0))
+    hints: list[bool] = []
+    app.bind_backtrack_hint_sink(hints.append)
+    transcript = [user_cell("hello")]
+
+    assert app.handle_backtrack_escape(
+        composer_is_empty=True,
+        overlay_open=False,
+        transcript_cells=transcript,
+    ) == "prime"
+    assert hints == [True]
+
+    assert app.clear_primed_backtrack_for_non_escape_key(
+        SimpleNamespace(code="char", kind="press")
+    ) is True
+    assert hints == [True, False]
+
+    assert app.handle_backtrack_escape(
+        composer_is_empty=True,
+        overlay_open=False,
+        transcript_cells=transcript,
+    ) == "prime"
+    assert app.handle_backtrack_escape(
+        composer_is_empty=True,
+        overlay_open=False,
+        transcript_cells=transcript,
+    ) == "open_preview"
+    assert hints[-2:] == [True, False]
+
+
+def test_apply_raw_output_mode_immediately_requests_transcript_reflow() -> None:
+    """Rust app::input::apply_raw_output_mode redraws retained history now."""
+
+    app = TuiAppRuntime(ExecFunctionActiveThreadRuntime(lambda _prompt: 0))
+    reflows: list[bool] = []
+    app.bind_raw_output_reflow_sink(reflows.append)
+
+    app.apply_raw_output_mode(True)
+    app.apply_raw_output_mode(False)
+
+    assert reflows == [True, False]
+    assert app.chat_widget.raw_mode is False

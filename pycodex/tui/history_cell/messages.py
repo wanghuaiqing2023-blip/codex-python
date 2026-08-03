@@ -16,6 +16,7 @@ from ..terminal_hyperlinks import (
     annotate_web_urls,
     plain_hyperlink_lines,
     prefix_hyperlink_lines,
+    remap_wrapped_line,
     visible_lines,
 )
 from .base import adaptive_wrap_lines, plain_lines
@@ -33,6 +34,26 @@ SUMMARY_STYLE = "dim italic"
 USER_PROMPT_PREFIX = "› "
 ASSISTANT_PREFIX = "• "
 ASSISTANT_CONTINUATION_PREFIX = "  "
+
+
+def _wrap_prefixed_hyperlink_lines(
+    lines: Iterable[HyperlinkLine],
+    width: int,
+    initial_prefix: Span | str,
+    subsequent_prefix: Span | str,
+) -> list[HyperlinkLine]:
+    source_lines = list(lines)
+    out: list[HyperlinkLine] = []
+    for index, source in enumerate(source_lines):
+        prefix = initial_prefix if index == 0 else subsequent_prefix
+        wrapped = adaptive_wrap_lines(
+            [source.line],
+            max(1, int(width)),
+            prefix,
+            subsequent_prefix,
+        )
+        out.extend(remap_wrapped_line(source, wrapped))
+    return out
 
 
 @dataclass(frozen=True)
@@ -270,10 +291,15 @@ class AgentMessageCell:
     def display_lines(self, width: int) -> list[Line]:
         return visible_lines(self.display_hyperlink_lines(width))
 
-    def display_hyperlink_lines(self, _width: int) -> list[HyperlinkLine]:
-        return prefix_hyperlink_lines(
+    def display_hyperlink_lines(self, width: int) -> list[HyperlinkLine]:
+        return _wrap_prefixed_hyperlink_lines(
             self.lines,
-            ASSISTANT_PREFIX if self.is_first_line else ASSISTANT_CONTINUATION_PREFIX,
+            width,
+            (
+                Span(ASSISTANT_PREFIX, "dim")
+                if self.is_first_line
+                else ASSISTANT_CONTINUATION_PREFIX
+            ),
             ASSISTANT_CONTINUATION_PREFIX,
         )
 
@@ -316,7 +342,7 @@ class AgentMarkdownCell:
         )
         return prefix_hyperlink_lines(
             rendered,
-            ASSISTANT_PREFIX,
+            Span(ASSISTANT_PREFIX, "dim"),
             ASSISTANT_CONTINUATION_PREFIX,
         )
 
@@ -341,10 +367,15 @@ class StreamingAgentTailCell:
     def display_lines(self, width: int) -> list[Line]:
         return visible_lines(self.display_hyperlink_lines(width))
 
-    def display_hyperlink_lines(self, _width: int) -> list[HyperlinkLine]:
-        return prefix_hyperlink_lines(
+    def display_hyperlink_lines(self, width: int) -> list[HyperlinkLine]:
+        return _wrap_prefixed_hyperlink_lines(
             self.lines,
-            ASSISTANT_PREFIX if self.is_first_line else ASSISTANT_CONTINUATION_PREFIX,
+            width,
+            (
+                Span(ASSISTANT_PREFIX, "dim")
+                if self.is_first_line
+                else ASSISTANT_CONTINUATION_PREFIX
+            ),
             ASSISTANT_CONTINUATION_PREFIX,
         )
 

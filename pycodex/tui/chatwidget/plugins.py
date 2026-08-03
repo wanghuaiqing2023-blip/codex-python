@@ -699,11 +699,49 @@ def on_plugin_uninstall_loaded(widget: Any, cwd: str | Path, plugin_display_name
 
 def plugins_loading_popup_params() -> SelectionViewParams:
     return SelectionViewParams(
-        subtitle="Loading plugins",
+        subtitle="Loading available plugins...",
         loading_text="Loading plugins...",
-        items=(SelectionItem(name="Loading plugins...", is_disabled=True),),
+        items=(
+            SelectionItem(
+                name="Loading plugins...",
+                description="This updates when the marketplace list is ready.",
+                is_disabled=True,
+            ),
+        ),
         footer_hint=plugins_popup_hint_line(False, False),
     )
+
+
+@dataclass
+class TerminalPluginsController:
+    """Run ``/plugins`` through the Rust-owned feature guard and loading view."""
+
+    app_runtime: Any
+
+    def run(self) -> Any:
+        from pycodex.features import Feature
+
+        from ..app_event import AppEvent as TuiAppEvent
+        from ..bottom_pane.list_selection_view import coerce_selection_view_params
+
+        config = getattr(
+            getattr(self.app_runtime, "active_thread_runtime", None),
+            "session_config",
+            None,
+        )
+        features = getattr(config, "features", None)
+        enabled = getattr(features, "enabled", None)
+        if not (callable(enabled) and enabled(Feature.PLUGINS)):
+            self.app_runtime.insert_info_history_message(
+                "Plugins are disabled.",
+                "Enable the plugins feature to use /plugins.",
+            )
+            return None
+
+        self.app_runtime.handle_app_event(
+            TuiAppEvent.of("FetchPluginsList", cwd=getattr(config, "cwd", Path.cwd()))
+        )
+        return coerce_selection_view_params(plugins_loading_popup_params())
 
 
 def marketplace_add_loading_popup_params() -> SelectionViewParams:
@@ -1119,6 +1157,7 @@ __all__ = [
     "PluginSummary",
     "PluginsCacheKind",
     "PluginsCacheState",
+    "TerminalPluginsController",
     "RUST_MODULE",
     "add_plugins_output",
     "advance_plugin_install_auth_flow",

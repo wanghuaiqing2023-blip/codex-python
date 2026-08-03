@@ -12,8 +12,11 @@ from enum import Enum
 from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..app_event import AppEvent
+from .bottom_pane_view import BottomPaneViewDefaults
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
+from .selection_popup_common import TerminalPopupLine
 
 
 RUST_MODULE = RustTuiModule(
@@ -81,7 +84,7 @@ class RenderedMemoriesSettings:
     desired_height: int
 
 
-class MemoriesSettingsView:
+class MemoriesSettingsView(BottomPaneViewDefaults):
     """State machine for the memories settings popup."""
 
     def __init__(
@@ -118,7 +121,7 @@ class MemoriesSettingsView:
         self.app_event_tx = app_event_tx
         self.docs_link = MEMORIES_DOC_URL
         self.keymap = keymap
-        self.emitted_events: List[dict] = []
+        self.emitted_events: List[AppEvent] = []
 
     @classmethod
     def new(
@@ -206,7 +209,10 @@ class MemoriesSettingsView:
             return
         state = self.active_state()
         current = 0 if state.selected_idx is None else state.selected_idx
-        state.selected_idx = max(0, min(visible - 1, current + delta))
+        if abs(delta) == 1:
+            state.selected_idx = (current + delta) % visible
+        else:
+            state.selected_idx = max(0, min(visible - 1, current + delta))
 
     def toggle_selected(self) -> None:
         if self.reset_confirmation is not None:
@@ -283,7 +289,7 @@ class MemoriesSettingsView:
         if self.reset_confirmation is not None:
             selected = self.reset_confirmation.selected_idx
             if selected == 0:
-                self._emit({"type": "ResetMemories"})
+                self._emit(AppEvent("ResetMemories"))
                 self.complete = True
             else:
                 self.close_reset_confirmation()
@@ -297,11 +303,13 @@ class MemoriesSettingsView:
                 return
 
         self._emit(
-            {
-                "type": "UpdateMemorySettings",
-                "use_memories": self.current_setting(MemoriesSetting.USE),
-                "generate_memories": self.current_setting(MemoriesSetting.GENERATE),
-            }
+            AppEvent(
+                "UpdateMemorySettings",
+                {
+                    "use_memories": self.current_setting(MemoriesSetting.USE),
+                    "generate_memories": self.current_setting(MemoriesSetting.GENERATE),
+                },
+            )
         )
         self.complete = True
 
@@ -311,7 +319,7 @@ class MemoriesSettingsView:
         else:
             self.complete = True
 
-    def _emit(self, event: dict) -> None:
+    def _emit(self, event: AppEvent) -> None:
         self.emitted_events.append(event)
         sender = self.app_event_tx
         if sender is None:
@@ -349,6 +357,13 @@ class MemoriesSettingsView:
             lines.append(rendered.docs_link)
         lines.append(rendered.footer_hint)
         return lines
+
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        lines = self.render_lines(width=max(1, int(width)))
+        return [
+            TerminalPopupLine(line, index == 0 or line.startswith("> "))
+            for index, line in enumerate(lines)
+        ]
 
     def _clip_rows(self, rows: Iterable[str], width: int) -> Iterable[str]:
         for row in rows:

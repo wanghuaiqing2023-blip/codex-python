@@ -1,6 +1,8 @@
 # Rust owner: codex-tui::chatwidget::slash_dispatch.
+from pathlib import Path
 from types import SimpleNamespace
 
+from pycodex.tui.history_cell.base import line_text
 from pycodex.tui.chatwidget.slash_dispatch import (
     ByteRange,
     GOAL_USAGE,
@@ -18,6 +20,7 @@ from pycodex.tui.chatwidget.slash_dispatch import (
     TerminalPromptDispatcher,
     TerminalPromptDispatchResult,
     TerminalSlashCommandEffectDispatcher,
+    TerminalSlashCommandViewDispatchResult,
     TerminalSlashCommandViewDispatcher,
     TextElement,
     ensure_side_command_allowed_outside_review,
@@ -110,6 +113,44 @@ def test_terminal_slash_command_view_dispatcher_routes_model_view_to_registered_
     assert handler.events == [("selected",)]
 
 
+def test_registered_view_command_can_handle_without_opening_a_view() -> None:
+    # Rust chatwidget::slash_dispatch treats owner-produced empty states as the
+    # completed command effect. It must not invoke a fallback effect dispatcher.
+    class EmptyStateHandler:
+        def __init__(self) -> None:
+            self.opened = 0
+
+        def open_view(self) -> None:
+            self.opened += 1
+
+        def handle_events(self, _events: tuple[object, ...]) -> None:
+            return None
+
+    handler = EmptyStateHandler()
+    dispatcher = TerminalSlashCommandViewDispatcher(
+        {SlashCommand.AUTO_REVIEW: handler}
+    )
+    fallbacks: list[SlashCommand] = []
+
+    result = run_terminal_prompt_dispatch(
+        InputResult.Command(SlashCommand.AUTO_REVIEW),
+        run_local_command=lambda _prompt: False,
+        open_command_view=dispatcher.dispatch_command_view,
+        dispatch_command=lambda command, _args: (
+            fallbacks.append(command)
+            or TerminalPromptDispatchResult("handled", command=command)
+        ),
+    )
+
+    assert result.action == "handled"
+    assert result.command is SlashCommand.AUTO_REVIEW
+    assert handler.opened == 1
+    assert fallbacks == []
+    assert dispatcher.dispatch_command_view("unknown") == (
+        TerminalSlashCommandViewDispatchResult(False)
+    )
+
+
 def test_terminal_slash_command_view_dispatcher_builds_runtime_model_view_owner() -> None:
     # Rust owner: chatwidget::slash_dispatch owns the command-to-view registry,
     # while chatwidget::model_popups owns the concrete /model picker session.
@@ -138,6 +179,24 @@ def test_terminal_slash_command_view_dispatcher_builds_runtime_model_view_owner(
     assert [item.name for item in view.items] == ["gpt-5.4"]
 
 
+def test_runtime_view_dispatcher_routes_bare_rename_to_interaction_prompt() -> None:
+    widget = ChatWidgetProtocolRuntime()
+    widget.thread_name = "Current title"
+    app_runtime = SimpleNamespace(
+        chat_widget=widget,
+        active_thread_runtime=SimpleNamespace(),
+        handle_app_event=lambda _event: None,
+    )
+
+    view = TerminalSlashCommandViewDispatcher.for_runtime(
+        app_runtime
+    ).open_command_view("rename")
+
+    assert view is not None
+    assert view.title == "Rename thread"
+    assert view.textarea.text() == "Current title"
+
+
 def test_terminal_slash_command_routes_cover_every_registered_command() -> None:
     # Fixed Rust baseline 1c7832f: slash_command.rs defines the registry while
     # chatwidget::slash_dispatch must choose an effect, view, guard, or shim.
@@ -149,7 +208,33 @@ def test_terminal_slash_command_routes_cover_every_registered_command() -> None:
     assert routes[SlashCommand.SETTINGS].outcome == "view"
     assert routes[SlashCommand.STATUSLINE].outcome == "view"
     assert routes[SlashCommand.STATUSLINE].python_owner == "pycodex.tui.chatwidget.status_controls"
-    assert routes[SlashCommand.MCP].outcome == "shim"
+    assert routes[SlashCommand.TITLE].outcome == "view"
+    assert routes[SlashCommand.TITLE].python_owner == "pycodex.tui.chatwidget.status_controls"
+    assert (
+        routes[SlashCommand.PERMISSIONS].python_owner
+        == "pycodex.tui.chatwidget.permission_popups"
+    )
+    assert routes[SlashCommand.IDE].outcome == "effect"
+    assert routes[SlashCommand.IDE].python_owner == "pycodex.tui.chatwidget.ide_context"
+    assert routes[SlashCommand.VIM].outcome == "effect"
+    assert routes[SlashCommand.VIM].python_owner == "pycodex.tui.chatwidget.protocol"
+    assert routes[SlashCommand.ELEVATE_SANDBOX].outcome == "effect"
+    assert (
+        routes[SlashCommand.ELEVATE_SANDBOX].python_owner
+        == "pycodex.tui.chatwidget.slash_dispatch + pycodex.tui.app.event_dispatch"
+    )
+    assert routes[SlashCommand.SANDBOX_READ_ROOT].outcome == "effect"
+    assert (
+        routes[SlashCommand.SANDBOX_READ_ROOT].python_owner
+        == "pycodex.tui.chatwidget.slash_dispatch + pycodex.tui.app.event_dispatch"
+    )
+    assert routes[SlashCommand.EXPERIMENTAL].outcome == "view"
+    assert routes[SlashCommand.EXPERIMENTAL].python_owner == (
+        "pycodex.tui.chatwidget.settings_popups + "
+        "pycodex.tui.bottom_pane.experimental_features_view"
+    )
+    assert routes[SlashCommand.MCP].outcome == "effect"
+    assert routes[SlashCommand.MCP].category == "extension"
     for command, route in routes.items():
         assert route.rust_owner
         assert route.argument_form == ("inline-or-bare" if command.supports_inline_args() else "bare")
@@ -157,6 +242,31 @@ def test_terminal_slash_command_routes_cover_every_registered_command() -> None:
         assert route.expected_effect
         assert route.python_owner
         assert route.product_test
+
+
+def test_terminal_title_command_uses_registered_active_view_owner() -> None:
+    # Rust owners:
+    # - chatwidget::slash_dispatch maps /title to open_terminal_title_setup.
+    # - bottom_pane::title_setup owns the active selection view.
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(cwd="C:/workspace/codex-python")
+        ),
+        chat_widget=SimpleNamespace(config=SimpleNamespace(tui_terminal_title=None)),
+        handle_app_event=lambda event: None,
+    )
+    dispatcher = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)
+
+    view = dispatcher.open_command_view("title")
+
+    assert view is not None
+    lines = view.render_lines()
+    assert lines[:2] == [
+        "  Configure Terminal Title",
+        "  Select which items to display in the terminal title.",
+    ]
+    enabled = [item.id for item in view.items if item.enabled]
+    assert enabled == ["activity", "project-name"]
 
 
 def test_terminal_settings_command_uses_registered_active_view_owner() -> None:
@@ -171,6 +281,108 @@ def test_terminal_settings_command_uses_registered_active_view_owner() -> None:
 
     assert view.title == "Settings"
     assert [item.name for item in view.items] == ["Microphone", "Speaker"]
+
+
+def test_terminal_experimental_command_uses_registered_toggle_view_owner() -> None:
+    from pycodex.features import Features
+
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(features=Features.with_defaults())
+        ),
+        chat_widget=ChatWidgetProtocolRuntime(),
+        app_event_sender=SimpleNamespace(send=lambda _event: None),
+        runtime_keymap=None,
+        handle_app_event=lambda _event: None,
+    )
+    dispatcher = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)
+
+    view = dispatcher.open_command_view("experimental")
+
+    assert view is not None
+    assert view.header[0] == "Experimental features"
+    assert view.features
+    assert view.features[0].name == "Terminal resize reflow"
+    assert view.features[0].enabled is True
+    assert view.terminal_lines(width=100)[0].text == "Experimental features"
+
+
+def test_terminal_memories_command_uses_enable_prompt_or_settings_view() -> None:
+    from pycodex.config.types import MemoriesConfig
+    from pycodex.features import Feature, Features
+
+    features = Features.with_defaults()
+    session_config = SimpleNamespace(
+        features=features,
+        memories=MemoriesConfig(use_memories=True, generate_memories=False),
+    )
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(session_config=session_config),
+        chat_widget=SimpleNamespace(config=session_config),
+        app_event_sender=SimpleNamespace(send=lambda _event: None),
+        runtime_keymap=None,
+        handle_app_event=lambda _event: None,
+    )
+    dispatcher = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)
+
+    enable_prompt = dispatcher.open_command_view("memories")
+    assert enable_prompt.title == "Enable memories?"
+    assert [item.name for item in enable_prompt.items] == [
+        "Yes, enable",
+        "Not now",
+    ]
+
+    features.set_enabled(Feature.MEMORY_TOOL, True)
+    settings = dispatcher.open_command_view("memories")
+    assert settings.settings_header()[0] == "Memories"
+    assert [item.name for item in settings.items] == [
+        "Use memories",
+        "Generate memories",
+        "Reset all memories",
+    ]
+    assert settings.terminal_lines(width=100)[0].text == "Memories"
+
+
+def test_terminal_skills_command_uses_chatwidget_skills_menu_owner() -> None:
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(session_config=SimpleNamespace()),
+        chat_widget=SimpleNamespace(),
+        handle_app_event=lambda _event: None,
+    )
+    dispatcher = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)
+
+    view = dispatcher.open_command_view("skills")
+
+    assert view.title == "Skills"
+    assert view.subtitle == "Choose an action"
+    assert [item.name for item in view.items] == [
+        "List skills",
+        "Enable/Disable Skills",
+    ]
+    assert [item.actions[0].kind for item in view.items] == [
+        "OpenSkillsList",
+        "OpenManageSkillsPopup",
+    ]
+
+
+def test_terminal_hooks_command_uses_chatwidget_hooks_browser_owner() -> None:
+    app_runtime = SimpleNamespace(
+        cwd="/repo",
+        config_request_handle=None,
+        app_event_sender=SimpleNamespace(send=lambda _event: None),
+        runtime_keymap=None,
+        active_thread_runtime=SimpleNamespace(session_config=SimpleNamespace()),
+        chat_widget=SimpleNamespace(),
+        handle_app_event=lambda _event: None,
+    )
+    dispatcher = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)
+
+    view = dispatcher.open_command_view("hooks")
+    lines = [line.text for line in view.terminal_lines(width=112)]
+
+    assert lines[0] == "Hooks"
+    assert "Lifecycle hooks from config and enabled plugins." in lines
+    assert lines[-1] == "Press Enter to view hooks; Esc to close"
 
 
 def test_terminal_slash_dispatcher_routes_auto_review_denials_through_permission_owner() -> None:
@@ -377,19 +589,241 @@ def test_structured_inline_command_reaches_effect_dispatcher_with_arguments() ->
     assert calls == [(SlashCommand.RAW, "on")]
 
 
-def test_deferred_extension_command_emits_explicit_terminal_compatibility_message() -> None:
-    messages: list[tuple[str, str | None]] = []
+def test_plugins_extension_opens_rust_owned_loading_view() -> None:
+    events: list[object] = []
+    widget = ChatWidgetProtocolRuntime()
     app_runtime = SimpleNamespace(
-        chat_widget=ChatWidgetProtocolRuntime(),
-        insert_info_history_message=lambda message, hint=None: messages.append((message, hint)),
-        insert_history_cell=lambda _cell: None,
+        chat_widget=widget,
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(
+                cwd=Path("/repo"),
+                features=SimpleNamespace(enabled=lambda _feature: True),
+            )
+        ),
+        handle_app_event=events.append,
     )
     dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
 
-    result = dispatcher.dispatch(SlashCommand.MCP)
+    result = dispatcher.dispatch(SlashCommand.PLUGINS)
 
-    assert result == TerminalPromptDispatchResult("handled", command=SlashCommand.MCP)
-    assert messages and "not enabled" in messages[0][0]
+    assert result.action == "show_view"
+    assert result.command is SlashCommand.PLUGINS
+    assert result.view.title == "Plugins"
+    assert result.view.subtitle == "Loading available plugins..."
+    assert events and getattr(events[0], "kind", None) == "FetchPluginsList"
+
+
+def test_logout_dispatches_app_event_then_requests_terminal_exit() -> None:
+    events: list[object] = []
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        handle_app_event=events.append,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.LOGOUT
+    )
+
+    assert result == TerminalPromptDispatchResult(
+        "exit",
+        command=SlashCommand.LOGOUT,
+    )
+    assert events and getattr(events[0], "kind", None) == "Logout"
+
+
+def test_rollout_displays_current_path_or_missing_message() -> None:
+    messages: list[tuple[str, str | None]] = []
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        rollout_path=Path("/tmp/codex-test-rollout.jsonl"),
+        insert_info_history_message=lambda message, hint=None: messages.append(
+            (message, hint)
+        ),
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
+
+    assert dispatcher.dispatch(SlashCommand.ROLLOUT).action == "handled"
+    assert messages == [
+        (f"Current rollout path: {Path('/tmp/codex-test-rollout.jsonl')}", None)
+    ]
+
+    app_runtime.rollout_path = None
+    dispatcher.dispatch(SlashCommand.ROLLOUT)
+    assert messages[-1] == ("Rollout path is not available yet.", None)
+
+
+def test_test_approval_projects_rust_fixture_into_apply_patch_approval() -> None:
+    plans: list[object] = []
+    widget = ChatWidgetProtocolRuntime()
+    widget.bind_approval_request_sink(plans.append)
+    app_runtime = SimpleNamespace(chat_widget=widget)
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.TEST_APPROVAL
+    )
+
+    assert result == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.TEST_APPROVAL,
+    )
+    assert len(plans) == 1
+    plan = plans[0]
+    assert plan.kind == "apply_patch"
+    assert plan.data["id"] == "1"
+    assert {
+        path.as_posix(): change.to_dict()
+        for path, change in plan.data["changes"].items()
+    } == {
+        "/tmp/test.txt": {"type": "add", "content": "test"},
+        "/tmp/test2.txt": {
+            "type": "update",
+            "unified_diff": "+test\n-test2",
+            "move_path": None,
+        },
+    }
+
+
+def test_memory_drop_reports_rust_owned_tui_stub_without_operation() -> None:
+    cells: list[object] = []
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        insert_history_cell=cells.append,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.MEMORY_DROP
+    )
+
+    assert result == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.MEMORY_DROP,
+    )
+    rendered = "\n".join(
+        line_text(line) for line in cells[0].display_lines(80)
+    )
+    assert "Memory maintenance: Not available in TUI yet." in rendered
+
+
+def test_memory_update_reports_rust_owned_tui_stub_without_operation() -> None:
+    cells: list[object] = []
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        insert_history_cell=cells.append,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.MEMORY_UPDATE
+    )
+
+    assert result == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.MEMORY_UPDATE,
+    )
+    rendered = "\n".join(
+        line_text(line) for line in cells[0].display_lines(80)
+    )
+    assert "Memory maintenance: Not available in TUI yet." in rendered
+
+
+def test_ps_inserts_unified_exec_processes_history_cell() -> None:
+    cells: list[object] = []
+    widget = ChatWidgetProtocolRuntime()
+    widget.command_lifecycle.unified_exec_processes = [
+        SimpleNamespace(command_display="sleep 5", recent_chunks=["waiting"])
+    ]
+    app_runtime = SimpleNamespace(
+        chat_widget=widget,
+        insert_history_cell=cells.append,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.PS
+    )
+
+    assert result.action == "handled"
+    rendered = "\n".join(
+        line_text(line) for line in cells[0].display_lines(80)
+    )
+    assert "Background terminals" in rendered
+    assert "sleep 5" in rendered
+    assert "waiting" in rendered
+
+
+def test_stop_submits_cleanup_clears_processes_and_reports_confirmation() -> None:
+    submitted: list[object] = []
+    messages: list[tuple[str, str | None]] = []
+    widget = ChatWidgetProtocolRuntime()
+    widget.command_lifecycle.unified_exec_processes = [
+        SimpleNamespace(command_display="sleep 5", recent_chunks=[])
+    ]
+    widget.command_lifecycle.sync_unified_exec_footer()
+    app_runtime = SimpleNamespace(
+        chat_widget=widget,
+        submit_op=lambda operation: submitted.append(operation),
+        insert_info_history_message=lambda message, hint=None: messages.append(
+            (message, hint)
+        ),
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(
+        app_runtime,
+        submit_operation=lambda _summary, submit: submit(),
+    )
+
+    result = dispatcher.dispatch(SlashCommand.STOP)
+
+    assert result.action == "handled"
+    assert getattr(submitted[0], "kind", None) == "CleanBackgroundTerminals"
+    assert widget.command_lifecycle.unified_exec_processes == []
+    assert widget.command_lifecycle.footer_processes == []
+    assert messages == [("Stopping all background terminals.", None)]
+
+
+def test_realtime_starts_and_stops_through_shared_state_and_footer_override() -> None:
+    from pycodex.features import Feature
+
+    submitted: list[object] = []
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(
+                features=SimpleNamespace(
+                    enabled=lambda feature: feature is Feature.REALTIME_CONVERSATION
+                )
+            )
+        ),
+        submit_op=lambda operation: submitted.append(operation),
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(
+        app_runtime,
+        submit_operation=lambda _summary, submit: submit(),
+    )
+
+    first = dispatcher.dispatch(SlashCommand.REALTIME)
+    second = dispatcher.dispatch(SlashCommand.REALTIME)
+
+    assert first.action == second.action == "handled"
+    assert [operation.kind for operation in submitted] == [
+        "RealtimeConversationStart",
+        "RealtimeConversationClose",
+    ]
+    assert app_runtime.footer_hint_override is None
+
+
+def test_ide_command_routes_through_chatwidget_ide_context_owner() -> None:
+    app_runtime = TuiAppRuntime(
+        ExecFunctionActiveThreadRuntime(lambda _prompt: "ok"),
+        thread_id="thread-1",
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
+
+    result = dispatcher.dispatch(SlashCommand.IDE, "off")
+
+    assert result == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.IDE,
+    )
+    assert app_runtime.ide_context_state.ide_context.is_enabled() is False
+    assert app_runtime.pending_history_cells
 
 
 def test_agent_command_routes_through_open_agent_picker_app_event() -> None:
@@ -541,6 +975,128 @@ def test_mention_command_returns_composer_mutation_instead_of_user_turn() -> Non
         prompt="@",
         command=SlashCommand.MENTION,
     )
+
+
+def test_vim_command_toggles_chatwidget_state_and_notice() -> None:
+    widget = ChatWidgetProtocolRuntime()
+    app_runtime = SimpleNamespace(
+        chat_widget=widget,
+        insert_info_history_message=lambda *_args: None,
+        insert_history_cell=lambda _cell: None,
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
+
+    first = dispatcher.dispatch(SlashCommand.VIM)
+    second = dispatcher.dispatch(SlashCommand.VIM)
+
+    assert first == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.VIM,
+    )
+    assert second == first
+    assert widget.vim_enabled is False
+    assert [message for message, _hint in widget.info_messages[-2:]] == [
+        "Vim mode enabled.",
+        "Vim mode disabled.",
+    ]
+
+
+def test_setup_default_sandbox_emits_elevated_setup_app_event_on_windows(
+    monkeypatch,
+) -> None:
+    # Rust: SlashCommand::ElevateSandbox is visible only in degraded Windows
+    # sandbox mode and emits BeginWindowsSandboxElevatedSetup with the auto
+    # approval preset instead of becoming a user turn.
+    monkeypatch.setattr(
+        "pycodex.tui.chatwidget.slash_dispatch.os.name",
+        "nt",
+    )
+    widget = ChatWidgetProtocolRuntime()
+    widget.config.windows_degraded_sandbox_active = True
+    events: list[AppEvent] = []
+    widget.app_event_tx = SimpleNamespace(send=events.append)
+    app_runtime = SimpleNamespace(
+        chat_widget=widget,
+        insert_info_history_message=lambda *_args: None,
+        insert_history_cell=lambda _cell: None,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.ELEVATE_SANDBOX
+    )
+
+    assert result == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.ELEVATE_SANDBOX,
+    )
+    assert len(events) == 1
+    assert events[0].kind == "BeginWindowsSandboxElevatedSetup"
+    assert events[0].payload["preset"].id == "auto"
+    assert events[0].payload["profile_selection"] is None
+
+
+def test_sandbox_add_read_dir_emits_path_event_and_bare_usage() -> None:
+    events: list[AppEvent] = []
+    cells: list[object] = []
+    widget = ChatWidgetProtocolRuntime()
+    widget.app_event_tx = SimpleNamespace(send=events.append)
+    app_runtime = SimpleNamespace(
+        chat_widget=widget,
+        insert_info_history_message=lambda *_args: None,
+        insert_history_cell=cells.append,
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
+
+    inline = dispatcher.dispatch(
+        SlashCommand.SANDBOX_READ_ROOT,
+        r"C:\missing read root",
+    )
+    bare = dispatcher.dispatch(SlashCommand.SANDBOX_READ_ROOT)
+
+    assert inline == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.SANDBOX_READ_ROOT,
+    )
+    assert bare == inline
+    assert events == [
+        AppEvent.begin_windows_sandbox_grant_read_root(
+            r"C:\missing read root"
+        )
+    ]
+    assert cells
+
+
+def test_init_existing_file_uses_rust_skip_notice_without_submitting(tmp_path) -> None:
+    # Rust test: chatwidget/tests/slash_commands.rs keeps an existing AGENTS.md
+    # intact and reports the local /init guard instead of creating a UserTurn.
+    agents_path = tmp_path / "AGENTS.md"
+    agents_path.write_text("existing", encoding="utf-8")
+    messages: list[tuple[str, str | None]] = []
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(cwd=tmp_path)
+        ),
+        insert_info_history_message=lambda message, hint=None: messages.append(
+            (message, hint)
+        ),
+        insert_history_cell=lambda _cell: None,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.INIT
+    )
+
+    assert result == TerminalPromptDispatchResult(
+        "handled",
+        command=SlashCommand.INIT,
+    )
+    assert agents_path.read_text(encoding="utf-8") == "existing"
+    assert messages == [
+        (
+            "AGENTS.md already exists here. Skipping /init to avoid overwriting it.",
+            None,
+        )
+    ]
 
 
 def test_guarded_command_emits_reason_instead_of_opening_or_submitting() -> None:

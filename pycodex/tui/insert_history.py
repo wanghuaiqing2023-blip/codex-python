@@ -192,7 +192,31 @@ def _coerce_style(value: object) -> Style:
         return Style()
     if isinstance(value, str):
         tokens = {token.lower().replace("-", "_") for token in value.split()}
-        fg = next((name for name in ("black", "red", "green", "yellow", "blue", "magenta", "cyan", "white") if name in tokens), None)
+        fg = next(
+            (
+                name
+                for name in (
+                    "black",
+                    "red",
+                    "green",
+                    "yellow",
+                    "blue",
+                    "magenta",
+                    "cyan",
+                    "white",
+                    "gray",
+                    "dark_gray",
+                    "light_red",
+                    "light_green",
+                    "light_yellow",
+                    "light_blue",
+                    "light_magenta",
+                    "light_cyan",
+                )
+                if name in tokens
+            ),
+            None,
+        )
         modifiers = Modifier(0)
         for token, modifier in (
             ("bold", Modifier.BOLD),
@@ -242,7 +266,8 @@ def _coerce_style(value: object) -> Style:
         ("crossed_out", Modifier.CROSSED_OUT),
         ("strikethrough", Modifier.CROSSED_OUT),
     ):
-        if name in modifier_names or bool(getattr(value, name, False)):
+        attribute = getattr(value, name, False)
+        if name in modifier_names or (not callable(attribute) and bool(attribute)):
             modifiers |= modifier
     raw_sub_modifier = getattr(value, "sub_modifier", 0)
     return Style(
@@ -711,7 +736,7 @@ class TerminalHistoryWriter:
 
     def insert_replayed_lines(
         self,
-        lines: Sequence[str],
+        lines: Sequence[object],
         reserve_active_bottom_pane: bool,
     ) -> None:
         """Insert resize-replayed history rows without live-pane side effects.
@@ -723,12 +748,28 @@ class TerminalHistoryWriter:
         insert-history flag combination itself.
         """
 
-        self.insert_lines(
-            lines,
-            clear_bottom_pane=False,
-            reserve_active_bottom_pane=reserve_active_bottom_pane,
-            render_bottom_pane=False,
+        materialized = tuple(lines)
+        plain_rows = [
+            line_text(_coerce_hyperlink_line(line).line) for line in materialized
+        ]
+        terminal_active = self.terminal_active()
+        self._prepare_terminal_insert(
+            len(materialized), terminal_active=terminal_active
         )
+        if terminal_active and materialized:
+            bottom = self._history_bottom_row(reserve_active_bottom_pane)
+            insert_terminal_history_lines_and_flush(
+                self.writer,
+                materialized,
+                history_bottom_row=bottom,
+                scroll_region_bottom=bottom,
+                wrap_width=self.wrap_width(),
+                mode=self.insert_mode,
+                terminal_rows=None if self.terminal_rows is None else self.terminal_rows(),
+            )
+        elif materialized:
+            insert_plain_history_lines_and_flush(self.writer, plain_rows)
+        self.state = self.state.after_insert_lines(plain_rows)
 
     def _history_bottom_row(self, reserve_active_bottom_pane: bool) -> int:
         if self.history_bottom_row is None:
@@ -1137,6 +1178,13 @@ def _ansi_color(name: str | None, foreground: bool) -> str:
         "white": 37,
         "gray": 90,
         "grey": 90,
+        "dark_gray": 90,
+        "light_red": 91,
+        "light_green": 92,
+        "light_yellow": 93,
+        "light_blue": 94,
+        "light_magenta": 95,
+        "light_cyan": 96,
     }
     code = table.get(normalized, 39 if foreground else 49)
     if not foreground and code < 40:
@@ -1175,6 +1223,60 @@ def write_spans(writer: TextIO, content: Iterable[Span]) -> None:
     writer.write("\x1b[39m\x1b[49m\x1b[0m")
 
 
+def _write_styled_hyperlink_spans(
+    writer: TextIO,
+    spans: Iterable[Span],
+    hyperlinks: Sequence[Hyperlink],
+) -> None:
+    """Emit SGR and OSC-8 together without flattening either semantic layer."""
+
+    fg: str | None = "reset"
+    bg: str | None = "reset"
+    modifiers = Modifier(0)
+    active_link: Hyperlink | None = None
+    column = 0
+
+    def set_style(style: Style) -> None:
+        nonlocal fg, bg, modifiers
+        next_modifiers = style.add_modifier & ~style.sub_modifier
+        if next_modifiers != modifiers:
+            ModifierDiff(modifiers, next_modifiers).queue(writer)
+            modifiers = next_modifiers
+        next_fg = style.fg or "reset"
+        next_bg = style.bg or "reset"
+        if next_fg != fg:
+            writer.write(_ansi_color(next_fg, True))
+            fg = next_fg
+        if next_bg != bg:
+            writer.write(_ansi_color(next_bg, False))
+            bg = next_bg
+
+    for span in spans:
+        set_style(span.style)
+        for char in span.content:
+            char_width = max(0, display_width(char))
+            link = next(
+                (
+                    candidate
+                    for candidate in hyperlinks
+                    if column in range(candidate.start, candidate.end)
+                ),
+                None,
+            )
+            if link != active_link:
+                if active_link is not None:
+                    writer.write("\x1b]8;;\x07")
+                if link is not None:
+                    writer.write(f"\x1b]8;;{link.uri}\x07")
+                active_link = link
+            writer.write(char)
+            column += char_width
+
+    if active_link is not None:
+        writer.write("\x1b]8;;\x07")
+    writer.write("\x1b[39m\x1b[49m\x1b[0m")
+
+
 def write_history_line(writer: TextIO, line: HyperlinkLine | Line | str, wrap_width: int) -> None:
     hline = _coerce_hyperlink_line(line)
     physical_rows = math.ceil(max(hline.width(), 1) / max(wrap_width, 1))
@@ -1193,9 +1295,7 @@ def write_history_line(writer: TextIO, line: HyperlinkLine | Line | str, wrap_wi
     writer.write(_ansi_color(hline.line.style.bg, False))
     writer.write("\x1b[K")
     if hline.hyperlinks:
-        plain = "".join(span.content for span in merged)
-        writer.write(_decorate_hyperlinks(hline, plain))
-        writer.write("\x1b[39m\x1b[49m\x1b[0m")
+        _write_styled_hyperlink_spans(writer, merged, hline.hyperlinks)
     else:
         write_spans(writer, merged)
 

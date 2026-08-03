@@ -78,6 +78,22 @@ def test_search_filter_maps_visible_to_actual_indices_and_notifies_callback():
     assert view.selected_actual_idx() is None
 
 
+def test_searchable_backspace_removes_one_unicode_query_character() -> None:
+    # Rust handle_key_event consumes KeyCode::Backspace and calls String::pop,
+    # which removes one Unicode scalar before reapplying the filter.
+    view = _view(
+        [SelectionItem(name="Alpha", search_value="alpha")],
+        is_searchable=True,
+    )
+    view.set_search_query("主题")
+
+    handle_key_event(view, "backspace")
+    assert view.search_query == "主"
+    handle_key_event(view, "backspace")
+    assert view.search_query == ""
+    assert view.filtered_indices == [0]
+
+
 def test_navigation_skips_disabled_rows_and_page_jump_clamp():
     view = _view(
         [
