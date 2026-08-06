@@ -8,7 +8,9 @@ tool-search metadata, and preserving parallel-call capability rules.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +19,10 @@ from pycodex.codex_mcp import ToolInfo
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.context import FunctionToolOutput, McpToolOutput, ToolPayload
 from pycodex.core.tools.hook_names import HookToolName
+from pycodex.core.tools.handlers.mcp_resource import (
+    _emit_tool_call_begin,
+    _emit_tool_call_end,
+)
 from pycodex.core.tools.registry import PostToolUsePayload, PreToolUsePayload, ToolExposure, ToolInvocation, flat_tool_name
 from pycodex.core.tools.tool_search_entry import ToolSearchInfo
 from pycodex.tools.tool_discovery import ToolSearchSourceInfo
@@ -78,7 +84,9 @@ class McpHandler:
             source_info,
         )
 
-    def telemetry_tags(self) -> tuple[tuple[str, str], ...]:
+    def telemetry_tags(self, invocation: ToolInvocation) -> tuple[tuple[str, str], ...]:
+        if not isinstance(invocation, ToolInvocation):
+            raise TypeError("invocation must be ToolInvocation")
         tags = [("mcp_server", self.tool_info.server_name)]
         if self.tool_info.server_origin is not None:
             tags.append(("mcp_server_origin", self.tool_info.server_origin))
@@ -133,7 +141,7 @@ class McpHandler:
             tool_response=tool_response,
         )
 
-    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput | McpToolOutput:
+    def handle(self, invocation_or_payload: Any) -> Any:
         payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
         call_id = str(getattr(invocation_or_payload, "call_id", ""))
         if not isinstance(payload, ToolPayload) or payload.type != "function":
@@ -154,19 +162,102 @@ class McpHandler:
             raise FunctionCallError.respond_to_model(
                 "mcp tool call requires a request callback in the Python port"
             )
+        invocation = {
+            "server": self.tool_info.server_name,
+            "tool": self.tool_info.tool.name,
+            "arguments": arguments,
+        }
+        started = _emit_tool_call_begin(invocation_or_payload, invocation)
+        started_at = time.perf_counter()
         output = self.request_callback(self.tool_info, call_id, self.tool_name(), arguments)
-        if isinstance(output, FunctionToolOutput | McpToolOutput):
-            return output
-        if isinstance(output, str):
-            return FunctionToolOutput.from_text(output, True)
-        result = output if isinstance(output, CallToolResult) else CallToolResult.from_mapping(output)
-        return McpToolOutput(
-            result=result,
-            tool_input=arguments,
-            wall_time_seconds=0.0,
-            original_image_detail_supported=False,
-            truncation_policy=_default_truncation_policy(),
+        if inspect.isawaitable(started) or inspect.isawaitable(output):
+            return _await_mcp_request_output(
+                started,
+                output,
+                invocation_or_payload,
+                invocation,
+                arguments,
+                started_at,
+            )
+        converted = _mcp_request_output(output, arguments)
+        ended = _emit_tool_call_end(
+            invocation_or_payload,
+            invocation,
+            _duration_ms(started_at),
+            result=_mcp_event_result(converted),
         )
+        if inspect.isawaitable(ended):
+            return _await_mcp_end_then_output(ended, converted)
+        return converted
+
+
+async def _await_mcp_request_output(
+    started: Any,
+    output: Any,
+    invocation_or_payload: Any,
+    invocation: Mapping[str, JsonValue],
+    arguments: JsonValue,
+    started_at: float,
+) -> Any:
+    if inspect.isawaitable(started):
+        await started
+    try:
+        raw_output = await output if inspect.isawaitable(output) else output
+        converted = _mcp_request_output(raw_output, arguments)
+    except Exception as err:
+        ended = _emit_tool_call_end(
+            invocation_or_payload,
+            invocation,
+            _duration_ms(started_at),
+            error=str(err),
+        )
+        if inspect.isawaitable(ended):
+            await ended
+        raise
+    ended = _emit_tool_call_end(
+        invocation_or_payload,
+        invocation,
+        _duration_ms(started_at),
+        result=_mcp_event_result(converted),
+    )
+    if inspect.isawaitable(ended):
+        await ended
+    return converted
+
+
+async def _await_mcp_end_then_output(ended: Any, output: Any) -> Any:
+    await ended
+    return output
+
+
+def _mcp_request_output(output: Any, arguments: JsonValue) -> Any:
+    if isinstance(output, FunctionToolOutput | McpToolOutput):
+        return output
+    if isinstance(output, str):
+        return FunctionToolOutput.from_text(output, True)
+    result = output if isinstance(output, CallToolResult) else CallToolResult.from_mapping(output)
+    return McpToolOutput(
+        result=result,
+        tool_input=arguments,
+        wall_time_seconds=0.0,
+        original_image_detail_supported=False,
+        truncation_policy=_default_truncation_policy(),
+    )
+
+
+def _mcp_event_result(output: Any) -> CallToolResult:
+    if isinstance(output, McpToolOutput):
+        return output.result
+    if isinstance(output, FunctionToolOutput):
+        return CallToolResult(
+            content=({"type": "text", "text": output.into_text()},),
+            is_error=None if output.success is None else not output.success,
+        )
+    raise TypeError("MCP request output must be a tool output")
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
 
 
 def create_mcp_tool_spec(tool_info: ToolInfo) -> dict[str, JsonValue]:

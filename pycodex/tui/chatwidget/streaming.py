@@ -258,7 +258,10 @@ class StreamingWidgetState:
     reasoning_buffer: str = ""
     full_reasoning_buffer: str = ""
     task_running: bool = False
-    status_indicator_visible: bool = True
+    # Rust ``BottomPane::new`` starts with ``status: None``.  The indicator is
+    # created only when a model turn, MCP startup, or command lifecycle needs
+    # it; local composer work such as ``@`` file search must stay idle.
+    status_indicator_visible: bool = False
     stream_controller: StreamControllerState | None = None
     plan_stream_controller: StreamControllerState | None = None
     active_cell_kind: str | None = None

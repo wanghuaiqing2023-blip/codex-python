@@ -1096,6 +1096,9 @@ def terminal_history_write_state_after_insert_lines(
 
 
 def _split_terminal_history_prefix(text: str) -> tuple[str, str]:
+    leading_whitespace = text[: len(text) - len(text.lstrip())]
+    if leading_whitespace:
+        return leading_whitespace, text[len(leading_whitespace) :]
     for prefix in ("\u203a ", "\u2022 ", "\u25a0 "):
         if text.startswith(prefix):
             return prefix, text[len(prefix) :]

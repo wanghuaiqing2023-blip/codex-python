@@ -127,7 +127,7 @@ from pycodex.core.unified_exec import (
 )
 from pycodex.core_plugins import PluginsManager
 from pycodex.core_skills import SkillsManager
-from pycodex.codex_mcp import McpConnectionManager
+from pycodex.codex_mcp import McpConnectionManager, effective_mcp_servers
 from pycodex.utils.home_dir import find_codex_home
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
@@ -2238,9 +2238,10 @@ def _in_memory_exec_session(
     session_provider = _session_model_provider(provider, auth_manager)
     if models_manager is None:
         models_manager = _models_manager_for_exec_session(session_config, session_provider)
+    user_shell = default_user_shell()
     return Session(
         cwd=config.cwd,
-        shell=default_user_shell(),
+        shell=user_shell,
         thread_id=thread_id or "thread",
         model_info=model_info,
         provider=session_provider,
@@ -2249,8 +2250,10 @@ def _in_memory_exec_session(
         session_config=session_config,
         services=_exec_session_services(
             session_config,
+            auth_manager=auth_manager,
             models_manager=models_manager,
             model_client=model_client,
+            user_shell=user_shell,
         ),
         user_instructions=config.user_instructions,
         developer_instructions=config.developer_instructions,
@@ -2293,20 +2296,69 @@ def _in_memory_exec_session(
 def _exec_session_services(
     config: ExecSessionConfig,
     *,
+    auth_manager: Any = None,
     models_manager: Any = None,
     model_client: ModelClient | None = None,
+    user_shell: Any = None,
 ) -> SessionServices:
     codex_home = Path(find_codex_home())
     plugins_manager = PluginsManager.new(codex_home)
     skills_manager = SkillsManager.new(codex_home, config.bundled_skills_enabled())
+    resolved_user_shell = user_shell or default_user_shell()
+    hooks = _build_hooks_for_exec_config(config, resolved_user_shell)
+    cached_auth = None
+    auth_cached = getattr(auth_manager, "auth_cached", None)
+    if callable(auth_cached):
+        cached_auth = auth_cached()
+    elif callable(getattr(auth_manager, "uses_codex_backend", None)):
+        cached_auth = auth_manager
+    mcp_config = config.to_codex_mcp_config(codex_home)
+    effective_servers = effective_mcp_servers(mcp_config, cached_auth)
+    auth_provider = None
+    if cached_auth is not None:
+        from pycodex.model_provider.auth import auth_provider_from_auth
+
+        auth_provider = auth_provider_from_auth(cached_auth)
     return SessionServices(
-        mcp_connection_manager=McpConnectionManager(config.mcp_servers),
+        mcp_connection_manager=McpConnectionManager(
+            {
+                name: server.configured_config()
+                for name, server in effective_servers.items()
+            },
+            auth=cached_auth,
+            auth_provider=auth_provider,
+            auth_store_mode=mcp_config.mcp_oauth_credentials_store_mode,
+        ),
         models_manager=models_manager,
         model_client=model_client,
         unified_exec_manager=UnifiedExecProcessManager(),
+        hooks=hooks,
+        user_shell=resolved_user_shell,
         skills_manager=skills_manager,
         plugins_manager=plugins_manager,
         mcp_manager=McpManager(plugins_manager),
+    )
+
+
+def _build_hooks_for_exec_config(config: ExecSessionConfig, user_shell: Any) -> Any:
+    """Build Rust ``session::build_hooks_for_config``'s core user-hook slice."""
+
+    from pycodex.hooks import Hooks, HooksConfig
+
+    shell_argv = list(user_shell.derive_exec_args("", use_login_shell=False))
+    shell_program = shell_argv.pop(0) if shell_argv else None
+    if shell_argv and shell_argv[-1] == "":
+        shell_argv.pop()
+    return Hooks.new(
+        HooksConfig(
+            feature_enabled=_ExecConfigFeatures(base=config.features).enabled(
+                Feature.CODEX_HOOKS
+            ),
+            bypass_hook_trust=config.bypass_hook_trust,
+            config_layer_stack=config.config_layer_stack,
+            shell_program=shell_program,
+            shell_args=shell_argv,
+        )
     )
 
 
@@ -2421,6 +2473,10 @@ def refresh_exec_core_session(
         else getattr(model_info, "default_reasoning_summary", "auto")
     )
     session.service_tier = config.service_tier
+    user_shell = session.shell or default_user_shell()
+    session.shell = user_shell
+    session.services.user_shell = user_shell
+    session.services.hooks = _build_hooks_for_exec_config(config, user_shell)
     for manager_name in ("plugins_manager", "skills_manager"):
         clear_cache = getattr(getattr(session.services, manager_name, None), "clear_cache", None)
         if callable(clear_cache):

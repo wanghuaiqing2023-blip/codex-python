@@ -17,6 +17,54 @@ from pycodex.tui.app.event_dispatch import (
 from pycodex.tui.app_event import AppEvent
 
 
+def test_file_search_events_route_through_rust_app_owners() -> None:
+    start = dispatch_event_plan(EventDispatchState(), AppEvent.start_file_search("pro"))
+    assert start.action == "handle_start_file_search"
+    assert start.updates == (("handle_start_file_search", {"query": "pro"}),)
+
+    matches = [{"path": "probe-alpha.md", "indices": [0, 1, 2]}]
+    result = dispatch_event_plan(
+        EventDispatchState(),
+        AppEvent.file_search_result("pro", matches),
+    )
+    assert result.action == "handle_file_search_result"
+    assert result.updates == (
+        ("handle_file_search_result", {"query": "pro", "matches": matches}),
+    )
+
+
+def test_mcp_inventory_completion_routes_back_to_the_app_loop() -> None:
+    """Rust app::event_dispatch handles McpInventoryLoaded after background IO."""
+
+    statuses = [{"name": "alpha", "tools": {}}]
+    plan = dispatch_event_plan(
+        EventDispatchState(),
+        AppEvent.of(
+            "McpInventoryLoaded",
+            statuses=statuses,
+            detail="tools_and_auth_only",
+            thread_id="thread-1",
+            error=None,
+        ),
+    )
+
+    assert plan == EventDispatchPlan(
+        action="mcp_inventory_loaded",
+        updates=(
+            (
+                "mcp_inventory_loaded",
+                {
+                    "detail": "tools_and_auth_only",
+                    "thread_id": "thread-1",
+                    "statuses": statuses,
+                    "error": None,
+                },
+            ),
+        ),
+        schedule_frame=True,
+    )
+
+
 def test_shutdown_first_marks_active_thread_for_shutdown_then_clears_pending():
     """Rust codex-tui app::event_dispatch::handle_exit_mode ShutdownFirst active thread branch."""
 

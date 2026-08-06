@@ -541,7 +541,7 @@ def test_terminal_runtime_resolves_active_turn_exec_approval_with_direction_keys
     assert "\x1b[1mapproved" in raw
     assert "\x1b[2m'Set-Content hello.txt hi'" in raw
     assert "\x1b]0;[ ! ] Action Required\x07" in stdout.getvalue()
-    assert "\x1b]0;\x07" in stdout.getvalue()
+    assert "\x1b]0;.\x07" in stdout.getvalue()
     assert "\x07" in stdout.getvalue()
 
 
@@ -715,7 +715,7 @@ def test_terminal_runtime_user_input_request_round_trips_and_records_typed_histo
     assert "Questions 1/1 answered" in rendered
     assert rendered.count("Python") == 1
     assert "\x1b]0;[ ! ] Action Required\x07" in stdout.getvalue()
-    assert "\x1b]0;\x07" in stdout.getvalue()
+    assert "\x1b]0;.\x07" in stdout.getvalue()
 
 
 def test_terminal_runtime_mcp_form_elicitation_round_trips_through_shared_view(monkeypatch) -> None:
@@ -1232,7 +1232,7 @@ def test_terminal_runtime_slash_popup_renders_and_moves_selection(monkeypatch) -
     output = stdout.getvalue()
     assert "/model" in output
     assert "/memories" in output
-    assert "\x1b[94m/memories" in output
+    assert "\x1b[36;1m/memories" in output
     assert "\x1b[7m/memories" not in output
     assert runtime.submitted == []
 
@@ -1541,7 +1541,7 @@ def test_terminal_runtime_model_command_opens_bottom_pane_selection_view(monkeyp
     output = stdout.getvalue()
     assert "Select Model and Effort" in output
     assert "Access legacy models by running codex -m <model_name> or in your config.toml" in output
-    assert "\x1b[94m> 2.   gpt-5.4" in output
+    assert "\x1b[36;1m> 2.   gpt-5.4" in output
     assert runtime.submitted == []
 
 
@@ -1648,7 +1648,7 @@ def test_terminal_runtime_model_command_pushes_reasoning_selection_view(monkeypa
     output = stdout.getvalue()
     assert "Select Model and Effort" in output
     assert "Select Reasoning Level for gpt-5.4" in output
-    assert "\x1b[94m> 2.   High" in output
+    assert "\x1b[36;1m> 2.   High" in output
     assert runtime.session_config.model == "gpt-5.4"
     assert runtime.session_config.model_reasoning_effort == "high"
     assert runtime.submitted == []

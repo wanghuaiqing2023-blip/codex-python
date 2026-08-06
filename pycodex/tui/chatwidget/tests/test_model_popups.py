@@ -498,7 +498,7 @@ def test_model_picker_view_projects_through_chatwidget_rendering_buffer() -> Non
     assert "Select Model and Effort" in buffer.plain()
     assert "Access legacy models" in buffer.plain()
     assert "2.   gpt-5.4-mini" in buffer.plain()
-    assert buffer.cell(0, selected_writes[0].row - 1).style.fg == RatatuiColor.LightBlue
+    assert buffer.cell(0, selected_writes[0].row - 1).style.fg == RatatuiColor.Cyan
 
 
 def test_reasoning_popup_view_projects_through_chatwidget_rendering_buffer() -> None:
@@ -543,4 +543,4 @@ def test_reasoning_popup_view_projects_through_chatwidget_rendering_buffer() -> 
     assert "2.   Medium (default)" in plain[4]
     assert "3.   High" in plain[5]
     selected = next(write for write in frame.writes if write.selected)
-    assert buffer.cell(0, selected.row - 1).style.fg == RatatuiColor.LightBlue
+    assert buffer.cell(0, selected.row - 1).style.fg == RatatuiColor.Cyan

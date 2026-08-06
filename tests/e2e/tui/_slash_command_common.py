@@ -1030,12 +1030,15 @@ def run_side_slash_candidate(
     artifact_dir: Path,
     inline_text: str | None = None,
     slash_command: str = "side",
+    return_shortcut: str = "\x04",
+    verify_main_return: bool = False,
 ) -> tuple[TuiProcessTranscript, tuple[bytes, ...]]:
     """Start a real side fork after seeding the parent conversation."""
 
     repo_root = _repo_root()
     main_reply = "MAIN_SESSION_READY"
     side_reply = "SIDE_REPLY_READY"
+    return_reply = "MAIN_RETURN_READY"
     bodies = (
         _completed_text_response(
             f"resp-{label}-side-main",
@@ -1045,7 +1048,7 @@ def run_side_slash_candidate(
         _completed_text_response(
             f"resp-{label}-side-child",
             f"msg-{label}-side-child",
-            side_reply,
+            return_reply if verify_main_return else side_reply,
         ),
     )
     slash_text = (
@@ -1105,32 +1108,50 @@ def run_side_slash_candidate(
             ),
         ]
         if inline_text is None:
-            input_steps.extend(
-                (
-                    ConptyInputStep(
-                        # Rust accepts both Ctrl+C and Ctrl+D for returning
-                        # from a side thread. Ctrl+D is delivered as an input
-                        # byte by Windows ConPTY instead of a host signal.
-                        "\x04",
-                        ready_text="Ctrl+C to return",
-                        ready_timeout=20.0,
-                        ready_quiet_period=0.5,
-                    ),
-                    ConptyInputStep(
-                        "/status",
-                        ready_timeout=3.0,
-                        ready_quiet_period=0.5,
-                        atomic_write=True,
-                    ),
-                    ConptyInputStep(
-                        "\r",
-                        ready_screen_text="/status",
-                        ready_timeout=10.0,
-                        ready_quiet_period=0.2,
-                    ),
+            input_steps.append(
+                ConptyInputStep(
+                    return_shortcut,
+                    ready_text="Ctrl+C to return",
+                    ready_timeout=20.0,
+                    ready_quiet_period=0.5,
                 )
             )
-            stop_pattern = "Session:"
+            if verify_main_return:
+                input_steps.extend(
+                    (
+                        ConptyInputStep(
+                            "RETURN_TO_MAIN_PROBE",
+                            ready_timeout=3.0,
+                            ready_quiet_period=0.5,
+                            atomic_write=True,
+                        ),
+                        ConptyInputStep(
+                            "\r",
+                            ready_screen_text="RETURN_TO_MAIN_PROBE",
+                            ready_timeout=10.0,
+                            ready_quiet_period=0.2,
+                        ),
+                    )
+                )
+                stop_pattern = return_reply
+            else:
+                input_steps.extend(
+                    (
+                        ConptyInputStep(
+                            "/status",
+                            ready_timeout=3.0,
+                            ready_quiet_period=0.5,
+                            atomic_write=True,
+                        ),
+                        ConptyInputStep(
+                            "\r",
+                            ready_screen_text="/status",
+                            ready_timeout=10.0,
+                            ready_quiet_period=0.2,
+                        ),
+                    )
+                )
+                stop_pattern = "Session:"
         else:
             stop_pattern = side_reply
         with temp_home:
@@ -1151,7 +1172,11 @@ def run_side_slash_candidate(
         prefix=(
             f"{label}-{slash_command}-inline"
             if inline_text is not None
-            else f"{label}-{slash_command}-bare"
+            else (
+                f"{label}-{slash_command}-ctrl-c-return"
+                if verify_main_return and return_shortcut == "\x03"
+                else f"{label}-{slash_command}-bare"
+            )
         ),
         rows=38,
         cols=120,

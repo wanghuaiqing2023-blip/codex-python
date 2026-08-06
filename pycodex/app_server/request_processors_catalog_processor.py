@@ -26,6 +26,7 @@ from pycodex.app_server_protocol import (
     ExperimentalFeatureStage,
     HookErrorInfo,
     HookMetadata,
+    HooksListEntry,
     HooksListParams,
     HooksListResponse,
     JSONRPCErrorError,
@@ -141,10 +142,84 @@ class CatalogRequestProcessor:
     ) -> HooksListResponse:
         params = _params(HooksListParams, params)
         loader = _callable(self.thread_manager, "list_hooks") or _callable(self.thread_manager, "hooks_list")
-        if loader is None:
-            return HooksListResponse(data=())
-        data = await _maybe_await(loader(getattr(params, "cwds", ())))
-        return HooksListResponse(data=data)
+        if loader is not None:
+            data = await _maybe_await(loader(getattr(params, "cwds", ())))
+            return HooksListResponse(data=data)
+
+        from pycodex.config.loader import load_config_layers_state
+        from pycodex.hooks import HooksConfig, list_hooks
+
+        requested_cwds = tuple(getattr(params, "cwds", ()))
+        if not requested_cwds:
+            requested_cwds = (_get(self.config, "cwd", default=Path.cwd()),)
+
+        codex_home = await self._codex_home()
+        cli_overrides = await self._cli_overrides()
+        entries: list[HooksListEntry] = []
+        for requested_cwd in requested_cwds:
+            cwd = Path(requested_cwd).expanduser().resolve()
+            try:
+                layers_loader = _callable(self.config_manager, "load_config_layers_for_cwd")
+                if layers_loader is not None:
+                    layers = await _maybe_await(layers_loader(cwd))
+                else:
+                    layers = load_config_layers_state(
+                        codex_home,
+                        cwd=cwd,
+                        cli_overrides=cli_overrides,
+                    )
+                effective = _effective_config(layers)
+                features = _get(effective, "features", default={})
+                feature_enabled = bool(_get(features, "hooks", default=True))
+                bypass_hook_trust = bool(
+                    _get(
+                        effective,
+                        "bypass_hook_trust",
+                        default=_get(self.config, "bypass_hook_trust", default=False),
+                    )
+                )
+                outcome = list_hooks(
+                    HooksConfig(
+                        feature_enabled=feature_enabled,
+                        bypass_hook_trust=bypass_hook_trust,
+                        config_layer_stack=layers,
+                    )
+                )
+                entries.append(
+                    HooksListEntry(
+                        cwd=str(cwd),
+                        hooks=hooks_to_info(outcome.hooks),
+                        warnings=tuple(outcome.warnings),
+                        errors=(),
+                    )
+                )
+            except Exception as exc:
+                entries.append(
+                    HooksListEntry(
+                        cwd=str(cwd),
+                        hooks=(),
+                        warnings=(),
+                        errors=(HookErrorInfo(path=str(cwd), message=str(exc)),),
+                    )
+                )
+        return HooksListResponse(data=tuple(entries))
+
+    async def _codex_home(self) -> Path:
+        provider = _callable(self.config_manager, "codex_home")
+        if provider is not None:
+            return Path(await _maybe_await(provider())).expanduser().resolve()
+        value = _get(
+            self.config_manager,
+            "codex_home",
+            default=_get(self.config, "codex_home", default=Path.home() / ".codex"),
+        )
+        return Path(value).expanduser().resolve()
+
+    async def _cli_overrides(self) -> Any:
+        provider = _callable(self.config_manager, "current_cli_overrides")
+        if provider is not None:
+            return await _maybe_await(provider())
+        return _get(self.config_manager, "cli_kv_overrides", default=())
 
     async def skills_config_write(
         self,
@@ -296,7 +371,15 @@ def hooks_to_info(hooks: Iterable[Any]) -> tuple[HookMetadata, ...]:
         "current_hash",
         "trust_status",
     )
-    return tuple(HookMetadata(**{field: _get(hook, field, default=None) for field in fields}) for hook in hooks)
+    result: list[HookMetadata] = []
+    for hook in hooks:
+        values = {field: _get(hook, field, default=None) for field in fields}
+        values["event_name"] = _snake_to_camel(_enum_value(values["event_name"]))
+        values["handler_type"] = _enum_value(values["handler_type"])
+        values["source"] = _snake_to_camel(_enum_value(values["source"]))
+        values["trust_status"] = _enum_value(values["trust_status"])
+        result.append(HookMetadata(**values))
+    return tuple(result)
 
 
 def errors_to_info(errors: Iterable[Any]) -> tuple[SkillErrorInfo, ...]:

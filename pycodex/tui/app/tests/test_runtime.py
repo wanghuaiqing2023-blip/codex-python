@@ -95,6 +95,7 @@ from pycodex.tui.app.agent_navigation import AgentNavigationDirection
 from pycodex.tui.app_backtrack import user_cell
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.app_event import AppEvent, PermissionProfileSelection, RateLimitRefreshOrigin, ThreadGoalSetMode
+from pycodex.tui.history_cell.mcp import McpInventoryLoadingCell
 from pycodex.tui.bottom_pane.footer import run_terminal_idle_footer_text_from_runtime
 from pycodex.tui.bottom_pane.approval_overlay import ApprovalViewProjector
 from pycodex.tui.bottom_pane.request_user_input import RequestUserInputViewProjector
@@ -136,6 +137,50 @@ def test_open_agent_picker_event_opens_multi_agent_enable_prompt_when_disabled()
     assert len(shown) == 1
     assert shown[0].title == "Enable subagents?"
     assert [item.name for item in shown[0].items] == ["Yes, enable", "Not now"]
+
+
+def test_mcp_inventory_loading_remains_until_background_completion() -> None:
+    """Rust app::background_requests keeps the loading cell until its event."""
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Manager:
+        def server_names(self) -> tuple[str, ...]:
+            return ("alpha",)
+
+        async def list_all_tools(self) -> tuple[object, ...]:
+            entered.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            return ()
+
+        async def auth_statuses(self) -> dict[str, str]:
+            return {"alpha": "Unsupported"}
+
+    active = ExecFunctionActiveThreadRuntime(lambda _prompt: 0)
+    active._core_session = SimpleNamespace(
+        services=SimpleNamespace(mcp_connection_manager=Manager())
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active)
+    runtime.chat_widget.begin_mcp_inventory_loading(
+        McpInventoryLoadingCell.new(False)
+    )
+
+    runtime.fetch_mcp_inventory("tools_and_auth_only")
+
+    assert entered.wait(2.0)
+    assert isinstance(runtime.chat_widget.active_cell, McpInventoryLoadingCell)
+    release.set()
+    deadline = time.monotonic() + 2.0
+    while runtime.pending_app_events.empty() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not runtime.pending_app_events.empty()
+
+    runtime.drain_app_events()
+
+    assert runtime.chat_widget.active_cell is None
+    assert runtime.pending_history_cells
 
 
 def test_core_active_thread_applies_override_turn_context_without_user_turn() -> None:
@@ -2854,10 +2899,32 @@ def test_tui_app_runtime_persist_model_selection_routes_local_runtime_through_co
     assert ok is True
     assert runtime.config_request_handle.__class__.__name__ == "InProcessConfigRequestHandle"
     assert runtime.config_request_handle.processor.__class__.__name__ == "ConfigRequestProcessor"
+    assert runtime.config_request_handle.catalog_processor.__class__.__name__ == "CatalogRequestProcessor"
     text = (tmp_path / "config.toml").read_text(encoding="utf-8")
     assert 'model = "gpt-local"' in text
     assert 'model_reasoning_effort = "medium"' in text
     assert runtime.chat_widget.info_messages == [("Model changed to gpt-local medium", None)]
+
+
+def test_tui_app_runtime_trust_hook_event_persists_through_config_service(tmp_path) -> None:
+    config = SimpleNamespace(codex_home=tmp_path, config_layer_stack=None)
+    runtime = TuiAppRuntime(
+        active_thread_runtime=SimpleNamespace(session_config=config)
+    )
+
+    plan = runtime.handle_app_event(
+        AppEvent.of(
+            "TrustHook",
+            key="path:modified",
+            current_hash="sha256:current",
+        )
+    )
+
+    assert plan.action == "handle_trust_hook"
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert "trusted_hash" in text
+    assert "sha256:current" in text
+    assert runtime.chat_widget.error_messages == []
 
 
 def test_tui_app_runtime_persist_model_selection_uses_runtime_codex_home_when_session_config_lacks_it(tmp_path) -> None:
@@ -3482,6 +3549,35 @@ def test_terminal_prompt_uses_input_submission_user_input_shape() -> None:
     assert type(op.payload["items"][0]).__name__ == "UserInput"
     assert user_turn_prompt(op) == "hello from terminal"
     assert tuple(item.text for item in user_inputs_for_app_command(op)) == ("hello from terminal",)
+
+
+def test_terminal_prompt_preserves_structured_plugin_mention_into_core_plan() -> None:
+    """Rust app routing preserves every structured user-input variant."""
+
+    from pycodex.plugin import PluginCapabilitySummary
+    from pycodex.tui.bottom_pane.chat_composer.draft_state import ComposerMentionBinding
+
+    plugin = PluginCapabilitySummary(
+        config_name="alpha-workflows@openai-curated",
+        display_name="Alpha Workflows",
+        has_skills=True,
+    )
+    binding = ComposerMentionBinding(
+        mention="alpha-workflows",
+        path="plugin://alpha-workflows@openai-curated",
+    )
+
+    op = app_command_for_prompt(
+        "$alpha-workflows execute plugin reference",
+        cwd="C:/repo",
+        mention_bindings=(binding,),
+        plugins=(plugin,),
+    )
+    inputs = user_inputs_for_app_command(op)
+
+    assert [item.type for item in inputs] == ["text", "mention"]
+    assert inputs[1].name == "Alpha Workflows"
+    assert inputs[1].path == "plugin://alpha-workflows@openai-curated"
 
 
 def test_tui_app_runtime_injects_enabled_ide_context_before_user_turn() -> None:

@@ -64,3 +64,73 @@ async def test_app_test_support_mcp_process_serves_initialize_over_stdio(
 
     assert response["result"]["codexHome"] == str(codex_home)
     assert response["result"]["userAgent"]
+
+
+@pytest.mark.asyncio
+async def test_hooks_list_discovers_user_config_hook_over_stdio(
+    tmp_path: Path,
+) -> None:
+    """Rust ``hooks_list_shows_discovered_hook`` app-server contract.
+
+    A hook declared in the user-level ``CODEX_HOME/config.toml`` must be
+    returned by the real ``hooks/list`` stdio request. The TUI derives its
+    Installed count from this response, so an unhandled request or empty hook
+    list reproduces the user-visible ``Installed = 0`` regression.
+    """
+
+    codex_home = tmp_path / "codex-home"
+    cwd = tmp_path / "worktree"
+    hook_script = cwd / ".codex" / "hooks" / "audit_hook.py"
+    hook_script.parent.mkdir(parents=True)
+    hook_script.write_text("print('{}')\n", encoding="utf-8")
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        """
+[features]
+hooks = true
+plugins = false
+
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "python .codex/hooks/audit_hook.py"
+commandWindows = "python .codex/hooks/audit_hook.py"
+timeout = 5
+statusMessage = "Auditing prompt submission"
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    process = await McpProcess.new(codex_home)
+    try:
+        await process.initialize(client_name="pycodex-e2e-hooks-list")
+        response = await process.send_request(
+            "hooks/list",
+            {"cwds": [str(cwd)]},
+        )
+    finally:
+        await process.close()
+
+    assert "error" not in response, (
+        "app-server did not route hooks/list; the TUI falls back to an empty "
+        f"hook entry and renders every Installed count as 0: {response}"
+    )
+    data = response["result"]["data"]
+    assert len(data) == 1, (
+        "hooks/list omitted the requested cwd; /hooks will render every "
+        f"Installed count as 0: {response}"
+    )
+    entry = data[0]
+    assert Path(entry["cwd"]).resolve() == cwd.resolve()
+    assert entry["errors"] == []
+    assert len(entry["hooks"]) == 1, (
+        "hooks/list did not discover the user-configured hook; /hooks will "
+        f"render UserPromptSubmit Installed as 0: {entry}"
+    )
+    hook = entry["hooks"][0]
+    assert hook["eventName"] == "userPromptSubmit"
+    assert hook["handlerType"] == "command"
+    assert hook["source"] == "user"
+    assert hook["enabled"] is True
+    assert hook["trustStatus"] == "untrusted"

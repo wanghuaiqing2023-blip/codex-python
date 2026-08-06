@@ -305,14 +305,21 @@ class TerminalBottomPaneViewState:
     )
 
     @classmethod
-    def new(cls, command_popup_flags: object | None = None) -> "TerminalBottomPaneViewState":
+    def new(
+        cls,
+        command_popup_flags: object | None = None,
+        app_event_sender: object | None = None,
+    ) -> "TerminalBottomPaneViewState":
         flags = (
             command_popup_flags
             if isinstance(command_popup_flags, CommandPopupFlags)
             else CommandPopupFlags()
         )
         return cls(
-            composer=ChatComposer(command_popup_flags=flags),
+            composer=ChatComposer(
+                command_popup_flags=flags,
+                app_event_tx=app_event_sender,
+            ),
             command_popup_flags=flags,
         )
 
@@ -353,6 +360,10 @@ class TerminalBottomPaneViewState:
     @property
     def command_popup_visible(self) -> bool:
         return self.command_popup_state.visible
+
+    @property
+    def popup_visible(self) -> bool:
+        return self.composer.popup_visible
 
     def apply_draft(self, draft: str) -> None:
         source = str(draft)
@@ -447,7 +458,7 @@ class TerminalBottomPaneViewState:
             and str(event_text) == "?"
             and not self.composer.current_text()
             and self.active_view is None
-            and not self.command_popup_visible
+            and not self.popup_visible
         ):
             self.footer_mode = toggle_shortcut_mode(
                 self.footer_mode,
@@ -469,6 +480,7 @@ class TerminalBottomPaneViewState:
         )
 
     def show_selection_view(self, params: SelectionViewParams) -> None:
+        self.composer._close_file_search_popup()
         terminal_bottom_pane_show_selection_view(
             self.view_stack,
             self.command_popup_state,
@@ -486,6 +498,7 @@ class TerminalBottomPaneViewState:
                 raise RuntimeError("selection view was not activated")
             return active_selection
         self.composer.command_popup_state.hide()
+        self.composer._close_file_search_popup()
         request = getattr(view, "current_request", None)
         active = self.view_stack.active_view()
         if request is not None and active is not None:
@@ -520,6 +533,9 @@ class TerminalBottomPaneViewState:
         )
         if projection.lines:
             return projection
+        composer_lines = self.composer.terminal_popup_lines(max(1, size.columns - 1))
+        if composer_lines:
+            return TerminalBottomPanePopupProjection(tuple(composer_lines))
         rows = self.pending_thread_approvals.as_renderable(max(1, size.columns))
         return TerminalBottomPanePopupProjection(
             tuple(TerminalPopupLine(row.text) for row in rows),

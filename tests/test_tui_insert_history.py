@@ -276,6 +276,19 @@ def test_terminal_history_cell_lines_preserve_prompt_prefix_on_continuation_rows
     assert "\u203a" not in rows[1]
 
 
+def test_terminal_history_cell_lines_preserve_leading_whitespace_on_wrapped_rows():
+    # Rust: insert_history::vt100_prefixed_non_url_line_preserves_prefix_on_wrapped_rows.
+    rows = terminal_history_cell_lines(
+        "    \u2022 Tools: alpha, beta, gamma, delta, epsilon",
+        24,
+    )
+
+    assert len(rows) >= 2
+    assert rows[0].startswith("    \u2022 Tools:")
+    assert all(row.startswith("    ") for row in rows[1:])
+    assert all(not row.startswith("      ") for row in rows[1:])
+
+
 def test_terminal_history_cell_lines_count_wide_characters_in_wrap_budget():
     rows = terminal_history_cell_lines(
         "\u2022 \u4f60\u597dabc def",

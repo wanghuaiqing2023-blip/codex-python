@@ -8,6 +8,7 @@ from pycodex.app_server_protocol.account import RateLimitSnapshot, RateLimitWind
 from pycodex.protocol import CollaborationMode, CollaborationModeMask, ModeKind, Settings
 from pycodex.tui.chatwidget.constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from pycodex.tui.bottom_pane.footer import terminal_idle_footer_right_text_from_runtime
+from pycodex.tui.history_cell.mcp import McpInventoryLoadingCell, line_text
 from pycodex.tui.chatwidget.protocol import (
     ChatWidgetProtocolRuntime,
     ReplayKind,
@@ -40,6 +41,45 @@ def test_vim_toggle_uses_bound_bottom_pane_owner() -> None:
     assert runtime.toggle_vim_mode_and_notify() == "Vim mode enabled."
     assert runtime.vim_enabled is True
     assert calls == ["toggle"]
+
+
+def test_file_search_result_uses_bound_bottom_pane_owner_and_redraws() -> None:
+    runtime = ChatWidgetProtocolRuntime()
+    applied: list[tuple[str, list[object]]] = []
+    runtime.bind_file_search_result_sink(
+        lambda query, matches: applied.append((query, matches))
+    )
+    before_redraws = runtime.turn.redraw_requests
+
+    matches = [{"path": "probe-alpha.md", "indices": [0, 1, 2]}]
+    runtime.apply_file_search_result("pro", matches)
+
+    assert applied == [("pro", matches)]
+    assert runtime.turn.redraw_requests == before_redraws + 1
+
+
+def test_mcp_inventory_loading_is_transient_and_type_guarded() -> None:
+    """Rust ChatWidget clears MCP loading without committing it to history."""
+
+    runtime = ChatWidgetProtocolRuntime()
+    previous = object()
+    runtime.set_active_history_cell(previous)
+    loading = McpInventoryLoadingCell.new(False)
+
+    runtime.begin_mcp_inventory_loading(loading)
+
+    assert runtime.history == [previous]
+    assert runtime.active_cell is loading
+    assert runtime.transcript.active_cell is loading
+    assert runtime.clear_mcp_inventory_loading() is True
+    assert runtime.active_cell is None
+    assert runtime.transcript.active_cell is None
+    assert runtime.history == [previous]
+
+    unrelated = object()
+    runtime.set_active_history_cell(unrelated)
+    assert runtime.clear_mcp_inventory_loading() is False
+    assert runtime.active_cell is unrelated
 
 
 def test_thread_rate_limits_notification_caches_display_snapshot_at_receipt() -> None:
@@ -772,6 +812,116 @@ def test_protocol_runtime_completed_reasoning_item_uses_replay_final_callback() 
     assert runtime.streaming.history == []
     assert runtime.streaming.reasoning_buffer == ""
     assert runtime.streaming.full_reasoning_buffer == ""
+
+
+def test_protocol_runtime_renders_completed_mcp_tool_call() -> None:
+    # Rust: chatwidget::protocol routes MCP item lifecycle through
+    # chatwidget::tool_lifecycle and commits a completed MCP history cell.
+    runtime = ChatWidgetProtocolRuntime()
+    started = {
+        "kind": "McpToolCall",
+        "id": "call-github-login",
+        "server": "codex_apps",
+        "tool": "github_get_user_login",
+        "arguments": {},
+        "status": "InProgress",
+    }
+    completed = {
+        **started,
+        "status": "Completed",
+        "durationMs": 7,
+        "result": {
+            "content": [{"type": "text", "text": "fixture-github-user"}],
+        },
+    }
+
+    runtime.handle(ServerNotification("ItemStarted", {"item": started, "turn_id": "turn-1"}))
+    runtime.handle(ServerNotification("ItemCompleted", {"item": completed, "turn_id": "turn-1"}))
+
+    assert runtime.active_cell is None
+    cell = runtime.history[-1]
+    rendered = "\n".join(line_text(line) for line in cell.display_lines(120))
+    assert "Called codex_apps.github_get_user_login({})" in rendered
+    assert "fixture-github-user" in rendered
+
+
+def test_protocol_runtime_renders_completed_web_search() -> None:
+    # Rust: chatwidget::protocol routes WebSearch item lifecycle through
+    # chatwidget::tool_lifecycle and commits the completed search history cell.
+    runtime = ChatWidgetProtocolRuntime()
+    started = {
+        "kind": "WebSearch",
+        "id": "web-search-1",
+        "query": "",
+        "status": "InProgress",
+    }
+    completed = {
+        **started,
+        "query": "pycodex deterministic web search marker",
+        "status": "Completed",
+        "action": {
+            "type": "search",
+            "query": "pycodex deterministic web search marker",
+        },
+    }
+
+    runtime.handle(ServerNotification("ItemStarted", {"item": started, "turn_id": "turn-1"}))
+    runtime.handle(ServerNotification("ItemCompleted", {"item": completed, "turn_id": "turn-1"}))
+
+    assert runtime.active_cell is None
+    rendered = "\n".join(line_text(line) for line in runtime.history[-1].display_lines(120))
+    assert "Searched pycodex deterministic web search marker" in rendered
+
+
+def test_protocol_runtime_renders_completed_image_generation(tmp_path) -> None:
+    # Rust: chatwidget::protocol and chatwidget::replay route ImageGeneration
+    # lifecycle through chatwidget::tool_lifecycle into a completed history cell.
+    runtime = ChatWidgetProtocolRuntime()
+    started = {
+        "kind": "ImageGeneration",
+        "id": "image-generation-1",
+        "status": "InProgress",
+    }
+    completed = {
+        **started,
+        "status": "Completed",
+        "revised_prompt": "A deterministic tiny orange cat icon",
+        "saved_path": str(tmp_path / "generated.png"),
+    }
+
+    runtime.handle(ServerNotification("ItemStarted", {"item": started, "turn_id": "turn-1"}))
+    runtime.handle(ServerNotification("ItemCompleted", {"item": completed, "turn_id": "turn-1"}))
+
+    rendered = "\n".join(line_text(line) for line in runtime.history[-1].display_lines(120))
+    assert "Generated Image:" in rendered
+    assert "A deterministic tiny orange cat icon" in rendered
+    assert "Saved to:" in rendered
+
+
+def test_protocol_runtime_renders_completed_view_image(tmp_path) -> None:
+    # Rust: chatwidget::replay routes ThreadItem::ImageView through
+    # chatwidget::tool_lifecycle::on_view_image_tool_call.
+    runtime = ChatWidgetProtocolRuntime()
+    runtime.config.cwd = str(tmp_path)
+    image_path = tmp_path / "tmp" / "pdfs" / "page-1.png"
+
+    runtime.handle(
+        ServerNotification(
+            "ItemCompleted",
+            {
+                "item": {
+                    "kind": "ImageView",
+                    "id": "view-image-1",
+                    "path": str(image_path),
+                },
+                "turn_id": "turn-1",
+            },
+        )
+    )
+
+    rendered = "\n".join(line_text(line) for line in runtime.history[-1].display_lines(120))
+    assert "Viewed Image" in rendered
+    assert "tmp/pdfs/page-1.png" in rendered
 
 
 def test_protocol_runtime_raw_reasoning_delta_is_config_gated() -> None:

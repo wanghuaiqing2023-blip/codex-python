@@ -2079,6 +2079,7 @@ def _apply_sampling_event_plan_to_state(
             state.emitted_stream_events = state.emitted_stream_events + (finished_tool_input_event,)
         state.active_tool_argument_diff_consumer = None
         completed_item = getattr(output_done, "completed_item", None)
+        completed_turn_item = getattr(output_done, "completed_turn_item", None)
         if isinstance(completed_item, ResponseItem) and completed_item not in state.completed_output_items:
             state.completed_output_items = state.completed_output_items + (completed_item,)
         state.should_continue_loop = state.should_continue_loop or getattr(output_done, "should_continue_loop", False)
@@ -2097,9 +2098,14 @@ def _apply_sampling_event_plan_to_state(
                 thread_id=getattr(transition, "thread_id", ""),
                 turn_id=getattr(transition, "turn_id", ""),
                 completed_item=completed_item,
+                completed_turn_item=completed_turn_item,
             )
         else:
-            turn_item = _completed_response_item_to_turn_item(completed_item)
+            turn_item = (
+                completed_turn_item
+                if isinstance(completed_turn_item, TurnItem)
+                else _completed_response_item_to_turn_item(completed_item)
+            )
             if turn_item is not None:
                 _append_stream_event(
                     state,
@@ -2254,6 +2260,7 @@ def _apply_plan_mode_assistant_done_plan_to_state(
     thread_id: str = "",
     turn_id: str = "",
     completed_item: ResponseItem | None = None,
+    completed_turn_item: TurnItem | None = None,
 ) -> None:
     completion = getattr(plan, "proposed_plan_completion_plan", None)
     if not thread_id:
@@ -2288,7 +2295,12 @@ def _apply_plan_mode_assistant_done_plan_to_state(
         state.plan_item_completed = getattr(completion, "plan_item_completed_after", state.plan_item_completed)
 
     turn_item_emit = getattr(plan, "turn_item_emit_plan", None)
-    contributed_turn_item = _plan_mode_contributed_agent_turn_item(plan, completed_item, turn_item_emit)
+    contributed_turn_item = _plan_mode_contributed_agent_turn_item(
+        plan,
+        completed_item,
+        turn_item_emit,
+        completed_turn_item=completed_turn_item,
+    )
     if contributed_turn_item is not None and turn_item_emit is not None:
         turn_item_emit = _replace_attr(turn_item_emit, "turn_item", contributed_turn_item)
     if turn_item_emit is not None:
@@ -2306,8 +2318,12 @@ def _plan_mode_contributed_agent_turn_item(
     plan: Any,
     completed_item: ResponseItem | None,
     turn_item_emit: Any,
+    *,
+    completed_turn_item: TurnItem | None = None,
 ) -> TurnItem | None:
-    turn_item = getattr(turn_item_emit, "turn_item", None)
+    turn_item = completed_turn_item
+    if not isinstance(turn_item, TurnItem):
+        turn_item = getattr(turn_item_emit, "turn_item", None)
     if not isinstance(turn_item, TurnItem):
         turn_item = _assistant_response_item_to_agent_turn_item(completed_item)
     if turn_item is None or turn_item.type != "AgentMessage":

@@ -57,6 +57,35 @@ def test_windows_conpty_native_and_python_bare_side_forks_and_returns(
         assert "Traceback" not in output, detail
 
 
+def test_windows_conpty_native_and_python_ctrl_c_returns_to_main_thread(
+    tmp_path,
+) -> None:
+    """Ctrl+C must restore the parent runtime, not merely leave a usable composer."""
+
+    native_exe = require_native_slash_comparison()
+    rust, python = slash_candidate_pair(native_exe)
+
+    for label, command in (("rust", rust), ("python", python)):
+        transcript, request_bodies = run_side_slash_candidate(
+            command,
+            label=label,
+            artifact_dir=tmp_path,
+            return_shortcut="\x03",
+            verify_main_return=True,
+        )
+        output = transcript.normalized_stdout()
+        detail = (
+            f"{label}: requests={len(request_bodies)}; "
+            f"stderr={transcript.normalized_stderr()!r}; output={output!r}"
+        )
+        assert len(request_bodies) == 2, detail
+        return_request = request_bodies[-1].decode("utf-8")
+        assert "RETURN_TO_MAIN_PROBE" in return_request, detail
+        assert "Side conversation boundary." not in return_request, detail
+        assert "MAIN_RETURN_READY" in output, detail
+        assert "Traceback" not in output, detail
+
+
 def test_windows_conpty_native_and_python_inline_side_submits_in_child(
     tmp_path,
 ) -> None:

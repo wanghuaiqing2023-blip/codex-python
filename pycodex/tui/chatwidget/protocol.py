@@ -20,13 +20,24 @@ from pycodex.protocol import CollaborationMode, CollaborationModeMask, ModeKind,
 from .._porting import RustTuiModule
 from ..app_server_approval_conversions import file_update_changes_to_display
 from ..history_cell.messages import new_reasoning_summary_block
+from ..history_cell.mcp import McpToolCallCell, new_active_mcp_tool_call
 from ..history_cell.notices import (
     new_cyber_policy_error_event,
     new_error_event,
     new_warning_event,
 )
-from ..history_cell.patches import new_patch_apply_failure, new_patch_event
+from ..history_cell.patches import (
+    new_image_generation_call,
+    new_patch_apply_failure,
+    new_patch_event,
+    new_view_image_tool_call,
+)
 from ..history_cell.plans import new_plan_update, new_proposed_plan
+from ..history_cell.search import (
+    WebSearchCell,
+    new_active_web_search_call,
+    new_web_search_call,
+)
 from ..history_cell.separators import FinalMessageSeparator
 from ..git_action_directives import parse_assistant_markdown
 from ..token_usage import TokenUsage, TokenUsageInfo
@@ -282,6 +293,14 @@ class ChatWidgetProtocolRuntime:
         self._collaboration_modes_enabled = True
         self._active_view_sink: Callable[[object], Any] | None = None
         self._user_message_submission_sink: Callable[[str], Any] | None = None
+        self._file_search_result_sink: Callable[[str, list[Any]], Any] | None = None
+        self._composer_insert_sink: Callable[[str], Any] | None = None
+        self._skills_sink: Callable[[list[Any]], Any] | None = None
+        self._plugins_sink: Callable[[list[Any]], Any] | None = None
+        self.skills_all: list[Any] = []
+        self.skills_for_mentions: list[Any] = []
+        self.plugin_mentions: list[Any] = []
+        self.skills_initial_state: dict[str, bool] | None = None
         self.turn_lifecycle = self.turn.turn_lifecycle
         self.transcript = self.turn.transcript
         self.last_non_retry_error: Optional[Any] = None
@@ -352,6 +371,72 @@ class ChatWidgetProtocolRuntime:
 
     def bind_user_message_submission_sink(self, sink: Callable[[str], Any] | None) -> None:
         self._user_message_submission_sink = sink
+
+    def bind_file_search_result_sink(
+        self,
+        sink: Callable[[str, list[Any]], Any] | None,
+    ) -> None:
+        """Bind Rust ``ChatWidget::apply_file_search_result`` to BottomPane."""
+
+        self._file_search_result_sink = sink
+
+    def bind_skill_composer_sinks(
+        self,
+        *,
+        insert_text: Callable[[str], Any] | None,
+        set_skills: Callable[[list[Any]], Any] | None,
+        set_plugins: Callable[[list[Any]], Any] | None = None,
+    ) -> None:
+        """Bind Rust ChatWidget skill state to the active BottomPane."""
+
+        self._composer_insert_sink = insert_text
+        self._skills_sink = set_skills
+        self._plugins_sink = set_plugins
+
+    def insert_str(self, text: str) -> None:
+        if self._composer_insert_sink is not None:
+            self._composer_insert_sink(str(text))
+        self.request_redraw()
+
+    def set_skills(self, skills: list[Any]) -> None:
+        self.skills_for_mentions = list(skills)
+        if self._skills_sink is not None:
+            self._skills_sink(list(skills))
+        self.request_redraw()
+
+    def on_plugin_mentions_loaded(self, mentions: list[Any]) -> None:
+        self.plugin_mentions = list(mentions)
+        if self._plugins_sink is not None:
+            self._plugins_sink(list(mentions))
+        self.request_redraw()
+
+    def plugins_for_mentions(self) -> list[Any]:
+        return list(self.plugin_mentions)
+
+    def show_skills_toggle_view(self, items: list[Any]) -> Any:
+        from ..bottom_pane.skills_toggle_view import SkillsToggleItem, SkillsToggleView
+
+        view = SkillsToggleView.new(
+            [
+                SkillsToggleItem(
+                    name=str(getattr(item, "name", "")),
+                    skill_name=str(getattr(item, "skill_name", "")),
+                    description=str(getattr(item, "description", "")),
+                    enabled=bool(getattr(item, "enabled", False)),
+                    path=getattr(item, "path", ""),
+                )
+                for item in items
+            ],
+            app_event_tx=self.app_event_tx,
+        )
+        if self._active_view_sink is not None:
+            self._active_view_sink(view)
+        return view
+
+    def apply_file_search_result(self, query: str, matches: list[Any]) -> None:
+        if self._file_search_result_sink is not None:
+            self._file_search_result_sink(str(query), list(matches))
+        self.request_redraw()
 
     def bind_vim_mode_toggle_sink(self, sink: Callable[[], bool] | None) -> None:
         """Bind Rust ``BottomPane::toggle_vim_enabled`` to slash dispatch."""
@@ -550,6 +635,29 @@ class ChatWidgetProtocolRuntime:
         if self.history_projection is not None:
             self.history_projection.set_active_cell(cell)
 
+    def begin_mcp_inventory_loading(self, cell: object) -> None:
+        """Install Rust's transient MCP inventory cell without committing it."""
+
+        if self.command_lifecycle.active_exec_cell is not None:
+            self.command_lifecycle.flush_active_cell()
+        elif self.active_cell is not None:
+            previous = self.active_cell
+            self.set_active_history_cell(None)
+            self.add_to_history(previous)
+        self.set_active_history_cell(cell)
+        self.request_redraw()
+
+    def clear_mcp_inventory_loading(self) -> bool:
+        """Clear only the matching transient cell when inventory completes."""
+
+        from ..history_cell.mcp import McpInventoryLoadingCell
+
+        if not isinstance(self.active_cell, McpInventoryLoadingCell):
+            return False
+        self.set_active_history_cell(None)
+        self.request_redraw()
+        return True
+
     def handle(self, notification: Union[ServerNotification, Mapping[str, Any], Any]) -> None:
         handle_server_notification(self, notification, None)
 
@@ -591,6 +699,124 @@ class ChatWidgetProtocolRuntime:
         self.transcript.had_work_activity = True
         self.streaming.had_work_activity = True
         self.streaming.request_redraw()
+
+    def on_mcp_tool_call_started(self, item: Any) -> None:
+        if self.command_lifecycle.active_exec_cell is not None:
+            self.command_lifecycle.flush_active_cell()
+        elif self.active_cell is not None:
+            previous = self.active_cell
+            self.set_active_history_cell(None)
+            self.add_to_history(previous)
+        cell = new_active_mcp_tool_call(
+            str(_get(item, "id", "")),
+            {
+                "server": str(_get(item, "server", "")),
+                "tool": str(_get(item, "tool", "")),
+                "arguments": _get(item, "arguments", None),
+            },
+            animations_enabled=not bool(getattr(self.config, "disable_animations", False)),
+        )
+        self.set_active_history_cell(cell)
+        self.transcript.had_work_activity = True
+        self.streaming.had_work_activity = True
+        self.request_redraw()
+
+    def on_mcp_tool_call_completed(self, item: Any) -> None:
+        call_id = str(_get(item, "id", ""))
+        cell = self.active_cell
+        if not isinstance(cell, McpToolCallCell) or cell.call_id() != call_id:
+            if cell is not None:
+                self.set_active_history_cell(None)
+                self.add_to_history(cell)
+            cell = new_active_mcp_tool_call(
+                call_id,
+                {
+                    "server": str(_get(item, "server", "")),
+                    "tool": str(_get(item, "tool", "")),
+                    "arguments": _get(item, "arguments", None),
+                },
+                animations_enabled=False,
+            )
+        error = _get(_get(item, "error", None), "message", None)
+        result = str(error) if error is not None else _get(item, "result", None)
+        if result is None:
+            result = "MCP tool call completed without a result"
+        duration_ms = _get(item, "duration_ms", _get(item, "durationMs", _get(item, "duration", 0)))
+        try:
+            duration_seconds = max(0.0, float(duration_ms or 0) / 1000.0)
+        except (TypeError, ValueError):
+            duration_seconds = 0.0
+        cell.complete(duration_seconds, result)
+        if self.active_cell is cell:
+            self.set_active_history_cell(None)
+        self.add_to_history(cell)
+        self.transcript.had_work_activity = True
+        self.streaming.had_work_activity = True
+        self.request_redraw()
+
+    def on_web_search_begin(self, call_id: str) -> None:
+        self.streaming.flush_answer_stream_with_separator()
+        if self.command_lifecycle.active_exec_cell is not None:
+            self.command_lifecycle.flush_active_cell()
+        elif self.active_cell is not None:
+            previous = self.active_cell
+            self.set_active_history_cell(None)
+            self.add_to_history(previous)
+        self.set_active_history_cell(
+            new_active_web_search_call(
+                str(call_id),
+                "",
+                animations_enabled=not bool(
+                    getattr(self.config, "disable_animations", False)
+                ),
+            )
+        )
+        self.request_redraw()
+
+    def on_web_search_end(self, call_id: str, query: str, action: Any) -> None:
+        self.streaming.flush_answer_stream_with_separator()
+        call_id = str(call_id)
+        query = str(query)
+        cell = self.active_cell
+        if isinstance(cell, WebSearchCell) and cell.call_id() == call_id:
+            cell.update(action, query)
+            cell.complete()
+            self.set_active_history_cell(None)
+        else:
+            cell = new_web_search_call(call_id, query, action)
+        self.add_to_history(cell)
+        self.transcript.had_work_activity = True
+        self.streaming.had_work_activity = True
+        self.request_redraw()
+
+    def on_view_image_tool_call(self, path: str | Path) -> None:
+        self.streaming.flush_answer_stream_with_separator()
+        self.add_to_history(
+            new_view_image_tool_call(
+                path,
+                getattr(self.config, "cwd", "."),
+            )
+        )
+        self.request_redraw()
+
+    def on_image_generation_begin(self) -> None:
+        self.streaming.flush_answer_stream_with_separator()
+
+    def on_image_generation_end(
+        self,
+        call_id: str,
+        revised_prompt: str | None,
+        saved_path: str | Path | None,
+    ) -> None:
+        self.streaming.flush_answer_stream_with_separator()
+        self.add_to_history(
+            new_image_generation_call(
+                str(call_id),
+                revised_prompt,
+                saved_path,
+            )
+        )
+        self.request_redraw()
 
     def on_exec_command_output_delta(self, call_id: str, delta: str) -> bool:
         handled = self.command_lifecycle.on_exec_command_output_delta(call_id, delta)

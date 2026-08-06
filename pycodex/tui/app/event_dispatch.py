@@ -617,6 +617,18 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
             updates=(("fetch_mcp_inventory", request),),
             schedule_frame=True,
         )
+    if variant == "McpInventoryLoaded":
+        result = {
+            "detail": _payload_value(payload, "detail", "tools_and_auth_only"),
+            "thread_id": _payload_value(payload, "thread_id", None),
+            "statuses": _payload_value(payload, "statuses", None),
+            "error": _payload_value(payload, "error", None),
+        }
+        return EventDispatchPlan(
+            action="mcp_inventory_loaded",
+            updates=(("mcp_inventory_loaded", result),),
+            schedule_frame=True,
+        )
     if variant == "FetchConnectorsList":
         force_refetch = bool(_payload_value(payload, "force_refetch", False))
         return EventDispatchPlan(

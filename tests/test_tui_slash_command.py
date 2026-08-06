@@ -45,7 +45,9 @@ def test_parse_accepts_leading_slash_and_rejects_unknown() -> None:
     assert SlashCommand.parse("/model") is SlashCommand.MODEL
     assert SlashCommand.MULTI_AGENTS.command() == "subagents"
     assert SlashCommand.parse("subagents") is SlashCommand.MULTI_AGENTS
-    assert SlashCommand.parse("multi-agents") is SlashCommand.MULTI_AGENTS
+    # Rust ``SlashCommand::MultiAgents`` serializes only as ``subagents``.
+    with pytest.raises(ValueError):
+        SlashCommand.parse("multi-agents")
     with pytest.raises(ValueError):
         SlashCommand.parse("missing")
 

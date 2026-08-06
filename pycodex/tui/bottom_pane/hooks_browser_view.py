@@ -13,6 +13,10 @@ from textwrap import wrap
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..ratatui_bridge import Color as RatatuiColor
+from ..ratatui_bridge import Span as RatatuiSpan
+from ..ratatui_bridge import Style as RatatuiStyle
+from ..status.helpers import format_directory_display
 from .bottom_pane_view import BottomPaneViewDefaults
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
@@ -29,44 +33,39 @@ RUST_MODULE = RustTuiModule(
 EVENT_COLUMN_WIDTH = 22
 COUNT_COLUMN_WIDTH = 12
 MAX_COMMAND_DETAIL_LINES = 3
+SURFACE_INSET = "  "
 
 HOOK_EVENT_ORDER = (
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
     "SessionStart",
     "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "Notification",
-    "Stop",
+    "SubagentStart",
     "SubagentStop",
-    "PreCompact",
-    "SessionEnd",
-    "PermissionRequest",
+    "Stop",
 )
 
-_EVENT_LABELS = {
-    "SessionStart": "Session start",
-    "UserPromptSubmit": "User prompt submit",
-    "PreToolUse": "Pre tool use",
-    "PostToolUse": "Post tool use",
-    "Notification": "Notification",
-    "Stop": "Stop",
-    "SubagentStop": "Subagent stop",
-    "PreCompact": "Pre compact",
-    "SessionEnd": "Session end",
-    "PermissionRequest": "Permission request",
-}
+_EVENT_LABELS = {event_name: event_name for event_name in HOOK_EVENT_ORDER}
 
 _EVENT_DESCRIPTIONS = {
-    "SessionStart": "Runs when a session starts.",
-    "UserPromptSubmit": "Runs before a user prompt is submitted.",
-    "PreToolUse": "Runs before a tool call executes.",
-    "PostToolUse": "Runs after a tool call completes.",
-    "Notification": "Runs when Codex emits a notification.",
-    "Stop": "Runs when a turn stops.",
-    "SubagentStop": "Runs when a subagent stops.",
-    "PreCompact": "Runs before conversation compaction.",
-    "SessionEnd": "Runs when a session ends.",
-    "PermissionRequest": "Runs when Codex requests permission.",
+    "PreToolUse": "Before a tool executes",
+    "PermissionRequest": "When permission is requested",
+    "PostToolUse": "After a tool executes",
+    "PreCompact": "Before context compaction",
+    "PostCompact": "After context compaction",
+    "SessionStart": "When a new session starts",
+    "UserPromptSubmit": "When the user submits a prompt",
+    "SubagentStart": "When a subagent is created",
+    "SubagentStop": "Right before a subagent ends its turn",
+    "Stop": "Right before Codex ends its turn",
+}
+
+_CANONICAL_EVENT_BY_TOKEN = {
+    "".join(character.lower() for character in event if character.isalnum()): event
+    for event in HOOK_EVENT_ORDER
 }
 
 
@@ -87,6 +86,12 @@ class HookSource(str, Enum):
     PROJECT = "Project"
     SYSTEM = "System"
     PLUGIN = "Plugin"
+    MDM = "Mdm"
+    SESSION_FLAGS = "SessionFlags"
+    CLOUD_REQUIREMENTS = "CloudRequirements"
+    LEGACY_MANAGED_CONFIG_FILE = "LegacyManagedConfigFile"
+    LEGACY_MANAGED_CONFIG_MDM = "LegacyManagedConfigMdm"
+    UNKNOWN = "Unknown"
 
 
 @dataclass
@@ -225,36 +230,26 @@ class HooksBrowserView(BottomPaneViewDefaults):
         return None if idx is None else self.entry.hooks[idx]
 
     def move_up(self) -> None:
-        self._move(-1, wrap=True)
+        length = self.page_len()
+        self.state.move_up_wrap(length)
+        self.state.ensure_visible(length, self.max_visible_rows())
 
     def move_down(self) -> None:
-        self._move(1, wrap=True)
+        length = self.page_len()
+        self.state.move_down_wrap(length)
+        self.state.ensure_visible(length, self.max_visible_rows())
 
     def page_up(self) -> None:
-        self._move(-self.max_visible_rows(), wrap=False)
+        self.state.page_up_clamped(self.page_len(), self.max_visible_rows())
 
     def page_down(self) -> None:
-        self._move(self.max_visible_rows(), wrap=False)
+        self.state.page_down_clamped(self.page_len(), self.max_visible_rows())
 
     def jump_top(self) -> None:
-        if self.page_len() > 0:
-            self.state.selected_idx = 0
+        self.state.jump_top(self.page_len(), self.max_visible_rows())
 
     def jump_bottom(self) -> None:
-        if self.page_len() > 0:
-            self.state.selected_idx = self.page_len() - 1
-
-    def _move(self, delta: int, *, wrap: bool) -> None:
-        length = self.page_len()
-        if length == 0:
-            return
-        current = 0 if self.state.selected_idx is None else self.state.selected_idx
-        next_idx = current + delta
-        if wrap:
-            next_idx %= length
-        else:
-            next_idx = max(0, min(length - 1, next_idx))
-        self.state.selected_idx = next_idx
+        self.state.jump_bottom(self.page_len(), self.max_visible_rows())
 
     def page_len(self) -> int:
         if self.page == HooksBrowserPage.EVENTS:
@@ -349,38 +344,40 @@ class HooksBrowserView(BottomPaneViewDefaults):
     def event_table_lines(self) -> List[str]:
         rows = self.event_rows()
         show_review = any(row.needs_review > 0 for row in rows)
-        header = ["Event", "Installed", "Active"]
+        header = (
+            f"{'Event':<{EVENT_COLUMN_WIDTH}}"
+            f"{'Installed':<{COUNT_COLUMN_WIDTH}}"
+            f"{'Active':<{COUNT_COLUMN_WIDTH}}"
+        )
         if show_review:
-            header.append("Review")
-        header.append("Description")
-        lines = [" | ".join(header)]
-        for idx, row in enumerate(rows):
-            marker = "> " if self.state.selected_idx == idx else "  "
-            cells = [
-                event_label(row.event_name),
-                str(row.installed),
-                str(row.active),
-            ]
+            header += f"{'Review':<{COUNT_COLUMN_WIDTH}}"
+        header += "Description"
+        lines = [header]
+        for row in rows:
+            line = (
+                f"{event_label(row.event_name):<{EVENT_COLUMN_WIDTH}}"
+                f"{row.installed:<{COUNT_COLUMN_WIDTH}}"
+                f"{row.active:<{COUNT_COLUMN_WIDTH}}"
+            )
             if show_review:
-                cells.append(str(row.needs_review))
-            cells.append(event_description(row.event_name))
-            lines.append(marker + " | ".join(cells))
+                line += f"{row.needs_review:<{COUNT_COLUMN_WIDTH}}"
+            lines.append(line + event_description(row.event_name))
         return lines
 
     def event_issue_lines(self) -> List[str]:
         if not self.entry.warnings and not self.entry.errors:
             return []
         lines = ["Issues"]
-        lines.extend(f"! {warning}" for warning in self.entry.warnings)
+        lines.extend(f"⚠ {warning}" for warning in self.entry.warnings)
         for error in self.entry.errors:
-            lines.append(f"x {get_value(error, 'path')}: {get_value(error, 'message')}")
+            lines.append(f"■ {get_value(error, 'path')}: {get_value(error, 'message')}")
         return lines
 
     def event_page_lines(self) -> List[str]:
         lines = self.event_header_lines() + [""]
         message = review_needed_message(self.review_needed_total_count())
         if message:
-            lines.extend([f"! {message}", ""])
+            lines.extend([f"⚠ {message}", ""])
         issue_lines = self.event_issue_lines()
         if issue_lines:
             lines.extend(issue_lines + [""])
@@ -394,12 +391,11 @@ class HooksBrowserView(BottomPaneViewDefaults):
             suffix = ""
             trust_status = normalize_trust_status(get_value(hook, "trust_status", HookTrustStatus.TRUSTED.value))
             if trust_status == HookTrustStatus.MODIFIED.value:
-                suffix = " - modified"
+                suffix = " · modified"
             elif trust_status == HookTrustStatus.UNTRUSTED.value:
-                suffix = " - new"
-            selected = "> " if self.state.selected_idx == idx else "  "
-            line = f"{selected}[{marker}] {hook_title(idx)}{suffix}"
-            lines.append(line if len(line) <= width else line[: max(0, width - 1)] + "...")
+                suffix = " · new"
+            line = f"[{marker}] {hook_title(idx)}{suffix}"
+            lines.append(_truncate_with_ellipsis(line, width))
         return lines
 
     def detail_lines(self, event_name: str, width: int = 80) -> List[str]:
@@ -426,16 +422,16 @@ class HooksBrowserView(BottomPaneViewDefaults):
     def render_footer(self) -> str:
         if self.page == HooksBrowserPage.EVENTS:
             if self.review_needed_total_count() > 0:
-                return "Press t to trust all; Enter to review hooks; Esc to close"
-            return "Press Enter to view hooks; Esc to close"
+                return "Press t to trust all; enter to review hooks; esc to close"
+            return "Press enter to view hooks; esc to close"
         hook = self.selected_hook(self.page_event or "")
         if hook is None:
-            return "Press Esc to go back"
+            return "Press esc to go back"
         if bool(get_value(hook, "is_managed", False)):
-            return "Managed hooks are always on; press Esc to go back"
+            return "Managed hooks are always on; press esc to go back"
         if hook_needs_review(hook):
-            return "Press t to trust; Esc to go back"
-        return "Press Space or Enter to toggle; Esc to go back"
+            return "Press t to trust; esc to go back"
+        return "Press space or enter to toggle; esc to go back"
 
     def handle_key_event(self, key_event: Any) -> str:
         key = normalize_key(key_event)
@@ -483,22 +479,37 @@ class HooksBrowserView(BottomPaneViewDefaults):
         return True
 
     def desired_height(self, width: int = 80) -> int:
-        return min(MAX_POPUP_ROWS + 8, len(self.render(width).lines) + 1)
+        # Rust reserves the menu surface's vertical inset plus one footer row.
+        return len(self._content_lines(width)) + 2
+
+    def _content_lines(self, width: int) -> List[str]:
+        if self.page == HooksBrowserPage.EVENTS:
+            return [*self.event_page_lines(), ""]
+
+        event_name = self.page_event or ""
+        headers = self.handler_header_lines(event_name)
+        rows = self.handler_row_lines(event_name, width)
+        if not rows:
+            return [*headers, "", "No hooks installed for this event.", ""]
+        visible_rows = rows[
+            self.state.scroll_top : self.state.scroll_top + self.max_visible_rows()
+        ]
+        return [
+            *headers,
+            "",
+            *visible_rows,
+            "",
+            *self.detail_lines(event_name, width),
+            "",
+        ]
 
     def render(self, width: int = 80) -> RenderedHooksBrowser:
-        if self.page == HooksBrowserPage.EVENTS:
-            lines = self.event_page_lines()
-        else:
-            event_name = self.page_event or ""
-            lines = self.handler_header_lines(event_name) + [""]
-            lines.extend(self.handler_row_lines(event_name, width))
-            lines.append("")
-            lines.extend(self.detail_lines(event_name, width))
+        lines = self._content_lines(max(1, int(width)))
         return RenderedHooksBrowser(
             page=self.page,
             lines=tuple(lines),
             footer=self.render_footer(),
-            desired_height=min(MAX_POPUP_ROWS + 8, len(lines) + 1),
+            desired_height=len(lines) + 2,
         )
 
     def render_lines(self, width: int = 80) -> List[str]:
@@ -506,14 +517,155 @@ class HooksBrowserView(BottomPaneViewDefaults):
         return [*rendered.lines, rendered.footer]
 
     def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
-        lines = self.render_lines(width=max(1, int(width)))
-        return [
-            TerminalPopupLine(
-                line,
-                index == 0 or line.startswith("> "),
-            )
-            for index, line in enumerate(lines)
+        content_width = max(1, int(width) - len(SURFACE_INSET) * 2)
+        if self.page == HooksBrowserPage.EVENTS:
+            lines = self._event_terminal_lines()
+        else:
+            lines = self._handler_terminal_lines(content_width)
+        lines.append(
+            _styled_popup_line(self.render_footer(), RatatuiStyle.default().dim())
+        )
+        return lines
+
+    def _event_terminal_lines(self) -> List[TerminalPopupLine]:
+        lines = [
+            _styled_popup_line("Hooks", RatatuiStyle.default().bold()),
+            _styled_popup_line(
+                "Lifecycle hooks from config and enabled plugins.",
+                RatatuiStyle.default().dim(),
+            ),
+            TerminalPopupLine(""),
         ]
+        review_message = review_needed_message(self.review_needed_total_count())
+        if review_message is not None:
+            lines.extend(
+                [
+                    _styled_popup_line(
+                        f"⚠ {review_message}",
+                        RatatuiStyle.default().with_fg(RatatuiColor.Yellow),
+                    ),
+                    TerminalPopupLine(""),
+                ]
+            )
+        if self.entry.warnings or self.entry.errors:
+            lines.append(_styled_popup_line("Issues", RatatuiStyle.default().bold()))
+            lines.extend(
+                _plain_popup_line(f"⚠ {warning}") for warning in self.entry.warnings
+            )
+            lines.extend(
+                _styled_popup_line(
+                    f"■ {get_value(error, 'path')}: {get_value(error, 'message')}",
+                    RatatuiStyle.default().with_fg(RatatuiColor.Red),
+                )
+                for error in self.entry.errors
+            )
+            lines.append(TerminalPopupLine(""))
+        lines.extend(self._event_table_terminal_lines())
+        lines.append(TerminalPopupLine(""))
+        return lines
+
+    def _event_table_terminal_lines(self) -> List[TerminalPopupLine]:
+        rows = self.event_rows()
+        show_review = any(row.needs_review > 0 for row in rows)
+        header = (
+            f"{'Event':<{EVENT_COLUMN_WIDTH}}"
+            f"{'Installed':<{COUNT_COLUMN_WIDTH}}"
+            f"{'Active':<{COUNT_COLUMN_WIDTH}}"
+        )
+        if show_review:
+            header += f"{'Review':<{COUNT_COLUMN_WIDTH}}"
+        lines = [_plain_popup_line(header + "Description")]
+        accent = RatatuiStyle.default().with_fg(RatatuiColor.Cyan).bold()
+        dim = RatatuiStyle.default().dim()
+        yellow = RatatuiStyle.default().with_fg(RatatuiColor.Yellow)
+        for index, row in enumerate(rows):
+            selected = self.state.selected_idx == index
+            parts = [
+                (f"{event_label(row.event_name):<{EVENT_COLUMN_WIDTH}}", RatatuiStyle.default()),
+                (f"{row.installed:<{COUNT_COLUMN_WIDTH}}", dim),
+                (f"{row.active:<{COUNT_COLUMN_WIDTH}}", dim),
+            ]
+            if show_review:
+                review_style = yellow if row.needs_review > 0 else dim
+                parts.append((f"{row.needs_review:<{COUNT_COLUMN_WIDTH}}", review_style))
+            parts.append((event_description(row.event_name), dim))
+            if selected:
+                parts = [(text, accent) for text, _style in parts]
+            lines.append(_popup_line_from_parts(parts))
+        return lines
+
+    def _handler_terminal_lines(self, width: int) -> List[TerminalPopupLine]:
+        event_name = self.page_event or ""
+        review_count = self.review_needed_count(event_name)
+        review_message = review_needed_message(review_count)
+        subtitle = review_message or "Turn hooks on or off. Your changes are saved automatically."
+        subtitle_style = (
+            RatatuiStyle.default().with_fg(RatatuiColor.Yellow)
+            if review_message is not None
+            else RatatuiStyle.default().dim()
+        )
+        lines = [
+            _styled_popup_line(
+                f"{event_label(event_name)} hooks",
+                RatatuiStyle.default().bold(),
+            ),
+            _styled_popup_line(subtitle, subtitle_style),
+            TerminalPopupLine(""),
+        ]
+        hooks = list(self.handlers_for_event(event_name))
+        if not hooks:
+            lines.extend(
+                [
+                    _styled_popup_line(
+                        "No hooks installed for this event.",
+                        RatatuiStyle.default().dim().italic(),
+                    ),
+                    TerminalPopupLine(""),
+                ]
+            )
+            return lines
+
+        row_texts = self.handler_row_lines(event_name, width)
+        visible_start = self.state.scroll_top
+        visible_end = visible_start + self.max_visible_rows()
+        accent = RatatuiStyle.default().with_fg(RatatuiColor.Cyan).bold()
+        warning = RatatuiStyle.default().with_fg(RatatuiColor.Yellow)
+        for index in range(visible_start, min(visible_end, len(hooks))):
+            hook = hooks[index]
+            needs_review = hook_needs_review(hook)
+            if self.state.selected_idx == index:
+                style = warning.bold() if needs_review else accent
+            elif needs_review:
+                style = warning
+            elif bool(get_value(hook, "is_managed", False)):
+                style = RatatuiStyle.default().dim()
+            else:
+                style = RatatuiStyle.default()
+            lines.append(_styled_popup_line(row_texts[index], style))
+        lines.append(TerminalPopupLine(""))
+        lines.extend(self._detail_terminal_lines(event_name, width))
+        lines.append(TerminalPopupLine(""))
+        return lines
+
+    def _detail_terminal_lines(
+        self,
+        event_name: str,
+        width: int,
+    ) -> List[TerminalPopupLine]:
+        dim = RatatuiStyle.default().dim()
+        lines = []
+        for line in self.detail_lines(event_name, width):
+            prefix = line[:10]
+            value = line[10:]
+            lines.append(
+                _popup_line_from_parts(
+                    [
+                        (prefix, RatatuiStyle.default()),
+                        (value, dim),
+                    ]
+                )
+            )
+        return lines
 
     def _emit(self, event: Dict[str, Any]) -> None:
         self.emitted_events.append(event)
@@ -521,9 +673,36 @@ class HooksBrowserView(BottomPaneViewDefaults):
         if sender is None:
             return
         if hasattr(sender, "send"):
-            sender.send(event)
+            from ..app_event import AppEvent
+
+            payload = dict(event)
+            variant = str(payload.pop("type"))
+            sender.send(AppEvent.of(variant, **payload))
         elif callable(sender):
             sender(event)
+
+
+def _popup_line_from_parts(
+    parts: Iterable[Tuple[str, RatatuiStyle]],
+) -> TerminalPopupLine:
+    materialized = tuple(parts)
+    text = SURFACE_INSET + "".join(content for content, _style in materialized)
+    spans = (
+        RatatuiSpan.raw(SURFACE_INSET),
+        *(
+            RatatuiSpan.styled(content, style)
+            for content, style in materialized
+        ),
+    )
+    return TerminalPopupLine(text, spans=spans)
+
+
+def _styled_popup_line(text: str, style: RatatuiStyle) -> TerminalPopupLine:
+    return _popup_line_from_parts(((text, style),))
+
+
+def _plain_popup_line(text: str) -> TerminalPopupLine:
+    return _styled_popup_line(text, RatatuiStyle.default())
 
 
 def normalize_entry(entry: Any) -> HooksListEntry:
@@ -553,8 +732,9 @@ def set_value(obj: Any, name: str, value: Any) -> None:
 def normalize_event_name(event_name: Any) -> str:
     if isinstance(event_name, Enum):
         event_name = event_name.value
-    text = str(event_name)
-    return text.split(".")[-1]
+    text = str(event_name).split(".")[-1]
+    token = "".join(character.lower() for character in text if character.isalnum())
+    return _CANONICAL_EVENT_BY_TOKEN.get(token, text)
 
 
 def normalize_trust_status(status: Any) -> str:
@@ -583,20 +763,31 @@ def hook_needs_review(hook: Any) -> bool:
 
 
 def hook_is_active(hook: Any) -> bool:
-    if hook_needs_review(hook):
-        return False
-    return bool(get_value(hook, "is_managed", False)) or bool(get_value(hook, "enabled", False))
+    trust_status = normalize_trust_status(
+        get_value(hook, "trust_status", HookTrustStatus.TRUSTED.value)
+    )
+    return bool(get_value(hook, "enabled", False)) and trust_status in {
+        HookTrustStatus.MANAGED.value,
+        HookTrustStatus.TRUSTED.value,
+    }
 
 
 def review_needed_message(count: int) -> Optional[str]:
     if count == 0:
         return None
-    noun = "hook" if count == 1 else "hooks"
-    return f"{count} {noun} need review before they can run."
+    if count == 1:
+        return "1 hook needs review before it can run."
+    return f"{count} hooks need review before they can run."
 
 
 def hook_trust_label(status: Any) -> str:
-    return normalize_trust_status(status)
+    normalized = normalize_trust_status(status)
+    return {
+        HookTrustStatus.MANAGED.value: "Managed",
+        HookTrustStatus.TRUSTED.value: "Trusted",
+        HookTrustStatus.UNTRUSTED.value: "New hook - review required",
+        HookTrustStatus.MODIFIED.value: "Modified since last trusted - review required",
+    }.get(normalized, normalized)
 
 
 def event_label(event_name: Any) -> str:
@@ -614,37 +805,92 @@ def hook_title(index: int) -> str:
 
 
 def hook_source_summary(hook: Any) -> str:
-    source = str(get_value(hook, "source", HookSource.USER.value)).split(".")[-1]
+    source = _normalize_source(get_value(hook, "source", HookSource.USER.value))
     plugin_id = get_value(hook, "plugin_id", None)
-    if plugin_id:
-        return f"Plugin {plugin_id}"
-    return source
+    if source == HookSource.PLUGIN.value:
+        return f"Plugin - {plugin_id}" if plugin_id else "Plugin"
+    return config_source_label(source)
 
 
 def detail_source_value(hook: Any) -> str:
+    source = _normalize_source(get_value(hook, "source", HookSource.USER.value))
+    if source == HookSource.PLUGIN.value:
+        return hook_source_summary(hook)
+    if source in {
+        HookSource.SYSTEM.value,
+        HookSource.MDM.value,
+        HookSource.CLOUD_REQUIREMENTS.value,
+        HookSource.LEGACY_MANAGED_CONFIG_FILE.value,
+        HookSource.LEGACY_MANAGED_CONFIG_MDM.value,
+    }:
+        return config_source_label(source)
     source_path = get_value(hook, "source_path", None)
-    summary = hook_source_summary(hook)
-    return f"{summary} ({source_path})" if source_path else summary
+    if source_path is None:
+        return config_source_label(source)
+    return f"{config_source_label(source)} - {format_directory_display(source_path, None)}"
 
 
 def config_source_label(source: Any) -> str:
-    return str(source).split(".")[-1]
+    normalized = _normalize_source(source)
+    return {
+        HookSource.SYSTEM.value: "Admin config",
+        HookSource.USER.value: "User config",
+        HookSource.PROJECT.value: "Project config",
+        HookSource.MDM.value: "Admin config",
+        HookSource.SESSION_FLAGS.value: "Session flags",
+        HookSource.CLOUD_REQUIREMENTS.value: "Admin config",
+        HookSource.LEGACY_MANAGED_CONFIG_FILE.value: "Admin config",
+        HookSource.LEGACY_MANAGED_CONFIG_MDM.value: "Admin config",
+        HookSource.UNKNOWN.value: "Unknown source",
+        HookSource.PLUGIN.value: "Plugin",
+    }.get(normalized, normalized)
 
 
 def detail_line(label: str, value: str) -> str:
-    return f"{label}: {value}"
+    return f"{label:<10}{value}"
 
 
 def detail_wrapped_lines(label: str, value: str, width: int, max_lines: Optional[int] = None) -> List[str]:
-    prefix = f"{label}: "
+    prefix = f"{label:<10}"
     available = max(1, width - len(prefix))
     wrapped = wrap(value, available) or [""]
+    truncated = max_lines is not None and len(wrapped) > max_lines
     if max_lines is not None:
         wrapped = wrapped[:max_lines]
-    lines = []
+    if truncated and wrapped:
+        wrapped[-1] = _truncate_with_ellipsis(
+            f"{wrapped[-1]}…",
+            available,
+        )
+    lines: List[str] = []
     for idx, chunk in enumerate(wrapped):
         lines.append((prefix if idx == 0 else " " * len(prefix)) + chunk)
     return lines
+
+
+def _normalize_source(source: Any) -> str:
+    if isinstance(source, Enum):
+        source = source.value
+    text = str(source).split(".")[-1]
+    token = "".join(character.lower() for character in text if character.isalnum())
+    for candidate in HookSource:
+        candidate_token = "".join(
+            character.lower() for character in candidate.value if character.isalnum()
+        )
+        if token == candidate_token:
+            return candidate.value
+    return text
+
+
+def _truncate_with_ellipsis(text: str, width: int) -> str:
+    available = max(0, int(width))
+    if len(text) <= available:
+        return text
+    if available == 0:
+        return ""
+    if available == 1:
+        return "…"
+    return text[: available - 1] + "…"
 
 
 def handle_key_event(view: HooksBrowserView, key_event: Any) -> str:
@@ -699,6 +945,11 @@ def hook(
         is_managed=is_managed,
         display_order=display_order,
         current_hash="sha256:current",
+        trust_status=(
+            HookTrustStatus.MANAGED.value
+            if is_managed
+            else HookTrustStatus.TRUSTED.value
+        ),
     )
 
 

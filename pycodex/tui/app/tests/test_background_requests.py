@@ -152,7 +152,7 @@ def test_marketplace_add_and_plugin_enabled_write_are_semantic_rpc_plans(tmp_pat
         params={
             "key_path": "plugins.sample",
             "value": {"enabled": False},
-            "merge_strategy": "Upsert",
+            "merge_strategy": "upsert",
         },
         error_context="config/value/write failed while updating plugin enablement in TUI",
         completion_event="PluginEnabledSet",

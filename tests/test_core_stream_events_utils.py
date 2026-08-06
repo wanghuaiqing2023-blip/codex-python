@@ -101,6 +101,8 @@ from pycodex.core import (
     tool_call_lifecycle_plan,
     unexpected_tool_output_plan,
 )
+from pycodex.core.session.session import Session
+from pycodex.exec.session import ExecSessionConfig
 from pycodex.core.client import SamplingRequestRuntimeHookAdapter, SamplingRuntimeEventApplicationState
 from pycodex.core.tools.router import ToolRouter
 from pycodex.core.function_tool import FunctionCallError
@@ -737,6 +739,41 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             self.assertEqual(session.recorded[0].role, "developer")
             self.assertIn("Generated images are saved to", session.recorded[0].content[0].text)
             self.assertIn(str(image_generation_artifact_path(Path(temp_dir), "session-1", "<image_id>")), session.recorded[0].content[0].text)
+
+    def test_product_turn_context_preserves_codex_home_for_generated_image(self) -> None:
+        """Rust: ``TurnContext.config.codex_home`` owns generated-image artifacts."""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_home = Path(temp_dir)
+            session = Session(
+                cwd=codex_home,
+                session_config=ExecSessionConfig(
+                    model="gpt-test",
+                    model_provider_id="openai",
+                    cwd=codex_home,
+                    codex_home=codex_home,
+                ),
+            )
+            turn_context = _run_async(session.new_default_turn())
+
+            turn_item = _run_async(
+                handle_non_tool_response_item_with_contributors(
+                    session,
+                    turn_context,
+                    None,
+                    ResponseItem.image_generation_call("ig-product", "completed", "Zm9v"),
+                    False,
+                )
+            )
+
+            expected_path = image_generation_artifact_path(
+                codex_home,
+                str(session.conversation_id),
+                "ig-product",
+            )
+            self.assertEqual(turn_context.config.codex_home, codex_home)
+            self.assertEqual(turn_item.item.saved_path, expected_path)
+            self.assertEqual(expected_path.read_bytes(), b"foo")
 
     def test_apply_turn_item_contributors_ignores_failed_contributor(self) -> None:
         original = TurnItem.agent_message(

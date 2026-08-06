@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -5,6 +6,8 @@ import pytest
 
 from pycodex.config import ConfigLayerEntry, ConfigLayerSource, ConfigLayerStack
 from pycodex.core.client import ModelClient
+from pycodex.core import ToolInfo
+from pycodex.core.hook_runtime import run_user_prompt_submit_hooks
 from pycodex.core.session.turn.runtime import (
     build_user_turn_responses_request_from_session,
     built_tools,
@@ -14,7 +17,8 @@ from pycodex.core_skills import SkillsManager
 from pycodex.exec.local_runtime import LocalHttpModelInfo, LocalHttpProvider, create_exec_core_session
 from pycodex.exec.session import ExecSessionConfig
 from pycodex.codex_mcp import McpConnectionManager
-from pycodex.protocol import SessionSource, UserInput
+from pycodex.features import Feature, Features
+from pycodex.protocol import ResponseItem, SessionSource, Tool, UserInput
 
 
 def _skill(path: Path, name: str) -> None:
@@ -39,6 +43,83 @@ def test_product_session_services_owns_model_client(tmp_path: Path, monkeypatch)
     session = create_exec_core_session(config, model_info, model_client=model_client)
 
     assert session.services.model_client is model_client
+
+
+@pytest.mark.asyncio
+async def test_product_session_services_runs_configured_user_prompt_submit_hook(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # Rust: codex-core::session::session::build_hooks_for_config installs the
+    # registry in SessionServices, and hook_runtime::run_user_prompt_submit_hooks
+    # executes it before sampling.
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    audit_log = tmp_path / "hook-audit.jsonl"
+    hook_script = tmp_path / "audit_hook.py"
+    hook_script.write_text(
+        "from pathlib import Path\n"
+        "import json\n"
+        "import sys\n"
+        "payload = json.load(sys.stdin)\n"
+        f"Path({str(audit_log)!r}).write_text(json.dumps(payload), encoding='utf-8')\n"
+        "print(json.dumps({'hookSpecificOutput': {"
+        "'hookEventName': 'UserPromptSubmit', "
+        "'additionalContext': 'session hook context'}}))\n",
+        encoding="utf-8",
+    )
+    command = f'python -B "{hook_script}"'
+    stack = ConfigLayerStack.new(
+        (
+            ConfigLayerEntry.new(
+                ConfigLayerSource.user(codex_home / "config.toml"),
+                {
+                    "hooks": {
+                        "UserPromptSubmit": [
+                            {
+                                "hooks": [
+                                    {
+                                        "type": "command",
+                                        "command": command,
+                                        "commandWindows": command,
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+            ),
+        )
+    )
+    config = ExecSessionConfig(
+        model="gpt-test",
+        model_provider_id="openai",
+        cwd=tmp_path,
+        bypass_hook_trust=True,
+        config_layer_stack=stack,
+    )
+    session = create_exec_core_session(
+        config,
+        LocalHttpModelInfo(slug="gpt-test", base_instructions="base"),
+        thread_id="thread-hooks",
+    )
+
+    turn = await session.new_default_turn()
+    outcome = await run_user_prompt_submit_hooks(
+        session,
+        turn,
+        prompt="audit this prompt",
+    )
+
+    assert outcome is not None
+    assert outcome.should_stop is False
+    assert outcome.additional_contexts == ("session hook context",)
+    assert json.loads(audit_log.read_text(encoding="utf-8"))["prompt"] == "audit this prompt"
+    assert [event.type for event in session.emitted_events[-2:]] == [
+        "hook_started",
+        "hook_completed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -140,6 +221,95 @@ async def test_product_session_reuses_managers_config_and_router_across_turns(
         "read_mcp_resource",
     }.issubset(first_names)
     assert first_names == second_names
+
+
+@pytest.mark.asyncio
+async def test_product_session_exposes_codex_apps_tools_when_exec_config_enables_apps(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # Rust: codex-core::session::turn::built_tools uses TurnContext::apps_enabled,
+    # whose product-session state is backed by Config::features plus ChatGPT auth.
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    features = Features.with_defaults().enable(Feature.APPS)
+    config = ExecSessionConfig(
+        model="gpt-test",
+        model_provider_id="openai",
+        cwd=tmp_path,
+        features=features,
+    )
+
+    class ChatGptAuthManager:
+        def current_auth_uses_codex_backend(self):
+            return True
+
+    session = create_exec_core_session(
+        config,
+        LocalHttpModelInfo(slug="gpt-test", base_instructions="base"),
+        auth_manager=ChatGptAuthManager(),
+    )
+    app_tool = ToolInfo(
+        server_name="codex_apps",
+        callable_namespace="mcp__codex_apps__github",
+        callable_name="_get_user_login",
+        tool=Tool(
+            name="github_get_user_login",
+            description="Return the authenticated GitHub login.",
+            input_schema={"type": "object", "properties": {}},
+        ),
+        connector_id="connector_github",
+        connector_name="GitHub",
+    )
+
+    class AppsMcpManager:
+        def __init__(self):
+            self.calls = []
+
+        async def list_all_tools(self):
+            return (app_tool,)
+
+        async def has_servers(self):
+            return True
+
+        async def call_tool(self, server, tool_name, arguments, meta):
+            self.calls.append((server, tool_name, arguments, meta))
+            return {
+                "content": [{"type": "text", "text": "fixture-github-user"}],
+                "isError": False,
+            }
+
+    mcp_manager = AppsMcpManager()
+    session.services.mcp_connection_manager = mcp_manager
+
+    turn = await session.new_default_turn()
+    router = await built_tools(session, turn)
+
+    assert turn.config.apps_enabled() is False
+    assert turn.apps_enabled() is True
+    assert any(
+        spec.get("type") == "namespace"
+        and spec.get("name") == "mcp__codex_apps__github"
+        and any(tool.get("name") == "_get_user_login" for tool in spec.get("tools", ()))
+        for spec in router.model_visible_specs()
+    )
+    call = router.build_tool_call(
+        ResponseItem.function_call(
+            "_get_user_login",
+            "{}",
+            "call-github-login",
+            namespace="mcp__codex_apps__github",
+        )
+    )
+    assert call is not None
+    output = await router.dispatch_tool_call_with_terminal_outcome(call)
+    assert output.result.result.content == (
+        {"type": "text", "text": "fixture-github-user"},
+    )
+    assert mcp_manager.calls == [
+        ("codex_apps", "github_get_user_login", {}, None)
+    ]
 
 
 @pytest.mark.asyncio

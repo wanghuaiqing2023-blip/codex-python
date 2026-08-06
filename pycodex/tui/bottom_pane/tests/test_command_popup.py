@@ -197,7 +197,7 @@ def test_command_popup_projects_through_chatwidget_rendering_buffer():
     assert "\u203a /m" in buffer.plain()
     assert "/model" in buffer.plain()
     assert "/memories" in buffer.plain()
-    assert buffer.cell(0, selected_writes[0].row - 1).style.fg == RatatuiColor.LightBlue
+    assert buffer.cell(0, selected_writes[0].row - 1).style.fg == RatatuiColor.Cyan
 
 
 def test_filter_extraction_uses_first_line_and_trims_after_slash():

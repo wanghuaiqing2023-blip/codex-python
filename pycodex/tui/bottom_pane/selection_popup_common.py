@@ -14,6 +14,7 @@ from typing import Any, Iterable, List, MutableSequence, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..ratatui_bridge import Color as RatatuiColor
+from ..ratatui_bridge import Modifier as RatatuiModifier
 from ..ratatui_bridge import Span as RatatuiSpan
 from ..ratatui_bridge import Rect
 from ..ratatui_bridge import Style as RatatuiStyle
@@ -61,7 +62,11 @@ class TerminalPopupLine:
     spans: Tuple[RatatuiSpan, ...] = ()
 
 
-TERMINAL_POPUP_SELECTED_ROW_STYLE = RatatuiStyle.default().with_fg(RatatuiColor.LightBlue)
+TERMINAL_POPUP_SELECTED_ROW_STYLE = (
+    RatatuiStyle.default()
+    .with_fg(RatatuiColor.Cyan)
+    .add_modifier(RatatuiModifier.BOLD)
+)
 
 
 def terminal_popup_line_style(*, selected: bool) -> RatatuiStyle:
@@ -251,6 +256,8 @@ def wrap_two_column_row(row: GenericDisplayRow, desc_col: int, width: int) -> Li
 def wrap_standard_row(row: GenericDisplayRow, desc_col: int, width: int) -> List[Line]:
     line = build_full_line(row, desc_col)
     width = max(width, 1)
+    if line.width <= width:
+        return [line]
     indent = " " * wrap_indent(row, desc_col, width)
     chunks = textwrap.wrap(line.text, width=width, subsequent_indent=indent, replace_whitespace=False, drop_whitespace=False) or [""]
     return [Line.from_text(chunk) for chunk in chunks]
@@ -265,13 +272,27 @@ def wrap_row_lines(row: GenericDisplayRow, desc_col: int, width: int) -> List[Li
 
 
 def apply_row_state_style(lines: List[Line], selected: bool, is_disabled: bool) -> None:
-    style = "accent" if selected else None
-    if is_disabled:
-        style = "dim" if style is None else f"{style}+dim"
-    if style is None:
-        return
     for idx, line in enumerate(lines):
-        lines[idx] = Line(tuple(Span(span.text, style) for span in line.spans))
+        lines[idx] = Line(
+            tuple(
+                Span(
+                    span.text,
+                    (
+                        "accent+dim"
+                        if selected and is_disabled
+                        else "accent"
+                        if selected
+                        else "+".join(
+                            part
+                            for part in (span.style, "dim" if is_disabled else None)
+                            if part and part != "plain"
+                        )
+                        or "plain"
+                    ),
+                )
+                for span in line.spans
+            )
+        )
 
 
 def compute_item_window_start(rows_all: List[GenericDisplayRow], state: ScrollState, max_items: int) -> int:
@@ -391,6 +412,7 @@ def render_terminal_popup_lines(
     max_results: int,
     empty_message: str,
     column_width: ColumnWidthConfig,
+    single_line: bool = False,
 ) -> List[TerminalPopupLine]:
     """Render selection-popup rows into terminal live-pane DTOs.
 
@@ -403,15 +425,24 @@ def render_terminal_popup_lines(
     # Rust ListSelectionView pairs wrapped rendering with the matching height
     # measurement. The measure helper subtracts one cell, so pass width + 1
     # just as list_selection_view.rs does for its render area's width.
-    render_height = measure_rows_height_with_col_width_mode(
-        rows_all,
-        state,
-        max_results,
-        render_width + 1,
-        column_width,
+    render_height = (
+        min(max_results, max(1, len(rows_all)))
+        if single_line
+        else measure_rows_height_with_col_width_mode(
+            rows_all,
+            state,
+            max_results,
+            render_width + 1,
+            column_width,
+        )
     )
     buffer: list[Line] = []
-    render_rows_with_col_width_mode(
+    renderer = (
+        render_rows_single_line_with_col_width_mode
+        if single_line
+        else render_rows_with_col_width_mode
+    )
+    renderer(
         Rect(0, 0, render_width, render_height),
         buffer,
         rows_all,
@@ -424,9 +455,28 @@ def render_terminal_popup_lines(
         TerminalPopupLine(
             line.text,
             _line_has_accent_style(line),
+            tuple(
+                RatatuiSpan.styled(span.text, _terminal_style_from_semantic(span.style))
+                for span in line.spans
+                if span.text
+            ),
         )
         for line in buffer
     ]
+
+
+def _terminal_style_from_semantic(style: str) -> RatatuiStyle:
+    result = RatatuiStyle.default()
+    parts = {part for part in str(style).split("+") if part}
+    if "bold" in parts:
+        result = result.add_modifier(RatatuiModifier.BOLD)
+    if "dim" in parts:
+        result = result.add_modifier(RatatuiModifier.DIM)
+    if "italic" in parts:
+        result = result.add_modifier(RatatuiModifier.ITALIC)
+    if "underline" in parts or "underlined" in parts:
+        result = result.add_modifier(RatatuiModifier.UNDERLINED)
+    return result
 
 
 def render_rows_single_line(

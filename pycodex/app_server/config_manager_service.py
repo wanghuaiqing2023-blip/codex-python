@@ -171,20 +171,51 @@ class ConfigManagerService:
 
 @dataclass(frozen=True)
 class InProcessConfigRequestHandle:
-    """Route TUI config requests through the app-server config service.
+    """Route local TUI requests through in-process app-server processors.
 
     Rust TUI always owns an ``AppServerRequestHandle``. The Python terminal
-    product runs the request processor and service in-process, so this adapter
-    only translates the typed transport envelope.
+    product runs the relevant processors and services in-process, so this
+    adapter translates the typed transport envelope without a TUI-only data
+    loading path.
     """
 
     processor: Any
+    catalog_processor: Any = None
 
     def request_typed(self, request: Any) -> Any:
         kind = _field(request, "kind", _field(request, "type", None))
-        if kind != "ConfigBatchWrite":
-            raise RuntimeError(f"unsupported in-process config request: {kind}")
-        return self.processor.batch_write(_config_batch_write_params(_field(request, "params", None)))
+        if kind == "ConfigBatchWrite":
+            return self.processor.batch_write(
+                _config_batch_write_params(_field(request, "params", None))
+            )
+        if kind == "SkillsConfigWrite":
+            return self._write_skill_config(_field(request, "params", None))
+        if kind == "HooksList" and self.catalog_processor is not None:
+            return self.catalog_processor.hooks_list(
+                _field(request, "params", None)
+            )
+        raise RuntimeError(f"unsupported in-process config request: {kind}")
+
+    async def _write_skill_config(self, params: Any) -> Any:
+        """Route Rust ``skills/config/write`` through core config edits."""
+
+        path = _field(params, "path", None)
+        name = _field(params, "name", None)
+        enabled = bool(_field(params, "enabled", False))
+        has_path = path is not None
+        has_name = isinstance(name, str) and bool(name.strip())
+        if has_path == has_name:
+            raise ValueError(
+                "skills/config/write requires exactly one of path or name"
+            )
+        manager = self.processor.config_manager
+        builder = CoreConfigEditsBuilder.for_config_path(manager.user_config_path())
+        if has_path:
+            builder.set_skill_config(str(path), enabled)
+        else:
+            builder.set_skill_config_by_name(str(name), enabled)
+        await builder.apply()
+        return {"effective_enabled": enabled}
 
 
 def _field(source: Any, name: str, default: Any = None) -> Any:

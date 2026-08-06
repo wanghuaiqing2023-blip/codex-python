@@ -500,6 +500,7 @@ class SamplingOutputItemDoneApplyPlan:
     state_after_output_result: SamplingOutputState | None = None
     mailbox_preemption_plan: SamplingMailboxPreemptionPlan | None = None
     completed_item: ResponseItem | None = None
+    completed_turn_item: TurnItem | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.transition_plan, SamplingOutputItemDoneTransitionPlan):
@@ -530,6 +531,8 @@ class SamplingOutputItemDoneApplyPlan:
             raise TypeError("mailbox_preemption_plan must be SamplingMailboxPreemptionPlan or None")
         if self.completed_item is not None:
             _ensure_response_item(self.completed_item)
+        if self.completed_turn_item is not None and not isinstance(self.completed_turn_item, TurnItem):
+            raise TypeError("completed_turn_item must be a TurnItem or None")
 
 
 @dataclass(frozen=True)
@@ -2224,6 +2227,7 @@ def sampling_stream_event_apply_plan(
     state: SamplingOutputState | None = None,
     output_item_done_item: ResponseItem | None = None,
     output_item_done_result: OutputItemResult | None = None,
+    output_item_done_turn_item: TurnItem | None = None,
     has_pending_mailbox_items: bool = False,
     assistant_message_stream_parsers: object | None = None,
     memories_disable_on_external_context: bool = False,
@@ -2254,6 +2258,7 @@ def sampling_stream_event_apply_plan(
                 plan_mode=plan_mode,
                 state=state,
                 output_result=output_item_done_result,
+                completed_turn_item=output_item_done_turn_item,
                 has_pending_mailbox_items=has_pending_mailbox_items,
                 memories_disable_on_external_context=memories_disable_on_external_context,
                 plan_item_id=plan_item_id,
@@ -2392,6 +2397,7 @@ def sampling_output_item_done_apply_plan(
     plan_mode: bool,
     state: SamplingOutputState,
     output_result: OutputItemResult | None = None,
+    completed_turn_item: TurnItem | None = None,
     has_pending_mailbox_items: bool = False,
     memories_disable_on_external_context: bool = False,
     plan_item_id: str = "plan",
@@ -2409,6 +2415,8 @@ def sampling_output_item_done_apply_plan(
         raise TypeError("state must be a SamplingOutputState")
     if output_result is not None and not isinstance(output_result, OutputItemResult):
         raise TypeError("output_result must be an OutputItemResult or None")
+    if completed_turn_item is not None and not isinstance(completed_turn_item, TurnItem):
+        raise TypeError("completed_turn_item must be a TurnItem or None")
     _ensure_bool(has_pending_mailbox_items, "has_pending_mailbox_items")
 
     streamed_assistant_text_plan = None
@@ -2446,6 +2454,7 @@ def sampling_output_item_done_apply_plan(
                 should_continue_loop=True,
                 preempt_for_mailbox_mail=sampling_item_preempts_for_mailbox_mail(item),
                 completed_item=item,
+                completed_turn_item=completed_turn_item,
             )
 
     if output_result is None:
@@ -2467,6 +2476,7 @@ def sampling_output_item_done_apply_plan(
         state_after_output_result=state_after,
         mailbox_preemption_plan=mailbox_preemption_plan,
         completed_item=item,
+        completed_turn_item=completed_turn_item,
     )
 
 

@@ -98,7 +98,25 @@ def test_decode_mcp_image_accepts_plain_and_data_url_png() -> None:
 
 
 def test_empty_mcp_output_and_status_inventory_lines() -> None:
-    assert "No MCP servers configured" in "\n".join(texts(empty_mcp_output().display_lines(80)))
+    empty = empty_mcp_output()
+    empty_lines = empty.display_lines(80)
+    assert texts(empty_lines) == [
+        "/mcp",
+        "",
+        "🔌  MCP Tools",
+        "",
+        "  • No MCP servers configured.",
+        "    See the MCP docs to configure them.",
+    ]
+    assert empty_lines[0].spans[0].style == "magenta"
+    assert empty_lines[2].spans[-1].style == "bold"
+    assert empty_lines[4].style == "italic"
+    assert empty_lines[5].style == "dim"
+    assert empty_lines[5].spans[1].style == "underlined"
+    assert [
+        (link.columns, link.destination)
+        for link in empty.display_hyperlink_lines(80)[5].hyperlinks
+    ] == [(range(12, 20), "https://developers.openai.com/codex/mcp")]
 
     cell = new_mcp_tools_output_from_statuses(
         [
@@ -116,17 +134,29 @@ def test_empty_mcp_output_and_status_inventory_lines() -> None:
 
     rendered = texts(cell.display_lines(80))
 
-    assert rendered[:5] == ["/mcp", "", "MCP Tools", "", "  - alpha"]
-    assert "    - Tools: z" in rendered
-    assert "    - Resources: Docs (file://docs)" in rendered
-    assert "    - Resource templates: Item (item://{id})" in rendered
+    assert rendered[:5] == ["/mcp", "", "🔌  MCP Tools", "", "  • alpha"]
+    assert "    • Tools: z" in rendered
+    assert "    • Resources: Docs (file://docs)" in rendered
+    assert "    • Resource templates: Item (item://{id})" in rendered
+    resource_line = next(
+        line for line in cell.display_lines(80) if "Resources: Docs" in line_text(line)
+    )
+    template_line = next(
+        line
+        for line in cell.display_lines(80)
+        if "Resource templates: Item" in line_text(line)
+    )
+    assert resource_line.spans[-1].style == "dim"
+    assert template_line.spans[-1].style == "dim"
 
 
 def test_inventory_loading_cell_animates_only_when_enabled() -> None:
     animated = new_mcp_inventory_loading(True)
     static = McpInventoryLoadingCell.new(False)
 
-    assert texts(animated.display_lines(80)) == ["- Loading MCP inventory..."]
+    display = animated.display_lines(80)
+    assert texts(display) == ["• Loading MCP inventory…"]
+    assert [span.style for span in display[0].spans] == ["dim", None, "bold", "dim"]
     assert texts(animated.raw_lines()) == ["Loading MCP inventory..."]
     assert animated.transcript_animation_tick() == 0
     assert static.transcript_animation_tick() is None

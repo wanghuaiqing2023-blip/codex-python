@@ -611,7 +611,7 @@ class TerminalSlashCommandEffectDispatcher:
                 "session_config",
                 None,
             )
-            self.app_runtime.insert_history_cell(
+            self.app_runtime.chat_widget.begin_mcp_inventory_loading(
                 new_mcp_inventory_loading(
                     bool(getattr(config, "animations", True))
                 )

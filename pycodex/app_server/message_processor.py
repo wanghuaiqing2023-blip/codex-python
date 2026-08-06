@@ -177,7 +177,10 @@ class MessageProcessorRequestError(Exception):
         self.error = error
 
 
-DEFAULT_REQUEST_ROUTES: dict[str, tuple[str, str]] = {
+RequestRoute = tuple[str, str] | tuple[str, str, str] | Callable[..., Any]
+
+
+DEFAULT_REQUEST_ROUTES: dict[str, RequestRoute] = {
     "ConfigRead": ("config_processor", "read"),
     "WindowsSandboxReadiness": ("windows_sandbox_processor", "windows_sandbox_readiness"),
     "RemoteControlEnable": ("remote_control_processor", "enable"),
@@ -206,6 +209,34 @@ DEFAULT_REQUEST_ROUTES: dict[str, tuple[str, str]] = {
     "McpServerStatusList": ("mcp_processor", "mcp_server_status_list"),
     "McpResourceRead": ("mcp_processor", "mcp_resource_read"),
     "McpServerToolCall": ("mcp_processor", "mcp_server_tool_call"),
+    "ModelList": ("catalog_processor", "model_list", "params_only"),
+    "CollaborationModeList": (
+        "catalog_processor",
+        "collaboration_mode_list",
+        "params_only",
+    ),
+    "ExperimentalFeatureList": (
+        "catalog_processor",
+        "experimental_feature_list",
+        "params_only",
+    ),
+    "PermissionProfileList": (
+        "catalog_processor",
+        "permission_profile_list",
+        "params_only",
+    ),
+    "SkillsList": ("catalog_processor", "skills_list", "params_only"),
+    "HooksList": ("catalog_processor", "hooks_list", "params_only"),
+    "SkillsConfigWrite": (
+        "catalog_processor",
+        "skills_config_write",
+        "params_only",
+    ),
+    "MockExperimentalMethod": (
+        "catalog_processor",
+        "mock_experimental_method",
+        "params_only",
+    ),
     "AppsList": ("apps_processor", "apps_list"),
     "LoginAccount": ("account_processor", "login_account"),
     "LogoutAccount": ("account_processor", "logout_account"),
@@ -232,7 +263,7 @@ class MessageProcessor:
         self,
         args: MessageProcessorArgs,
         *,
-        request_routes: Mapping[str, tuple[str, str] | Callable[..., Any]] | None = None,
+        request_routes: Mapping[str, RequestRoute] | None = None,
     ) -> None:
         self.outgoing = args.outgoing
         self.analytics_events_client = args.analytics_events_client
@@ -257,6 +288,9 @@ class MessageProcessor:
         )
         from pycodex.app_server.request_processors_apps_processor import (
             AppsRequestProcessor,
+        )
+        from pycodex.app_server.request_processors_catalog_processor import (
+            CatalogRequestProcessor,
         )
         from pycodex.chatgpt.workspace_settings import WorkspaceSettingsCache
         from pycodex.core.codex_delegate import CancellationToken
@@ -292,6 +326,7 @@ class MessageProcessor:
                 args.rpc_transport,
             ),
         )
+        workspace_settings_cache = WorkspaceSettingsCache()
         processors.setdefault(
             "apps_processor",
             AppsRequestProcessor.new(
@@ -299,8 +334,18 @@ class MessageProcessor:
                 thread_manager,
                 args.outgoing,
                 args.config_manager,
-                WorkspaceSettingsCache(),
+                workspace_settings_cache,
                 CancellationToken(),
+            ),
+        )
+        processors.setdefault(
+            "catalog_processor",
+            CatalogRequestProcessor.new(
+                args.auth_manager,
+                thread_manager,
+                args.config,
+                args.config_manager,
+                workspace_settings_cache,
             ),
         )
         effective_args = MessageProcessorArgs(
@@ -471,9 +516,11 @@ class MessageProcessor:
                 app_server_client_name,
                 client_version,
             )
-        processor_name, method_name = route
+        processor_name, method_name, *options = route
         processor = getattr(self, processor_name)
         handler = getattr(processor, method_name)
+        if options == ["params_only"]:
+            return await _call_processor(handler, codex_request.params)
         return await _call_processor(handler, connection_request_id, codex_request.params, codex_request)
 
     async def connection_closed(self, connection_id: Any, session_state: ConnectionSessionState) -> None:
