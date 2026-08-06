@@ -9,6 +9,7 @@ from pycodex.tui.bottom_pane.skill_popup import plugin_mention_item
 from pycodex.tui.bottom_pane.skill_popup import query_match_score_sorts_before_plugin_rank_bias
 from pycodex.tui.bottom_pane.skill_popup import scrolling_mentions_shifts_rendered_window_snapshot
 from pycodex.tui.bottom_pane.skill_popup import skill_popup_hint_line
+from pycodex.tui.bottom_pane.skill_popup import truncate_text
 
 
 def test_filtered_mentions_preserve_results_beyond_popup_height():
@@ -97,9 +98,19 @@ def test_rows_description_composition_and_truncation():
 
     row = popup.rows_from_matches(popup.filtered())[0]
 
-    assert row.name.endswith(".")
+    assert row.name.endswith("...")
+    assert len(row.name) == 28
     assert row.description == "[Skill] Useful skill"
     assert row.selected is True
+
+
+def test_truncate_text_matches_rust_grapheme_and_three_dot_contract():
+    assert truncate_text("alpha-workflows-skill (alpha-workflows)", 28) == (
+        "alpha-workflows-skill (al..."
+    )
+    assert truncate_text("e\N{COMBINING ACUTE ACCENT}abcd", 4) == (
+        "e\N{COMBINING ACUTE ACCENT}..."
+    )
 
 
 def test_set_mentions_query_clamp_empty_and_hint_line():
@@ -113,7 +124,7 @@ def test_set_mentions_query_clamp_empty_and_hint_line():
     assert popup.selected_mention().display_name == "Mention 00"
     popup.set_query("zzz")
     assert popup.selected_mention() is None
-    assert skill_popup_hint_line() == "Press Enter to insert or Esc to close"
+    assert skill_popup_hint_line() == "Press enter to insert or esc to close"
 
 
 def test_rust_named_semantic_helpers_cover_internal_behavior():

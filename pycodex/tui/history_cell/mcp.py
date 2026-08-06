@@ -13,8 +13,9 @@ from time import monotonic
 from typing import Any, Iterable, Mapping
 
 from .._porting import RustTuiModule
-from ..line_truncation import Line
-from .base import PlainHistoryCell
+from ..line_truncation import Line, Span
+from ..terminal_hyperlinks import HyperlinkLine, TerminalHyperlink, visible_lines
+from .base import plain_lines
 from .messages import raw_lines_from_source
 
 RUST_MODULE = RustTuiModule(
@@ -66,6 +67,34 @@ def line_text(line: Line) -> str:
 
 def mcp_auth_status_label(status: McpAuthStatus | str | Any) -> str:
     return McpAuthStatus.coerce(status).value
+
+
+@dataclass
+class McpInventoryHistoryCell:
+    """Styled `/mcp` inventory with semantic OSC-8 links.
+
+    Rust stores these as styled ``Line`` values inside ``PlainHistoryCell``.
+    The Python history facade carries links separately, so this cell preserves
+    the same visible line styles while retaining the MCP documentation link.
+    """
+
+    lines: list[HyperlinkLine] = field(default_factory=list)
+
+    def display_lines(self, _width: int) -> list[Line]:
+        return visible_lines(self.lines)
+
+    def display_hyperlink_lines(self, _width: int) -> list[HyperlinkLine]:
+        return list(self.lines)
+
+    def transcript_hyperlink_lines(self, width: int) -> list[HyperlinkLine]:
+        return self.display_hyperlink_lines(width)
+
+    def raw_lines(self) -> list[Line]:
+        return plain_lines(visible_lines(self.lines))
+
+
+def _inventory_line(*spans: Span | str, style: Any = None) -> HyperlinkLine:
+    return HyperlinkLine.new(Line.from_spans(spans, style=style))
 
 
 @dataclass(frozen=True)
@@ -286,15 +315,29 @@ def try_new_completed_mcp_tool_call_with_image_output(result: CallToolResult | d
     return None
 
 
-def empty_mcp_output() -> PlainHistoryCell:
-    return PlainHistoryCell.new(
+def empty_mcp_output() -> McpInventoryHistoryCell:
+    docs_prefix = "    See the "
+    docs_label = "MCP docs"
+    docs_line = _inventory_line(
+        docs_prefix,
+        Span(docs_label, "underlined"),
+        " to configure them.",
+        style="dim",
+    )
+    docs_line.hyperlinks.append(
+        TerminalHyperlink(
+            range(len(docs_prefix), len(docs_prefix) + len(docs_label)),
+            MCP_DOCS_URL,
+        )
+    )
+    return McpInventoryHistoryCell(
         [
-            "/mcp",
-            "",
-            "MCP Tools",
-            "",
-            "  - No MCP servers configured.",
-            f"    See the MCP docs to configure them: {MCP_DOCS_URL}",
+            _inventory_line(Span("/mcp", "magenta")),
+            _inventory_line(""),
+            _inventory_line("🔌  ", Span("MCP Tools", "bold")),
+            _inventory_line(""),
+            _inventory_line("  • No MCP servers configured.", style="italic"),
+            docs_line,
         ]
     )
 
@@ -325,8 +368,16 @@ class ResourceTemplate:
         if isinstance(value, cls):
             return value
         if isinstance(value, dict):
-            return cls(str(value.get("name", "")), str(value.get("uri_template", "")), value.get("title"))
-        return cls(str(getattr(value, "name")), str(getattr(value, "uri_template")), getattr(value, "title", None))
+            return cls(
+                str(value.get("name", "")),
+                str(value.get("uri_template", value.get("uriTemplate", ""))),
+                value.get("title"),
+            )
+        return cls(
+            str(getattr(value, "name")),
+            str(getattr(value, "uri_template", getattr(value, "uriTemplate", ""))),
+            getattr(value, "title", None),
+        )
 
 
 @dataclass(frozen=True)
@@ -358,33 +409,72 @@ class McpServerStatus:
         )
 
 
-def _label_name_uri(item: Resource | ResourceTemplate) -> str:
-    label = item.title or item.name
-    uri = item.uri if isinstance(item, Resource) else item.uri_template
-    return f"{label} ({uri})"
-
-
 def new_mcp_tools_output_from_statuses(
     statuses: Iterable[McpServerStatus | dict[str, Any] | Any],
     detail: McpServerStatusDetail | str | Any,
-) -> PlainHistoryCell:
+) -> McpInventoryHistoryCell:
     detail = McpServerStatusDetail.coerce(detail)
     status_list = sorted((McpServerStatus.coerce(status) for status in statuses), key=lambda item: item.name)
-    lines = ["/mcp", "", "MCP Tools", ""]
+    lines = [
+        _inventory_line(Span("/mcp", "magenta")),
+        _inventory_line(""),
+        _inventory_line("🔌  ", Span("MCP Tools", "bold")),
+        _inventory_line(""),
+    ]
     if not any(status.tools for status in status_list):
-        lines.extend(["  - No MCP tools available.", ""])
+        lines.extend(
+            [
+                _inventory_line("  • No MCP tools available.", style="italic"),
+                _inventory_line(""),
+            ]
+        )
     for status in status_list:
-        lines.append(f"  - {status.name}")
-        lines.append(f"    - Auth: {mcp_auth_status_label(status.auth_status)}")
+        lines.append(_inventory_line("  • ", status.name))
+        lines.append(
+            _inventory_line(
+                "    • Auth: ", mcp_auth_status_label(status.auth_status)
+            )
+        )
         names = sorted(status.tools.keys())
-        lines.append(f"    - Tools: {', '.join(names) if names else '(none)'}")
+        lines.append(
+            _inventory_line(
+                "    • Tools: ", ", ".join(names) if names else "(none)"
+            )
+        )
         if detail is McpServerStatusDetail.Full:
-            resources = ", ".join(_label_name_uri(item) for item in status.resources)
-            templates = ", ".join(_label_name_uri(item) for item in status.resource_templates)
-            lines.append(f"    - Resources: {resources if resources else '(none)'}")
-            lines.append(f"    - Resource templates: {templates if templates else '(none)'}")
-        lines.append("")
-    return PlainHistoryCell.new(lines)
+            resource_spans: list[Span | str] = ["    • Resources: "]
+            if status.resources:
+                for index, resource in enumerate(status.resources):
+                    if index:
+                        resource_spans.append(", ")
+                    resource_spans.extend(
+                        [
+                            resource.title or resource.name,
+                            " ",
+                            Span(f"({resource.uri})", "dim"),
+                        ]
+                    )
+            else:
+                resource_spans.append("(none)")
+            lines.append(_inventory_line(*resource_spans))
+
+            template_spans: list[Span | str] = ["    • Resource templates: "]
+            if status.resource_templates:
+                for index, template in enumerate(status.resource_templates):
+                    if index:
+                        template_spans.append(", ")
+                    template_spans.extend(
+                        [
+                            template.title or template.name,
+                            " ",
+                            Span(f"({template.uri_template})", "dim"),
+                        ]
+                    )
+            else:
+                template_spans.append("(none)")
+            lines.append(_inventory_line(*template_spans))
+        lines.append(_inventory_line(""))
+    return McpInventoryHistoryCell(lines)
 
 
 def new_mcp_tools_output(
@@ -393,7 +483,7 @@ def new_mcp_tools_output(
     resources: Mapping[str, Iterable[Any]] | None = None,
     resource_templates: Mapping[str, Iterable[Any]] | None = None,
     auth_statuses: Mapping[str, Any] | None = None,
-) -> PlainHistoryCell:
+) -> McpInventoryHistoryCell:
     servers = getattr(getattr(config, "mcp_servers", config), "get", lambda: getattr(config, "mcp_servers", {}))()
     if isinstance(config, dict):
         servers = config.get("mcp_servers", servers)
@@ -423,7 +513,16 @@ class McpInventoryLoadingCell:
         return cls(bool(animations_enabled))
 
     def display_lines(self, _width: int) -> list[Line]:
-        return [Line.from_text("- Loading MCP inventory...")]
+        return [
+            Line.from_spans(
+                [
+                    Span("•", "dim"),
+                    " ",
+                    Span("Loading MCP inventory", "bold"),
+                    Span("…", "dim"),
+                ]
+            )
+        ]
 
     def raw_lines(self) -> list[Line]:
         return [Line.from_text("Loading MCP inventory...")]
@@ -457,6 +556,7 @@ __all__ = [
     "MCP_DOCS_URL",
     "McpAuthStatus",
     "McpInventoryLoadingCell",
+    "McpInventoryHistoryCell",
     "McpInvocation",
     "McpServerStatus",
     "McpServerStatusDetail",

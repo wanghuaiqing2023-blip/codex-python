@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -38,19 +39,77 @@ class AppsTestServer:
 
     @classmethod
     async def mount(cls) -> "AppsTestServer":
+        return await cls.mount_with_tools(
+            (
+                {
+                    "name": "calendar_create_event",
+                    "description": "Create a calendar event",
+                    "inputSchema": {"type": "object"},
+                },
+                {
+                    "name": "calendar_list_events",
+                    "description": "List calendar events",
+                    "inputSchema": {"type": "object"},
+                },
+            )
+        )
+
+    @classmethod
+    async def mount_with_tools(
+        cls,
+        tools: tuple[dict[str, Any], ...] | list[dict[str, Any]],
+        *,
+        apps: tuple[dict[str, Any], ...] | list[dict[str, Any]] | None = None,
+        tool_call_result: dict[str, Any] | None = None,
+    ) -> "AppsTestServer":
         calls: list[dict[str, Any]] = []
         lock = threading.Lock()
+        listed_tools = [dict(tool) for tool in tools]
+        directory_apps = [
+            dict(app)
+            for app in (
+                apps
+                if apps is not None
+                else (
+                    {
+                        "id": "connector_2128aebfecb84f64a069897515042a44",
+                        "name": "Google Calendar",
+                        "description": "Plan events and schedules.",
+                    },
+                )
+            )
+        ]
+        configured_tool_call_result = (
+            dict(tool_call_result)
+            if tool_call_result is not None
+            else {"content": [{"type": "text", "text": "ok"}], "isError": False}
+        )
+        sessions: set[str] = set()
 
         class Handler(BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
 
-            def _json(self, value: Any) -> None:
-                body = json.dumps(value, separators=(",", ":")).encode()
-                self.send_response(200)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(body)))
+            def _json(
+                self,
+                value: Any = None,
+                *,
+                status: int = 200,
+                headers: tuple[tuple[str, str], ...] = (),
+            ) -> None:
+                body = (
+                    b""
+                    if value is None
+                    else json.dumps(value, separators=(",", ":")).encode()
+                )
+                self.send_response(status)
+                if body:
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(body)))
+                for name, header_value in headers:
+                    self.send_header(name, header_value)
                 self.end_headers()
-                self.wfile.write(body)
+                if body:
+                    self.wfile.write(body)
 
             def do_GET(self) -> None:  # noqa: N802
                 if self.path.startswith("/.well-known/oauth-authorization-server/mcp"):
@@ -65,13 +124,8 @@ class AppsTestServer:
                 if self.path.startswith("/connectors/directory/list"):
                     self._json(
                         {
-                            "apps": [
-                                {
-                                    "id": "connector_2128aebfecb84f64a069897515042a44",
-                                    "name": "Google Calendar",
-                                    "description": "Plan events and schedules.",
-                                }
-                            ]
+                            "apps": directory_apps,
+                            "nextToken": None,
                         }
                     )
                     return
@@ -82,33 +136,38 @@ class AppsTestServer:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 with lock:
                     calls.append(body)
+                request_id = body.get("id")
+                if request_id is None:
+                    self._json(status=202)
+                    return
                 method = body.get("method")
+                response_headers: tuple[tuple[str, str], ...] = ()
                 if method == "initialize":
+                    session_id = uuid.uuid4().hex
+                    with lock:
+                        sessions.add(session_id)
+                    response_headers = (("mcp-session-id", session_id),)
                     result = {
                         "protocolVersion": "2025-11-25",
                         "serverInfo": {"name": "codex-apps-test", "version": "1.0.0"},
                         "capabilities": {"tools": {}},
                     }
                 elif method == "tools/list":
-                    result = {
-                        "tools": [
-                            {
-                                "name": "calendar_create_event",
-                                "description": "Create a calendar event",
-                                "inputSchema": {"type": "object"},
-                            },
-                            {
-                                "name": "calendar_list_events",
-                                "description": "List calendar events",
-                                "inputSchema": {"type": "object"},
-                            },
-                        ]
-                    }
+                    result = {"tools": listed_tools}
                 elif method == "tools/call":
-                    result = {"content": [{"type": "text", "text": "ok"}], "isError": False}
+                    result = configured_tool_call_result
                 else:
                     result = {}
-                self._json({"jsonrpc": "2.0", "id": body.get("id"), "result": result})
+                self._json(
+                    {"jsonrpc": "2.0", "id": request_id, "result": result},
+                    headers=response_headers,
+                )
+
+            def do_DELETE(self) -> None:  # noqa: N802
+                session_id = self.headers.get("mcp-session-id")
+                with lock:
+                    sessions.discard(session_id or "")
+                self._json(status=204)
 
             def log_message(self, _format: str, *_args: object) -> None:
                 return

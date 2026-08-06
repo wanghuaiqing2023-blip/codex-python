@@ -109,7 +109,7 @@ async def write_hook_trusts(request_handle: Any, trust_updates: list[HookTrustUp
                 {
                     "key_path": "hooks.state",
                     "value": value,
-                    "merge_strategy": "Upsert",
+                    "merge_strategy": "upsert",
                 }
             ],
             "file_path": None,
@@ -121,6 +121,30 @@ async def write_hook_trusts(request_handle: Any, trust_updates: list[HookTrustUp
         request_handle,
         request,
         "config/batchWrite failed while updating hook trust in TUI",
+    )
+
+
+async def write_hook_enabled(request_handle: Any, key: str, enabled: bool) -> Any:
+    request = {
+        "type": "ConfigBatchWrite",
+        "request_id": _request_id("hooks-config-write"),
+        "params": {
+            "edits": [
+                {
+                    "key_path": "hooks.state",
+                    "value": {str(key): {"enabled": bool(enabled)}},
+                    "merge_strategy": "upsert",
+                }
+            ],
+            "file_path": None,
+            "expected_version": None,
+            "reload_user_config": True,
+        },
+    }
+    return await _request_typed(
+        request_handle,
+        request,
+        "config/batchWrite failed while updating hook enablement in TUI",
     )
 
 
@@ -138,4 +162,5 @@ __all__ = [
     "hooks_list_entry_for_cwd",
     "write_hook_trust",
     "write_hook_trusts",
+    "write_hook_enabled",
 ]

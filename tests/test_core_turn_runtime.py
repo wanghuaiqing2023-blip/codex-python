@@ -24,6 +24,7 @@ from pycodex.core.session.turn.runtime import (
     run_user_turn_sampling_from_session,
 )
 from pycodex.core.turn_timing import TurnTimingState
+from pycodex.plugin import PluginLoadOutcome, LoadedPlugin
 from pycodex.core.tools.context import FunctionToolOutput
 from pycodex.core.tools.handlers.shell import ShellCommandHandler
 from pycodex.core.tools.handlers.apply_patch import ApplyPatchHandler
@@ -456,6 +457,53 @@ def goal_runtime_events_of_type(session: TurnSessionStub, event_type: str) -> tu
 
 
 class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_turn_loads_current_plugins_before_resolving_structured_mentions(self) -> None:
+        """Rust: session::turn::build_skills_and_plugins loads plugins per turn."""
+
+        session = TurnSessionStub()
+        plugin = LoadedPlugin(
+            config_name="alpha-workflows@openai-curated",
+            root=Path("C:/plugins/alpha-workflows"),
+            manifest_name="Alpha Workflows",
+            manifest_description="Run deterministic alpha workflows.",
+            has_enabled_skills=True,
+        )
+
+        class PluginsManager:
+            def __init__(self) -> None:
+                self.inputs = []
+
+            async def plugins_for_config(self, config_input):
+                self.inputs.append(config_input)
+                return PluginLoadOutcome.from_plugins((plugin,))
+
+        manager = PluginsManager()
+        session.services = SimpleNamespace(plugins_manager=manager)
+        config_input = object()
+        session.turn_context.config = SimpleNamespace(
+            apps_enabled=False,
+            plugins_config_input=lambda: config_input,
+        )
+
+        items = await turn_runtime._prepare_user_turn_skill_plugin_items(
+            session,
+            session.turn_context,
+            (
+                UserInput.text_input("$alpha-workflows execute plugin reference"),
+                UserInput.mention(
+                    "Alpha Workflows",
+                    "plugin://alpha-workflows@openai-curated",
+                ),
+            ),
+            Router(),
+        )
+
+        self.assertEqual(manager.inputs, [config_input])
+        self.assertEqual(len(items), 1)
+        rendered = str(items[0].content[0].text)
+        self.assertIn("Capabilities from the `Alpha Workflows` plugin:", rendered)
+        self.assertIn("Skills", rendered)
+
     async def test_turn_start_dispatches_extension_lifecycle_with_token_baseline(self) -> None:
         # Rust: core/src/tasks/mod.rs::Session::start_task and task_complete
         # dispatch core GoalRuntimeEvent values around extension lifecycle.
@@ -3557,6 +3605,63 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed[0].payload.item.type, "AgentMessage")
         self.assertEqual(completed[0].payload.item.item.content[0].text, "done-only visible answer")
         self.assertEqual(result.response_items[0].content[0].text, "done-only visible answer")
+
+    async def test_live_image_generation_completion_preserves_saved_artifact_path(self) -> None:
+        """Rust: streamed ImageGeneration completion carries Core's saved path to the TUI."""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_home = Path(temp_dir)
+            session = TurnSessionStub()
+            session.conversation_id = "session-live-image"
+            session.turn_context.turn_id = "turn-1"
+            session.turn_context.config = SimpleNamespace(codex_home=codex_home)
+            client = ModelClient(
+                session_id="session",
+                thread_id="123e4567-e89b-12d3-a456-426614174000",
+                installation_id="install",
+            )
+            provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+            model_info = SimpleNamespace(
+                slug="gpt-test",
+                supports_reasoning_summaries=False,
+                support_verbosity=False,
+                service_tier_for_request=lambda tier: tier,
+            )
+            image = ResponseItem.image_generation_call(
+                "ig-live",
+                "completed",
+                "Zm9v",
+                "A deterministic image",
+            )
+
+            async def sampler(request):
+                await request.stream_event_observer({"type": "output_item_done", "item": image})
+                return SimpleNamespace(
+                    response_items=(image,),
+                    stream_events=(
+                        {"type": "output_item_done", "item": image},
+                        {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                    ),
+                    live_stream_events_emitted=True,
+                )
+
+            await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("generate"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            completed = events_of_type(session, "item_completed")
+            self.assertEqual(len(completed), 1)
+            image_item = completed[0].payload.item.item
+            self.assertEqual(image_item.revised_prompt, "A deterministic image")
+            self.assertIsNotNone(image_item.saved_path)
+            self.assertEqual(image_item.saved_path.read_bytes(), b"foo")
+            self.assertTrue(str(image_item.saved_path).startswith(str(codex_home)))
 
     async def test_run_user_turn_sampling_emits_response_created_live_status(self) -> None:
         # Rust source: codex-core records response.created as a first-token

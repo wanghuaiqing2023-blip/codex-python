@@ -1,7 +1,10 @@
 import io
+from pathlib import Path
 
 import pytest
 
+from pycodex.tui.app_event import AppEvent
+from pycodex.tui.bottom_pane.file_search_popup import FileMatch
 from pycodex.tui.slash_command import SlashCommand
 from pycodex.tui.keymap import KeyBinding, RuntimeKeymap
 
@@ -1129,6 +1132,74 @@ def test_terminal_composer_prompt_reader_seeds_next_draft_for_mention() -> None:
 
     assert reader.read() == InputResult.Submitted("@README.md")
     assert drafts[0] == "@"
+
+
+def test_file_search_popup_follows_active_at_token_and_ignores_stale_results() -> None:
+    """Rust chat_composer::sync_file_search_popup/current_at_token contract."""
+
+    events: list[AppEvent] = []
+    composer = ChatComposer(
+        text="compare @first with @probe-tail now",
+        app_event_tx=events.append,
+    )
+    composer.set_cursor(len("compare @first with @pro"))
+
+    assert composer.current_at_token() == "@probe-tail"
+    assert composer.active_popup == "file"
+    assert events[-1] == AppEvent.start_file_search("probe-tail")
+
+    composer.on_file_search_result(
+        "stale",
+        [FileMatch(1, Path("stale.txt"), indices=[0])],
+    )
+    assert composer.file_search_popup.matches == []
+    composer.on_file_search_result(
+        "probe-tail",
+        [FileMatch(84, Path("probe-tail.txt"), indices=[0, 1, 2])],
+    )
+    assert composer.file_search_popup.selected_match() == Path("probe-tail.txt")
+
+
+def test_file_search_escape_preserves_draft_and_query_change_reopens() -> None:
+    """Rust file-popup Esc dismissal is token-scoped and never mutates text."""
+
+    events: list[AppEvent] = []
+    composer = ChatComposer(text="@pro", app_event_tx=events.append)
+    composer.sync_popups()
+    composer.on_file_search_result(
+        "pro",
+        [FileMatch(84, Path("probe-alpha.md"), indices=[0, 1, 2])],
+    )
+
+    action = composer.handle_terminal_event("esc")
+    assert action == TerminalComposerInputAction("render", "@pro")
+    assert composer.current_text() == "@pro"
+    assert composer.active_popup == "none"
+
+    composer.handle_terminal_event("text", "b")
+    assert composer.current_text() == "@prob"
+    assert composer.active_popup == "file"
+    assert events[-1] == AppEvent.start_file_search("prob")
+
+
+def test_file_search_selection_replaces_only_active_token_and_quotes_spaces() -> None:
+    """Rust insert_selected_path preserves neighboring tokens and cursor."""
+
+    composer = ChatComposer(text="keep @one and @space-tail suffix")
+    composer.set_cursor(len("keep @one and @space"))
+    composer.on_file_search_result(
+        "space-tail",
+        [FileMatch(84, Path("docs/probe with space.md"), indices=[5, 6, 7])],
+    )
+
+    action = composer.handle_terminal_event("enter")
+    assert action == TerminalComposerInputAction(
+        "render",
+        'keep @one and "docs\\probe with space.md"  suffix',
+    )
+    assert composer.current_text().startswith('keep @one and "docs\\probe with space.md" ')
+    assert composer.current_text().endswith(" suffix")
+    assert composer.cursor() == len('keep @one and "docs\\probe with space.md" ')
 
 
 def test_plan_mode_nudge_line_keeps_visible_actions():

@@ -118,7 +118,7 @@ def test_terminal_popup_lines_reserve_measured_height_for_all_wrapped_items() ->
 def test_terminal_popup_line_style_maps_selected_semantics_to_terminal_style() -> None:
     # Rust owner: codex-tui::bottom_pane::selection_popup_common owns selected
     # row style before the terminal frame projects rows into ratatui cells.
-    assert terminal_popup_line_style(selected=True).fg == RatatuiColor.LightBlue
+    assert terminal_popup_line_style(selected=True).fg == RatatuiColor.Cyan
     assert terminal_popup_line_style(selected=False).fg is None
 
 

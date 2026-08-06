@@ -325,6 +325,50 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual(plan.harness_overrides.additional_writable_roots, (extra,))
         self.assertEqual(plan.harness_overrides.to_mapping()["cwd"], "project")
 
+    def test_build_exec_config_bootstrap_plan_includes_project_hook_layer(self):
+        # Rust ConfigBuilder supplies the complete ConfigLayerStack to
+        # session::build_hooks_for_config, including trusted project layers.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            codex_home = root / "codex-home"
+            project = root / "project"
+            project_config = project / ".codex" / "config.toml"
+            codex_home.mkdir()
+            project_config.parent.mkdir(parents=True)
+            (project / ".git").mkdir()
+            project_key = str(project.resolve(strict=False)).replace("\\", "\\\\")
+            (codex_home / "config.toml").write_text(
+                f'[projects."{project_key}"]\ntrust_level = "trusted"\n',
+                encoding="utf-8",
+            )
+            project_config.write_text(
+                "[[hooks.UserPromptSubmit]]\n"
+                "[[hooks.UserPromptSubmit.hooks]]\n"
+                'type = "command"\n'
+                'command = "python .codex/hooks/audit_hook.py"\n',
+                encoding="utf-8",
+            )
+            user_mapping = {
+                "projects": {
+                    str(project.resolve(strict=False)): {"trust_level": "trusted"}
+                }
+            }
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                plan = build_exec_config_bootstrap_plan(
+                    parse_exec_args(["-C", str(project), "prompt"]),
+                    config_toml=user_mapping,
+                    current_dir=root,
+                )
+
+        assert plan.config_layer_stack is not None
+        project_layers = [
+            layer
+            for layer in plan.config_layer_stack.layers
+            if layer.name.type == "project"
+        ]
+        self.assertEqual(len(project_layers), 1)
+        self.assertIn("UserPromptSubmit", project_layers[0].config["hooks"])
+
     def test_build_exec_config_bootstrap_plan_uses_config_model_and_provider(self):
         cli = parse_exec_args(["prompt"])
 
@@ -349,8 +393,10 @@ class ExecConfigPlanTests(unittest.TestCase):
     def test_exec_session_config_from_bootstrap_plan_projects_runtime_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
+            codex_home = root / "codex-home"
             project = root / "project"
             extra = root / "extra"
+            codex_home.mkdir()
             project.mkdir()
             extra.mkdir()
             cli = parse_exec_args(
@@ -369,20 +415,22 @@ class ExecConfigPlanTests(unittest.TestCase):
                     "prompt",
                 ]
             )
-            plan = build_exec_config_bootstrap_plan(
-                cli,
-                config_toml={
-                    "user_instructions": "project rules",
-                    "project_doc_max_bytes": 0,
-                },
-                current_dir=root,
-            )
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                plan = build_exec_config_bootstrap_plan(
+                    cli,
+                    config_toml={
+                        "user_instructions": "project rules",
+                        "project_doc_max_bytes": 0,
+                    },
+                    current_dir=root,
+                )
 
         config = exec_session_config_from_bootstrap_plan(plan)
 
         self.assertEqual(config.model, "gpt-5.2-codex")
         self.assertEqual(config.model_provider_id, "openai")
         self.assertEqual(config.cwd, project.resolve())
+        self.assertEqual(config.codex_home, codex_home)
         self.assertEqual(config.workspace_roots, (project.resolve(), extra))
         self.assertEqual(config.user_instructions, "project rules")
         self.assertIs(config.approval_policy, AskForApproval.NEVER)

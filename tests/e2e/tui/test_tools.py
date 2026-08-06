@@ -5,6 +5,357 @@ from tests.e2e.tui._common import *  # noqa: F401,F403
 pytestmark = pytest.mark.e2e
 
 
+def test_windows_conpty_native_and_python_hosted_web_search_lifecycle(tmp_path: Path) -> None:
+    """Compare Rust/Python WebSearch start, completion, and final-answer UI.
+
+    Rust owners:
+    - ``codex-core::stream_events_utils`` maps hosted ``web_search_call``
+      response items into item-started and item-completed notifications;
+    - ``codex-tui::chatwidget::protocol`` routes those notifications to
+      ``on_web_search_begin`` and replay completion;
+    - ``codex-tui::chatwidget::tool_lifecycle`` owns the active/completed
+      ``Searching the web`` / ``Searched`` transcript cells.
+    """
+
+    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
+        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
+    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
+    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
+    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY smoke only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    native_exe = native_codex_exe_from_env()
+    if not native_exe.exists():
+        pytest.skip(f"native codex executable not found: {native_exe}")
+
+    repo_root = _repo_root()
+    query = "pycodex deterministic web search marker"
+    final_answer = "PYCODEX_WEB_SEARCH_DONE"
+    response_body = _responses_sse(
+        {"type": "response.created", "response": {"id": "resp-web-search"}},
+        {
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": {
+                "id": "ws-pycodex-e2e",
+                "type": "web_search_call",
+                "status": "in_progress",
+            },
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "ws-pycodex-e2e",
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {
+                    "type": "search",
+                    "query": query,
+                    "queries": [query],
+                },
+            },
+        },
+        {
+            "type": "response.output_item.added",
+            "output_index": 1,
+            "item": {
+                "id": "msg-web-search-final",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+            },
+        },
+        {
+            "type": "response.output_text.delta",
+            "item_id": "msg-web-search-final",
+            "output_index": 1,
+            "content_index": 0,
+            "delta": final_answer,
+        },
+        {
+            "type": "response.output_item.done",
+            "output_index": 1,
+            "item": {
+                "id": "msg-web-search-final",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": final_answer}],
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-web-search",
+                "usage": {
+                    "input_tokens": 1,
+                    "input_tokens_details": None,
+                    "output_tokens": 1,
+                    "output_tokens_details": None,
+                    "total_tokens": 2,
+                },
+            },
+        },
+    )
+
+    def run_pair_member(command_spec: TuiComparisonCommand, label: str) -> tuple[object, tuple[dict[str, object], ...]]:
+        with _SseFixtureServer(response_body) as server:
+            config = (
+                'model = "gpt-5.5"\n'
+                'model_provider = "pycodex_mock"\n'
+                'approval_policy = "never"\n'
+                'sandbox_mode = "read-only"\n'
+                'web_search = "live"\n'
+                'suppress_unstable_features_warning = true\n\n'
+                '[features]\napps = false\nplugins = false\n\n'
+                '[model_providers.pycodex_mock]\n'
+                'name = "Mock provider for hosted web-search test"\n'
+                f'base_url = "{server.base_url}"\n'
+                'wire_api = "responses"\n'
+                'requires_openai_auth = false\n'
+                'request_max_retries = 0\n'
+                'stream_max_retries = 0\n'
+                'supports_websockets = false\n\n'
+                f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+                'trust_level = "trusted"\n'
+            )
+            env, temp_home = _isolated_codex_home_env_with_config(config)
+            with temp_home:
+                transcript = run_windows_conpty_tui_command(
+                    command_spec,
+                    input_steps=(
+                        ConptyInputStep(
+                            "use hosted web search",
+                            ready_pattern=READY_COMPOSER_PATTERN,
+                            ready_timeout=30.0,
+                            ready_quiet_period=0.2,
+                            atomic_write=True,
+                        ),
+                        ConptyInputStep(
+                            "\r",
+                            ready_text="hosted web search",
+                            ready_timeout=10.0,
+                        ),
+                        ConptyInputStep(
+                            "",
+                            ready_pattern=(
+                                f"{re.escape(final_answer)}|"
+                                r"replay target does not implement on_web_search_begin\(\)"
+                            ),
+                            ready_timeout=40.0,
+                            ready_quiet_period=0.3,
+                            capture_name="web-search-complete-or-error",
+                        ),
+                        ConptyInputStep("/quit\r", ready_timeout=0.2),
+                    ),
+                    env=env,
+                    timeout=50,
+                    size=TerminalSize(rows=32, cols=130),
+                )
+            requests = tuple(json.loads(body) for body in server.request_bodies)
+        transcript.write_artifacts(tmp_path, prefix=f"{label}-web-search", rows=32, cols=130)
+        return transcript, requests
+
+    rust_command, python_command = build_rust_python_inline_pair(
+        repo_root=repo_root,
+        native_exe=native_exe,
+        extra_args=("--disable", "apps", "--disable", "plugins"),
+    )
+    results = {
+        "rust": run_pair_member(rust_command, "rust"),
+        "python": run_pair_member(python_command, "python"),
+    }
+
+    for label, (transcript, requests) in results.items():
+        assert len(requests) == 1, f"{label}: requests={requests!r}"
+        assert any(
+            isinstance(tool, dict) and str(tool.get("type", "")).startswith("web_search")
+            for tool in requests[0].get("tools", [])
+        ), f"{label}: hosted web-search tool missing from model request"
+        screen = transcript.checkpoint_screen(
+            "web-search-complete-or-error",
+            rows=32,
+            cols=130,
+        )
+        assert f"Searched {query}" in screen, f"{label}: {screen}"
+        assert final_answer in screen, f"{label}: {screen}"
+        assert "Conversation interrupted" not in screen, f"{label}: {screen}"
+        assert "replay target does not implement on_web_search_begin()" not in screen, (
+            f"{label}: {screen}"
+        )
+
+
+def test_windows_conpty_native_and_python_hosted_image_generation_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """Compare Rust/Python image generation completion and artifact UI.
+
+    Rust owners:
+    - ``codex-core::stream_events_utils`` saves completed hosted image output
+      and emits the ImageGeneration item lifecycle;
+    - ``codex-tui::chatwidget::replay`` routes the completed item to
+      ``on_image_generation_end``;
+    - ``codex-tui::chatwidget::tool_lifecycle`` commits the generated-image
+      history cell and saved artifact path.
+    """
+
+    if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
+        pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
+    if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_EXPERIMENTAL_CONPTY_ENV}=1 to debug experimental ConPTY driver")
+    if os.environ.get(RUN_VERIFIED_CONPTY_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_ENV}=1 only after low-level ConPTY smoke is stable")
+    if os.environ.get(RUN_VERIFIED_CONPTY_TUI_ENV) != "1":
+        pytest.skip(f"set {RUN_VERIFIED_CONPTY_TUI_ENV}=1 only after ConPTY TUI input submission is stable")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY smoke only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    native_exe = native_codex_exe_from_env()
+    if not native_exe.exists():
+        pytest.skip(f"native codex executable not found: {native_exe}")
+
+    repo_root = _repo_root()
+    revised_prompt = "A deterministic tiny orange cat icon"
+    tiny_png_base64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+        "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    image_body = _responses_sse(
+        {"type": "response.created", "response": {"id": "resp-image-generation"}},
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "ig-pycodex-e2e",
+                "type": "image_generation_call",
+                "status": "completed",
+                "revised_prompt": revised_prompt,
+                "result": tiny_png_base64,
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-image-generation",
+                "usage": {
+                    "input_tokens": 1,
+                    "input_tokens_details": None,
+                    "output_tokens": 1,
+                    "output_tokens_details": None,
+                    "total_tokens": 2,
+                },
+            },
+        },
+    )
+
+    def run_pair_member(
+        command_spec: TuiComparisonCommand,
+        label: str,
+    ) -> tuple[object, tuple[dict[str, object], ...]]:
+        with _SseFixtureServer(image_body) as server:
+            config = (
+                'model = "gpt-5.5"\n'
+                'model_provider = "pycodex_mock"\n'
+                'approval_policy = "never"\n'
+                'sandbox_mode = "read-only"\n'
+                'suppress_unstable_features_warning = true\n\n'
+                '[features]\n'
+                'image_generation = true\n'
+                'apps = false\n'
+                'plugins = false\n\n'
+                '[model_providers.pycodex_mock]\n'
+                'name = "Mock provider for hosted image-generation test"\n'
+                f'base_url = "{server.base_url}"\n'
+                'wire_api = "responses"\n'
+                'requires_openai_auth = false\n'
+                'request_max_retries = 0\n'
+                'stream_max_retries = 0\n'
+                'supports_websockets = false\n\n'
+                f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+                'trust_level = "trusted"\n'
+            )
+            env, temp_home = _isolated_codex_home_env_with_config(config)
+            with temp_home:
+                transcript = run_windows_conpty_tui_command(
+                    command_spec,
+                    input_steps=(
+                        ConptyInputStep(
+                            "generate a deterministic cat image",
+                            ready_pattern=READY_COMPOSER_PATTERN,
+                            ready_timeout=30.0,
+                            ready_quiet_period=0.2,
+                            atomic_write=True,
+                        ),
+                        ConptyInputStep(
+                            "\r",
+                            ready_text="deterministic cat image",
+                            ready_timeout=10.0,
+                        ),
+                        ConptyInputStep(
+                            "",
+                            ready_pattern=(
+                                r"Generated Image:|"
+                                r"replay target does not implement "
+                                r"on_image_generation_(?:begin|end)\(\)"
+                            ),
+                            ready_timeout=40.0,
+                            ready_quiet_period=0.3,
+                            capture_name="image-generation-complete-or-error",
+                        ),
+                        ConptyInputStep("/quit\r", ready_timeout=0.2),
+                    ),
+                    env=env,
+                    timeout=50,
+                    size=TerminalSize(rows=32, cols=130),
+                )
+            requests = tuple(json.loads(body) for body in server.request_bodies)
+        transcript.write_artifacts(
+            tmp_path,
+            prefix=f"{label}-image-generation",
+            rows=32,
+            cols=130,
+        )
+        return transcript, requests
+
+    rust_command, python_command = build_rust_python_inline_pair(
+        repo_root=repo_root,
+        native_exe=native_exe,
+        extra_args=("--disable", "apps", "--disable", "plugins"),
+    )
+    results = {
+        "rust": run_pair_member(rust_command, "rust"),
+        "python": run_pair_member(python_command, "python"),
+    }
+
+    for label, (transcript, requests) in results.items():
+        assert requests, f"{label}: no model request received"
+        screen = transcript.checkpoint_screen(
+            "image-generation-complete-or-error",
+            rows=32,
+            cols=130,
+        )
+        assert "Generated Image:" in screen, f"{label}: {screen}"
+        assert revised_prompt in screen, f"{label}: {screen}"
+        assert "Saved to:" in screen, f"{label}: {screen}"
+        assert len(requests) == 1, f"{label}: requests={requests!r}"
+        assert "Conversation interrupted" not in screen, f"{label}: {screen}"
+        assert "replay target does not implement on_image_generation_" not in screen, (
+            f"{label}: {screen}"
+        )
+
+
 def test_windows_conpty_native_and_python_local_sse_exec_command_output_when_enabled(tmp_path: Path) -> None:
     # Rust source/test contract:
     # - codex-core maps Responses function_call items into turn tool execution.

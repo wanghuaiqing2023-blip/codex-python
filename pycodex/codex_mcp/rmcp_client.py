@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Mapping
 
 from pycodex.config.mcp_types import McpServerConfig
+from pycodex.protocol import Tool
+from .codex_apps import (
+    filter_disallowed_codex_apps_tools,
+    normalize_codex_apps_callable_name,
+    normalize_codex_apps_callable_namespace,
+    normalize_codex_apps_tool_title,
+)
+from .mcp import CODEX_APPS_MCP_SERVER_NAME
 from .runtime import McpRuntimeContext
 from .server import EffectiveMcpServer, McpServerMetadata
 from .tools import ToolInfo
@@ -41,22 +49,53 @@ class ManagedClient:
         result = await self.client.list_tools_with_connector_ids(
             timeout=self.tool_timeout
         )
-        tools = tuple(
-            ToolInfo(
-                server_name=self.server_name,
-                supports_parallel_tool_calls=self.metadata.supports_parallel_tool_calls,
-                server_origin=self.metadata.origin,
-                callable_name=_tool_name(item.tool),
-                callable_namespace=self.server_name,
-                namespace_description=item.connector_description,
-                tool=item.tool,
-                connector_id=item.connector_id,
-                connector_name=item.connector_name,
+        tools = []
+        for item in result.tools:
+            tool = item.tool if isinstance(item.tool, Tool) else Tool.from_mcp_value(item.tool)
+            if self.server_name == CODEX_APPS_MCP_SERVER_NAME:
+                connector_id = item.connector_id
+                connector_name = item.connector_name
+                connector_description = item.connector_description
+            else:
+                connector_id = None
+                connector_name = None
+                connector_description = None
+            callable_name = normalize_codex_apps_callable_name(
+                self.server_name,
+                tool.name,
+                connector_id,
+                connector_name,
             )
-            for item in result.tools
-        )
-        self.listed_tools_snapshot = tools
-        return tools
+            callable_namespace = normalize_codex_apps_callable_namespace(
+                self.server_name,
+                connector_name,
+            )
+            if tool.title is not None:
+                normalized_title = normalize_codex_apps_tool_title(
+                    self.server_name,
+                    connector_name,
+                    tool.title,
+                )
+                if normalized_title != tool.title:
+                    tool = replace(tool, title=normalized_title)
+            tools.append(
+                ToolInfo(
+                    server_name=self.server_name,
+                    supports_parallel_tool_calls=self.metadata.supports_parallel_tool_calls,
+                    server_origin=self.metadata.origin,
+                    callable_name=callable_name,
+                    callable_namespace=callable_namespace,
+                    namespace_description=connector_description,
+                    tool=tool,
+                    connector_id=connector_id,
+                    connector_name=connector_name,
+                )
+            )
+        listed = tuple(tools)
+        if self.server_name == CODEX_APPS_MCP_SERVER_NAME:
+            listed = filter_disallowed_codex_apps_tools(listed)
+        self.listed_tools_snapshot = listed
+        return listed
 
     async def list_resources(self, cursor: str | None = None) -> Any:
         return await self.client.list_resources(

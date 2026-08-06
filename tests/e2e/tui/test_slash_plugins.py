@@ -43,11 +43,22 @@ def test_windows_conpty_native_and_python_plugins_view_is_local(
             command,
             label=label,
             slash_text="/plugins",
-            stop_pattern=r"(?:Loading plugins\.\.\.|plugin/list failed)",
+            stop_pattern=(
+                r"(?:Loading plugins\.\.\.|"
+                r"Browse plugins from available marketplaces\.|"
+                r"plugin/list failed)"
+            ),
             artifact_dir=tmp_path,
             plugins_enabled=True,
         )
         assert_local_slash_candidate(label, transcript, request_count)
         output = transcript.normalized_stdout()
-        assert "Loading plugins..." in output or "plugin/list failed" in output
+        assert any(
+            marker in output
+            for marker in (
+                "Loading plugins...",
+                "Browse plugins from available marketplaces.",
+                "plugin/list failed",
+            )
+        )
         assert "Traceback" not in output

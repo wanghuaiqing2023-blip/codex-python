@@ -1,6 +1,8 @@
 ﻿from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 
+import pycodex.file_search as core_file_search
 from pycodex.tui.app_event import AppEvent
 from pycodex.tui.file_search import FileSearchManager, TuiSessionReporter, on_complete, on_update
 
@@ -138,4 +140,64 @@ def test_session_token_wraps_like_rust_wrapping_add() -> None:
     assert manager.state.session_token == 0
     assert sessions[0][1].session_token == 0
     assert sessions[0][0].queries == ["wrap"]
+
+
+def test_default_backend_searches_real_workspace_asynchronously(tmp_path: Path) -> None:
+    """Rust file_search manager default backend emits indexed real matches."""
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "probe-alpha.md").write_text("alpha", encoding="utf-8")
+    (tmp_path / "src" / "other-probe.py").write_text("probe", encoding="utf-8")
+    completed = Event()
+
+    class NotifyingTx(Tx):
+        def send(self, event):
+            super().send(event)
+            completed.set()
+
+    tx = NotifyingTx()
+    manager = FileSearchManager.new(tmp_path, tx)
+    manager.on_user_query("pro")
+
+    assert completed.wait(5), "real file-search worker did not report"
+    event = tx.events[-1]
+    assert event.kind == "FileSearchResult"
+    assert event.payload["query"] == "pro"
+    matches = event.payload["matches"]
+    assert any(str(match.path) == "probe-alpha.md" for match in matches)
+    alpha = next(match for match in matches if str(match.path) == "probe-alpha.md")
+    assert alpha.indices == [0, 1, 2]
+
+
+def test_default_backend_reuses_one_walk_for_query_updates(tmp_path: Path, monkeypatch) -> None:
+    """Rust TUI FileSearchManager retains one core session per search root."""
+
+    (tmp_path / "alpha.txt").write_text("alpha", encoding="utf-8")
+    (tmp_path / "beta.txt").write_text("beta", encoding="utf-8")
+    walks: list[Path] = []
+    original_walk = core_file_search._walk_entries
+
+    def recording_walk(roots, **kwargs):
+        walks.append(Path(roots[0]))
+        return original_walk(roots, **kwargs)
+
+    monkeypatch.setattr(core_file_search, "_walk_entries", recording_walk)
+    ready = Event()
+
+    class NotifyingTx(Tx):
+        def send(self, event):
+            super().send(event)
+            ready.set()
+
+    tx = NotifyingTx()
+    manager = FileSearchManager.new(tmp_path, tx)
+    manager.on_user_query("alpha")
+    assert ready.wait(5)
+    ready.clear()
+
+    manager.on_user_query("beta")
+    assert ready.wait(5)
+
+    assert walks == [tmp_path]
+    assert [event.payload["query"] for event in tx.events[-2:]] == ["alpha", "beta"]
 

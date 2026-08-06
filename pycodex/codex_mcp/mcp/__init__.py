@@ -217,6 +217,9 @@ async def read_mcp_resource(
     manager = await McpConnectionManager.from_effective_servers(
         selected,
         runtime_context=runtime_context,
+        auth=auth,
+        auth_provider=_auth_provider(auth),
+        auth_store_mode=config.mcp_oauth_credentials_store_mode,
     )
     try:
         return await _maybe_await(manager.read_resource(server, uri))
@@ -245,6 +248,9 @@ async def collect_mcp_server_status_snapshot_with_detail(
     manager = await McpConnectionManager.from_effective_servers(
         servers,
         runtime_context=runtime_context,
+        auth=auth,
+        auth_provider=_auth_provider(auth),
+        auth_store_mode=config.mcp_oauth_credentials_store_mode,
     )
     try:
         tools = await _maybe_await(manager.list_all_tools())
@@ -327,6 +333,14 @@ def _uses_codex_backend(auth: Any | None) -> bool:
         return False
     value = getattr(auth, "uses_codex_backend", False)
     return bool(value() if callable(value) else value)
+
+
+def _auth_provider(auth: Any | None) -> Any | None:
+    if auth is None:
+        return None
+    from pycodex.model_provider.auth import auth_provider_from_auth
+
+    return auth_provider_from_auth(auth)
 
 
 def _field(value: Any, *names: str) -> Any:

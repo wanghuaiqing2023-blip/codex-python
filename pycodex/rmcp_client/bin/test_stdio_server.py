@@ -18,6 +18,12 @@ SMALL_PNG_BASE64 = (
     "iZk9HQAAAABJRU5ErkJggg=="
 )
 DEFAULT_SYNC_TIMEOUT_MS = 1_000
+TOOLS_LIST_DELAY_ENV = "PYCODEX_TEST_MCP_TOOLS_LIST_DELAY_SECONDS"
+TOOLS_LIST_RELEASE_FILE_ENV = "PYCODEX_TEST_MCP_TOOLS_LIST_RELEASE_FILE"
+TOOLS_LIST_BLOCK_FILE_ENV = "PYCODEX_TEST_MCP_TOOLS_LIST_BLOCK_FILE"
+TOOLS_PROFILE_ENV = "PYCODEX_TEST_MCP_PROFILE"
+TOOLS_CALL_LOG_ENV = "PYCODEX_TEST_MCP_CALL_LOG"
+TOOLS_LIST_RELEASE_TIMEOUT_SECONDS = 60.0
 _SYNC_BARRIERS: dict[str, tuple[int, threading.Barrier]] = {}
 _SYNC_LOCK = threading.Lock()
 
@@ -156,6 +162,23 @@ class TestToolServer:
                 read_only=True,
             ),
         ]
+        if os.environ.get(TOOLS_PROFILE_ENV) == "openai_docs":
+            self.tools = [
+                _tool(
+                    "search_openai_docs",
+                    "Search the official OpenAI developer documentation.",
+                    {"query": {"type": "string"}},
+                    ["query"],
+                    read_only=True,
+                ),
+                _tool(
+                    "fetch_openai_doc",
+                    "Fetch an official OpenAI developer documentation page.",
+                    {"url": {"type": "string"}},
+                    ["url"],
+                    read_only=True,
+                ),
+            ]
         self.resources = [
             {
                 "uri": MEMO_URI,
@@ -188,6 +211,20 @@ class TestToolServer:
                 "instructions": "Use these tools to exercise the rmcp test server.",
             }
         if method == "tools/list":
+            release_file = os.environ.get(TOOLS_LIST_RELEASE_FILE_ENV)
+            block_file = os.environ.get(TOOLS_LIST_BLOCK_FILE_ENV)
+            should_block = not block_file or Path(block_file).exists()
+            if release_file and should_block:
+                deadline = time.monotonic() + TOOLS_LIST_RELEASE_TIMEOUT_SECONDS
+                release_path = Path(release_file)
+                while not release_path.exists():
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("tools/list release file was not created")
+                    time.sleep(0.05)
+            else:
+                delay_seconds = float(os.environ.get(TOOLS_LIST_DELAY_ENV, "0") or 0)
+                if delay_seconds > 0:
+                    time.sleep(delay_seconds)
             return {"tools": self.tools}
         if method == "resources/list":
             return {"resources": self.resources}
@@ -210,6 +247,46 @@ class TestToolServer:
         name = str(params.get("name", ""))
         arguments = params.get("arguments")
         arguments = arguments if isinstance(arguments, dict) else {}
+        call_log = os.environ.get(TOOLS_CALL_LOG_ENV)
+        if call_log:
+            with Path(call_log).open("a", encoding="utf-8") as sink:
+                sink.write(
+                    json.dumps(
+                        {"name": name, "arguments": arguments},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+        if name == "search_openai_docs":
+            query = str(arguments.get("query", ""))
+            if not query:
+                raise ValueError("missing arguments for search_openai_docs tool")
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "OPENAI_DOCS_E2E_RESULT: Responses API documentation "
+                            "https://platform.openai.com/docs/api-reference/responses"
+                        ),
+                    }
+                ],
+                "isError": False,
+            }
+        if name == "fetch_openai_doc":
+            url = str(arguments.get("url", ""))
+            if not url:
+                raise ValueError("missing arguments for fetch_openai_doc tool")
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"OPENAI_DOCS_E2E_FETCHED: {url}",
+                    }
+                ],
+                "isError": False,
+            }
         if name == "sandbox_meta":
             return self.structured_result(dict(params.get("_meta") or {}))
         if name == "cwd":

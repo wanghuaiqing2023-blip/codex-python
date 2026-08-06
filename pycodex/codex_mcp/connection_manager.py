@@ -27,6 +27,9 @@ class McpConnectionManager:
         runtime_context: McpRuntimeContext | None = None,
         prefix_mcp_tool_names: bool = True,
         elicitation_manager: ElicitationRequestManager | None = None,
+        auth: Any = None,
+        auth_provider: Any = None,
+        auth_store_mode: Any = None,
     ) -> None:
         self._servers = {
             name: _server_config(value)
@@ -39,6 +42,9 @@ class McpConnectionManager:
         self._runtime_context = runtime_context or _default_runtime_context()
         self._prefix_mcp_tool_names = prefix_mcp_tool_names
         self._elicitation_manager = elicitation_manager
+        self._auth = auth
+        self._auth_provider = auth_provider
+        self._auth_store_mode = auth_store_mode
         self._clients: dict[str, ManagedClient] = {}
         self._startup_errors: dict[str, Exception] = {}
         self._started = False
@@ -53,6 +59,9 @@ class McpConnectionManager:
         runtime_context: McpRuntimeContext,
         prefix_mcp_tool_names: bool = True,
         elicitation_manager: ElicitationRequestManager | None = None,
+        auth: Any = None,
+        auth_provider: Any = None,
+        auth_store_mode: Any = None,
     ) -> "McpConnectionManager":
         manager = cls(
             {
@@ -62,6 +71,9 @@ class McpConnectionManager:
             runtime_context=runtime_context,
             prefix_mcp_tool_names=prefix_mcp_tool_names,
             elicitation_manager=elicitation_manager,
+            auth=auth,
+            auth_provider=auth_provider,
+            auth_store_mode=auth_store_mode,
         )
         await manager.ensure_started()
         return manager
@@ -96,6 +108,27 @@ class McpConnectionManager:
     def configured_servers(self) -> dict[str, McpServerConfig]:
         return dict(self._servers)
 
+    def server_names(self) -> tuple[str, ...]:
+        return tuple(sorted(self._servers))
+
+    def enabled_server_names(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(name for name, server in self._servers.items() if server.enabled)
+        )
+
+    async def auth_statuses(self) -> dict[str, Any]:
+        from .mcp.auth import compute_auth_statuses
+
+        entries = await compute_auth_statuses(
+            (
+                (name, EffectiveMcpServer.configured(server))
+                for name, server in self._servers.items()
+            ),
+            self._auth_store_mode,
+            self._auth,
+        )
+        return {name: entry.auth_status for name, entry in entries.items()}
+
     def has_servers(self) -> bool:
         return bool(self._servers)
 
@@ -128,6 +161,9 @@ class McpConnectionManager:
                 config,
                 self._runtime_context,
                 send_elicitation=sender,
+                auth_provider=(
+                    self._auth_provider if name == "codex_apps" else None
+                ),
             )
         except Exception as exc:
             self._startup_errors[name] = exc

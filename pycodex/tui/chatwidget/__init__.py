@@ -420,8 +420,13 @@ class ChatWidget:
     def clear_mcp_inventory_loading(self) -> None:
         pass
 
-    def apply_file_search_result(self, result: Any) -> None:
-        self.history.append({"file_search": result})
+    def apply_file_search_result(self, query: str, matches: Any = None) -> None:
+        bottom_pane = _get(self.init, "bottom_pane", None)
+        apply_result = getattr(bottom_pane, "on_file_search_result", None)
+        if callable(apply_result):
+            apply_result(str(query), list(matches or ()))
+        else:
+            self.history.append({"file_search": {"query": str(query), "matches": list(matches or ())}})
 
     def current_stream_width(self) -> int:
         return int(_get(self.init, "stream_width", 80))

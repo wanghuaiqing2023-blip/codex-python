@@ -47,6 +47,7 @@ from pycodex.utils.output_truncation import approx_token_count
 from pycodex.utils.output_truncation import formatted_truncate_text
 
 from .engine import HookListEntry, _ClaudeHooksEngine, _CommandShell
+from .engine.discovery import discover_handlers
 from .events.compact import PostCompactRequest, PreCompactOutcome, PreCompactRequest, StatelessHookOutcome
 from .events.permission_request import PermissionRequestOutcome, PermissionRequestRequest
 from .events.post_tool_use import PostToolUseOutcome, PostToolUseRequest

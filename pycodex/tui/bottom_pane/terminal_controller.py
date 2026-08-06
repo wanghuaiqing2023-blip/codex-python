@@ -54,9 +54,7 @@ class TerminalBottomPaneController:
         self._on_selection_events = on_selection_events
         self._set_terminal_title_requires_action = set_terminal_title_requires_action or (lambda _required: None)
         composer_cursor_visible = cursor_visible or (lambda: True)
-        self._view_state = TerminalBottomPaneViewState.new(
-            command_popup_flags
-        )
+        self._view_state = TerminalBottomPaneViewState.new(command_popup_flags)
 
         base_footer_right_text = footer_right_text or (lambda: "")
 
@@ -131,6 +129,36 @@ class TerminalBottomPaneController:
         """Synchronize composer draft into the bottom-pane owner state."""
 
         self._view_state.apply_draft(draft)
+
+    def apply_file_search_result(self, query: str, matches: list[object]) -> None:
+        """Forward Rust ``ChatWidget::apply_file_search_result`` to BottomPane."""
+
+        self._view_state.composer.on_file_search_result(query, matches)
+        self.render_without_resize_check()
+
+    def insert_text(self, text: str) -> None:
+        """Insert text through the Rust-owned composer state machine."""
+
+        self._view_state.composer.insert_text(str(text))
+        self._view_state.composer.sync_popups(
+            active_view_present=self._view_state.active_view is not None
+        )
+        self.render_without_resize_check()
+
+    def set_skills(self, skills: list[object]) -> None:
+        """Refresh the composer's skill mention catalog."""
+
+        self._view_state.composer.set_skills(list(skills))
+        self.render_without_resize_check()
+
+    def set_plugin_mentions(self, plugins: list[object]) -> None:
+        """Refresh the composer's Rust-owned plugin mention catalog."""
+
+        self._view_state.composer.set_plugin_mentions(list(plugins))
+        self.render_without_resize_check()
+
+    def take_recent_submission_mention_bindings(self) -> list[object]:
+        return list(self._view_state.composer.take_recent_submission_mention_bindings())
 
     @property
     def composer(self) -> object:
@@ -231,6 +259,12 @@ class TerminalBottomPaneController:
 
     def has_active_view(self) -> bool:
         return self._view_state.active_view is not None
+
+    def clear_active_views(self) -> None:
+        """Clear the Rust-owned active-view stack after a standalone flow."""
+
+        self._view_state.view_stack.clear()
+        self._sync_terminal_title_requires_action()
 
     def live_status_footprint_active(self) -> bool:
         """Return the status footprint actually rendered by ``BottomPane``."""

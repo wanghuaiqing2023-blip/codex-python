@@ -449,7 +449,7 @@ def test_terminal_projection_paints_slash_popup_below_composer_with_highlight() 
 
     output = writer.getvalue()
     assert "\x1b[9;1H\u203a /m" in output
-    assert "\x1b[10;1H\x1b[94m/model" in output
+    assert "\x1b[10;1H\x1b[36;1m/model" in output
     assert "\x1b[7m/model" not in output
     assert "\x1b[11;1H/memories" in output
     assert "gpt-test high" not in output
@@ -578,7 +578,7 @@ def test_terminal_projection_clears_previous_larger_popup_footprint() -> None:
     assert "\x1b[10;1H\x1b[2K" in output
     assert "\x1b[11;1H\x1b[2K" in output
     assert "\x1b[12;1H\x1b[2K" in output
-    assert "\x1b[10;1H\x1b[94m/model choose\x1b[0m" in output
+    assert "\x1b[10;1H\x1b[36;1m/model choose\x1b[0m" in output
 
 
 def test_terminal_projection_frame_update_does_not_flush_without_policy() -> None:

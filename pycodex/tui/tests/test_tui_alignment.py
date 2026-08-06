@@ -826,7 +826,7 @@ def test_terminal_projection_owns_request_runner_without_surface_adapter() -> No
     assert "def terminal_popup_line_style" in selection_popup_source
     assert "def terminal_popup_line_for_width" in selection_popup_source
     assert "def terminal_popup_lines_for_width" in selection_popup_source
-    assert "RatatuiColor.LightBlue" in selection_popup_source
+    assert "RatatuiColor.Cyan" in selection_popup_source
     assert not (REPO_ROOT / "pycodex/tui/bottom_pane/terminal_frame.py").exists()
     assert not (REPO_ROOT / "pycodex/tui/bottom_pane/tests/test_terminal_frame.py").exists()
     terminal_frame_importers = {
@@ -1198,15 +1198,23 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
         "sync_pending_thread_approvals",
         "set_keymap",
         "set_task_running",
+        "set_vim_enabled",
+        "toggle_vim_enabled",
+        "set_esc_backtrack_hint",
         "set_side_conversation_active",
-            "show_shutdown",
-            "show_view",
-            "dismiss_app_server_request",
-            "has_active_view",
-            "live_status_footprint_active",
-            "handle_active_view_input",
-            "composer",
-            "handle_composer_event",
+        "set_skills",
+        "set_plugin_mentions",
+        "apply_file_search_result",
+        "show_shutdown",
+        "show_view",
+        "dismiss_app_server_request",
+        "has_active_view",
+        "live_status_footprint_active",
+        "handle_active_view_input",
+        "composer",
+        "handle_composer_event",
+        "insert_text",
+        "take_recent_submission_mention_bindings",
         "history_bottom_row",
         "prepare_history_insert",
         "resize_reflow_replay_callback",

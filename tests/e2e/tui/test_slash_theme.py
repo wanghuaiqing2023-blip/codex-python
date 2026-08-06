@@ -251,10 +251,17 @@ def test_windows_conpty_rust_python_and_golden_match_for_every_builtin_theme(
 def _theme_interaction_steps() -> tuple[ConptyInputStep, ...]:
     return (
         ConptyInputStep(
-            "/theme\r",
+            "/theme",
             ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
             ready_timeout=30.0,
             ready_quiet_period=0.5,
+            atomic_write=True,
+        ),
+        ConptyInputStep(
+            "\r",
+            ready_screen_text="/theme",
+            ready_timeout=10.0,
+            ready_quiet_period=0.3,
         ),
         ConptyInputStep(
             "\x1b[B",
@@ -343,10 +350,17 @@ def test_windows_conpty_theme_navigation_search_and_persistence_when_enabled(
 def _theme_ime_steps() -> tuple[ConptyInputStep, ...]:
     return (
         ConptyInputStep(
-            "/theme\r",
+            "/theme",
             ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
             ready_timeout=30.0,
             ready_quiet_period=0.5,
+            atomic_write=True,
+        ),
+        ConptyInputStep(
+            "\r",
+            ready_screen_text="/theme",
+            ready_timeout=10.0,
+            ready_quiet_period=0.3,
         ),
         ConptyInputStep(
             "主题",
@@ -399,10 +413,17 @@ def test_windows_conpty_theme_ime_query_backspace_recovers_when_enabled(
 def _theme_cancel_steps() -> tuple[ConptyInputStep, ...]:
     return (
         ConptyInputStep(
-            "/theme\r",
+            "/theme",
             ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
             ready_timeout=30.0,
             ready_quiet_period=0.5,
+            atomic_write=True,
+        ),
+        ConptyInputStep(
+            "\r",
+            ready_screen_text="/theme",
+            ready_timeout=10.0,
+            ready_quiet_period=0.3,
         ),
         ConptyInputStep(
             "\x1b[B",

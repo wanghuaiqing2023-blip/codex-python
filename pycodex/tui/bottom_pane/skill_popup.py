@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..text_formatting import truncate_text as _truncate_graphemes
 from .popup_consts import MAX_POPUP_ROWS
 
 RUST_MODULE = RustTuiModule(
@@ -195,16 +196,11 @@ def render_ref(popup: SkillPopup, area: Any = None, buf: Any = None) -> List[Dis
 
 
 def skill_popup_hint_line() -> str:
-    return "Press Enter to insert or Esc to close"
+    return "Press enter to insert or esc to close"
 
 
 def truncate_text(text: str, max_len: int) -> str:
-    text = str(text)
-    if len(text) <= max_len:
-        return text
-    if max_len <= 1:
-        return "."[:max_len]
-    return text[: max_len - 1] + "."
+    return _truncate_graphemes(str(text), int(max_len))
 
 
 def fuzzy_match(haystack: str, needle: str) -> Optional[Tuple[List[int], int]]:

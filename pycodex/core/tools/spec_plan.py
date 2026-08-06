@@ -9,6 +9,7 @@ dispatch registry used by ``ToolRouter``.
 from __future__ import annotations
 
 import copy
+import inspect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -200,6 +201,9 @@ def build_tool_router(
         planned_tools,
         getattr(params, "mcp_tools", None) or (),
         getattr(params, "deferred_mcp_tools", None) or (),
+        request_callback=_mcp_request_callback(
+            getattr(params, "mcp_resource_provider", None)
+        ),
     )
     add_mcp_resource_tools(
         planned_tools,
@@ -400,6 +404,23 @@ def add_mcp_tools(
             McpHandler.new(tool_info, request_callback=request_callback),
             ToolExposure.DEFERRED,
         )
+
+
+def _mcp_request_callback(provider: Any) -> McpToolRequestCallback | None:
+    call_tool = getattr(provider, "call_tool", None)
+    if not callable(call_tool):
+        return None
+
+    async def request(tool_info, _call_id, _tool_name, arguments):
+        result = call_tool(
+            tool_info.server_name,
+            tool_info.tool.name,
+            arguments,
+            None,
+        )
+        return await result if inspect.isawaitable(result) else result
+
+    return request
 
 
 def add_mcp_resource_tools(

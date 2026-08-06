@@ -236,6 +236,9 @@ def open_manage_skills_popup(widget: Any) -> Optional[SkillsToggleView]:
                 path=core.path_to_skills_md,
             )
         )
+    show_terminal_view = getattr(widget, "show_skills_toggle_view", None)
+    if callable(show_terminal_view):
+        return show_terminal_view(items)
     view = SkillsToggleView(tuple(items))
     widget.bottom_pane.show_view(view)
     return view
@@ -504,6 +507,9 @@ def connector_mention_slug(app: Any) -> str:
 def skill_display_name(skill: SkillMetadata) -> str:
     if skill.interface and skill.interface.display_name:
         return skill.interface.display_name
+    plugin_name, separator, skill_name = skill.name.partition(":")
+    if separator and plugin_name and skill_name:
+        return f"{skill_name} ({plugin_name})"
     return skill.name
 
 

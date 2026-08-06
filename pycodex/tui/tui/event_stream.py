@@ -258,6 +258,64 @@ class WindowsConsoleInputSource(TerminalInputSource):
             self._decoded_events.append(terminal_event_from_char(char))
 
 
+@dataclass
+class WindowsConsoleInputModeGuard:
+    """Restore the Windows console input mode changed for TUI key handling."""
+
+    handle: int
+    original_mode: int
+    kernel32: Any
+    restored: bool = False
+
+    def restore(self) -> None:
+        if self.restored:
+            return
+        self.restored = True
+        import ctypes.wintypes
+
+        self.kernel32.SetConsoleMode(
+            ctypes.wintypes.HANDLE(self.handle),
+            self.original_mode,
+        )
+
+
+def enable_windows_console_raw_input(stdin: TextIO) -> WindowsConsoleInputModeGuard | None:
+    """Make Ctrl+C/Ctrl+D observable as keys, matching crossterm raw mode.
+
+    Windows' ``ENABLE_PROCESSED_INPUT`` turns Ctrl+C into a process-level
+    ``SIGINT`` before ``ReadConsoleInputW`` can expose the key event. Rust's
+    crossterm raw mode clears it together with line input and echo. Keep the
+    original mode so the terminal is restored even when the TUI exits through
+    an exception.
+    """
+
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        import ctypes.wintypes
+        import msvcrt
+
+        handle = int(msvcrt.get_osfhandle(stdin.fileno()))
+        mode = ctypes.wintypes.DWORD()
+        kernel32 = ctypes.windll.kernel32
+        raw_handle = ctypes.wintypes.HANDLE(handle)
+        if kernel32.GetConsoleMode(raw_handle, ctypes.byref(mode)) == 0:
+            return None
+        original_mode = int(mode.value)
+        enable_processed_input = 0x0001
+        enable_line_input = 0x0002
+        enable_echo_input = 0x0004
+        raw_mode = original_mode & ~(
+            enable_processed_input | enable_line_input | enable_echo_input
+        )
+        if kernel32.SetConsoleMode(raw_handle, raw_mode) == 0:
+            return None
+        return WindowsConsoleInputModeGuard(handle, original_mode, kernel32)
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
 class SelectTerminalInputSource(TerminalInputSource):
     """Best-effort non-Windows TTY adapter, used only outside Windows."""
 
@@ -1426,9 +1484,11 @@ __all__ = [
     "TuiEventStream",
     "WindowsConsoleEventSource",
     "WindowsConsoleInputSource",
+    "WindowsConsoleInputModeGuard",
     "default",
     "draw_and_key_events_yield_both",
     "error_or_eof_ends_stream",
+    "enable_windows_console_raw_input",
     "get_or_make_terminal_input_source",
     "key_event_skips_unmapped",
     "lagged_draw_maps_to_draw",

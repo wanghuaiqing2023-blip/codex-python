@@ -28,11 +28,12 @@ from pycodex.app_server_client import (
 )
 from pycodex.arg0 import Arg0DispatchPaths
 from pycodex.config import (
-    ConfigLayerEntry,
-    ConfigLayerSource,
+    ConfigLoadOptions,
     ConfigLayerStack,
     ConfigOverride,
+    LoaderOverrides,
     apply_single_override,
+    load_config_layers_state,
 )
 from pycodex.core.agents_md import (
     DEFAULT_PROJECT_DOC_MAX_BYTES,
@@ -206,11 +207,14 @@ class ExecConfigBootstrapPlan:
     include_apps_instructions: bool = True
     include_skill_instructions: bool = True
     include_collaboration_mode_instructions: bool = True
+    codex_home: Path | None = None
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
     def __post_init__(self) -> None:
         if not isinstance(self.config_cwd, Path):
             object.__setattr__(self, "config_cwd", Path(self.config_cwd))
+        if self.codex_home is not None and not isinstance(self.codex_home, Path):
+            object.__setattr__(self, "codex_home", Path(self.codex_home))
         object.__setattr__(self, "cli_overrides", tuple(self.cli_overrides))
         object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
@@ -1641,7 +1645,14 @@ def build_exec_config_bootstrap_plan(
 
     config_cwd = resolve_exec_config_cwd(cli, current_dir)
     cli_overrides = tuple(cli.cli_config_overrides().parse_overrides())
-    config_layer_stack = _exec_config_layer_stack(config_toml, cli_overrides)
+    config_layer_stack = _exec_config_layer_stack(
+        config_toml,
+        cli_overrides,
+        cwd=config_cwd,
+        strict_config=cli.strict_config,
+        ignore_user_config=cli.ignore_user_config,
+        profile=str(cli.profile) if cli.profile is not None else None,
+    )
     effective_config = config_layer_stack.effective_config()
     features = _features_from_exec_config(effective_config)
     active_project = _active_project_trust(effective_config, config_cwd)
@@ -1654,6 +1665,7 @@ def build_exec_config_bootstrap_plan(
     )
     return ExecConfigBootstrapPlan(
         config_cwd=config_cwd,
+        codex_home=_maybe_codex_home(),
         strict_config=cli.strict_config,
         ignore_user_config=cli.ignore_user_config,
         ignore_rules=cli.ignore_rules,
@@ -1726,6 +1738,8 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         model=harness.model,
         model_provider_id=harness.model_provider,
         cwd=cwd,
+        codex_home=plan.codex_home,
+        bypass_hook_trust=bool(harness.bypass_hook_trust),
         workspace_roots=(cwd, *harness.additional_writable_roots),
         user_instructions=plan.user_instructions,
         developer_instructions=plan.developer_instructions,
@@ -1787,22 +1801,32 @@ def _exec_config_with_overrides(
 def _exec_config_layer_stack(
     config_toml: Mapping[str, JsonValue] | None,
     cli_overrides: tuple[ConfigOverride, ...],
+    *,
+    cwd: Path,
+    strict_config: bool,
+    ignore_user_config: bool,
+    profile: str | None,
 ) -> ConfigLayerStack:
     codex_home = find_codex_home()
-    layers = [
-        ConfigLayerEntry.new(
-            ConfigLayerSource.user(codex_home / "config.toml"),
-            copy.deepcopy(dict(config_toml or {})),
+    stack = load_config_layers_state(
+        codex_home,
+        cwd=cwd,
+        cli_overrides=cli_overrides,
+        config_load_options=ConfigLoadOptions(
+            loader_overrides=LoaderOverrides(
+                user_config_profile=profile,
+                ignore_user_config=ignore_user_config,
+            ),
+            strict_config=strict_config,
+        ),
+    )
+    if config_toml is not None:
+        stack = stack.with_user_config_profile(
+            codex_home / "config.toml",
+            profile,
+            copy.deepcopy(dict(config_toml)),
         )
-    ]
-    override_layer: dict[str, JsonValue] = {}
-    for override in cli_overrides:
-        apply_single_override(override_layer, override.path, copy.deepcopy(override.value))
-    if override_layer:
-        layers.append(
-            ConfigLayerEntry.new(ConfigLayerSource.session_flags(), override_layer)
-        )
-    return ConfigLayerStack.new(layers)
+    return stack
 
 
 def _config_bool(

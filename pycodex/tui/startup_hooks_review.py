@@ -202,6 +202,78 @@ def selection_view_params(
     )
 
 
+async def load_startup_hooks_review_entry(
+    request_handle: Any,
+    cwd: str | Path,
+    bypass_hook_trust: bool,
+) -> Any | None:
+    """Load the Rust startup-review entry through the app-server boundary."""
+
+    from .hooks_rpc import fetch_hooks_list, hooks_list_entry_for_cwd
+
+    try:
+        response = await fetch_hooks_list(request_handle, cwd)
+    except Exception:
+        return None
+    entry_value = hooks_list_entry_for_cwd(response, cwd)
+    return entry_value if review_is_needed(bypass_hook_trust, entry_value) else None
+
+
+def terminal_selection_view_params(
+    entry_value: Any,
+    trust_all_error: Optional[str],
+    trusting_all: bool,
+    on_select: Any,
+    keymap: Any,
+) -> Any:
+    """Build the active ``BottomPaneView`` used by the real terminal TUI."""
+
+    from .bottom_pane.list_selection_view import SelectionItem as BottomPaneSelectionItem
+    from .bottom_pane.list_selection_view import SelectionViewParams as BottomPaneSelectionViewParams
+    from .bottom_pane.popup_consts import standard_popup_hint_line_for_keymap
+
+    count = review_needed_count(entry_value)
+    count_line = "1 hook is new or changed." if count == 1 else f"{count} hooks are new or changed."
+    header = [
+        "Hooks need review",
+        count_line,
+        "Hooks can run outside the sandbox after you trust them.",
+    ]
+    if trust_all_error is not None:
+        header.append(trust_all_error)
+    elif trusting_all:
+        header.append("Trusting hooks...")
+
+    def item(name: str, selection: StartupHooksReviewSelection) -> Any:
+        return BottomPaneSelectionItem(
+            name=name,
+            is_disabled=trusting_all,
+            dismiss_on_select=True,
+            actions=[lambda _events, value=selection: on_select(value)],
+        )
+
+    list_keymap = getattr(keymap, "list", keymap)
+    try:
+        footer_hint = standard_popup_hint_line_for_keymap(list_keymap)
+    except Exception:
+        footer_hint = "Press enter to confirm or esc to go back"
+    return BottomPaneSelectionViewParams(
+        header=header,
+        footer_hint=footer_hint,
+        items=[
+            item("Review hooks", StartupHooksReviewSelection.REVIEW_HOOKS),
+            item(
+                "Trust all and continue",
+                StartupHooksReviewSelection.TRUST_ALL_AND_CONTINUE,
+            ),
+            item(
+                "Continue without trusting (hooks won't run)",
+                StartupHooksReviewSelection.CONTINUE_WITHOUT_TRUSTING,
+            ),
+        ],
+    )
+
+
 def review_needed_count(entry_value: Any) -> int:
     return sum(1 for hook_value in _hooks(entry_value) if hook_needs_review(hook_value))
 
@@ -213,9 +285,9 @@ def review_is_needed(bypass_hook_trust: bool, entry_value: Any) -> bool:
 def hook_needs_review(hook_value: Any) -> bool:
     status = _field(hook_value, "trust_status")
     if isinstance(status, Enum):
-        status = status.name if status.name else status.value
-    status_text = str(status)
-    return status_text.endswith("Untrusted") or status_text.endswith("Modified") or status_text in {"Untrusted", "Modified"}
+        status = status.value
+    status_text = str(status).rsplit(".", 1)[-1].lower()
+    return status_text in {"untrusted", "modified"}
 
 
 def selection_item(name: str, is_disabled: bool) -> SelectionItem:
@@ -292,6 +364,7 @@ __all__ = [
     "hook",
     "hook_needs_review",
     "maybe_run_startup_hooks_review",
+    "load_startup_hooks_review_entry",
     "render_lines",
     "render_ref",
     "review_is_needed",
@@ -301,4 +374,5 @@ __all__ = [
     "selection_item",
     "selection_view",
     "selection_view_params",
+    "terminal_selection_view_params",
 ]

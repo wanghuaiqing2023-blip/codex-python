@@ -392,10 +392,14 @@ class ExecSessionConfig:
     has_chatgpt_auth: bool = False
     goal_tools_enabled_value: bool = False
     experimental_realtime_start_instructions: str | None = None
+    codex_home: Path | None = None
+    bypass_hook_trust: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.cwd, Path):
             object.__setattr__(self, "cwd", Path(self.cwd))
+        if self.codex_home is not None and not isinstance(self.codex_home, Path):
+            object.__setattr__(self, "codex_home", Path(self.codex_home))
         object.__setattr__(self, "workspace_roots", tuple(Path(root) for root in self.workspace_roots))
         object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
@@ -469,6 +473,7 @@ class ExecSessionConfig:
             "include_collaboration_mode_instructions",
             "has_chatgpt_auth",
             "goal_tools_enabled_value",
+            "bypass_hook_trust",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise TypeError(f"{name} must be a bool")
@@ -527,6 +532,34 @@ class ExecSessionConfig:
         from pycodex.features import Feature
 
         return self.has_chatgpt_auth and _config_feature_enabled(self.features, Feature.APPS)
+
+    def to_codex_mcp_config(self, codex_home: Path | str) -> Any:
+        """Project the runtime MCP config used by ``codex-mcp``.
+
+        Rust keeps configured servers in ``McpConfig`` and adds host-owned
+        servers only at the ``effective_mcp_servers`` boundary.  Keeping that
+        distinction here prevents TUI consumers from treating ``config.toml``
+        as the complete runtime inventory.
+        """
+
+        from pycodex.codex_mcp import McpConfig
+        from pycodex.config.mcp_types import McpServerConfig
+        from pycodex.features import Feature
+
+        configured: dict[str, McpServerConfig] = {}
+        for name, value in dict(self.mcp_servers or {}).items():
+            configured[str(name)] = (
+                value
+                if isinstance(value, McpServerConfig)
+                else McpServerConfig.from_mapping(value)
+            )
+        return McpConfig(
+            chatgpt_base_url=self.chatgpt_base_url or "https://chatgpt.com",
+            codex_home=Path(codex_home),
+            apps_enabled=_config_feature_enabled(self.features, Feature.APPS),
+            approval_policy=self.approval_policy,
+            configured_mcp_servers=configured,
+        )
 
     async def to_mcp_config(self, plugins_manager: Any) -> Mapping[str, Any]:
         servers = dict(self.mcp_servers or {})

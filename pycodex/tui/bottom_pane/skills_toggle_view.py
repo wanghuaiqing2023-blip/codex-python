@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..app_event import AppEvent
+from .bottom_pane_view import BottomPaneViewDefaults, ViewCompletion
 from .popup_consts import MAX_POPUP_ROWS
+from .selection_popup_common import TerminalPopupLine
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -46,7 +49,7 @@ class DisplayLine:
 
 
 @dataclass
-class SkillsToggleView:
+class SkillsToggleView(BottomPaneViewDefaults):
     items: List[SkillsToggleItem]
     app_event_tx: Any = None
     keymap: Any = None
@@ -224,6 +227,29 @@ class SkillsToggleView:
         self.close()
         return "Handled"
 
+    def completion(self) -> ViewCompletion | None:
+        return ViewCompletion.CANCELLED if self.complete else None
+
+    def prefer_esc_to_handle_key_event(self) -> bool:
+        return True
+
+    def handle_paste(self, pasted: str) -> bool:
+        if not pasted:
+            return False
+        self.search_query += str(pasted)
+        self.apply_filter()
+        return True
+
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        lines = self.render({"width": max(1, int(width)), "height": 10_000})
+        return [
+            TerminalPopupLine(
+                line.text[: max(1, int(width))],
+                selected=line.style == "selected",
+            )
+            for line in lines
+        ]
+
     def desired_height(self, width: int) -> int:
         rows = self.build_rows()
         return len(self.header) + self.rows_height(rows) + 6
@@ -385,7 +411,9 @@ def _send(target: Any, event: Dict[str, Any]) -> None:
     if target is None:
         return
     if hasattr(target, "send"):
-        target.send(event)
+        payload = dict(event)
+        kind = str(payload.pop("type", ""))
+        target.send(AppEvent(kind, payload) if kind else event)
     elif hasattr(target, "append"):
         target.append(event)
     elif callable(target):

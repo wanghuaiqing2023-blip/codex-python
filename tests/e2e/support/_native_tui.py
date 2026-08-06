@@ -27,7 +27,7 @@ import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from pycodex.utils.pty import TerminalSize, conpty_supported
 
@@ -317,6 +317,7 @@ class ConptyInputStep:
     atomic_write: bool = False
     resize_settle_time: float = 0.1
     capture_name: str | None = None
+    after_ready: Callable[[], None] | None = None
 
 
 class NativeComparisonLayer(Enum):
@@ -1731,6 +1732,8 @@ def run_windows_conpty_tui_command(
                     break
             elif step.ready_timeout > 0:
                 time.sleep(float(step.ready_timeout))
+            if step.after_ready is not None:
+                step.after_ready()
             if step.capture_name is not None:
                 screen_checkpoints.append(
                     (

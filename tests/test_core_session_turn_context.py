@@ -1,16 +1,41 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pycodex.core.session.turn_context as turn_context_module
-from pycodex.core.session.turn_context import local_iana_timezone, local_time_context
+from pycodex.core.session.turn_context import TurnContext, local_iana_timezone, local_time_context
+from pycodex.features import Feature, Features
 
 
 class _FixedZone:
     def __init__(self, key: str | None = None, zone: str | None = None) -> None:
         self.key = key
         self.zone = zone
+
+
+def test_apps_enabled_requires_feature_and_current_codex_backend_auth() -> None:
+    # Rust: codex-core::session::turn_context::TurnContext::apps_enabled.
+    features = Features.with_defaults().enable(Feature.APPS)
+    chatgpt_auth = SimpleNamespace(current_auth_uses_codex_backend=lambda: True)
+    api_key_auth = SimpleNamespace(current_auth_uses_codex_backend=lambda: False)
+
+    assert TurnContext(
+        cwd=Path("C:/work"),
+        features=features,
+        auth_manager=chatgpt_auth,
+    ).apps_enabled()
+    assert not TurnContext(
+        cwd=Path("C:/work"),
+        features=features,
+        auth_manager=api_key_auth,
+    ).apps_enabled()
+    assert not TurnContext(
+        cwd=Path("C:/work"),
+        features=Features.with_defaults().disable(Feature.APPS),
+        auth_manager=chatgpt_auth,
+    ).apps_enabled()
 
 
 def test_local_time_context_uses_iana_timezone_from_active_zoneinfo(monkeypatch) -> None:

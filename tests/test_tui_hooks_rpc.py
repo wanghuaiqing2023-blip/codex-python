@@ -122,7 +122,7 @@ async def test_write_hook_trusts_sends_config_batch_write_upsert():
                 "hook-a": {"trusted_hash": "hash-a"},
                 "hook-b": {"trusted_hash": "hash-b"},
             },
-            "merge_strategy": "Upsert",
+            "merge_strategy": "upsert",
         }
     ]
 

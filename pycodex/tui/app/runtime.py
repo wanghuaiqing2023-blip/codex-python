@@ -82,8 +82,10 @@ from ..config_update import (
     build_memory_settings_edits,
     build_model_selection_edits,
     write_config_batch,
+    write_skill_enabled,
 )
 from ..history_cell.notices import new_error_event, new_info_event
+from ..file_search import FileSearchManager
 from ..keymap import RuntimeKeymap
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, rate_limit_snapshot_display_for_limit
 from .agent_navigation import (
@@ -417,6 +419,9 @@ def _config_request_handle_from_runtime(runtime: Any) -> Any:
         ConfigManagerService,
         InProcessConfigRequestHandle,
     )
+    from pycodex.app_server.request_processors_catalog_processor import (
+        CatalogRequestProcessor,
+    )
     from pycodex.app_server.request_processors_config_processor import ConfigRequestProcessor
     from pycodex.config import ConfigLayerEntry, ConfigLayerSource, ConfigLayerStack
     from pycodex.core.config.edit import read_toml_mapping
@@ -440,7 +445,14 @@ def _config_request_handle_from_runtime(runtime: Any) -> Any:
         thread_manager=None,
         analytics_events_client=None,
     )
-    return InProcessConfigRequestHandle(config_processor)
+    catalog_processor = CatalogRequestProcessor.new(
+        auth_manager=None,
+        thread_manager=None,
+        config=config,
+        config_manager=config_manager,
+        workspace_settings_cache=None,
+    )
+    return InProcessConfigRequestHandle(config_processor, catalog_processor)
 
 
 def _effort_config_value(effort: Any) -> str | None:
@@ -1536,7 +1548,26 @@ class CoreExecActiveThreadRuntime:
         codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
         models_manager = None
         if codex_home is not None:
-            state_runtime = self._state_runtime_for_thread_goals()
+            if self.auth_manager is None:
+                try:
+                    self.auth_manager = _run_coro_blocking(
+                        auth_service_from_snapshot(
+                            codex_home,
+                            self.original_auth or self.auth,
+                            getattr(self.session_config, "chatgpt_base_url", None),
+                        )
+                    )
+                except Exception:
+                    self.auth_manager = None
+            try:
+                state_runtime = self._state_runtime_for_thread_goals()
+            except OSError as exc:
+                _timing_trace(
+                    "state_runtime_unavailable",
+                    codex_home=str(codex_home),
+                    error=str(exc),
+                )
+                state_runtime = None
             models_manager = self.models_manager()
         self._core_session = create_exec_core_session(
             self.session_config,
@@ -1557,6 +1588,39 @@ class CoreExecActiveThreadRuntime:
             )
         self._core_session.goal_continuation_callback = self._queue_goal_continuation_from_core
         return self._core_session
+
+    def load_skills_for_current_config(self, *, force_reload: bool = False) -> Any:
+        """Load the current skill catalog through the same core session as turns."""
+
+        session = self._ensure_core_session_sync()
+        if session is None:
+            from pycodex.core_skills import SkillLoadOutcome
+
+            return SkillLoadOutcome()
+        manager = getattr(getattr(session, "services", None), "skills_manager", None)
+        if force_reload and callable(getattr(manager, "clear_cache", None)):
+            manager.clear_cache()
+        from pycodex.core.session.session import _load_turn_skills
+
+        return self._session_async_runtime().run(
+            _load_turn_skills(session, self.session_config)
+        )
+
+    def load_plugin_mentions_for_current_config(self) -> tuple[Any, ...]:
+        """Load plugin capability summaries through the core plugin manager."""
+
+        session = self._ensure_core_session_sync()
+        if session is None:
+            return ()
+        from pycodex.core.session.session import (
+            _load_plugins_for_config,
+            _plugin_capability_summaries,
+        )
+
+        outcome = self._session_async_runtime().run(
+            _load_plugins_for_config(session, self.session_config)
+        )
+        return _plugin_capability_summaries(outcome)
 
     def _session_async_runtime(self) -> _PersistentAsyncRuntime:
         with self._async_runtime_lock:
@@ -2010,7 +2074,14 @@ class CoreExecActiveThreadRuntime:
             return
 
     def _seed_configured_mcp_startup_events(self) -> None:
-        names = refresh_mcp_startup_expected_servers_from_config(self.session_config)
+        core_session = self._ensure_core_session_sync()
+        manager = getattr(getattr(core_session, "services", None), "mcp_connection_manager", None)
+        manager_names = getattr(manager, "enabled_server_names", None)
+        names = (
+            list(manager_names())
+            if callable(manager_names)
+            else refresh_mcp_startup_expected_servers_from_config(self.session_config)
+        )
         for name in names:
             self._startup_app_server_events.put(
                 {
@@ -2024,8 +2095,6 @@ class CoreExecActiveThreadRuntime:
         if not names:
             return
 
-        core_session = self._ensure_core_session_sync()
-        manager = getattr(getattr(core_session, "services", None), "mcp_connection_manager", None)
         if manager is None:
             for name in names:
                 self._enqueue_mcp_startup_result(
@@ -2934,6 +3003,7 @@ class TuiAppRuntime:
     auxiliary_app_events: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     pending_app_events: Queue[Any] = field(default_factory=Queue, repr=False)
     app_event_sender: AppEventSender = field(init=False, repr=False)
+    file_search: FileSearchManager = field(init=False, repr=False)
     active_collaboration_mode: Any = None
     config_request_handle: Any = None
     open_url_sink: Callable[[str], Any] = field(default_factory=lambda: webbrowser.open)
@@ -2941,12 +3011,16 @@ class TuiAppRuntime:
     _side_parent_ui_states: dict[str, Any] = field(default_factory=dict, repr=False)
     _status_rate_limit_request_id: int = 0
     ide_context_state: Any = field(init=False, repr=False)
+    _next_user_turn_mention_bindings: list[Any] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
         # Rust ``App::run`` gives every view an AppEventSender backed by the
         # app loop's unbounded channel. Keep callbacks enqueue-only so the
         # bottom pane can finish its input/completion pass before dispatch.
         self.app_event_sender = AppEventSender(self.pending_app_events)
+        session_config = getattr(self.active_thread_runtime, "session_config", None)
+        search_cwd = Path(_field(session_config, "cwd", self.cwd) or self.cwd)
+        self.file_search = FileSearchManager.new(search_cwd, self.app_event_sender)
         self.ide_context_state = _new_ide_context_widget_state(self.cwd)
         if self.config_request_handle is None:
             self.config_request_handle = _config_request_handle_from_runtime(self.active_thread_runtime)
@@ -3185,6 +3259,11 @@ class TuiAppRuntime:
         result = dispatch_input(*args, **kwargs)
         self.drain_app_events()
         return result
+
+    def run_idle_app_event_loop_step(self) -> tuple[Any, ...]:
+        """Receive queued asynchronous events while terminal input is idle."""
+
+        return self.drain_app_events()
 
     def _thread_event_store(self, thread_id: str | None = None) -> ThreadEventStore:
         target = str(thread_id or self.routing_state.active_thread_id or self.thread_id)
@@ -3439,7 +3518,18 @@ class TuiAppRuntime:
             service_tier=_runtime_turn_context_value(self, "service_tier"),
             collaboration_mode=collaboration_mode,
             ide_context_apply=self.maybe_apply_ide_context,
+            mention_bindings=self._take_next_user_turn_mention_bindings(),
+            skills=list(self.chat_widget.skills_for_mentions),
+            plugins=list(self.chat_widget.plugin_mentions),
         )
+
+    def set_next_user_turn_mention_bindings(self, bindings: list[Any]) -> None:
+        self._next_user_turn_mention_bindings = list(bindings)
+
+    def _take_next_user_turn_mention_bindings(self) -> list[Any]:
+        bindings = list(self._next_user_turn_mention_bindings)
+        self._next_user_turn_mention_bindings.clear()
+        return bindings
 
     def handle_ide_command_args(self, args: str) -> None:
         """Run Rust ``chatwidget::ide_context`` command semantics."""
@@ -4027,6 +4117,7 @@ class TuiAppRuntime:
         cwd = _field(session, "cwd", None)
         if cwd is not None:
             self.cwd = Path(cwd)
+            self.file_search.update_search_dir(self.cwd)
         rollout_path = _field(session, "rollout_path", None) or _field(started, "rollout_path", None)
         if rollout_path is not None:
             self.rollout_path = Path(rollout_path)
@@ -4129,6 +4220,113 @@ class TuiAppRuntime:
                 _field(payload, "detail", "tools_and_auth_only"),
                 _field(payload, "thread_id", None),
             )
+        elif plan.action == "mcp_inventory_loaded":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self.handle_mcp_inventory_loaded(
+                _field(payload, "statuses", None),
+                _field(payload, "detail", "tools_and_auth_only"),
+                _field(payload, "thread_id", None),
+                _field(payload, "error", None),
+            )
+        elif plan.action == "handle_start_file_search":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self.file_search.on_user_query(str(_field(payload, "query", payload) or ""))
+        elif plan.action == "handle_file_search_result":
+            payload = plan.updates[0][1] if plan.updates else {}
+            self.chat_widget.apply_file_search_result(
+                str(_field(payload, "query", "")),
+                list(_field(payload, "matches", ()) or ()),
+            )
+        elif plan.action == "handle_open_skills_list":
+            from ..chatwidget.skills import open_skills_list
+
+            if not self.chat_widget.skills_all:
+                self.refresh_skills_for_current_cwd(force_reload=False)
+            self.refresh_plugin_mentions_for_current_cwd()
+            open_skills_list(self.chat_widget)
+        elif plan.action == "handle_open_manage_skills_popup":
+            from ..chatwidget.skills import open_manage_skills_popup
+
+            if not self.chat_widget.skills_all:
+                self.refresh_skills_for_current_cwd(force_reload=False)
+            open_manage_skills_popup(self.chat_widget)
+        elif plan.action == "handle_set_skill_enabled":
+            from ..chatwidget.skills import update_skill_enabled
+
+            payload = plan.updates[0][1] if plan.updates else {}
+            path = str(_field(payload, "path", ""))
+            enabled = bool(_field(payload, "enabled", False))
+            try:
+                if self.config_request_handle is None:
+                    raise RuntimeError("missing app-server config request handle")
+                _run_coro_blocking(
+                    write_skill_enabled(self.config_request_handle, path, enabled)
+                )
+            except BaseException as error:
+                self.chat_widget.add_error_message(
+                    f"Failed to save skill setting: {error}"
+                )
+            else:
+                update_skill_enabled(self.chat_widget, path, enabled)
+                self._reload_runtime_user_config_layer()
+        elif plan.action == "handle_set_hook_enabled":
+            from ..hooks_rpc import write_hook_enabled
+
+            payload = plan.updates[0][1] if plan.updates else {}
+            try:
+                if self.config_request_handle is None:
+                    raise RuntimeError("missing app-server config request handle")
+                _run_coro_blocking(
+                    write_hook_enabled(
+                        self.config_request_handle,
+                        str(_field(payload, "key", "")),
+                        bool(_field(payload, "enabled", False)),
+                    )
+                )
+            except BaseException as error:
+                self.chat_widget.add_error_message(
+                    f"Failed to update hook config: {error}"
+                )
+            else:
+                self._reload_runtime_user_config_layer()
+        elif plan.action in {"handle_trust_hook", "handle_trust_hooks"}:
+            from ..hooks_rpc import (
+                HookTrustUpdate,
+                write_hook_trust,
+                write_hook_trusts,
+            )
+
+            payload = plan.updates[0][1] if plan.updates else {}
+            try:
+                if self.config_request_handle is None:
+                    raise RuntimeError("missing app-server config request handle")
+                if plan.action == "handle_trust_hook":
+                    _run_coro_blocking(
+                        write_hook_trust(
+                            self.config_request_handle,
+                            str(_field(payload, "key", "")),
+                            str(_field(payload, "current_hash", "")),
+                        )
+                    )
+                else:
+                    updates = [
+                        HookTrustUpdate(
+                            key=str(_field(update, "key", "")),
+                            current_hash=str(_field(update, "current_hash", "")),
+                        )
+                        for update in (_field(payload, "updates", ()) or ())
+                    ]
+                    _run_coro_blocking(
+                        write_hook_trusts(self.config_request_handle, updates)
+                    )
+            except BaseException as error:
+                self.chat_widget.add_error_message(f"Failed to trust hooks: {error}")
+            else:
+                self._reload_runtime_user_config_layer()
+        elif plan.action == "handle_manage_skills_closed":
+            from ..chatwidget.skills import handle_manage_skills_closed
+
+            handle_manage_skills_closed(self.chat_widget)
         elif plan.action == "open_agent_picker":
             self.open_agent_picker()
         elif plan.action == "start_side":
@@ -4153,6 +4351,30 @@ class TuiAppRuntime:
             op = _field(payload, "op", None)
             if not isinstance(op, AppCommand):
                 raise TypeError("CodexOp payload must contain an AppCommand")
+            if op.kind == "ListSkills":
+                payload = op.payload if isinstance(op.payload, Mapping) else {}
+                saved_enabled = {
+                    skill.path: skill.enabled
+                    for skill in self.chat_widget.skills_all
+                }
+                refreshed = self.refresh_skills_for_current_cwd(
+                    force_reload=bool(_field(payload, "force_reload", False))
+                )
+                if saved_enabled:
+                    refreshed = [
+                        replace(
+                            skill,
+                            enabled=saved_enabled.get(skill.path, skill.enabled),
+                        )
+                        for skill in refreshed
+                    ]
+                    from ..chatwidget.skills import enabled_skills_for_mentions
+
+                    self.chat_widget.skills_all = refreshed
+                    self.chat_widget.set_skills(
+                        enabled_skills_for_mentions(refreshed)
+                    )
+                return plan
             if self.codex_op_sink is None:
                 self.submit_op(op)
             else:
@@ -4209,21 +4431,108 @@ class TuiAppRuntime:
             self._reset_memories()
         return plan
 
-    def fetch_mcp_inventory(self, detail: Any, thread_id: Any = None) -> None:
-        """Render `/mcp` from the active core session's MCP manager."""
+    def refresh_skills_for_current_cwd(self, *, force_reload: bool = False) -> list[Any]:
+        """Refresh Rust ``SkillsListResponse`` state for ChatWidget/BottomPane."""
 
-        del thread_id
-        from ..history_cell.mcp import (
-            empty_mcp_output,
-            new_mcp_tools_output_from_statuses,
+        from ..chatwidget.skills import (
+            ProtocolSkillMetadata,
+            enabled_skills_for_mentions,
         )
+
+        loader = getattr(self.active_thread_runtime, "load_skills_for_current_config", None)
+        if not callable(loader):
+            self.chat_widget.skills_all = []
+            self.chat_widget.set_skills([])
+            return []
+        try:
+            outcome = loader(force_reload=bool(force_reload))
+        except BaseException as error:
+            self.chat_widget.add_error_message(f"Failed to load skills: {error}")
+            return list(self.chat_widget.skills_all)
+        skills: list[ProtocolSkillMetadata] = []
+        pairs = getattr(outcome, "skills_with_enabled", None)
+        loaded = pairs() if callable(pairs) else ()
+        for skill, enabled in loaded:
+            path = getattr(skill, "path_to_skills_md", None)
+            name = str(getattr(skill, "name", "") or "")
+            if path is None or not name:
+                continue
+            skills.append(
+                ProtocolSkillMetadata(
+                    name=name,
+                    path=str(path),
+                    enabled=bool(enabled),
+                    description=getattr(skill, "description", None),
+                    short_description=getattr(skill, "short_description", None),
+                    interface=getattr(skill, "interface", None),
+                    dependencies=getattr(skill, "dependencies", None),
+                    scope=getattr(skill, "scope", None),
+                )
+            )
+        self.chat_widget.skills_all = skills
+        self.chat_widget.set_skills(enabled_skills_for_mentions(skills))
+        return skills
+
+    def refresh_plugin_mentions_for_current_cwd(self) -> list[Any]:
+        """Refresh Rust ``PluginCapabilitySummary`` mention state."""
+
+        loader = getattr(
+            self.active_thread_runtime,
+            "load_plugin_mentions_for_current_config",
+            None,
+        )
+        if not callable(loader):
+            self.chat_widget.on_plugin_mentions_loaded([])
+            return []
+        try:
+            raw_mentions = loader()
+        except BaseException as error:
+            self.chat_widget.add_error_message(f"Failed to load plugin mentions: {error}")
+            return list(self.chat_widget.plugin_mentions)
+        from pycodex.plugin import PluginCapabilitySummary
+
+        mentions = [PluginCapabilitySummary.from_value(value) for value in raw_mentions or ()]
+        self.chat_widget.on_plugin_mentions_loaded(mentions)
+        return mentions
+
+    def _reload_runtime_user_config_layer(self) -> None:
+        """Refresh the in-memory config after an app-server style skill write."""
+
+        from pycodex.core.config.edit import read_toml_mapping
 
         config = getattr(self.active_thread_runtime, "session_config", None)
-        server_names = tuple(
-            refresh_mcp_startup_expected_servers_from_config(config)
+        stack = _field(config, "config_layer_stack", None)
+        get_user_config_file = getattr(stack, "get_user_config_file", None)
+        config_path = get_user_config_file() if callable(get_user_config_file) else None
+        if config_path is None:
+            codex_home = _runtime_codex_home(self.active_thread_runtime, config)
+            config_path = None if codex_home is None else codex_home / "config.toml"
+        if stack is None or config_path is None:
+            return
+        refreshed_stack = stack.with_user_config(
+            Path(config_path), read_toml_mapping(config_path)
         )
-        if not server_names:
-            self.insert_history_cell(empty_mcp_output())
+        _apply_session_config_updates(
+            self.active_thread_runtime,
+            {"config_layer_stack": refreshed_stack},
+        )
+        refreshed_config = getattr(self.active_thread_runtime, "session_config", None)
+        core_session = getattr(self.active_thread_runtime, "_core_session", None)
+        if core_session is not None and hasattr(core_session, "session_config"):
+            core_session.session_config = refreshed_config
+        self.sync_chat_widget_config_from_runtime()
+
+    def fetch_mcp_inventory(self, detail: Any, thread_id: Any = None) -> None:
+        """Fetch `/mcp` inventory in the background like Rust ``App``."""
+
+        from ..history_cell.mcp import (
+            empty_mcp_output,
+        )
+
+        current_thread_id = (
+            getattr(self.chat_widget, "thread_id", None) or self.thread_id
+        )
+        if thread_id is not None and str(thread_id) != str(current_thread_id):
             return
 
         core_session = getattr(self.active_thread_runtime, "_core_session", None)
@@ -4239,11 +4548,25 @@ class TuiAppRuntime:
             "mcp_connection_manager",
             None,
         )
+        config = getattr(self.active_thread_runtime, "session_config", None)
+        manager_names = getattr(manager, "server_names", None)
+        server_names = (
+            tuple(manager_names())
+            if callable(manager_names)
+            else tuple(refresh_mcp_startup_expected_servers_from_config(config))
+        )
+        if not server_names:
+            self.chat_widget.clear_mcp_inventory_loading()
+            self.insert_history_cell(empty_mcp_output())
+            return
         if manager is None:
-            self.insert_history_cell(
-                new_mcp_tools_output_from_statuses(
-                    [{"name": name} for name in server_names],
-                    detail,
+            self.app_event_sender.send(
+                AppEvent.of(
+                    "McpInventoryLoaded",
+                    statuses=[{"name": name} for name in server_names],
+                    detail=detail,
+                    thread_id=thread_id,
+                    error=None,
                 )
             )
             return
@@ -4275,35 +4598,80 @@ class TuiAppRuntime:
                 if include_resources
                 else {}
             )
+            auth_statuses_method = getattr(manager, "auth_statuses", None)
+            auth_statuses = (
+                await auth_statuses_method()
+                if callable(auth_statuses_method)
+                else {}
+            )
             return [
                 {
                     "name": name,
                     "tools": tools_by_server.get(name, {}),
                     "resources": resources.get(name, ()),
                     "resource_templates": templates.get(name, ()),
-                    "auth_status": "Unsupported",
+                    "auth_status": auth_statuses.get(name, "Unsupported"),
                 }
                 for name in server_names
             ]
 
-        async_runtime = getattr(
-            self.active_thread_runtime,
-            "_session_async_runtime",
-            None,
+        def collect_and_notify() -> None:
+            async_runtime = getattr(
+                self.active_thread_runtime,
+                "_session_async_runtime",
+                None,
+            )
+            try:
+                statuses = (
+                    async_runtime().run(collect_statuses())
+                    if callable(async_runtime)
+                    else _run_coro_blocking(collect_statuses())
+                )
+                error = None
+            except Exception as exc:
+                statuses = None
+                error = str(exc)
+            self.app_event_sender.send(
+                AppEvent.of(
+                    "McpInventoryLoaded",
+                    statuses=statuses,
+                    detail=detail,
+                    thread_id=thread_id,
+                    error=error,
+                )
+            )
+
+        Thread(
+            target=collect_and_notify,
+            name="pycodex-mcp-inventory",
+            daemon=True,
+        ).start()
+
+    def handle_mcp_inventory_loaded(
+        self,
+        statuses: Any,
+        detail: Any,
+        thread_id: Any = None,
+        error: Any = None,
+    ) -> None:
+        """Apply Rust's ``McpInventoryLoaded`` completion on the app loop."""
+
+        from ..history_cell.mcp import new_mcp_tools_output_from_statuses
+
+        current_thread_id = (
+            getattr(self.chat_widget, "thread_id", None) or self.thread_id
         )
-        try:
-            statuses = (
-                async_runtime().run(collect_statuses())
-                if callable(async_runtime)
-                else _run_coro_blocking(collect_statuses())
-            )
-            self.insert_history_cell(
-                new_mcp_tools_output_from_statuses(statuses, detail)
-            )
-        except Exception as error:
+        if thread_id is not None and str(thread_id) != str(current_thread_id):
+            return
+        self.chat_widget.clear_mcp_inventory_loading()
+        if error:
             self.insert_error_history_message(
                 f"Failed to load MCP inventory: {error}"
             )
+            return
+        self.insert_history_cell(
+            new_mcp_tools_output_from_statuses(list(statuses or ()), detail)
+        )
 
     def _begin_windows_sandbox_elevated_setup(self, payload: Any) -> None:
         """Run Rust's elevated Windows sandbox setup from its AppEvent owner."""
@@ -5005,14 +5373,24 @@ class TuiAppRuntime:
 
     def refresh_mcp_startup_expected_servers(self) -> list[str]:
         expected: list[str] = []
-        for config in (
-            getattr(self.chat_widget, "config", None),
-            getattr(self.active_thread_runtime, "session_config", None),
-            getattr(self.active_thread_runtime, "config", None),
-        ):
-            expected = refresh_mcp_startup_expected_servers_from_config(config)
-            if expected:
-                break
+        core_session = getattr(self.active_thread_runtime, "_core_session", None)
+        manager = getattr(
+            getattr(core_session, "services", None),
+            "mcp_connection_manager",
+            None,
+        )
+        enabled_names = getattr(manager, "enabled_server_names", None)
+        if callable(enabled_names):
+            expected = list(enabled_names())
+        if not expected:
+            for config in (
+                getattr(self.chat_widget, "config", None),
+                getattr(self.active_thread_runtime, "session_config", None),
+                getattr(self.active_thread_runtime, "config", None),
+            ):
+                expected = refresh_mcp_startup_expected_servers_from_config(config)
+                if expected:
+                    break
         setter = getattr(self.chat_widget.mcp_startup, "set_mcp_startup_expected_servers", None)
         if callable(setter):
             setter(expected)
@@ -5708,6 +6086,9 @@ def app_command_for_prompt(
     service_tier: Any = None,
     collaboration_mode: Any = None,
     ide_context_apply: Callable[[list[Any]], Any] | None = None,
+    mention_bindings: list[Any] | tuple[Any, ...] = (),
+    skills: list[Any] | tuple[Any, ...] = (),
+    plugins: list[Any] | tuple[Any, ...] = (),
 ) -> AppCommand:
     widget = _TerminalInputSubmissionWidget(
         cwd=Path(cwd),
@@ -5718,10 +6099,15 @@ def app_command_for_prompt(
         service_tier=service_tier,
         collaboration_mode=collaboration_mode,
         ide_context_apply=ide_context_apply,
+        bottom_pane=_TerminalBottomPane(
+            mention_bindings=list(mention_bindings),
+            skill_mentions=list(skills),
+        ),
+        plugin_mentions=list(plugins),
     )
     accepted = submit_user_message_with_history_record(
         widget,
-        UserMessage(prompt),
+        UserMessage(prompt, mention_bindings=tuple(mention_bindings)),
         UserMessageHistoryRecord.user_message_text(),
     )
     if not accepted or not widget.ops:
@@ -6239,6 +6625,16 @@ def user_inputs_for_app_command(op: AppCommand) -> tuple[UserInput, ...]:
             path = _item_payload_field(item, "path")
             if path is not None:
                 user_inputs.append(UserInput.local_image(Path(str(path))))
+        elif kind == "skill":
+            name = _item_payload_field(item, "name")
+            path = _item_payload_field(item, "path")
+            if name is not None and path is not None:
+                user_inputs.append(UserInput.skill(str(name), Path(str(path))))
+        elif kind == "mention":
+            name = _item_payload_field(item, "name")
+            path = _item_payload_field(item, "path")
+            if name is not None and path is not None:
+                user_inputs.append(UserInput.mention(str(name), str(path)))
     if not user_inputs:
         prompt = user_turn_prompt(op)
         if prompt:
@@ -6772,14 +7168,19 @@ class _TerminalFeatures:
 
 @dataclass
 class _TerminalBottomPane:
+    mention_bindings: list[Any] = field(default_factory=list)
+    skill_mentions: list[Any] = field(default_factory=list)
+
     def take_recent_submission_images_with_placeholders(self) -> tuple[Any, ...]:
         return ()
 
     def take_recent_submission_mention_bindings(self) -> tuple[Any, ...]:
-        return ()
+        bindings = tuple(self.mention_bindings)
+        self.mention_bindings.clear()
+        return bindings
 
-    def skills(self) -> None:
-        return None
+    def skills(self) -> list[Any]:
+        return list(self.skill_mentions)
 
 
 @dataclass
@@ -6800,6 +7201,7 @@ class _TerminalInputSubmissionWidget:
     service_tier: Any = None
     collaboration_mode: Any = None
     ide_context_apply: Callable[[list[Any]], Any] | None = None
+    plugin_mentions: list[Any] = field(default_factory=list)
     ops: list[AppCommand] = field(default_factory=list)
     bottom_pane: _TerminalBottomPane = field(default_factory=_TerminalBottomPane)
     input_queue: _TerminalInputQueue = field(default_factory=_TerminalInputQueue)
@@ -6842,8 +7244,8 @@ class _TerminalInputSubmissionWidget:
         if self.ide_context_apply is not None:
             self.ide_context_apply(items)
 
-    def plugins_for_mentions(self) -> None:
-        return None
+    def plugins_for_mentions(self) -> list[Any]:
+        return list(self.plugin_mentions)
 
     def connectors_for_mentions(self) -> None:
         return None

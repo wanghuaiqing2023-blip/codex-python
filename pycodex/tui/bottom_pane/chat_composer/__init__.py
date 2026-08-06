@@ -15,11 +15,23 @@ import unicodedata
 from typing import Any, Callable, MutableSequence, TextIO
 
 from ..._porting import RustTuiModule
+from ...app_event import AppEvent
 from ..command_popup import CommandPopup, CommandPopupFlags
+from ..file_search_popup import FileSearchPopup
 from ..paste_burst import CharDecision, FlushResultKind, PasteBurst
 from ..selection_popup_common import TerminalPopupLine
+from ..selection_popup_common import (
+    ColumnWidthConfig,
+    GenericDisplayRow,
+    render_terminal_popup_lines,
+)
+from ..scroll_state import ScrollState
+from ..skill_popup import MentionItem, SkillPopup, skill_popup_hint_line
 from ..textarea import TextArea, TextAreaState
-from .draft_state import DraftState
+from ...ratatui_bridge import Span as RatatuiSpan
+from ...ratatui_bridge import Style as RatatuiStyle
+from ...ratatui_bridge import Modifier as RatatuiModifier
+from .draft_state import ComposerMentionBinding, DraftState
 from .slash_input import terminal_command_popup_visible_for_draft
 
 RUST_MODULE = RustTuiModule(
@@ -971,6 +983,33 @@ class ChatComposer:
         self.command_popup_state = TerminalCommandPopupState.new(
             kwargs.pop("command_popup_flags", None)
         )
+        self.file_search_popup = FileSearchPopup.new()
+        self.skill_popup = SkillPopup.new([])
+        self.skills: list[Any] = []
+        self.plugins: list[Any] = []
+        self.app_event_tx = kwargs.pop("app_event_tx", None)
+        self.current_file_query: str | None = None
+        self.dismissed_file_token: str | None = None
+        self.dismissed_mention_token: str | None = None
+
+    def bind_app_event_sender(self, sender: object | None) -> None:
+        """Bind the Rust ``AppEventSender`` used by asynchronous popups."""
+
+        self.app_event_tx = sender
+
+    def set_skills(self, skills: list[Any]) -> None:
+        """Apply Rust ``ChatComposer::set_skills`` mention candidates."""
+
+        self.skills = list(skills)
+        self.skill_popup.set_mentions(self._mention_items())
+        self.sync_popups()
+
+    def set_plugin_mentions(self, plugins: list[Any] | None) -> None:
+        """Apply Rust ``ChatComposer::set_plugin_mentions`` candidates."""
+
+        self.plugins = list(plugins or [])
+        self.skill_popup.set_mentions(self._mention_items())
+        self.sync_popups()
 
     def set_keymap(self, keymap: Any) -> None:
         """Apply Rust ``ChatComposer::set_keymap`` submit bindings."""
@@ -1045,6 +1084,7 @@ class ChatComposer:
 
         self._flush_paste_before_modified_input()
         self.command_popup_state.hide()
+        self._close_file_search_popup()
         self.active_popup = "none"
         self._history_search = HistorySearchSession(
             original_draft=self._snapshot_history_draft()
@@ -1224,10 +1264,45 @@ class ChatComposer:
 
     def sync_popups(self, *, active_view_present: bool = False) -> None:
         self.sync_count += 1
-        if not self.config.popups_enabled or not self.config.slash_commands_enabled:
+        if not self.config.popups_enabled or active_view_present or self.history_search_active:
             self.command_popup_state.hide()
-            if self.active_popup == "command":
+            self._close_file_search_popup()
+            self._close_skill_popup()
+            self.active_popup = "none"
+            return
+
+        mention_token = self.current_mention_token()
+        if mention_token is not None:
+            self.command_popup_state.hide()
+            self._close_file_search_popup()
+            if mention_token == self.dismissed_mention_token:
                 self.active_popup = "none"
+                return
+            self.dismissed_mention_token = None
+            self.skill_popup.set_mentions(self._mention_items())
+            self.skill_popup.set_query(mention_token)
+            self.active_popup = "skill" if self.skill_popup.mentions else "none"
+            return
+
+        self.dismissed_mention_token = None
+        self._close_skill_popup()
+
+        at_token = self.current_at_token()
+        if at_token is not None:
+            self.command_popup_state.hide()
+            if at_token == self.dismissed_file_token:
+                self._close_file_search_popup()
+                self.active_popup = "none"
+                return
+            self.dismissed_file_token = None
+            self._sync_file_search_popup(at_token[1:])
+            return
+
+        self.dismissed_file_token = None
+        self._close_file_search_popup()
+        if not self.config.slash_commands_enabled:
+            self.command_popup_state.hide()
+            self.active_popup = "none"
             return
         visible = self.command_popup_state.sync_draft(
             self.current_text(),
@@ -1238,6 +1313,212 @@ class ChatComposer:
             self.active_popup = "command"
         elif self.active_popup == "command":
             self.active_popup = "none"
+
+    def current_at_token(self) -> str | None:
+        """Return the active non-empty ``@query`` token at the cursor.
+
+        Rust ``ChatComposer::current_at_token`` only starts legacy file search
+        once at least one query character follows ``@``.  Whitespace ends the
+        token and moving the cursor to another token retargets the popup.
+        """
+
+        text = self.current_text()
+        cursor = max(0, min(self.draft.textarea.cursor(), len(text)))
+        start = cursor
+        while start > 0 and not text[start - 1].isspace():
+            start -= 1
+        end = cursor
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        token = text[start:end]
+        if len(token) <= 1 or not token.startswith("@"):
+            return None
+        return token
+
+    def current_mention_token(self) -> str | None:
+        """Return the current ``$`` token query, including the empty query."""
+
+        if not self.skills and not self.plugins:
+            return None
+        text = self.current_text()
+        cursor = max(0, min(self.draft.textarea.cursor(), len(text)))
+        start = cursor
+        while start > 0 and not text[start - 1].isspace():
+            start -= 1
+        end = cursor
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        token = text[start:end]
+        return token[1:] if token.startswith("$") else None
+
+    def _skill_mention_items(self) -> list[MentionItem]:
+        from ...chatwidget.skills import skill_description, skill_display_name
+
+        mentions: list[MentionItem] = []
+        for skill in self.skills:
+            name = str(getattr(skill, "name", "") or "")
+            path = getattr(skill, "path_to_skills_md", None)
+            if not name or path is None:
+                continue
+            display_name = skill_display_name(skill)
+            search_terms = [name] if display_name == name else [name, display_name]
+            mentions.append(
+                MentionItem(
+                    display_name=display_name,
+                    description=skill_description(skill),
+                    insert_text=f"${name}",
+                    search_terms=search_terms,
+                    path=str(path),
+                    category_tag="[Skill]",
+                    sort_rank=1,
+                )
+            )
+        return mentions
+
+    def _plugin_mention_items(self) -> list[MentionItem]:
+        mentions: list[MentionItem] = []
+        for plugin in self.plugins:
+            config_name = str(getattr(plugin, "config_name", "") or "")
+            if not config_name:
+                continue
+            plugin_name, separator, marketplace_name = config_name.partition("@")
+            display_name = str(getattr(plugin, "display_name", "") or plugin_name)
+            description = getattr(plugin, "description", None)
+            if description is None:
+                labels: list[str] = []
+                if bool(getattr(plugin, "has_skills", False)):
+                    labels.append("skills")
+                mcp_names = tuple(getattr(plugin, "mcp_server_names", ()) or ())
+                if mcp_names:
+                    labels.append(f"{len(mcp_names)} MCP server" + ("s" if len(mcp_names) != 1 else ""))
+                app_ids = tuple(getattr(plugin, "app_connector_ids", ()) or ())
+                if app_ids:
+                    labels.append(f"{len(app_ids)} app" + ("s" if len(app_ids) != 1 else ""))
+                description = "Plugin" if not labels else "Plugin · " + " · ".join(labels)
+            search_terms = [plugin_name, config_name]
+            if display_name != plugin_name:
+                search_terms.append(display_name)
+            if separator and marketplace_name:
+                search_terms.append(marketplace_name)
+            mentions.append(
+                MentionItem(
+                    display_name=display_name,
+                    description=str(description),
+                    insert_text=f"${plugin_name}",
+                    search_terms=search_terms,
+                    path=f"plugin://{config_name}",
+                    category_tag="[Plugin]",
+                    sort_rank=0,
+                )
+            )
+        return mentions
+
+    def _mention_items(self) -> list[MentionItem]:
+        return [*self._skill_mention_items(), *self._plugin_mention_items()]
+
+    def _close_skill_popup(self) -> None:
+        if self.active_popup == "skill":
+            self.active_popup = "none"
+
+    def _sync_file_search_popup(self, query: str) -> None:
+        query = str(query)
+        if not query:
+            self._close_file_search_popup()
+            return
+        if query != self.current_file_query:
+            self.current_file_query = query
+            self.file_search_popup.set_query(query)
+            self._send_app_event(AppEvent.start_file_search(query))
+        self.active_popup = "file"
+
+    def _close_file_search_popup(self) -> None:
+        if self.current_file_query is not None:
+            self._send_app_event(AppEvent.start_file_search(""))
+        self.current_file_query = None
+        self.file_search_popup.set_empty_prompt()
+        if self.active_popup == "file":
+            self.active_popup = "none"
+
+    def _send_app_event(self, event: AppEvent) -> None:
+        target = self.app_event_tx
+        if target is None:
+            return
+        send = getattr(target, "send", None)
+        if callable(send):
+            send(event)
+            return
+        if callable(target):
+            target(event)
+
+    def on_file_search_result(self, query: str, matches: list[Any]) -> None:
+        token = self.current_at_token()
+        if token is None or not token[1:].startswith(str(query)):
+            return
+        self.file_search_popup.set_matches(str(query), matches)
+
+    def terminal_popup_lines(self, width: int) -> list[TerminalPopupLine]:
+        if self.active_popup == "file":
+            return self.file_search_popup.terminal_lines(width)
+        if self.active_popup == "skill":
+            popup_rows = self.skill_popup.rows_from_matches(self.skill_popup.filtered())
+            rows = [
+                GenericDisplayRow(
+                    name=row.name,
+                    match_indices=row.match_indices,
+                    description=row.description,
+                )
+                for row in popup_rows
+            ]
+            lines = render_terminal_popup_lines(
+                rows,
+                ScrollState(
+                    selected_idx=self.skill_popup.selected_idx,
+                    scroll_top=self.skill_popup.scroll_top,
+                ),
+                width=max(1, int(width) - 2),
+                max_results=8,
+                empty_message="no matches",
+                column_width=ColumnWidthConfig(),
+                single_line=True,
+            )
+            lines = [
+                TerminalPopupLine(
+                    "  " + line.text,
+                    line.selected,
+                    (RatatuiSpan.raw("  "), *(line.spans or (RatatuiSpan.raw(line.text),))),
+                )
+                for line in lines
+            ]
+            lines.extend(
+                (
+                    TerminalPopupLine("", False),
+                    TerminalPopupLine(
+                        "  " + skill_popup_hint_line(),
+                        False,
+                        (
+                            RatatuiSpan.raw("  Press "),
+                            RatatuiSpan.styled(
+                                "enter",
+                                RatatuiStyle.default().add_modifier(RatatuiModifier.DIM),
+                            ),
+                            RatatuiSpan.raw(" to insert or "),
+                            RatatuiSpan.styled(
+                                "esc",
+                                RatatuiStyle.default().add_modifier(RatatuiModifier.DIM),
+                            ),
+                            RatatuiSpan.raw(" to close"),
+                        ),
+                    ),
+                )
+            )
+            return lines
+        if self.command_popup_state.visible:
+            return self.command_popup_state.terminal_lines(width=width)
+        return []
+
+    @property
+    def popup_visible(self) -> bool:
+        return self.active_popup in {"file", "skill"} or self.command_popup_state.visible
 
     def render(self, area: Any = None, buf: MutableSequence[Any] | None = None) -> ChatComposerRenderSnapshot:
         return self.render_with_mask(area, buf, None)
@@ -1290,7 +1571,46 @@ class ChatComposer:
         handler = self.handlers.get(target)
         if handler is not None:
             return handler(key_event)
-        if target == "slash_popup" and key_event.code.lower() in {
+        if target == "file_popup":
+            code = key_event.code.lower().replace("_", "-")
+            if code in {"up", "ctrl-p"}:
+                self.file_search_popup.move_up()
+                return (InputResult.None_(), True)
+            if code in {"down", "ctrl-n"}:
+                self.file_search_popup.move_down()
+                return (InputResult.None_(), True)
+            if code in {"enter", "tab"}:
+                selected = self.file_search_popup.selected_match()
+                if selected is not None:
+                    self.insert_selected_path(str(selected))
+                    return (InputResult.None_(), True)
+                self._close_file_search_popup()
+                if code == "enter":
+                    return self._dispatch_without_popup(key_event)
+                return (InputResult.None_(), True)
+            if code in {"esc", "escape"}:
+                self.dismissed_file_token = self.current_at_token()
+                self._close_file_search_popup()
+                return (InputResult.None_(), True)
+        if target == "skill_popup":
+            code = key_event.code.lower().replace("_", "-")
+            if code in {"up", "ctrl-p"}:
+                self.skill_popup.move_up()
+                return (InputResult.None_(), True)
+            if code in {"down", "ctrl-n"}:
+                self.skill_popup.move_down()
+                return (InputResult.None_(), True)
+            if code in {"enter", "tab"}:
+                selected = self.skill_popup.selected_mention()
+                if selected is not None:
+                    self.insert_selected_mention(selected.insert_text, selected.path)
+                self.active_popup = "none"
+                return (InputResult.None_(), True)
+            if code in {"esc", "escape"}:
+                self.dismissed_mention_token = self.current_mention_token()
+                self.active_popup = "none"
+                return (InputResult.None_(), True)
+        if target in {"slash_popup", "file_popup", "skill_popup"} and key_event.code.lower() in {
             "char",
             "left",
             "right",
@@ -1303,6 +1623,53 @@ class ChatComposer:
         if target == "without_popup":
             return self._dispatch_without_popup(key_event)
         return (InputResult.None_(), False)
+
+    def insert_selected_mention(self, insert_text: str, path: str | None = None) -> None:
+        """Replace the current ``$query`` with the selected atomic mention."""
+
+        text = self.current_text()
+        cursor = max(0, min(self.draft.textarea.cursor(), len(text)))
+        start = cursor
+        while start > 0 and not text[start - 1].isspace():
+            start -= 1
+        end = cursor
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        self.draft.textarea.replace_range(range(start, end), "")
+        self.draft.textarea.set_cursor(start)
+        element_id = self.draft.textarea.insert_element(str(insert_text))
+        mention_name = str(insert_text)[1:] if str(insert_text).startswith("$") else ""
+        if path is not None and mention_name:
+            self.draft.mention_bindings[element_id] = ComposerMentionBinding(
+                mention=mention_name,
+                path=str(path),
+            )
+        self.draft.textarea.insert_str(" ")
+        self.draft.textarea.set_cursor(start + len(str(insert_text)) + 1)
+
+    def insert_selected_path(self, path: str) -> None:
+        """Replace the active ``@query`` with the selected relative path."""
+
+        text = self.current_text()
+        cursor = max(0, min(self.draft.textarea.cursor(), len(text)))
+        start = cursor
+        while start > 0 and not text[start - 1].isspace():
+            start -= 1
+        end = cursor
+        while end < len(text) and not text[end].isspace():
+            end += 1
+        token = text[start:end]
+        if not token.startswith("@"):
+            return
+        selected = str(path)
+        if any(char.isspace() for char in selected) and '"' not in selected:
+            selected = f'"{selected}"'
+        replacement = selected + " "
+        next_text = text[:start] + replacement + text[end:]
+        self.draft.textarea.set_text_clearing_elements(next_text)
+        self.draft.textarea.set_cursor(start + len(replacement))
+        self.dismissed_file_token = None
+        self.sync_popups()
 
     def _dispatch_without_popup(self, key_event: KeyEvent) -> tuple[InputResult, bool]:
         code = key_event.code.lower().replace("_", "-")
@@ -1326,6 +1693,7 @@ class ChatComposer:
                 return (InputResult.None_(), bool(self.errors))
             text, text_elements = prepared
             self.record_submission(self.current_text())
+            self.capture_recent_submission_mention_bindings()
             self.clear_draft()
             return (InputResult.Submitted(text, text_elements), True)
 
@@ -1398,9 +1766,27 @@ class ChatComposer:
         self.draft.textarea.set_text_clearing_elements("")
         self.draft.textarea.set_cursor(0)
         self.draft.pending_pastes.clear()
+        self.draft.mention_bindings.clear()
         self.command_popup_state.hide()
-        if self.active_popup == "command":
-            self.active_popup = "none"
+        self._close_file_search_popup()
+        self.active_popup = "none"
+
+    def mention_bindings(self) -> list[ComposerMentionBinding]:
+        ordered: list[ComposerMentionBinding] = []
+        for element in self.draft.textarea.text_element_snapshots():
+            binding = self.draft.mention_bindings.get(element.id)
+            if binding is None or binding.mention != element.text.removeprefix("$"):
+                continue
+            ordered.append(ComposerMentionBinding(binding.mention, binding.path))
+        return ordered
+
+    def capture_recent_submission_mention_bindings(self) -> None:
+        self.draft.recent_submission_mention_bindings = self.mention_bindings()
+
+    def take_recent_submission_mention_bindings(self) -> list[ComposerMentionBinding]:
+        bindings = list(self.draft.recent_submission_mention_bindings)
+        self.draft.recent_submission_mention_bindings.clear()
+        return bindings
 
     def insert_text(self, text: str) -> bool:
         normalized = _normalize_pasted_text(str(text))
@@ -1675,6 +2061,20 @@ class ChatComposer:
             return TerminalComposerInputAction("render", self.current_text())
 
         popup_key = terminal_popup_key(kind, text)
+        if self.active_popup == "file" and popup_key in {
+            "up",
+            "down",
+            "tab",
+            "enter",
+            "esc",
+        }:
+            result, redraw = self._dispatch("file_popup", KeyEvent.key(popup_key))
+            if result.kind != "None":
+                return result
+            return TerminalComposerInputAction(
+                "render" if redraw else "continue",
+                self.current_text(),
+            )
         if self.command_popup_state.visible and popup_key in {"up", "down", "tab", "enter", "esc"}:
             if popup_key == "esc":
                 self.command_popup_state.hide()

@@ -307,7 +307,7 @@ async def write_plugin_enabled(request_handle: Any, plugin_id: str, enabled: boo
     return _plan(
         "ConfigValueWrite",
         "plugin-enable",
-        {"key_path": "plugins.%s" % plugin_id, "value": {"enabled": enabled}, "merge_strategy": "Upsert"},
+        {"key_path": "plugins.%s" % plugin_id, "value": {"enabled": enabled}, "merge_strategy": "upsert"},
         "config/value/write failed while updating plugin enablement in TUI",
         "PluginEnabledSet",
     )
@@ -318,7 +318,7 @@ async def write_hook_enabled(request_handle: Any, key: str, enabled: bool) -> Ba
     return _plan(
         "ConfigBatchWrite",
         "hooks-config-write",
-        {"edits": [{"key_path": "hooks.state", "value": {key: {"enabled": enabled}}, "merge_strategy": "Upsert"}], "reload_user_config": True},
+        {"edits": [{"key_path": "hooks.state", "value": {key: {"enabled": enabled}}, "merge_strategy": "upsert"}], "reload_user_config": True},
         "config/batchWrite failed while updating hook enablement in TUI",
         "HookEnabledSet",
     )

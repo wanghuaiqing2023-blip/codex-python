@@ -380,9 +380,9 @@ def test_terminal_hooks_command_uses_chatwidget_hooks_browser_owner() -> None:
     view = dispatcher.open_command_view("hooks")
     lines = [line.text for line in view.terminal_lines(width=112)]
 
-    assert lines[0] == "Hooks"
-    assert "Lifecycle hooks from config and enabled plugins." in lines
-    assert lines[-1] == "Press Enter to view hooks; Esc to close"
+    assert lines[0] == "  Hooks"
+    assert "  Lifecycle hooks from config and enabled plugins." in lines
+    assert lines[-1] == "  Press enter to view hooks; esc to close"
 
 
 def test_terminal_slash_dispatcher_routes_auto_review_denials_through_permission_owner() -> None:

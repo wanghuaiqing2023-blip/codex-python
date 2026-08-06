@@ -13,6 +13,7 @@ terminal scroll, selection, and copy work like the Rust TUI.
 from __future__ import annotations
 
 from collections import deque
+import asyncio
 import sys
 from pathlib import Path
 from typing import Callable, TextIO
@@ -101,6 +102,7 @@ from .event_stream import (
     TerminalTurnEventLoopRunner,
     TerminalTurnIdleTicker,
     TerminalTurnEventStreamProtocol,
+    enable_windows_console_raw_input,
     terminal_stdin_is_terminal,
 )
 
@@ -178,6 +180,17 @@ class TerminalTuiRunner:
             cursor_visible=self._status.composer_cursor_visible,
             set_terminal_title_requires_action=self._status.set_terminal_title_requires_action,
             command_popup_flags=command_popup_flags_from_config(self.app_runtime.chat_widget.config),
+        )
+        self._bottom_pane.composer.bind_app_event_sender(
+            self.app_runtime.app_event_sender
+        )
+        self.app_runtime.chat_widget.bind_file_search_result_sink(
+            self._bottom_pane.apply_file_search_result
+        )
+        self.app_runtime.chat_widget.bind_skill_composer_sinks(
+            insert_text=self._bottom_pane.insert_text,
+            set_skills=self._bottom_pane.set_skills,
+            set_plugins=self._bottom_pane.set_plugin_mentions,
         )
         self.app_runtime.bind_side_ui_sink(
             self._bottom_pane.set_side_conversation_active
@@ -509,12 +522,36 @@ class TerminalTuiRunner:
         self.app_runtime.chat_widget.refresh_terminal_title()
 
     def run(self) -> int:
+        input_mode_guard = (
+            enable_windows_console_raw_input(self.stdin)
+            if self._stdin_is_terminal
+            else None
+        )
+        try:
+            return self._run_with_terminal_mode()
+        finally:
+            if input_mode_guard is not None:
+                input_mode_guard.restore()
+
+    def _run_with_terminal_mode(self) -> int:
         if self._stdin_is_terminal:
             enable_bracketed_paste(self.stdout)
         self._resize.activate_layout()
+        startup_hooks_entry = self._run_startup_hooks_review()
         self._session_header.write()
         self._startup_notices.write()
         self._drain_startup_app_server_events()
+        if startup_hooks_entry is not None:
+            from ..bottom_pane.hooks_browser_view import HooksBrowserView
+
+            self._bottom_pane.show_view(
+                HooksBrowserView.from_entry(
+                    startup_hooks_entry,
+                    self.app_runtime.app_event_sender,
+                    getattr(self.app_runtime.runtime_keymap, "list", None),
+                )
+            )
+            self._bottom_pane.render_without_resize_check()
         refresh_runtime_status_surfaces(
             self.app_runtime.chat_widget,
             self.app_runtime,
@@ -552,6 +589,102 @@ class TerminalTuiRunner:
             self._user_prompt_output.write(prompt)
             self._run_turn(prompt)
 
+    def _run_startup_hooks_review(self) -> object | None:
+        """Run Rust ``startup_hooks_review`` before entering the App loop."""
+
+        from ..hooks_rpc import HookTrustUpdate, write_hook_trusts
+        from ..startup_hooks_review import (
+            StartupHooksReviewSelection,
+            hook_needs_review,
+            load_startup_hooks_review_entry,
+            terminal_selection_view_params,
+        )
+
+        request_handle = self.app_runtime.config_request_handle
+        if request_handle is None:
+            return None
+        session_config = getattr(self.app_runtime.active_thread_runtime, "session_config", None)
+        config = session_config or getattr(self.app_runtime.chat_widget, "config", None)
+        bypass_hook_trust = bool(getattr(config, "bypass_hook_trust", False))
+        try:
+            entry = asyncio.run(
+                load_startup_hooks_review_entry(
+                    request_handle,
+                    self.app_runtime.cwd,
+                    bypass_hook_trust,
+                )
+            )
+        except Exception:
+            return None
+        if entry is None:
+            return None
+
+        trust_all_error: str | None = None
+        while True:
+            selected: list[StartupHooksReviewSelection] = []
+            params = terminal_selection_view_params(
+                entry,
+                trust_all_error,
+                False,
+                selected.append,
+                self.app_runtime.runtime_keymap,
+            )
+            self._bottom_pane.show_view(params)
+            self._bottom_pane.render_without_resize_check()
+            source = self._input_source_provider.get()
+            if source is None:
+                self._bottom_pane.clear_active_views()
+                return None
+            while self._bottom_pane.has_active_view():
+                event = source.poll(0.1)
+                if event is None:
+                    self._resize.check_size_change()
+                    continue
+                if event.kind in {"eof", "interrupt"}:
+                    self._bottom_pane.clear_active_views()
+                    return None
+                if event.kind == "resize":
+                    self._resize.check_size_change()
+                    self._bottom_pane.render_without_resize_check()
+                    continue
+                self._bottom_pane.handle_active_view_input(event)
+
+            choice = (
+                selected[-1]
+                if selected
+                else StartupHooksReviewSelection.CONTINUE_WITHOUT_TRUSTING
+            )
+            if choice is StartupHooksReviewSelection.REVIEW_HOOKS:
+                return entry
+            if choice is StartupHooksReviewSelection.CONTINUE_WITHOUT_TRUSTING:
+                return None
+
+            trusting_params = terminal_selection_view_params(
+                entry,
+                None,
+                True,
+                lambda _selection: None,
+                self.app_runtime.runtime_keymap,
+            )
+            self._bottom_pane.show_view(trusting_params)
+            self._bottom_pane.render_without_resize_check()
+            updates = [
+                HookTrustUpdate(
+                    key=str(getattr(hook, "key", "")),
+                    current_hash=str(getattr(hook, "current_hash", "")),
+                )
+                for hook in getattr(entry, "hooks", ())
+                if hook_needs_review(hook)
+            ]
+            try:
+                asyncio.run(write_hook_trusts(request_handle, updates))
+            except Exception as exc:
+                trust_all_error = f"Failed to trust hooks: {exc}"
+                self._bottom_pane.clear_active_views()
+                continue
+            self._bottom_pane.clear_active_views()
+            return None
+
     def _drain_startup_app_server_events(self) -> int:
         next_event = getattr(
             self.app_runtime.active_thread_runtime,
@@ -569,9 +702,11 @@ class TerminalTuiRunner:
             handled += 1
 
     def _poll_idle_app_server_events(self) -> None:
-        """Multiplex asynchronous app-server events while the composer is idle."""
+        """Multiplex asynchronous app and app-server events while idle."""
 
-        if self._drain_startup_app_server_events() == 0:
+        app_results = self.app_runtime.run_idle_app_event_loop_step()
+        app_server_count = self._drain_startup_app_server_events()
+        if not app_results and app_server_count == 0:
             return
         self._project_chatwidget_status()
         refresh_runtime_status_surfaces(
@@ -604,13 +739,18 @@ class TerminalTuiRunner:
         event: object,
         event_text: str = "",
     ) -> bool:
-        return bool(
+        was_active = self._bottom_pane.has_active_view()
+        handled = bool(
             self.app_runtime.run_app_event_loop_step(
                 self._bottom_pane.handle_active_view_input,
                 event,
                 event_text,
             )
         )
+        if was_active and not self._bottom_pane.has_active_view():
+            self._resize_history.repaint_viewport()
+            self._bottom_pane.render_after_history_repaint()
+        return handled
 
     def _get_composer_input_source(self) -> object | None:
         source = self._input_source_provider.get()
@@ -706,6 +846,9 @@ class TerminalTuiRunner:
         return runtime_keymap.pager
 
     def _run_turn(self, prompt: str) -> None:
+        self.app_runtime.set_next_user_turn_mention_bindings(
+            self._bottom_pane.take_recent_submission_mention_bindings()
+        )
         self.app_runtime.run_app_event_loop_step(
             self.app_runtime.enqueue_user_turn,
             prompt,

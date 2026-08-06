@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Any, Callable, List, Optional, Protocol, Union
 
 from ._porting import RustTuiModule
@@ -39,12 +39,95 @@ SessionFactory = Callable[[List[Path], FileSearchOptions, "TuiSessionReporter", 
 
 
 def _default_session_factory(
-    _roots: List[Path],
-    _options: FileSearchOptions,
-    _reporter: "TuiSessionReporter",
-    _cancel_flag: Any,
+    roots: List[Path],
+    options: FileSearchOptions,
+    reporter: "TuiSessionReporter",
+    cancel_flag: Any,
 ) -> FileSearchSession:
-    raise RuntimeError("file search session backend is not configured")
+    return _AsyncFileSearchSession(roots, options, reporter, cancel_flag)
+
+
+class _AsyncFileSearchSession:
+    """Asynchronous adapter over the Rust-aligned ``pycodex.file_search`` API.
+
+    Rust's ``codex_file_search::FileSearchSession`` walks and matches on worker
+    threads while ``update_query`` remains cheap.  The TUI manager needs the
+    same contract so input and popup repaint are never blocked by a workspace
+    walk.
+    """
+
+    def __init__(
+        self,
+        roots: List[Path],
+        options: FileSearchOptions,
+        reporter: "TuiSessionReporter",
+        cancel_flag: Any,
+    ) -> None:
+        self._roots = list(roots)
+        self._options = options
+        self._reporter = reporter
+        self._cancel_flag = cancel_flag
+        self._lock = Lock()
+        self._closed = False
+        self._pending_query: str | None = None
+        self._worker_running = False
+        self._core_session: Any = None
+
+    def update_query(self, query: str) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._pending_query = str(query)
+            if self._worker_running:
+                return
+            self._worker_running = True
+        Thread(target=self._run_queries, name="pycodex-file-search", daemon=True).start()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._pending_query = None
+            core_session = self._core_session
+            self._core_session = None
+        _close_session(core_session)
+
+    def _run_queries(self) -> None:
+        from pycodex.file_search import FileSearchOptions as CoreFileSearchOptions
+        from pycodex.file_search import create_session
+
+        with self._lock:
+            core_session = self._core_session
+        if core_session is None:
+            try:
+                core_session = create_session(
+                    self._roots,
+                    CoreFileSearchOptions(compute_indices=self._options.compute_indices),
+                    self._reporter,
+                    self._cancel_flag,
+                )
+            except Exception:
+                with self._lock:
+                    self._worker_running = False
+                self._reporter.on_complete()
+                return
+            with self._lock:
+                if self._closed:
+                    self._worker_running = False
+                    _close_session(core_session)
+                    return
+                self._core_session = core_session
+
+        while True:
+            with self._lock:
+                if self._closed:
+                    self._worker_running = False
+                    return
+                query = self._pending_query
+                self._pending_query = None
+                if query is None:
+                    self._worker_running = False
+                    return
+            core_session.update_query(query)
 
 
 class FileSearchManager:
@@ -72,6 +155,7 @@ class FileSearchManager:
     def update_search_dir(self, new_dir: Union[str, Path]) -> None:
         self.search_dir = Path(new_dir)
         with self._lock:
+            _close_session(self.state.session)
             self.state.session = None
             self.state.latest_query = ""
 
@@ -82,6 +166,7 @@ class FileSearchManager:
             self.state.latest_query = query
 
             if query == "":
+                _close_session(self.state.session)
                 self.state.session = None
                 return
 
@@ -147,6 +232,12 @@ def _send_event(tx: Any, event: AppEvent) -> None:
         tx(event)
     else:
         raise TypeError("app event target must be callable or expose send(event)")
+
+
+def _close_session(session: Optional[FileSearchSession]) -> None:
+    close = getattr(session, "close", None)
+    if callable(close):
+        close()
 
 
 def on_update(reporter: TuiSessionReporter, snapshot: Any) -> None:

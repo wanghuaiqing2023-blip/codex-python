@@ -20,6 +20,7 @@ from pycodex.core import (
     join_tool_name,
     mcp_hook_tool_input,
     mcp_tool_to_responses_api_tool,
+    override_tool_exposure,
 )
 from pycodex.protocol import CallToolResult, SearchToolCallParams, Tool, ToolName, TruncationPolicyConfig
 
@@ -130,6 +131,11 @@ class McpToolHandlerTests(unittest.TestCase):
 
     def test_handler_metadata_and_telemetry(self) -> None:
         handler = McpHandler.new(tool_info())
+        invocation = ToolInvocation(
+            call_id="call-mcp-telemetry",
+            tool_name=handler.tool_name(),
+            payload=ToolPayload.function("{}"),
+        )
 
         self.assertEqual(handler.tool_name(), ToolName.namespaced("mcp__calendar__", "_create_event"))
         self.assertEqual(handler.hook_tool_name(), HookToolName.new("mcp__calendar__create_event"))
@@ -138,7 +144,12 @@ class McpToolHandlerTests(unittest.TestCase):
         self.assertTrue(handler.matches_kind(ToolPayload.tool_search(SearchToolCallParams("calendar"))))
         self.assertFalse(handler.matches_kind(ToolPayload.custom("raw")))
         self.assertEqual(
-            handler.telemetry_tags(),
+            handler.telemetry_tags(invocation),
+            (("mcp_server", "codex-apps"), ("mcp_server_origin", "plugin")),
+        )
+        deferred = override_tool_exposure(handler, ToolExposure.DEFERRED)
+        self.assertEqual(
+            deferred.telemetry_tags(invocation),
             (("mcp_server", "codex-apps"), ("mcp_server_origin", "plugin")),
         )
 

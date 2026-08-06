@@ -2,6 +2,8 @@ from pathlib import Path
 
 from pycodex.tui.bottom_pane.file_search_popup import FileMatch, FileSearchPopup, file_match
 from pycodex.tui.bottom_pane.popup_consts import MAX_POPUP_ROWS
+from pycodex.tui.bottom_pane.selection_popup_common import terminal_popup_line_style
+from pycodex.tui.ratatui_bridge import Color, Modifier
 
 
 def test_new_starts_waiting_with_empty_queries_and_visible_height_one():
@@ -131,3 +133,30 @@ def test_render_ref_converts_matches_to_generic_rows_and_empty_message():
     assert rendered.rows[0].match_indices == [0, 4]
     assert rendered.selected_idx == 0
     assert rendered.empty_message == "no matches"
+
+
+def test_terminal_lines_preserve_rust_inset_match_bold_and_selected_accent() -> None:
+    popup = FileSearchPopup.new()
+    popup.set_query("pro")
+    popup.set_matches(
+        "pro",
+        [
+            FileMatch(score=84, path=Path("probe-alpha.md"), indices=[0, 1, 2]),
+            FileMatch(score=80, path=Path("docs/other-probe.txt"), indices=[11, 12, 13]),
+        ],
+    )
+
+    selected, ordinary = popup.terminal_lines(80)
+    assert selected.text == "  probe-alpha.md"
+    assert selected.selected
+    assert ordinary.text == "  docs\\other-probe.txt" or ordinary.text == "  docs/other-probe.txt"
+    ordinary_modifiers = [span.style.modifiers for span in ordinary.spans]
+    assert sum(Modifier.BOLD in modifiers for modifiers in ordinary_modifiers) == 3
+    assert all(span.style.fg is None for span in ordinary.spans)
+
+    popup.move_down()
+    moved = popup.terminal_lines(80)[1]
+    assert moved.selected
+    accent = terminal_popup_line_style(selected=moved.selected)
+    assert accent.fg == Color.Cyan
+    assert Modifier.BOLD in accent.modifiers

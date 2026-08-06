@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pycodex.ext.extension_api import ExtensionData
+from pycodex.features import Feature
 from pycodex.protocol import (
     AskForApproval,
     FileSystemSandboxPolicy,
@@ -124,6 +125,42 @@ class TurnContext:
     @property
     def sub_id(self) -> str:
         return str(self.turn_id or "")
+
+    def apps_enabled(self) -> bool:
+        """Match Rust ``TurnContext::apps_enabled`` for the current auth."""
+
+        uses_codex_backend = _current_auth_uses_codex_backend(self.auth_manager)
+        enabled_for_auth = getattr(self.features, "apps_enabled_for_auth", None)
+        if callable(enabled_for_auth):
+            try:
+                return bool(enabled_for_auth(uses_codex_backend))
+            except Exception:
+                return False
+        enabled = getattr(self.features, "enabled", None)
+        if not callable(enabled):
+            return False
+        try:
+            return bool(enabled(Feature.APPS)) and uses_codex_backend
+        except Exception:
+            return False
+
+
+def _current_auth_uses_codex_backend(auth_manager: Any) -> bool:
+    if auth_manager is None:
+        return False
+    current = getattr(auth_manager, "current_auth_uses_codex_backend", None)
+    if callable(current):
+        try:
+            return bool(current())
+        except Exception:
+            return False
+    uses_codex_backend = getattr(auth_manager, "uses_codex_backend", None)
+    if callable(uses_codex_backend):
+        try:
+            return bool(uses_codex_backend())
+        except Exception:
+            return False
+    return bool(uses_codex_backend)
 
 
 def local_time_context() -> tuple[str, str]:

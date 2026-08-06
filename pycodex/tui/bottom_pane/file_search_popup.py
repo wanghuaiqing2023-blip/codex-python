@@ -7,8 +7,13 @@ from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..ratatui_bridge import Span as RatatuiSpan
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
+from .selection_popup_common import ColumnWidthConfig
+from .selection_popup_common import GenericDisplayRow as SelectionDisplayRow
+from .selection_popup_common import TerminalPopupLine
+from .selection_popup_common import render_terminal_popup_lines
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -125,6 +130,35 @@ class FileSearchPopup:
         if isinstance(buf, list):
             buf.append(rendered)
         return rendered
+
+    def terminal_lines(self, width: int) -> List[TerminalPopupLine]:
+        rows = [
+            SelectionDisplayRow(
+                name=row.name,
+                match_indices=row.match_indices,
+                description=row.description,
+                category_tag=row.category_tag,
+                is_disabled=row.is_disabled,
+                disabled_reason=row.disabled_reason,
+            )
+            for row in self.rows()
+        ]
+        lines = render_terminal_popup_lines(
+            rows,
+            self.state,
+            width=max(1, int(width)),
+            max_results=MAX_POPUP_ROWS,
+            empty_message=self.empty_message(),
+            column_width=ColumnWidthConfig(),
+        )
+        return [
+            TerminalPopupLine(
+                "  " + line.text,
+                line.selected,
+                (RatatuiSpan.raw("  "), *(line.spans or (RatatuiSpan.raw(line.text),))),
+            )
+            for line in lines
+        ]
 
 
 def render_ref(popup: FileSearchPopup, area: Any = None, buf: Any = None) -> RenderedFileSearchPopup:

@@ -9,11 +9,12 @@ outcomes, and additional-context developer messages.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any
 
 from pycodex.core.context import HookAdditionalContext
 from pycodex.core.tools.hook_names import HookToolName
-from pycodex.protocol import ResponseItem
+from pycodex.protocol import EventMsg, HookStartedEvent, ResponseItem
 
 JsonValue = Any
 
@@ -534,6 +535,47 @@ def build_user_prompt_submit_request(
     )
 
 
+async def run_user_prompt_submit_hooks(
+    sess: Any,
+    turn_context: Any,
+    *,
+    prompt: str,
+) -> HookRuntimeOutcome | None:
+    """Run Rust ``hook_runtime::inspect_pending_input``'s user-input branch."""
+
+    services = getattr(sess, "services", None)
+    hooks = getattr(services, "hooks", None)
+    runner = getattr(hooks, "run_user_prompt_submit", None)
+    preview = getattr(hooks, "preview_user_prompt_submit", None)
+    if not callable(runner) or not callable(preview):
+        return None
+
+    context = _hook_request_context(sess, turn_context)
+    request = build_user_prompt_submit_request(context, prompt=prompt)
+    turn_id = context.turn_id
+    for run in preview(request):
+        await _emit_hook_event(
+            sess,
+            turn_context,
+            EventMsg.with_payload(
+                "hook_started",
+                HookStartedEvent(turn_id=turn_id, run=run),
+            ),
+        )
+
+    outcome = await runner(request)
+    for completed in getattr(outcome, "hook_events", ()):
+        await _emit_hook_event(
+            sess,
+            turn_context,
+            EventMsg.with_payload("hook_completed", completed),
+        )
+    return HookRuntimeOutcome(
+        should_stop=bool(getattr(outcome, "should_stop", False)),
+        additional_contexts=tuple(getattr(outcome, "additional_contexts", ()) or ()),
+    )
+
+
 def build_stop_request(
     context: HookRequestContext,
     *,
@@ -654,6 +696,52 @@ def additional_context_messages(additional_contexts: tuple[str, ...] | list[str]
     return tuple(HookAdditionalContext.new(text).into_response_item() for text in _string_tuple(additional_contexts, "additional_contexts"))
 
 
+def _hook_request_context(sess: Any, turn_context: Any) -> HookRequestContext:
+    conversation_id = getattr(sess, "conversation_id", None)
+    session_id = conversation_id or getattr(sess, "thread_id", None) or "thread"
+    turn_id = getattr(turn_context, "turn_id", None) or getattr(
+        turn_context, "sub_id", None
+    )
+    if not isinstance(turn_id, str):
+        raise TypeError("turn_context must expose a string turn_id or sub_id")
+
+    model_info = getattr(turn_context, "model_info", None)
+    model = getattr(model_info, "slug", None)
+    if not isinstance(model, str):
+        model = str(getattr(getattr(sess, "session_config", None), "model", "") or "")
+
+    transcript_path = None
+    for name in ("rollout_path", "thread_rollout_path", "persisted_thread_history_path"):
+        candidate = getattr(sess, name, None)
+        if candidate is not None:
+            transcript_path = str(candidate)
+            break
+
+    approval_policy = getattr(
+        turn_context,
+        "approval_policy",
+        getattr(sess, "approval_policy", None),
+    )
+    return HookRequestContext(
+        session_id=str(session_id),
+        turn_id=turn_id,
+        cwd=str(getattr(turn_context, "cwd", getattr(sess, "cwd", ""))),
+        transcript_path=transcript_path,
+        model=model,
+        permission_mode=hook_permission_mode(approval_policy),
+        subagent=None,
+    )
+
+
+async def _emit_hook_event(sess: Any, turn_context: Any, event: EventMsg) -> None:
+    sender = getattr(sess, "send_event", None)
+    if not callable(sender):
+        return
+    result = sender(turn_context, event)
+    if inspect.isawaitable(result):
+        await result
+
+
 def _field(value: Any, name: str, default: Any) -> Any:
     if isinstance(value, dict):
         return value.get(name, default)
@@ -720,4 +808,5 @@ __all__ = [
     "post_tool_use_replacement_text",
     "pre_compact_outcome_from_hook",
     "pre_tool_use_result_from_outcome",
+    "run_user_prompt_submit_hooks",
 ]

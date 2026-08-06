@@ -28,10 +28,14 @@ from pycodex.codex_mcp import (
     qualified_mcp_tool_name_prefix,
     resolve_oauth_scopes,
 )
+from pycodex.codex_mcp.rmcp_client import ManagedClient
+from pycodex.codex_mcp.server import McpServerMetadata
 from pycodex.config.mcp_types import AppToolApproval, McpServerConfig
+from pycodex.protocol import Tool
 from pycodex.protocol.config_types import AskForApproval
 from pycodex.protocol.models import PermissionProfile
 from pycodex.protocol.tool_name import ToolName
+from pycodex.rmcp_client import ListToolsWithConnectorIdResult, ToolWithConnectorId
 
 
 def _stdio_server(**overrides: object) -> McpServerConfig:
@@ -87,6 +91,45 @@ def test_effective_servers_preserve_configured_and_add_host_apps(tmp_path: Path)
     assert apps.transport.url == "https://chatgpt.com/backend-api/wham/apps"
 
 
+def test_effective_servers_do_not_add_host_apps_without_backend_auth(
+    tmp_path: Path,
+) -> None:
+    config = McpConfig(
+        codex_home=tmp_path,
+        apps_enabled=True,
+        configured_mcp_servers={"docs": _stdio_server()},
+    )
+    api_key_auth = SimpleNamespace(uses_codex_backend=lambda: False)
+
+    assert set(effective_mcp_servers(config, api_key_auth)) == {"docs"}
+
+
+def test_connection_manager_reports_complete_names_and_codex_apps_auth(
+    tmp_path: Path,
+) -> None:
+    backend_auth = SimpleNamespace(uses_codex_backend=lambda: True)
+    effective = effective_mcp_servers(
+        McpConfig(
+            codex_home=tmp_path,
+            apps_enabled=True,
+            configured_mcp_servers={"node_repl": _stdio_server()},
+        ),
+        backend_auth,
+    )
+    manager = McpConnectionManager(
+        {
+            name: server.configured_config()
+            for name, server in effective.items()
+        },
+        auth=backend_auth,
+    )
+
+    assert manager.server_names() == ("codex_apps", "node_repl")
+    assert manager.enabled_server_names() == ("codex_apps", "node_repl")
+    statuses = asyncio.run(manager.auth_statuses())
+    assert str(statuses["codex_apps"]).lower().replace("_", " ") == "bearer token"
+
+
 def test_mcp_permission_auto_approval_matches_rust_policy() -> None:
     approved_tool = McpPermissionPromptAutoApproveContext(
         tool_approval_mode=AppToolApproval.APPROVE
@@ -121,6 +164,53 @@ def test_tool_metadata_and_names_match_rust_contract() -> None:
         tool={"name": "search", "inputSchema": {"type": "object"}},
     )
     assert tool.canonical_tool_name() == ToolName.namespaced("docs", "search")
+
+
+@pytest.mark.asyncio
+async def test_managed_client_normalizes_codex_apps_connector_namespace_and_name() -> None:
+    # Rust: codex-mcp::rmcp_client::list_tools_for_client_uncached applies the
+    # codex_apps callable namespace/name normalization before model exposure.
+    class Client:
+        async def list_tools_with_connector_ids(self, *, timeout):
+            assert timeout == 5
+            return ListToolsWithConnectorIdResult(
+                tools=(
+                    ToolWithConnectorId(
+                        tool=Tool(
+                            name="github_get_user_login",
+                            title="GitHub_Get User Login",
+                            input_schema={"type": "object"},
+                        ),
+                        connector_id="connector_github",
+                        connector_name="GitHub",
+                        connector_description="Read GitHub account metadata.",
+                    ),
+                )
+            )
+
+    managed = ManagedClient(
+        server_name=CODEX_APPS_MCP_SERVER_NAME,
+        client=Client(),
+        metadata=McpServerMetadata(
+            pollutes_memory=True,
+            origin="https://chatgpt.com",
+            supports_parallel_tool_calls=False,
+        ),
+        tool_timeout=5,
+    )
+
+    (tool,) = await managed.list_tools()
+
+    assert tool.callable_namespace == "codex_apps__github"
+    assert tool.callable_name == "_get_user_login"
+    assert tool.canonical_tool_name() == ToolName.namespaced(
+        "codex_apps__github",
+        "_get_user_login",
+    )
+    assert tool.tool.name == "github_get_user_login"
+    assert tool.tool.title == "Get User Login"
+    assert tool.connector_id == "connector_github"
+    assert tool.namespace_description == "Read GitHub account metadata."
 
 
 def test_auth_elicitation_payload_and_completion_match_rust() -> None:

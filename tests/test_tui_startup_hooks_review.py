@@ -28,6 +28,9 @@ def test_untrusted_hooks_need_review_without_bypass() -> None:
     # Rust source: startup_hooks_review.rs::tests::untrusted_hooks_need_review_without_bypass.
     assert review_is_needed(False, entry())
     assert review_needed_count(entry()) == 2
+    assert review_needed_count(
+        {"hooks": [{"trust_status": "untrusted"}, {"trust_status": "modified"}]}
+    ) == 2
 
 
 def test_selected_choice_maps_completed_indices() -> None:

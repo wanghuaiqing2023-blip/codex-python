@@ -40,7 +40,11 @@ from pycodex.core.connectors import (
 from pycodex.connectors.merge import merge_plugin_connectors_with_accessible
 from pycodex.connectors.metadata import connector_name_slug
 from pycodex.core.context import SkillInstructions
-from pycodex.core.hook_runtime import HookRuntimeOutcome, additional_context_messages
+from pycodex.core.hook_runtime import (
+    HookRuntimeOutcome,
+    additional_context_messages,
+    run_user_prompt_submit_hooks,
+)
 from pycodex.core.state.additional_context import (
     AdditionalContextEntry,
     AdditionalContextStore,
@@ -93,6 +97,7 @@ from pycodex.apply_patch import parse_patch, verify_apply_patch_args
 from pycodex.core.apply_patch import convert_apply_patch_to_protocol
 from pycodex.core.stream_events_utils import AssistantMessageStreamParsers, OutputItemResult, SamplingOutputState
 from pycodex.core.stream_events_utils import get_last_assistant_message_from_turn
+from pycodex.core.stream_events_utils import finalize_non_tool_response_item_with_contributors
 from pycodex.core.stream_events_utils import handle_non_tool_response_item
 from pycodex.core.stream_events_utils import last_assistant_message_from_item
 from pycodex.core.stream_events_utils import sampling_stream_event_apply_plan
@@ -1287,7 +1292,16 @@ async def _prepare_user_turn_skill_plugin_items(
     mentioned_skills = ()
     mentioned_plugins = ()
     explicitly_enabled_connectors: set[str] = set(collect_explicit_app_ids(user_input))
-    available_connectors = _available_connectors(sess, turn_context, router)
+    # Rust ``session::turn::build_skills_and_plugins`` resolves plugins from
+    # the manager for every turn.  Keeping this turn-scoped matters because
+    # config changes and curated-plugin refreshes can happen after startup.
+    turn_plugins = await _load_turn_plugin_capability_summaries(sess, turn_context)
+    available_connectors = _available_connectors(
+        sess,
+        turn_context,
+        router,
+        plugins=turn_plugins,
+    )
     turn_skills = _turn_skills_outcome(sess, turn_context)
     connector_slug_counts = build_connector_slug_counts(available_connectors)
     skill_name_counts_lower: dict[str, int] = {}
@@ -1306,16 +1320,9 @@ async def _prepare_user_turn_skill_plugin_items(
         mentioned_plugins = tuple(
             collect_explicit_plugin_mentions(
                 user_input,
-                getattr(sess, "plugins", ()),
+                turn_plugins,
             )
         )
-        if not mentioned_plugins:
-            mentioned_plugins = tuple(
-                collect_explicit_plugin_mentions(
-                    user_input,
-                    _collect_plugins_from_turn_context(sess, turn_context),
-                )
-            )
     try:
         skill_injections = build_skill_injections(mentioned_skills)
     except Exception as exc:
@@ -1410,7 +1417,13 @@ def _router_mcp_tools(router: Any) -> tuple[Any, ...]:
     return ()
 
 
-def _available_connectors(sess: Any, turn_context: Any, router: Any) -> tuple[Any, ...]:
+def _available_connectors(
+    sess: Any,
+    turn_context: Any,
+    router: Any,
+    *,
+    plugins: tuple[Any, ...] | None = None,
+) -> tuple[Any, ...]:
     configured_apps = getattr(turn_context, "config", None)
     apps_enabled = (
         _bool_config_property(turn_context, "apps_enabled", False)
@@ -1427,7 +1440,11 @@ def _available_connectors(sess: Any, turn_context: Any, router: Any) -> tuple[An
         connector_list = ((connector_list,) if connector_list else ())
     connector_list = tuple(connector_list)
     if not connector_list:
-        plugin_apps = _iter_app_ids_from_plugins(_collect_plugins_from_turn_context(sess, turn_context))
+        plugin_apps = _iter_app_ids_from_plugins(
+            plugins
+            if plugins is not None
+            else _collect_plugins_from_turn_context(sess, turn_context)
+        )
         accessible = accessible_connectors_from_mcp_tools(_router_mcp_tools(router))
         if plugin_apps:
             connector_list = merge_plugin_connectors_with_accessible(plugin_apps, accessible)
@@ -1451,6 +1468,32 @@ def _collect_plugins_from_turn_context(sess: Any, turn_context: Any) -> tuple[An
         return tuple(plugins)
     plugins = _field_value(turn_context, "plugins", ())
     return tuple(plugins) if plugins else ()
+
+
+async def _load_turn_plugin_capability_summaries(
+    sess: Any,
+    turn_context: Any,
+) -> tuple[Any, ...]:
+    """Mirror Rust's per-turn ``PluginsManager::plugins_for_config`` lookup."""
+
+    services = getattr(sess, "services", None)
+    manager = getattr(services, "plugins_manager", None)
+    loader = getattr(manager, "plugins_for_config", None)
+    if not callable(loader):
+        return _collect_plugins_from_turn_context(sess, turn_context)
+
+    config = getattr(turn_context, "config", None)
+    config_input_builder = getattr(config, "plugins_config_input", None)
+    config_input = config_input_builder() if callable(config_input_builder) else config
+    outcome = await _maybe_await(loader(config_input))
+    capability_summaries = getattr(outcome, "capability_summaries", None)
+    if callable(capability_summaries):
+        return tuple(capability_summaries() or ())
+    if capability_summaries is not None:
+        return tuple(capability_summaries or ())
+    if isinstance(outcome, (tuple, list)):
+        return tuple(outcome)
+    return ()
 
 
 async def _apply_explicit_connectors(sess: Any, explicit_connectors: set[str]) -> None:
@@ -2000,9 +2043,13 @@ async def _run_user_prompt_submit_hook(
         or getattr(sess, "user_prompt_submit_hook", None)
         or getattr(turn_context, "run_user_prompt_submit_hook", None)
     )
-    if not callable(hook):
-        return None
     prompt = _user_prompt_submit_prompt(user_input)
+    if not callable(hook):
+        return await run_user_prompt_submit_hooks(
+            sess,
+            turn_context,
+            prompt=prompt,
+        )
     raw_outcome = await _call_user_prompt_submit_hook(hook, sess, turn_context, user_input, prompt)
     return _user_prompt_submit_outcome(raw_outcome)
 
@@ -3083,7 +3130,7 @@ class _LiveStreamEventObserver:
             turn_context=self.turn_context,
         )
         self._update_dispatch_state(event, dispatch_plan)
-        apply_plan = self._apply_plan_for_event(event, dispatch_plan, plan_mode=plan_mode)
+        apply_plan = await self._apply_plan_for_event(event, dispatch_plan, plan_mode=plan_mode)
         self.events.append(event)
         self.dispatch_plans.append(dispatch_plan)
         self.apply_plans.append(apply_plan)
@@ -3130,13 +3177,14 @@ class _LiveStreamEventObserver:
             self.active_item = None
             self.active_item_is_streaming_to_client = False
 
-    def _apply_plan_for_event(self, event: Mapping[str, Any], dispatch_plan: Any, *, plan_mode: bool) -> Any:
+    async def _apply_plan_for_event(self, event: Mapping[str, Any], dispatch_plan: Any, *, plan_mode: bool) -> Any:
         item = event.get("item") if event.get("type") == "output_item_done" else None
         output_item_done_item = item if isinstance(item, ResponseItem) else None
-        output_item_done_result = (
-            _stream_event_output_result_for_item(output_item_done_item, plan_mode=plan_mode)
-            if output_item_done_item is not None
-            else None
+        output_item_done_result, output_item_done_turn_item = await _stream_event_output_result_and_turn_item(
+            self.sess,
+            self.turn_context,
+            output_item_done_item,
+            plan_mode=plan_mode,
         )
         return sampling_stream_event_apply_plan(
             dispatch_plan,
@@ -3144,6 +3192,7 @@ class _LiveStreamEventObserver:
             state=self.output_state,
             output_item_done_item=output_item_done_item,
             output_item_done_result=output_item_done_result,
+            output_item_done_turn_item=output_item_done_turn_item,
             has_pending_mailbox_items=False,
             assistant_message_stream_parsers=self.assistant_message_stream_parsers,
             plan_item_id=self.runtime_state.plan_item_id,
@@ -3532,10 +3581,11 @@ async def _sampling_stream_event_apply_plans_from_result(
             raise TypeError("sampler stream_events entries must be mappings")
         item = event.get("item") if event.get("type") == "output_item_done" else None
         output_item_done_item = item if isinstance(item, ResponseItem) else None
-        output_item_done_result = (
-            _stream_event_output_result_for_item(output_item_done_item, plan_mode=plan_mode)
-            if output_item_done_item is not None
-            else None
+        output_item_done_result, output_item_done_turn_item = await _stream_event_output_result_and_turn_item(
+            sess,
+            turn_context,
+            output_item_done_item,
+            plan_mode=plan_mode,
         )
         apply_plan = sampling_stream_event_apply_plan(
             dispatch_plan,
@@ -3543,6 +3593,7 @@ async def _sampling_stream_event_apply_plans_from_result(
             state=output_state,
             output_item_done_item=output_item_done_item,
             output_item_done_result=output_item_done_result,
+            output_item_done_turn_item=output_item_done_turn_item,
             has_pending_mailbox_items=has_pending_mailbox_items,
             assistant_message_stream_parsers=assistant_message_stream_parsers,
             plan_item_id=runtime_state.plan_item_id,
@@ -3578,6 +3629,31 @@ def _stream_event_output_result_for_item(item: ResponseItem, *, plan_mode: bool)
         needs_follow_up=item.type in _TOOL_RESPONSE_ITEM_TYPES,
         last_agent_message=last_assistant_message_from_item(item, plan_mode),
     )
+
+
+async def _stream_event_output_result_and_turn_item(
+    sess: Any,
+    turn_context: Any,
+    item: ResponseItem | None,
+    *,
+    plan_mode: bool,
+) -> tuple[OutputItemResult | None, TurnItem | None]:
+    if item is None:
+        return None, None
+    if item.type not in _TOOL_RESPONSE_ITEM_TYPES:
+        finalized = await finalize_non_tool_response_item_with_contributors(
+            sess,
+            turn_context,
+            getattr(turn_context, "extension_data", None),
+            item,
+            plan_mode,
+        )
+        if finalized is not None:
+            return (
+                OutputItemResult(last_agent_message=finalized.facts.last_agent_message),
+                finalized.turn_item,
+            )
+    return _stream_event_output_result_for_item(item, plan_mode=plan_mode), None
 
 
 _TOOL_RESPONSE_ITEM_TYPES = {

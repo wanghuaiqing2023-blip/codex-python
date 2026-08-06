@@ -130,7 +130,7 @@ def test_terminal_bottom_pane_frame_buffer_projects_frame_writes_into_cells() ->
     assert buffer.area == Rect(0, 8, 32, 2)
     assert buffer.row_plain(8) == "> prompt" + " " * 24
     assert buffer.row_plain(9) == "/model choose" + " " * 19
-    assert buffer.cell(0, 9).style.fg == RatatuiColor.LightBlue
+    assert buffer.cell(0, 9).style.fg == RatatuiColor.Cyan
 
 
 def test_terminal_bottom_pane_live_tail_keeps_markdown_span_styles() -> None:
@@ -275,7 +275,7 @@ def test_terminal_bottom_pane_frame_projects_popup_rows_to_buffer() -> None:
         " " * 32,
     ]
     assert buffer.cell(0, 9).symbol == "/"
-    assert buffer.cell(0, 9).style.fg == RatatuiColor.LightBlue
+    assert buffer.cell(0, 9).style.fg == RatatuiColor.Cyan
     assert buffer.cell(0, 10).style.fg is None
 
 
