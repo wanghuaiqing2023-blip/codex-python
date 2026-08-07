@@ -557,7 +557,7 @@ def test_windows_conpty_python_prompts_to_review_untrusted_hooks_at_startup(
     screen = transcript.checkpoint_cells("startup-review", rows=ROWS, cols=COLS)
     rendered = screen.text()
     assert "Hooks need review" in rendered
-    assert "hooks are new or changed." in rendered
+    assert "1 hook is new or changed." in rendered
     assert "Hooks can run outside the sandbox after you trust them." in rendered
     assert "Review hooks" in rendered
     assert "Trust all and continue" in rendered

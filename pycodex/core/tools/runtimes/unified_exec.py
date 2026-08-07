@@ -303,7 +303,7 @@ class UnifiedExecRuntime:
                 store.put(key, approved_for_session)
         return decision
 
-    async def run(self, req: UnifiedExecRequest, attempt: SandboxAttempt, _ctx: Any) -> Any:
+    async def run(self, req: UnifiedExecRequest, attempt: SandboxAttempt, ctx: Any) -> Any:
         # Rust owner: unified_exec opens the process with the selected sandbox
         # attempt.  Preserve that dynamic anchor for the stdlib manager rather
         # than letting it default to an unrestricted subprocess.
@@ -315,7 +315,100 @@ class UnifiedExecRuntime:
         result = self.manager.exec_command(self.manager_request)
         if inspect.isawaitable(result):
             result = await result
+        await _emit_unified_exec_command_lifecycle(req, ctx, result)
         return result
+
+
+async def _emit_unified_exec_command_lifecycle(
+    req: UnifiedExecRequest,
+    ctx: Any,
+    result: Any,
+) -> None:
+    """Project Rust unified-exec startup events onto Python turn items.
+
+    Rust's process manager emits the begin event only after a successful spawn
+    and keeps a live process open until its later end event. Python combines
+    spawn and the initial output snapshot in one synchronous manager call, so
+    this runtime boundary is the first point with both a successful result and
+    the allocated process id.
+    """
+
+    from pycodex.core.tools.context import ExecCommandToolOutput
+    from pycodex.core.tools.events import (
+        build_command_execution_begin_item,
+        build_command_execution_end_item,
+    )
+    from pycodex.protocol import (
+        ExecCommandBeginEvent,
+        ExecCommandEndEvent,
+        ExecCommandSource,
+        ExecCommandStatus,
+    )
+    from pycodex.protocol.exec_output import bytes_to_string_smart
+    from pycodex.shell_command import parse_command
+
+    if ctx is None or not isinstance(result, ExecCommandToolOutput):
+        return
+    session = getattr(ctx, "session", None)
+    turn = getattr(ctx, "turn", None)
+    emit_started = getattr(session, "emit_turn_item_started", None)
+    if not callable(emit_started):
+        return
+
+    command = tuple(str(part) for part in req.command)
+    cwd = Path(req.cwd)
+    parsed_cmd = tuple(parse_command(command))
+    call_id = str(getattr(ctx, "call_id", ""))
+    turn_id = str(getattr(turn, "sub_id", None) or getattr(turn, "turn_id", ""))
+    process_id = str(req.process_id)
+    source = ExecCommandSource.UNIFIED_EXEC_STARTUP
+    begin_item = build_command_execution_begin_item(
+        ExecCommandBeginEvent(
+            call_id=call_id,
+            turn_id=turn_id,
+            command=command,
+            cwd=cwd,
+            parsed_cmd=parsed_cmd,
+            process_id=process_id,
+            source=source,
+        )
+    )
+    emitted = emit_started(turn, begin_item)
+    if inspect.isawaitable(emitted):
+        await emitted
+
+    if result.process_id is not None:
+        return
+    emit_completed = getattr(session, "emit_turn_item_completed", None)
+    if not callable(emit_completed):
+        return
+    text = bytes_to_string_smart(result.raw_output)
+    exit_code = -1 if result.exit_code is None else int(result.exit_code)
+    end_item = build_command_execution_end_item(
+        ExecCommandEndEvent(
+            call_id=call_id,
+            turn_id=turn_id,
+            command=command,
+            cwd=cwd,
+            parsed_cmd=parsed_cmd,
+            stdout=text,
+            stderr="",
+            aggregated_output=text,
+            exit_code=exit_code,
+            duration=max(0, int(float(result.wall_time_seconds) * 1000)),
+            formatted_output=text,
+            status=(
+                ExecCommandStatus.COMPLETED
+                if exit_code == 0
+                else ExecCommandStatus.FAILED
+            ),
+            process_id=process_id,
+            source=source,
+        )
+    )
+    emitted = emit_completed(turn, end_item)
+    if inspect.isawaitable(emitted):
+        await emitted
 
 @dataclass(frozen=True)
 class UnifiedExecDirectRunPlan:

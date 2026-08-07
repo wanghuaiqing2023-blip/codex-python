@@ -364,6 +364,12 @@ class ChatWidgetProtocolRuntime:
     def bind_terminal_title_refresh(self, sink: Callable[[], Any] | None) -> None:
         self.terminal_title_refresh_sink = sink
 
+    def bind_unified_exec_processes_sink(
+        self,
+        sink: Callable[[list[str]], Any],
+    ) -> None:
+        self.command_lifecycle.bind_unified_exec_processes_projection(sink)
+
     def refresh_terminal_title(self) -> None:
         if self.terminal_title_refresh_sink is not None:
             self.terminal_title_refresh_sink()

@@ -564,7 +564,7 @@ def test_terminal_product_path_contract_matrix_is_guarded() -> None:
         "popup_key_mapping": "test_terminal_popup_key_maps_rust_like_payloads",
         "popup_action_plan": "test_terminal_command_popup_input_action_plans_navigation_completion_and_command_view",
         "popup_state_sync": "test_terminal_command_popup_state_syncs_draft_and_hides_for_active_view",
-        "popup_runner_completion_and_view": "test_terminal_command_popup_runner_applies_navigation_completion_and_model_view",
+        "popup_runner_completion_and_dispatch": "test_terminal_command_popup_runner_applies_navigation_completion_and_returns_model_command",
     }
     required_slash_input_tests = {
         "slash_command_name_editing": "test_terminal_draft_visibility_and_command_name_follow_slash_input_boundary",
@@ -1218,14 +1218,17 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
         "history_bottom_row",
         "prepare_history_insert",
         "resize_reflow_replay_callback",
-        "clear",
-        "clear_without_resize_check",
+            "clear",
+            "clear_active_views",
+            "clear_without_resize_check",
         "restore_cursor",
         "run_external_repaint",
         "render_after_history_repaint",
-        "render_without_resize_check",
-        "render",
-    }
+            "render_without_resize_check",
+            "render",
+            "record_pending_slash_command_history",
+            "sync_unified_exec_processes",
+        }
 
     forbidden_projection_imports = {
         "COMMAND_COLUMN_WIDTH",
@@ -1914,7 +1917,8 @@ def test_turn_input_and_side_approval_arbitration_use_rust_owned_anchors() -> No
     assert "if self.active_side_parent_thread_id() is None:" in app_runtime
     assert "self.app_runtime.maybe_return_from_side()" in terminal_runtime
     assert "self.app_runtime.submit_op(AppCommand.interrupt())" in terminal_runtime
-    assert 'in {"interrupt", "escape"}' in terminal_runtime
+    assert 'if event_kind == "interrupt":' in terminal_runtime
+    assert 'if event_kind == "escape":' in terminal_runtime
     for variant in (
         "CommandExecutionRequestApproval",
         "FileChangeRequestApproval",

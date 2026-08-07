@@ -12,6 +12,7 @@ import os
 from typing import Callable, Protocol, TypeAlias
 
 from .._porting import RustTuiModule
+from ..app_event import AppEvent
 from .chat_composer import (
     ChatComposer,
     InputResult,
@@ -57,6 +58,7 @@ from .footer import (
     toggle_shortcut_mode,
 )
 from .terminal_action import TerminalStyledText
+from .unified_exec_footer import UnifiedExecFooter
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -271,6 +273,7 @@ class TerminalBottomPaneRenderContext:
     popup_cursor: tuple[int, int] | None = None
     active_tail_lines: tuple[object, ...] = ()
     footer_lines: tuple[str, ...] = ()
+    supplemental_footer_lines: tuple[str, ...] = ()
     composer_height: int = 1
 
     @property
@@ -279,7 +282,7 @@ class TerminalBottomPaneRenderContext:
 
     @property
     def footer_height(self) -> int:
-        return max(1, len(self.footer_lines))
+        return len(self.supplemental_footer_lines) + max(1, len(self.footer_lines))
 
 
 @dataclass
@@ -299,6 +302,9 @@ class TerminalBottomPaneViewState:
     footer_mode: FooterMode = FooterMode.COMPOSER_EMPTY
     pending_thread_approvals: PendingThreadApprovals = field(
         default_factory=PendingThreadApprovals.new
+    )
+    unified_exec_footer: UnifiedExecFooter = field(
+        default_factory=UnifiedExecFooter.new
     )
     command_popup_flags: CommandPopupFlags = field(
         default_factory=CommandPopupFlags
@@ -377,6 +383,11 @@ class TerminalBottomPaneViewState:
 
         self.composer.record_submission(text)
 
+    def record_pending_slash_command_history(self) -> None:
+        """Commit the command history staged by the composer before dispatch."""
+
+        self.composer.record_pending_slash_command_history()
+
     def configure_history(
         self,
         thread_id: object,
@@ -390,6 +401,9 @@ class TerminalBottomPaneViewState:
 
     def apply_active_tail(self, lines: tuple[object, ...]) -> None:
         self.active_tail_lines = tuple(lines)
+
+    def apply_unified_exec_processes(self, processes: list[str]) -> bool:
+        return self.unified_exec_footer.set_processes(processes)
 
     def apply_pending_thread_approvals(self, approvals: list[str]) -> None:
         self.pending_thread_approvals.set_threads(list(approvals))
@@ -440,6 +454,11 @@ class TerminalBottomPaneViewState:
         on_selection_events: TerminalSelectionEventHandler | None = None,
         open_command_view: TerminalCommandViewFactory | None = None,
     ) -> TerminalComposerInputAction | InputResult:
+        if str(event_kind).lower() == "interrupt":
+            if self.handle_ctrl_c():
+                return TerminalComposerInputAction("render", self.composer.current_text())
+            return TerminalComposerInputAction("interrupt", self.composer.current_text())
+
         key = terminal_popup_key(event_kind, event_text)
         active = terminal_bottom_pane_active_view_input(
             self.view_stack,
@@ -478,6 +497,26 @@ class TerminalBottomPaneViewState:
             open_command_view=open_command_view,
             show_view=self.show_view,
         )
+
+    def handle_ctrl_c(self) -> bool:
+        """Apply Rust ``BottomPane::on_ctrl_c`` first-refusal ordering."""
+
+        if self.active_view is not None:
+            return self.view_stack.handle_ctrl_c()
+        if self.composer.cancel_history_search():
+            return True
+
+        previous_text = self.composer.clear_for_ctrl_c()
+        if previous_text is None:
+            return False
+
+        self.footer_mode = FooterMode.COMPOSER_EMPTY
+        thread_id = self.composer.history.thread_id
+        if thread_id is not None:
+            self.composer._send_app_event(
+                AppEvent.append_message_history_entry(thread_id, previous_text)
+            )
+        return True
 
     def show_selection_view(self, params: SelectionViewParams) -> None:
         self.composer._close_file_search_popup()
@@ -583,6 +622,10 @@ class TerminalBottomPaneViewState:
             cursor_visible=(popup_cursor is not None if popup_projection.is_active_view else composer_cursor_visible()),
             popup_cursor=popup_cursor,
             active_tail_lines=self.active_tail_lines,
+            supplemental_footer_lines=tuple(
+                TerminalStyledText(line.text, ((line.text, "dim"),))
+                for line in self.unified_exec_footer.render_lines(size.columns)
+            ),
             footer_lines=(
                 (self.composer.history_search_footer_text(),)
                 if self.composer.history_search_footer_text() is not None

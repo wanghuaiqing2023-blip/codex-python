@@ -224,6 +224,9 @@ class TerminalTuiRunner:
                 runtime_terminal_title_text(self.app_runtime)
             )
         )
+        self.app_runtime.chat_widget.bind_unified_exec_processes_sink(
+            self._bottom_pane.sync_unified_exec_processes
+        )
         self._transcript = TerminalTranscriptState()
         self._transcript_overlay = TerminalTranscriptOverlayController(
             cells=lambda: tuple(self._transcript.cells),
@@ -574,6 +577,7 @@ class TerminalTuiRunner:
                 self._prompt_dispatch.dispatch,
                 prompt,
             )
+            self._bottom_pane.record_pending_slash_command_history()
             if prompt_dispatch.action == "exit":
                 self._shutdown()
                 return self.exit_code
@@ -945,15 +949,34 @@ class TerminalTuiRunner:
         return None if source is None else source.poll(timeout)
 
     def _handle_turn_input(self, event: object) -> bool:
-        if str(getattr(event, "kind", "")) == "resize":
+        event_kind = str(getattr(event, "kind", ""))
+        if event_kind == "resize":
             self._resize.check_size_change()
             return True
         if self._bottom_pane.has_active_view():
             return self._handle_bottom_pane_active_input(event)
-        if str(getattr(event, "kind", "")) in {"interrupt", "ctrl_d"}:
+        if event_kind in {"interrupt", "ctrl_d"}:
             if self.app_runtime.maybe_return_from_side():
                 return True
-        if str(getattr(event, "kind", "")) in {"interrupt", "escape"}:
+        if event_kind == "interrupt":
+            outcome = self._handle_bottom_pane_composer_event(
+                "interrupt",
+                "",
+                None,
+                bool(
+                    getattr(
+                        self._input_source_provider.get(),
+                        "detect_paste_bursts",
+                        False,
+                    )
+                ),
+            )
+            self._bottom_pane.render_without_resize_check()
+            if str(getattr(outcome, "kind", "")) == "render":
+                return True
+            self.app_runtime.submit_op(AppCommand.interrupt())
+            return True
+        if event_kind == "escape":
             self.app_runtime.submit_op(AppCommand.interrupt())
             return True
         if isinstance(event, TerminalInputEvent):
@@ -980,6 +1003,7 @@ class TerminalTuiRunner:
                 self._prompt_dispatch.dispatch,
                 outcome,
             )
+            self._bottom_pane.record_pending_slash_command_history()
             if prompt_dispatch.action == "show_view" and prompt_dispatch.view is not None:
                 self._bottom_pane.show_view(prompt_dispatch.view)
                 self._bottom_pane.render_without_resize_check()

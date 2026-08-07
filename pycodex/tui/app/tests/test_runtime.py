@@ -82,6 +82,7 @@ from pycodex.tui.app.runtime import (
     _rate_limits_backend_auth_provider,
     _rate_limits_backend_base_url,
     _goal_continuation_app_command,
+    _command_completion_notifications_from_result,
     _server_notifications_from_session_event,
     app_command_for_prompt,
     exec_run_plan_for_app_command,
@@ -5814,3 +5815,66 @@ def test_apply_raw_output_mode_immediately_requests_transcript_reflow() -> None:
 
     assert reflows == [True, False]
     assert app.chat_widget.raw_mode is False
+
+
+def test_turn_completion_does_not_close_live_unified_exec_startup() -> None:
+    """Rust keeps unified-exec sessions alive after their starting turn ends."""
+
+    result = SimpleNamespace(
+        tool_response_items=(
+            SimpleNamespace(
+                call_id="call-live",
+                output=SimpleNamespace(success=True, to_text=lambda: "initial output"),
+            ),
+        )
+    )
+    pending = {
+        "call-live": {
+            "kind": "CommandExecution",
+            "id": "call-live",
+            "source": "unified_exec_startup",
+            "process_id": "1000",
+            "status": "InProgress",
+        }
+    }
+
+    notifications = _command_completion_notifications_from_result(
+        result,
+        thread_id="thread-1",
+        turn_id="turn-1",
+        pending_commands=pending,
+        completed_commands=set(),
+    )
+
+    assert notifications == ()
+
+
+def test_turn_completion_still_projects_missing_standard_command_end() -> None:
+    result = SimpleNamespace(
+        tool_response_items=(
+            SimpleNamespace(
+                call_id="call-shell",
+                output=SimpleNamespace(success=True, to_text=lambda: "done"),
+            ),
+        )
+    )
+    pending = {
+        "call-shell": {
+            "kind": "CommandExecution",
+            "id": "call-shell",
+            "source": "agent",
+            "process_id": None,
+            "status": "InProgress",
+        }
+    }
+
+    notifications = _command_completion_notifications_from_result(
+        result,
+        thread_id="thread-1",
+        turn_id="turn-1",
+        pending_commands=pending,
+        completed_commands=set(),
+    )
+
+    assert len(notifications) == 1
+    assert notifications[0].kind == "ItemCompleted"

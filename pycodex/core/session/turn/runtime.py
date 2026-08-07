@@ -5253,6 +5253,11 @@ async def _handle_tool_call_with_history_projection(
 
 
 async def _emit_started_command_execution(sess: Any, turn_context: Any, call: Any) -> bool:
+    tool_name = getattr(getattr(call, "tool_name", None), "name", "")
+    if tool_name == "exec_command":
+        # UnifiedExecRuntime owns this lifecycle because only it has the
+        # allocated process id required by /ps and /stop.
+        return False
     details = _command_execution_details(sess, turn_context, call)
     if details is None:
         return False
@@ -5283,6 +5288,8 @@ async def _emit_completed_command_execution(
     """Emit Rust-style command completion before the model follow-up."""
 
     tool_name = getattr(getattr(call, "tool_name", None), "name", "")
+    if tool_name == "exec_command":
+        return False
     output = _command_execution_output(tool_name, getattr(result, "result", None))
     if output is None:
         return False

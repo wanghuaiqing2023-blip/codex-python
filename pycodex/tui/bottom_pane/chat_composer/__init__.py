@@ -479,8 +479,6 @@ def run_terminal_composer_prompt_loop(
                 if record_submission is not None:
                     record_submission(submitted)
                 submit(submitted)
-            elif record_submission is not None and outcome.command is not None:
-                record_submission(f"/{outcome.command.command()}")
             return outcome
         action = outcome
         apply_draft(owner.current_text())
@@ -864,9 +862,9 @@ def run_terminal_command_popup_input_action(
     """Apply a terminal slash-popup key action within the composer owner.
 
     Rust owner: ``codex-tui::bottom_pane::chat_composer`` decides whether a
-    popup key moves selection, completes the highlighted slash command, opens a
-    command-owned view, or falls through to normal composer input. The terminal
-    controller supplies only concrete view-opening callbacks.
+    popup key moves selection, completes the highlighted slash command, returns
+    the selected command, or falls through to normal composer input. Command
+    views remain owned by ``chatwidget::slash_dispatch``.
     """
 
     if not state.visible:
@@ -886,20 +884,6 @@ def run_terminal_command_popup_input_action(
     if action.kind == "complete":
         return action.draft if action.draft is not None else draft
     if action.kind == "open_command_view":
-        params = open_command_view(action.command or "") if open_command_view is not None else None
-        from ...chatwidget.slash_dispatch import TerminalSlashCommandViewDispatchResult
-
-        if isinstance(params, TerminalSlashCommandViewDispatchResult):
-            if params.view is not None and show_view is not None:
-                show_view(params.view)
-                return action.draft if action.draft is not None else ""
-            if params.handled:
-                state.hide()
-                return action.draft if action.draft is not None else ""
-            params = None
-        if params is not None and show_view is not None:
-            show_view(params)
-            return action.draft if action.draft is not None else ""
         from ...slash_command import SlashCommand
 
         try:
@@ -972,6 +956,7 @@ class ChatComposer:
         self.draft.textarea.set_cursor(len(initial_text))
         self.draft.pending_pastes = list(kwargs.pop("pending_pastes", []))
         self.history = ChatComposerHistory.new()
+        self.pending_slash_command_history: Any | None = None
         self.history_lookup: Callable[[int, int], object | None] | None = None
         self._history_search: Any | None = None
         if history_search_active:
@@ -1265,6 +1250,17 @@ class ChatComposer:
     def sync_popups(self, *, active_view_present: bool = False) -> None:
         self.sync_count += 1
         if not self.config.popups_enabled or active_view_present or self.history_search_active:
+            self.command_popup_state.hide()
+            self._close_file_search_popup()
+            self._close_skill_popup()
+            self.active_popup = "none"
+            return
+
+        current_text = self.current_text()
+        cursor_bytes = len(current_text[: self.cursor()].encode("utf-8"))
+        if self.history.should_handle_navigation(current_text, cursor_bytes):
+            # Rust keeps every popup closed while the current draft is a
+            # recalled history entry so repeated Up/Down continues browsing.
             self.command_popup_state.hide()
             self._close_file_search_popup()
             self._close_skill_popup()
@@ -1627,6 +1623,7 @@ class ChatComposer:
     def insert_selected_mention(self, insert_text: str, path: str | None = None) -> None:
         """Replace the current ``$query`` with the selected atomic mention."""
 
+        before_text = self.current_text()
         text = self.current_text()
         cursor = max(0, min(self.draft.textarea.cursor(), len(text)))
         start = cursor
@@ -1646,10 +1643,12 @@ class ChatComposer:
             )
         self.draft.textarea.insert_str(" ")
         self.draft.textarea.set_cursor(start + len(str(insert_text)) + 1)
+        self._reset_history_navigation_after_user_edit(before_text)
 
     def insert_selected_path(self, path: str) -> None:
         """Replace the active ``@query`` with the selected relative path."""
 
+        before_text = self.current_text()
         text = self.current_text()
         cursor = max(0, min(self.draft.textarea.cursor(), len(text)))
         start = cursor
@@ -1669,23 +1668,25 @@ class ChatComposer:
         self.draft.textarea.set_text_clearing_elements(next_text)
         self.draft.textarea.set_cursor(start + len(replacement))
         self.dismissed_file_token = None
+        self._reset_history_navigation_after_user_edit(before_text)
         self.sync_popups()
 
     def _dispatch_without_popup(self, key_event: KeyEvent) -> tuple[InputResult, bool]:
         code = key_event.code.lower().replace("_", "-")
         if code == "char" and key_event.char is not None:
-            self.insert_text(key_event.char)
-            return (InputResult.None_(), True)
+            return (InputResult.None_(), self.insert_text(key_event.char))
         if code == "enter" and _has_modifier(key_event, "shift"):
+            before_text = self.current_text()
             self.draft.textarea.input("enter")
-            return (InputResult.None_(), True)
+            changed = self._reset_history_navigation_after_user_edit(before_text)
+            return (InputResult.None_(), changed)
         if code == "enter" and not key_event.modifiers:
             slash_result = terminal_input_result_from_line(
                 self.current_text(),
                 self.text_elements,
             )
             if slash_result.kind in {"Command", "CommandWithArgs", "ServiceTierCommand"}:
-                self.record_submission(self.current_text())
+                self.stage_slash_command_history(slash_result.command)
                 self.clear_draft()
                 return (slash_result, True)
             prepared = self.prepare_submission_text(record_history=True)
@@ -1697,14 +1698,24 @@ class ChatComposer:
             self.clear_draft()
             return (InputResult.Submitted(text, text_elements), True)
 
-        before = (self.current_text(), self.draft.textarea.cursor())
+        before_text = self.current_text()
+        before = (before_text, self.draft.textarea.cursor())
         self.draft.textarea.input(code)
         self._retain_live_pending_pastes()
         after = (self.current_text(), self.draft.textarea.cursor())
+        self._reset_history_navigation_after_user_edit(before_text)
         return (InputResult.None_(), before != after)
 
     def current_text(self) -> str:
         return self.draft.textarea.text()
+
+    def _reset_history_navigation_after_user_edit(self, before_text: str) -> bool:
+        """Leave history traversal only when a user action changed the draft."""
+
+        changed = self.current_text() != before_text
+        if changed:
+            self.history.reset_navigation()
+        return changed
 
     @property
     def input_enabled(self) -> bool:
@@ -1771,6 +1782,29 @@ class ChatComposer:
         self._close_file_search_popup()
         self.active_popup = "none"
 
+    def clear_for_ctrl_c(self) -> str | None:
+        """Clear and remember one non-empty draft like Rust ``ChatComposer``."""
+
+        from ..chat_composer_history import HistoryEntry
+
+        previous_text = self.current_text()
+        entry = HistoryEntry(
+            text=previous_text,
+            text_elements=self.text_elements,
+            local_image_paths=[],
+            remote_image_urls=list(self.remote_image_urls),
+            mention_bindings=self.mention_bindings(),
+            pending_pastes=list(self.draft.pending_pastes),
+        )
+        if entry.is_empty_submission():
+            return None
+
+        self.clear_draft()
+        self.remote_image_urls.clear()
+        self.history.reset_navigation()
+        self.history.record_local_submission(entry)
+        return previous_text
+
     def mention_bindings(self) -> list[ComposerMentionBinding]:
         ordered: list[ComposerMentionBinding] = []
         for element in self.draft.textarea.text_element_snapshots():
@@ -1792,6 +1826,7 @@ class ChatComposer:
         normalized = _normalize_pasted_text(str(text))
         if not normalized or not self.input_enabled:
             return False
+        before_text = self.current_text()
         if (
             normalized == "/"
             and self.draft.textarea.is_vim_normal_mode()
@@ -1802,12 +1837,12 @@ class ChatComposer:
             self.draft.textarea.set_text_clearing_elements("/")
             self.draft.textarea.set_cursor(1)
             self.draft.textarea.enter_vim_insert_mode()
-            return True
+            return self._reset_history_navigation_after_user_edit(before_text)
         if len(normalized) == 1:
             self.draft.textarea.input(normalized)
         else:
             self.draft.textarea.insert_str(normalized)
-        return True
+        return self._reset_history_navigation_after_user_edit(before_text)
 
     def cursor(self) -> int:
         return self.draft.textarea.cursor()
@@ -1847,6 +1882,7 @@ class ChatComposer:
         normalized = _normalize_pasted_text(str(pasted))
         if not normalized:
             return False
+        before_text = self.current_text()
         if len(normalized) > LARGE_PASTE_CHAR_THRESHOLD:
             placeholder = self.next_large_paste_placeholder(len(normalized))
             self.draft.textarea.insert_element(placeholder)
@@ -1855,7 +1891,7 @@ class ChatComposer:
             self.draft.textarea.insert_str(normalized)
         self.draft.paste_burst.clear_after_explicit_paste()
         self.sync_popups()
-        return True
+        return self._reset_history_navigation_after_user_edit(before_text)
 
     def next_large_paste_placeholder(self, char_count: int) -> str:
         base = f"[Pasted Content {int(char_count)} chars]"
@@ -1900,6 +1936,47 @@ class ChatComposer:
         from ..chat_composer_history import HistoryEntry
 
         self.history.record_local_submission(HistoryEntry.new(str(text).rstrip("\r\n")))
+
+    def _stage_slash_command_history_text(self, text: str) -> None:
+        """Snapshot one recognized slash invocation for post-dispatch commit."""
+
+        from ..chat_composer_history import HistoryEntry
+
+        self.pending_slash_command_history = HistoryEntry(
+            text=str(text),
+            text_elements=self.text_elements,
+            local_image_paths=[],
+            remote_image_urls=list(self.remote_image_urls),
+            mention_bindings=self.mention_bindings(),
+            pending_pastes=list(self.draft.pending_pastes),
+        )
+
+    def stage_slash_command_history(self, command: Any) -> None:
+        """Stage the original composer text, excluding Rust's ``/clear``."""
+
+        from ...slash_command import SlashCommand
+
+        if command is SlashCommand.CLEAR:
+            return
+        self._stage_slash_command_history_text(self.current_text().strip())
+
+    def stage_selected_slash_command_history(self, command: Any) -> None:
+        """Stage a popup selection using its canonical slash-command name."""
+
+        from ...slash_command import SlashCommand
+
+        if command is SlashCommand.CLEAR:
+            return
+        command_name = command.command() if hasattr(command, "command") else str(command)
+        self._stage_slash_command_history_text(f"/{command_name}")
+
+    def record_pending_slash_command_history(self) -> None:
+        """Commit and consume the slash history staged before dispatch."""
+
+        entry = self.pending_slash_command_history
+        self.pending_slash_command_history = None
+        if entry is not None:
+            self.history.record_local_submission(entry)
 
     def configure_history(
         self,
@@ -1980,7 +2057,9 @@ class ChatComposer:
                 if grab is not None:
                     start = len(before.encode("utf-8")[: grab.start_byte].decode("utf-8"))
                     if grab.grabbed:
+                        before_text = self.current_text()
                         self.draft.textarea.replace_range(range(start, cursor), "")
+                        self._reset_history_navigation_after_user_edit(before_text)
                     burst.append_char_to_buffer(char, now)
                     self.sync_popups()
                     return True
@@ -2002,7 +2081,9 @@ class ChatComposer:
             if grab is not None:
                 start = len(before.encode("utf-8")[: grab.start_byte].decode("utf-8"))
                 if grab.grabbed:
+                    before_text = self.current_text()
                     self.draft.textarea.replace_range(range(start, cursor), "")
+                    self._reset_history_navigation_after_user_edit(before_text)
                 burst.append_char_to_buffer(char, now)
                 self.sync_popups()
                 return True
@@ -2090,7 +2171,8 @@ class ChatComposer:
                     except ValueError:
                         command = None
                     if command is not None and not command.available_during_task():
-                        self.record_submission(f"/{command.command()}")
+                        self.stage_selected_slash_command_history(command)
+                        self.record_pending_slash_command_history()
                         self.clear_draft()
                         self.command_popup_state.hide()
                         self.active_popup = "none"
@@ -2105,13 +2187,15 @@ class ChatComposer:
                 show_view=show_view,
             )
             if isinstance(popup_result, InputResult):
-                self.record_submission(f"/{popup_result.command.command()}")
+                self.stage_selected_slash_command_history(popup_result.command)
                 self.clear_draft()
                 self.reset_vim_mode_after_successful_dispatch(popup_result)
                 return popup_result
             if popup_result is not None:
                 if popup_result != self.current_text():
+                    before_text = self.current_text()
                     self.set_text_content(popup_result)
+                    self._reset_history_navigation_after_user_edit(before_text)
                 return TerminalComposerInputAction("render", self.current_text())
 
         if popup_key in {"up", "down"} and self.navigate_history(popup_key):
@@ -2121,7 +2205,9 @@ class ChatComposer:
             if self.draft.paste_burst.append_newline_if_active(timestamp):
                 return TerminalComposerInputAction("continue", self.current_text())
             if self.draft.paste_burst.newline_should_insert_instead_of_submit(timestamp):
+                before_text = self.current_text()
                 self.draft.textarea.insert_str("\n")
+                self._reset_history_navigation_after_user_edit(before_text)
                 self.draft.paste_burst.extend_window(timestamp)
                 self.sync_popups(active_view_present=active_view_present)
                 return TerminalComposerInputAction("render", self.current_text())

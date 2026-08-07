@@ -273,3 +273,26 @@ def test_public_started_and_completed_wrappers_track_unified_processes_and_wait_
     assert state.unified_exec_processes == []
     assert state.footer_processes == []
     assert state.flushed_wait_cells == [UnifiedExecInteractionCell("echo hi", "")]
+
+
+def test_unified_exec_unknown_start_tracks_process_without_active_exec_cell():
+    """Rust command_lifecycle suppresses Unknown unified-exec transcript rows."""
+
+    state = CommandLifecycleState(bottom_pane_task_running=True)
+
+    state.on_command_execution_started(
+        CommandExecutionItem(
+            "call-powershell",
+            "Start-Sleep -Seconds 300",
+            "unified_exec_startup",
+            process_id="proc-powershell",
+            command_actions=[{"type": "unknown", "cmd": "Start-Sleep -Seconds 300"}],
+        )
+    )
+
+    assert [process.command_display for process in state.unified_exec_processes] == [
+        "Start-Sleep -Seconds 300"
+    ]
+    assert state.footer_processes == ["Start-Sleep -Seconds 300"]
+    assert state.active_exec_cell is None
+    assert state.running_commands == {}

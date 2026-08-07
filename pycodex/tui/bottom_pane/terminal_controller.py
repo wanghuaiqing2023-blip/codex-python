@@ -207,6 +207,11 @@ class TerminalBottomPaneController:
 
         self._view_state.record_submission(text)
 
+    def record_pending_slash_command_history(self) -> None:
+        """Commit staged slash history after chatwidget dispatch completes."""
+
+        self._view_state.record_pending_slash_command_history()
+
     def _configure_history(
         self,
         thread_id: object,
@@ -222,6 +227,12 @@ class TerminalBottomPaneController:
         """Apply chatwidget-owned mutable stream-tail frame input."""
 
         self._view_state.apply_active_tail(lines)
+
+    def sync_unified_exec_processes(self, processes: list[str]) -> None:
+        """Project Rust's unified-exec footer state into the live pane."""
+
+        if self._view_state.apply_unified_exec_processes(processes):
+            self.render_without_resize_check()
 
     def sync_pending_thread_approvals(self, approvals: list[str]) -> None:
         """Project Rust pending-thread approval rows through bottom-pane state."""

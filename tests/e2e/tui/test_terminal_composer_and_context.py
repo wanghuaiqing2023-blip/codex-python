@@ -10,6 +10,270 @@ from tests.e2e.tui._common import *  # noqa: F401,F403
 pytestmark = pytest.mark.e2e
 
 
+def _last_live_composer_row(screen: str) -> str:
+    rows = [line.strip() for line in screen.splitlines() if line.lstrip().startswith("›")]
+    return rows[-1] if rows else ""
+
+
+def test_windows_conpty_python_ctrl_c_clears_multiline_draft_then_empty_ctrl_c_exits(
+    tmp_path: Path,
+) -> None:
+    """Ctrl+C clears and records a whole draft before it is allowed to exit.
+
+    Rust owners/tests:
+    - ``bottom_pane::BottomPane::on_ctrl_c`` gives a non-empty composer first
+      refusal and only leaves an empty composer unhandled for the quit path;
+    - ``bottom_pane::ChatComposer::clear_for_ctrl_c`` clears the complete
+      draft, resets navigation, and records the cleared draft in local history;
+    - ``clear_for_ctrl_c_records_cleared_draft`` proves Up can recall it.
+
+    Bracketed paste creates one real multiline draft without submitting a
+    model turn.  The first Ctrl+C must leave the process alive with an empty
+    composer, Up must restore both lines, and only a later Ctrl+C on the empty
+    composer may exit.
+    """
+
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY regression only runs on Windows")
+    capability = interactive_tui_comparison_capability(conpty_driver_available=True)
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    repo_root = _repo_root()
+    first_line = "PYCODEX_CTRL_C_MULTILINE_FIRST"
+    second_line = "PYCODEX_CTRL_C_MULTILINE_SECOND"
+    multiline_draft = f"{first_line}\n{second_line}"
+    python = build_inline_tui_command(
+        "python",
+        repo_root=repo_root,
+        extra_args=("--disable", "apps", "--disable", "plugins"),
+    )
+    env, temp_home = _isolated_codex_home_env()
+
+    with temp_home:
+        transcript = run_windows_conpty_tui_command(
+            python,
+            input_steps=(
+                ConptyInputStep(
+                    f"\x1b[200~{multiline_draft}\x1b[201~",
+                    ready_pattern=READY_COMPOSER_PATTERN,
+                    ready_timeout=30.0,
+                    ready_quiet_period=0.2,
+                    atomic_write=True,
+                ),
+                ConptyInputStep(
+                    "",
+                    ready_screen_text=second_line,
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
+                    capture_name="multiline-before-ctrl-c",
+                ),
+                ConptyInputStep("\x03", ready_timeout=0.1, atomic_write=True),
+                ConptyInputStep(
+                    "",
+                    ready_timeout=0.5,
+                    capture_name="after-first-ctrl-c",
+                ),
+                ConptyInputStep("\x1b[A", ready_timeout=0.1, atomic_write=True),
+                ConptyInputStep(
+                    "",
+                    ready_timeout=0.5,
+                    capture_name="recalled-cleared-draft",
+                ),
+                # Clear the recalled draft, then press Ctrl+C on the now-empty
+                # composer to exercise the Rust-owned exit boundary.
+                ConptyInputStep("\x03", ready_timeout=0.1, atomic_write=True),
+                ConptyInputStep("\x03", ready_timeout=0.2, atomic_write=True),
+            ),
+            env=env,
+            timeout=20,
+            size=TerminalSize(rows=32, cols=120),
+        )
+
+    transcript.write_artifacts(tmp_path, prefix="python-ctrl-c-multiline", rows=32, cols=120)
+    before_clear = transcript.checkpoint_screen(
+        "multiline-before-ctrl-c",
+        rows=32,
+        cols=120,
+    )
+    after_clear = transcript.checkpoint_screen(
+        "after-first-ctrl-c",
+        rows=32,
+        cols=120,
+    )
+    recalled = transcript.checkpoint_screen(
+        "recalled-cleared-draft",
+        rows=32,
+        cols=120,
+    )
+
+    assert first_line in before_clear and second_line in before_clear, before_clear
+    assert first_line not in after_clear and second_line not in after_clear, after_clear
+    assert _last_live_composer_row(after_clear) == "› Ask Codex to do anything", after_clear
+    assert first_line in recalled and second_line in recalled, recalled
+    assert transcript.returncode == 0, transcript.normalized_combined()
+    assert "Traceback" not in transcript.normalized_combined()
+
+
+def test_windows_conpty_python_up_continues_past_recalled_slash_command(
+    tmp_path: Path,
+) -> None:
+    """A recalled slash command must not reopen the popup and consume Up.
+
+    Rust owner: ``ChatComposer::sync_popups`` checks
+    ``history.should_handle_navigation`` and suppresses all popups while the
+    composer contains a recalled history entry.
+    """
+
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY regression only runs on Windows")
+    capability = interactive_tui_comparison_capability(conpty_driver_available=True)
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    repo_root = _repo_root()
+    python = build_inline_tui_command(
+        "python",
+        repo_root=repo_root,
+        extra_args=("--disable", "apps", "--disable", "plugins"),
+    )
+    env, temp_home = _isolated_codex_home_env()
+
+    with temp_home:
+        transcript = run_windows_conpty_tui_command(
+            python,
+            input_steps=(
+                ConptyInputStep(
+                    "/status\r",
+                    ready_pattern=READY_COMPOSER_PATTERN,
+                    ready_timeout=30.0,
+                    ready_quiet_period=0.2,
+                    atomic_write=True,
+                ),
+                ConptyInputStep("/ps\r", ready_timeout=0.3, atomic_write=True),
+                ConptyInputStep("\x1b[A", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep(
+                    "",
+                    ready_screen_text="› /ps",
+                    ready_timeout=5.0,
+                    ready_quiet_period=0.2,
+                    capture_name="recalled-latest-slash",
+                ),
+                ConptyInputStep("\x1b[A", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep(
+                    "",
+                    ready_timeout=0.5,
+                    capture_name="recalled-older-slash",
+                ),
+                ConptyInputStep("\x03", ready_timeout=0.1, atomic_write=True),
+                ConptyInputStep("\x03", ready_timeout=0.2, atomic_write=True),
+            ),
+            env=env,
+            timeout=20,
+            size=TerminalSize(rows=32, cols=120),
+        )
+
+    transcript.write_artifacts(tmp_path, prefix="python-slash-history-up", rows=32, cols=120)
+    latest = transcript.checkpoint_screen("recalled-latest-slash", rows=32, cols=120)
+    older = transcript.checkpoint_screen("recalled-older-slash", rows=32, cols=120)
+
+    assert _last_live_composer_row(latest) == "› /ps", latest
+    assert _last_live_composer_row(older) == "› /status", older
+    assert transcript.returncode == 0, transcript.normalized_combined()
+    assert "Traceback" not in transcript.normalized_combined()
+
+
+def test_windows_conpty_python_history_retains_multiple_modal_slash_commands(
+    tmp_path: Path,
+) -> None:
+    """Modal slash commands must remain available to repeated Up navigation.
+
+    Rust ``chatwidget::slash_dispatch`` records the command staged by
+    ``ChatComposer`` after dispatch, including commands such as ``/model`` and
+    ``/permissions`` that open a bottom-pane view.  Cancelling those views does
+    not remove their composer-history entries.
+    """
+
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY regression only runs on Windows")
+    capability = interactive_tui_comparison_capability(conpty_driver_available=True)
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    repo_root = _repo_root()
+    python = build_inline_tui_command(
+        "python",
+        repo_root=repo_root,
+        extra_args=("--disable", "apps", "--disable", "plugins"),
+    )
+    env, temp_home = _isolated_codex_home_env()
+
+    with temp_home:
+        transcript = run_windows_conpty_tui_command(
+            python,
+            input_steps=(
+                ConptyInputStep(
+                    "/model\r",
+                    ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
+                    ready_timeout=30.0,
+                    ready_quiet_period=0.4,
+                    atomic_write=True,
+                ),
+                ConptyInputStep(
+                    "",
+                    ready_screen_text="Select Model",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.3,
+                ),
+                # Give the Windows escape decoder an isolated byte and enough
+                # time to cancel the view before starting the next command.
+                ConptyInputStep("\x1b", ready_timeout=1.0, atomic_write=True),
+                ConptyInputStep("/permissions\r", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep(
+                    "",
+                    ready_screen_text="Update Model Permissions",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.3,
+                ),
+                ConptyInputStep("\x1b", ready_timeout=1.0, atomic_write=True),
+                ConptyInputStep("/status\r", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep(
+                    "",
+                    ready_screen_text="Token usage:",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.3,
+                ),
+                ConptyInputStep("\x1b[A", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep("", ready_timeout=0.5, capture_name="modal-history-up-1"),
+                ConptyInputStep("\x1b[A", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep("", ready_timeout=0.5, capture_name="modal-history-up-2"),
+                ConptyInputStep("\x1b[A", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep("", ready_timeout=0.5, capture_name="modal-history-up-3"),
+                ConptyInputStep("\x03", ready_timeout=0.1, atomic_write=True),
+                ConptyInputStep("\x03", ready_timeout=0.2, atomic_write=True),
+            ),
+            env=env,
+            timeout=35,
+            size=TerminalSize(rows=32, cols=120),
+        )
+
+    transcript.write_artifacts(tmp_path, prefix="python-modal-slash-history", rows=32, cols=120)
+    recalled = [
+        _last_live_composer_row(
+            transcript.checkpoint_screen(
+                f"modal-history-up-{index}",
+                rows=32,
+                cols=120,
+            )
+        )
+        for index in range(1, 4)
+    ]
+
+    assert recalled == ["› /status", "› /permissions", "› /model"]
+    assert transcript.returncode == 0, transcript.normalized_combined()
+    assert "Traceback" not in transcript.normalized_combined()
+
+
 def test_windows_conpty_native_and_python_shortcut_overlay_when_enabled() -> None:
     # Rust source/test contract:
     # - codex-tui::bottom_pane::chat_composer::handle_shortcut_overlay_key

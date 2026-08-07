@@ -4820,6 +4820,10 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(started_item.command, command_item.command)
         self.assertNotEqual(command_item.command, exec_args["cmd"])
         self.assertEqual(command_item.id, "call-exec")
+        self.assertEqual(started_item.source, "unifiedExecStartup")
+        self.assertEqual(command_item.source, "unifiedExecStartup")
+        self.assertEqual(started_item.process_id, "1000")
+        self.assertEqual(command_item.process_id, "1000")
         self.assertEqual(command_item.status, "completed")
         self.assertIn("tool managed output", command_item.aggregated_output)
 

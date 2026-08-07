@@ -7006,6 +7006,14 @@ def _command_completion_notifications_from_result(
         started = pending_commands.get(call_id)
         if started is None:
             continue
+        if (
+            started.get("source") == "unified_exec_startup"
+            and started.get("process_id") is not None
+        ):
+            # Rust keeps a live unified-exec startup open after turn completion;
+            # its process watcher (or /stop) owns the later completion. A model
+            # tool response is only the initial output snapshot, not an end.
+            continue
         completed = dict(started)
         completed["status"] = "Completed" if _tool_output_success(item) is not False else "Failed"
         completed["aggregated_output"] = _tool_output_text(item)

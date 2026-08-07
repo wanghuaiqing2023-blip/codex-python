@@ -43,7 +43,9 @@ _SPINNER_FRAMES = frozenset("\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f\u2
 _TITLE_ITEM_CASES = (
     ("app-name", r"codex", "startup"),
     ("project-name", r"codex-python", "startup"),
-    ("current-dir", r".*codex-python", "startup"),
+    # Rust truncates each terminal-title part to 32 characters, so a worktree
+    # path may retain only the leading ``codex...`` portion of the directory.
+    ("current-dir", r".*codex(?:-python|\.\.\.)", "startup"),
     ("activity", r".", "activity"),
     ("run-state", r"Ready", "startup"),
     ("thread-title", rf"(?:primary|{_THREAD_ID_PATTERN})", "startup"),
