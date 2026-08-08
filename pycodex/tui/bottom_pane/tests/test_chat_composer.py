@@ -551,6 +551,19 @@ def test_bare_slash_command_can_be_recalled_after_recording_pending_history() ->
     assert composer.current_text() == "/diff"
 
 
+def test_init_slash_command_records_literal_command_in_composer_history() -> None:
+    # Rust ownership split: chat_composer stores /init in slash history while
+    # chatwidget::slash_dispatch replaces it with INIT_PROMPT for the model.
+    composer = ChatComposer(text="/init")
+
+    result = composer.handle_terminal_event("enter")
+
+    assert result == InputResult.Command(SlashCommand.INIT)
+    composer.record_pending_slash_command_history()
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "/init"
+
+
 def test_popup_selected_slash_command_records_canonical_command_history() -> None:
     # Rust source: chat_composer.rs::popup_selected_slash_command_records_canonical_command_history.
     composer = ChatComposer()

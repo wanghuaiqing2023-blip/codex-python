@@ -144,13 +144,37 @@ def test_windows_conpty_python_up_continues_past_recalled_slash_command(
             python,
             input_steps=(
                 ConptyInputStep(
-                    "/status\r",
+                    "/status",
                     ready_pattern=READY_COMPOSER_PATTERN,
                     ready_timeout=30.0,
                     ready_quiet_period=0.2,
                     atomic_write=True,
                 ),
-                ConptyInputStep("/ps\r", ready_timeout=0.3, atomic_write=True),
+                ConptyInputStep(
+                    "\r",
+                    ready_screen_text="/status",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
+                ),
+                ConptyInputStep(
+                    "/ps",
+                    ready_screen_text="Token usage:",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
+                    atomic_write=True,
+                ),
+                ConptyInputStep(
+                    "\r",
+                    ready_screen_text="/ps",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
+                ),
+                ConptyInputStep(
+                    "",
+                    ready_screen_text="Background terminals",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
+                ),
                 ConptyInputStep("\x1b[A", ready_timeout=0.2, atomic_write=True),
                 ConptyInputStep(
                     "",
@@ -213,11 +237,17 @@ def test_windows_conpty_python_history_retains_multiple_modal_slash_commands(
             python,
             input_steps=(
                 ConptyInputStep(
-                    "/model\r",
+                    "/model",
                     ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
                     ready_timeout=30.0,
                     ready_quiet_period=0.4,
                     atomic_write=True,
+                ),
+                ConptyInputStep(
+                    "\r",
+                    ready_screen_text="/model",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
                 ),
                 ConptyInputStep(
                     "",
@@ -228,7 +258,13 @@ def test_windows_conpty_python_history_retains_multiple_modal_slash_commands(
                 # Give the Windows escape decoder an isolated byte and enough
                 # time to cancel the view before starting the next command.
                 ConptyInputStep("\x1b", ready_timeout=1.0, atomic_write=True),
-                ConptyInputStep("/permissions\r", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep("/permissions", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep(
+                    "\r",
+                    ready_screen_text="/permissions",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
+                ),
                 ConptyInputStep(
                     "",
                     ready_screen_text="Update Model Permissions",
@@ -236,7 +272,13 @@ def test_windows_conpty_python_history_retains_multiple_modal_slash_commands(
                     ready_quiet_period=0.3,
                 ),
                 ConptyInputStep("\x1b", ready_timeout=1.0, atomic_write=True),
-                ConptyInputStep("/status\r", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep("/status", ready_timeout=0.2, atomic_write=True),
+                ConptyInputStep(
+                    "\r",
+                    ready_screen_text="/status",
+                    ready_timeout=10.0,
+                    ready_quiet_period=0.2,
+                ),
                 ConptyInputStep(
                     "",
                     ready_screen_text="Token usage:",

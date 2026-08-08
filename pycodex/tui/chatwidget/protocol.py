@@ -1171,7 +1171,9 @@ class ChatWidgetProtocolRuntime:
                 self.add_to_history(new_cyber_policy_error_event())
 
     def on_warning(self, message: Any) -> None:
+        history_start = len(self.turn.history)
         self.turn.on_warning(message)
+        self._project_new_turn_error_history(history_start)
 
     def on_plan_delta(self, delta: str) -> None:
         self._sync_collaboration_mode_state()

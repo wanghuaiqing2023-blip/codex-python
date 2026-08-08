@@ -316,6 +316,18 @@ class UnifiedExecRuntime:
         if inspect.isawaitable(result):
             result = await result
         await _emit_unified_exec_command_lifecycle(req, ctx, result)
+        if getattr(result, "process_id", None) is not None:
+            watch_process_exit = getattr(self.manager, "watch_process_exit", None)
+            if callable(watch_process_exit):
+                watch_process_exit(
+                    int(result.process_id),
+                    session_ref=getattr(ctx, "session", None),
+                    turn_ref=getattr(ctx, "turn", None),
+                    call_id=str(getattr(ctx, "call_id", "")),
+                    command=req.command,
+                    cwd=req.cwd,
+                    event_loop=asyncio.get_running_loop(),
+                )
         return result
 
 

@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Mapping
 from enum import Enum
-from pathlib import Path
+from importlib.resources import files
 from typing import Any, Sequence
 
 from pycodex.core.event_mapping import parse_turn_item
@@ -22,6 +23,7 @@ from pycodex.protocol import (
     ContextCompactionItem,
     EventMsg,
     ResponseItem,
+    TokenUsage,
     TruncationPolicyConfig,
     TurnItem,
     TurnStartedEvent,
@@ -29,16 +31,13 @@ from pycodex.protocol import (
     WarningEvent,
 )
 
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-_RUST_CORE_ROOT = _WORKSPACE_ROOT / "codex" / "codex-rs" / "core"
-
-
-def _include_rust_str(relative_path: str) -> str:
-    return (_RUST_CORE_ROOT / relative_path).read_text(encoding="utf-8")
-
-
-SUMMARIZATION_PROMPT = _include_rust_str("templates/compact/prompt.md")
-SUMMARY_PREFIX = _include_rust_str("templates/compact/summary_prefix.md")
+_COMPACT_TEMPLATES = files("pycodex.core").joinpath("templates", "compact")
+SUMMARIZATION_PROMPT = _COMPACT_TEMPLATES.joinpath("prompt.md").read_text(
+    encoding="utf-8"
+)
+SUMMARY_PREFIX = _COMPACT_TEMPLATES.joinpath("summary_prefix.md").read_text(
+    encoding="utf-8"
+).rstrip("\r\n")
 COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000
 
 
@@ -291,20 +290,27 @@ async def drain_to_completed(
     )
     async for event in _aiter_stream(stream):
         kind = _event_kind(event)
-        payload = _event_payload(event)
         if kind in {"output_item_done", "OutputItemDone"}:
-            item = payload if isinstance(payload, ResponseItem) else _field(payload, "item", payload)
+            item = _event_variant_value(event, "item")
             await _call_required(sess, "record_conversation_items", turn_context, [item])
         elif kind in {"server_reasoning_included", "ServerReasoningIncluded"}:
-            await _call_required(sess, "set_server_reasoning_included", bool(_field(payload, "included", payload)))
+            included = _event_variant_value(
+                event,
+                "server_reasoning_included",
+                "included",
+            )
+            await _call_required(sess, "set_server_reasoning_included", included)
         elif kind in {"rate_limits", "RateLimits"}:
-            await _call_optional(sess, "update_rate_limits", turn_context, payload)
+            snapshot = _event_variant_value(event, "rate_limits")
+            await _call_required(sess, "update_rate_limits", turn_context, snapshot)
         elif kind in {"completed", "Completed"}:
-            usage = _field(payload, "token_usage", _field(payload, "usage"))
-            await _call_optional(sess, "update_token_usage_info", turn_context, usage)
+            usage = _coerce_token_usage(
+                _event_variant_value(event, "token_usage", "usage")
+            )
+            await _call_required(sess, "update_token_usage_info", turn_context, usage)
             return
         elif kind in {"error", "Error"}:
-            raise RuntimeError(str(payload))
+            raise RuntimeError(str(_event_variant_value(event, "error")))
     raise RuntimeError("stream closed before response.completed")
 
 
@@ -685,10 +691,54 @@ def _event_kind(event: Any) -> str:
     return str(_field(event, "type", _field(event, "kind", "")))
 
 
-def _event_payload(event: Any) -> Any:
+_MISSING_EVENT_VALUE = object()
+
+
+def _event_variant_value(event: Any, *field_names: str) -> Any:
+    """Extract the value carried by a Rust-shaped response event variant."""
+
     if isinstance(event, tuple) and len(event) > 1:
         return event[1]
-    return _field(event, "payload", event)
+    for name in field_names:
+        value = _field(event, name, _MISSING_EVENT_VALUE)
+        if value is not _MISSING_EVENT_VALUE:
+            return value
+    for name in ("payload", "value"):
+        value = _field(event, name, _MISSING_EVENT_VALUE)
+        if value is not _MISSING_EVENT_VALUE:
+            return value
+    return event
+
+
+def _coerce_token_usage(value: Any) -> TokenUsage | None:
+    if value is None or isinstance(value, TokenUsage):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError("completed token_usage must be TokenUsage, a mapping, or None")
+
+    input_details = value.get("input_tokens_details")
+    output_details = value.get("output_tokens_details")
+    cached_tokens = (
+        input_details.get("cached_tokens", 0)
+        if isinstance(input_details, Mapping)
+        else value.get("cached_input_tokens", 0)
+    )
+    reasoning_tokens = (
+        output_details.get("reasoning_tokens", 0)
+        if isinstance(output_details, Mapping)
+        else value.get("reasoning_output_tokens", 0)
+    )
+    return TokenUsage(
+        input_tokens=_usage_int(value.get("input_tokens")),
+        cached_input_tokens=_usage_int(cached_tokens),
+        output_tokens=_usage_int(value.get("output_tokens")),
+        reasoning_output_tokens=_usage_int(reasoning_tokens),
+        total_tokens=_usage_int(value.get("total_tokens")),
+    )
+
+
+def _usage_int(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 async def _send_event(sess: Any, turn_context: Any, event: EventMsg) -> None:

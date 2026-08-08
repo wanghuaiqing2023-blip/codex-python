@@ -19,7 +19,11 @@ from pycodex.app_server_protocol.item import (
 from pycodex.app_server_protocol import ThreadGoalStatus as AppThreadGoalStatus
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
-from pycodex.exec.local_runtime import LocalHttpShellInvocation, _in_memory_exec_session
+from pycodex.exec.local_runtime import (
+    LocalHttpBearerAuthProvider,
+    LocalHttpShellInvocation,
+    _in_memory_exec_session,
+)
 from pycodex.exec.session import ExecSessionConfig
 from pycodex.model_provider.auth import auth_service_from_snapshot
 from pycodex.protocol import (
@@ -32,6 +36,11 @@ from pycodex.protocol import (
     CommandExecutionItem,
     CollaborationMode,
     ContentItem,
+    CodexErr,
+    EventMsg,
+    ExecCommandEndEvent,
+    ExecCommandSource,
+    ExecCommandStatus,
     FunctionCallOutputPayload,
     ModeKind,
     PermissionProfile,
@@ -51,6 +60,7 @@ from pycodex.protocol import (
     ReviewDecision,
     ReviewTarget,
     TurnItem,
+    UnexpectedResponseError,
     UpdatePlanArgs,
     WindowsSandboxLevel,
 )
@@ -3948,6 +3958,134 @@ def test_core_exec_active_thread_runtime_forwards_core_result_to_chatwidget(monk
     assert app_runtime.chat_widget.run_state_status_text() == "Ready"
 
 
+def test_core_exec_compact_uses_auth_manager_cached_token(monkeypatch) -> None:
+    """Compact requests use the same refreshed auth boundary as regular turns.
+
+    Rust ownership: ``codex-core::client`` keeps authentication on the shared
+    model-client transport; ``codex-tui`` only submits ``Op::Compact``.  A
+    compact request must therefore not reuse the TUI runtime's startup token
+    after ``AuthManager`` has refreshed it.
+    """
+
+    captured_headers: list[dict[str, str]] = []
+
+    async def fake_send(_prepared, transport, **_kwargs):
+        captured_headers.append(dict(transport.headers or {}))
+        if len(captured_headers) == 1:
+            raise CodexErr.unexpected_status(
+                UnexpectedResponseError(
+                    status=401,
+                    body='{"detail":"expired token"}',
+                    url="https://example.test/responses",
+                )
+            )
+        return SimpleNamespace(stream_events=())
+
+    async def fake_run_compact_task(session, turn_context, _input):
+        stream = await session.services.model_client.new_session().stream(
+            {"input": (), "base_instructions": None},
+            runtime.model_info,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        assert [event async for event in stream] == []
+
+    monkeypatch.setattr(
+        "pycodex.core.client.send_prepared_http_sampling_request_live",
+        fake_send,
+    )
+    monkeypatch.setattr("pycodex.core.compact.run_compact_task", fake_run_compact_task)
+
+    class ModelSession:
+        def prepare_http_request(self, request):
+            return request
+
+    class ModelClient:
+        state = SimpleNamespace(
+            beta_features_header=None,
+            include_timing_metrics=False,
+            enable_request_compression=False,
+        )
+
+        def build_responses_request(self, *_args, **_kwargs):
+            return {}
+
+        def build_compact_request_headers(self, *, auth=None, **_kwargs):
+            return auth.to_auth_headers()
+
+        def new_session(self):
+            return ModelSession()
+
+        def current_window_id(self):
+            return "window"
+
+    token = {"value": "fresh-token"}
+
+    class Recovery:
+        def __init__(self):
+            self.calls = 0
+
+        def has_next(self):
+            return self.calls == 0
+
+        async def next(self):
+            self.calls += 1
+            token["value"] = "refreshed-after-401"
+            return object()
+
+    class AuthManager:
+        def __init__(self):
+            self.recovery = Recovery()
+
+        def auth_cached(self):
+            return {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": token["value"],
+                    "account_id": "account-id",
+                },
+            }
+
+        def unauthorized_recovery(self):
+            return self.recovery
+
+    class Session:
+        def __init__(self):
+            self.services = SimpleNamespace(model_client=ModelClient())
+            self.event_observer = None
+
+        async def new_default_turn(self):
+            return SimpleNamespace(compact_prompt="compact prompt")
+
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=object(),
+        model_client=ModelClient(),
+        provider=SimpleNamespace(base_url="https://example.test"),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        auth=LocalHttpBearerAuthProvider(token="stale-token"),
+        auth_manager=AuthManager(),
+    )
+    runtime._core_session = Session()
+
+    stream = runtime._submit_compact_thread_op("primary")
+    terminal = None
+    while terminal is None:
+        event = stream.next_event(timeout=1)
+        assert event is not None
+        if event.kind in {"TurnCompleted", "TurnFailed"}:
+            terminal = event
+
+    assert terminal.kind == "TurnCompleted", repr(runtime._last_worker_error)
+    assert len(captured_headers) == 2, repr(runtime._last_worker_error)
+    assert captured_headers[0]["Authorization"] == "Bearer fresh-token"
+    assert captured_headers[0]["ChatGPT-Account-ID"] == "account-id"
+    assert captured_headers[1]["Authorization"] == "Bearer refreshed-after-401"
+    assert captured_headers[1]["ChatGPT-Account-ID"] == "account-id"
+
+
 def test_core_exec_active_thread_runtime_consumes_startup_prewarm_once(monkeypatch) -> None:
     # Rust-derived composition test:
     # codex-core/src/session_startup_prewarm.rs schedules a prewarmed
@@ -4980,6 +5118,47 @@ def test_core_exec_active_thread_runtime_forwards_canonical_item_lifecycle(monke
     assert events[2].payload["item"]["aggregated_output"] == "file.txt"
     assert app_runtime.pending_history_cells[0].calls[0].call_id == "call-1"
     assert app_runtime.pending_history_cells[0].calls[0].output.aggregated_output == "file.txt"
+
+
+def test_session_event_mapper_projects_unified_exec_end_as_item_completed() -> None:
+    """Mirror app-server handling of Rust async-watcher ExecCommandEnd."""
+
+    completed_commands: set[str] = set()
+    event = EventMsg.with_payload(
+        "exec_command_end",
+        ExecCommandEndEvent(
+            call_id="call-background",
+            turn_id="turn-background",
+            command=("python", "-c", "print('done')"),
+            cwd=Path("C:/repo"),
+            parsed_cmd=(),
+            stdout="done\n",
+            stderr="",
+            aggregated_output="done\n",
+            exit_code=0,
+            duration=125,
+            formatted_output="done\n",
+            status=ExecCommandStatus.COMPLETED,
+            process_id="1000",
+            source=ExecCommandSource.UNIFIED_EXEC_STARTUP,
+        ),
+    )
+
+    notifications = _server_notifications_from_session_event(
+        event,
+        thread_id="thread-1",
+        turn_id="fallback-turn",
+        completed_commands=completed_commands,
+    )
+
+    assert len(notifications) == 1
+    assert notifications[0].kind == "ItemCompleted"
+    assert notifications[0].payload["turn_id"] == "turn-background"
+    assert notifications[0].payload["item"]["id"] == "call-background"
+    assert notifications[0].payload["item"]["process_id"] == "1000"
+    assert notifications[0].payload["item"]["source"] == "unified_exec_startup"
+    assert notifications[0].payload["item"]["aggregated_output"] == "done\n"
+    assert completed_commands == {"call-background"}
 
 
 def test_session_event_mapper_accepts_dict_item_completed_agent_message() -> None:

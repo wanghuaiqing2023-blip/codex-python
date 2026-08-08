@@ -397,6 +397,185 @@ def test_windows_conpty_python_ps_stop_manages_real_unified_exec_processes(
     assert "Traceback" not in transcript.normalized_combined()
 
 
+def test_windows_conpty_ps_reaps_a_managed_process_that_exits_on_its_own(
+    tmp_path: Path,
+) -> None:
+    """A yielded unified-exec process disappears when it later exits normally.
+
+    Rust contracts:
+    - ``core::unified_exec::async_watcher::spawn_exit_watcher`` emits exactly
+      one ``ExecCommandEnd`` after a retained process exits and output drains;
+    - ``tui::chatwidget::command_lifecycle::on_command_execution_completed``
+      removes that process from both ``/ps`` and the bottom-pane footer.
+
+    The PID assertion makes the regression boundary explicit: the child is
+    already gone before ``/ps`` runs, so a remaining row is stale TUI state.
+    """
+
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY regression only runs on Windows")
+    capability = interactive_tui_comparison_capability(conpty_driver_available=True)
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    repo_root = _repo_root()
+    pid_path = tmp_path / "self-exiting-background.pid"
+    escaped_pid_path = pid_path.as_posix().replace("'", "''")
+    marker = "PYCODEX_SELF_EXITING_BACKGROUND"
+    command = (
+        f"$PID | Set-Content -LiteralPath '{escaped_pid_path}'; "
+        "Start-Sleep -Milliseconds 750; "
+        f"Write-Output '{marker}'"
+    )
+    tool_body = _responses_sse(
+        {"type": "response.created", "response": {"id": "resp-self-exiting-tool"}},
+        {
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "fc-self-exiting",
+                "type": "function_call",
+                "call_id": "call-self-exiting",
+                "name": "exec_command",
+                "arguments": json.dumps(
+                    {"cmd": command, "yield_time_ms": 250},
+                    separators=(",", ":"),
+                ),
+            },
+        },
+        {
+            "type": "response.completed",
+            "response": {
+                "id": "resp-self-exiting-tool",
+                "usage": {
+                    "input_tokens": 1,
+                    "input_tokens_details": None,
+                    "output_tokens": 1,
+                    "output_tokens_details": None,
+                    "total_tokens": 2,
+                },
+            },
+        },
+    )
+    final_answer = "PYCODEX_SELF_EXITING_TURN_COMPLETE"
+    final_body = _completed_response(
+        "resp-self-exiting-final",
+        "msg-self-exiting-final",
+        final_answer,
+    )
+    config = (
+        'model = "mock-model"\n'
+        'model_provider = "pycodex_mock"\n'
+        'approval_policy = "never"\n'
+        'sandbox_mode = "danger-full-access"\n'
+        'suppress_unstable_features_warning = true\n\n'
+        "[features]\n"
+        "unified_exec = true\n"
+        "apps = false\n"
+        "plugins = false\n\n"
+        "[model_providers.pycodex_mock]\n"
+        'name = "Mock provider for self-exiting /ps E2E"\n'
+        'base_url = "{base_url}"\n'
+        'wire_api = "responses"\n'
+        "request_max_retries = 0\n"
+        "stream_max_retries = 0\n"
+        "supports_websockets = false\n\n"
+        f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+        'trust_level = "trusted"\n'
+    )
+    python = build_inline_tui_command(
+        "python",
+        repo_root=repo_root,
+        extra_args=("--enable", "unified_exec", "--disable", "apps", "--disable", "plugins"),
+        sandbox_mode="danger-full-access",
+        approval_policy="never",
+    )
+
+    exited_pid = ""
+
+    def assert_child_has_exited() -> None:
+        nonlocal exited_pid
+        deadline = time.monotonic() + 5.0
+        while not pid_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert pid_path.exists(), "managed child did not publish its PID"
+        exited_pid = pid_path.read_text(encoding="utf-8").strip()
+        assert exited_pid.isdigit()
+        assert _wait_for_test_process_exit(exited_pid), (
+            f"managed child {exited_pid} was still alive before /ps"
+        )
+
+    with _SseFixtureServer((tool_body, final_body)) as server:
+        env, temp_home = _isolated_codex_home_env_with_config(
+            config.format(base_url=server.base_url)
+        )
+        with temp_home:
+            transcript = run_windows_conpty_tui_command(
+                python,
+                input_steps=(
+                    ConptyInputStep(
+                        "start a short managed background terminal",
+                        ready_pattern=READY_COMPOSER_PATTERN,
+                        ready_timeout=30.0,
+                        ready_quiet_period=0.2,
+                        atomic_write=True,
+                    ),
+                    ConptyInputStep(
+                        "\r",
+                        ready_screen_text="short managed background terminal",
+                        ready_timeout=10.0,
+                        ready_quiet_period=0.2,
+                    ),
+                    ConptyInputStep(
+                        "",
+                        ready_text_sequence=(final_answer, "mock-model"),
+                        ready_timeout=30.0,
+                        ready_quiet_period=0.3,
+                        after_ready=assert_child_has_exited,
+                    ),
+                    ConptyInputStep("/ps", ready_timeout=0.2, atomic_write=True),
+                    ConptyInputStep(
+                        "\r",
+                        ready_screen_text="/ps",
+                        ready_timeout=10.0,
+                        ready_quiet_period=0.2,
+                    ),
+                    ConptyInputStep(
+                        "",
+                        ready_screen_text="Background terminals",
+                        ready_timeout=10.0,
+                        ready_quiet_period=0.3,
+                        capture_name="self-exiting-ps",
+                    ),
+                    ConptyInputStep("/quit\r", ready_timeout=0.2, atomic_write=True),
+                ),
+                env=env,
+                timeout=45,
+                size=TerminalSize(rows=36, cols=140),
+            )
+        request_count = len(server.request_bodies)
+
+    transcript.write_artifacts(
+        tmp_path,
+        prefix="python-self-exiting-ps",
+        rows=36,
+        cols=140,
+    )
+    screen = transcript.checkpoint_screen("self-exiting-ps", rows=36, cols=140)
+    lines = screen.splitlines()
+    ps_header_index = max(
+        index for index, line in enumerate(lines) if line.strip() == "Background terminals"
+    )
+    ps_section = "\n".join(lines[ps_header_index:])
+
+    assert exited_pid.isdigit()
+    assert "No background terminals running." in ps_section
+    assert marker not in ps_section
+    assert "background terminal running" not in ps_section
+    assert request_count == 2, "/ps must remain a local command"
+    assert "Traceback" not in transcript.normalized_combined()
+
+
 def test_windows_conpty_detached_start_process_is_outside_ps_stop_boundary(
     tmp_path: Path,
 ) -> None:

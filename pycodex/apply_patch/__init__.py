@@ -263,7 +263,7 @@ def apply_patch_action_to_disk(action: ApplyPatchAction) -> str:
         if change.type == "add":
             assert change.content is not None
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(change.content, encoding="utf-8")
+            path.write_bytes(change.content.encode("utf-8"))
             added.append(path)
             continue
         if change.type == "delete":
@@ -277,7 +277,7 @@ def apply_patch_action_to_disk(action: ApplyPatchAction) -> str:
                 )
             output_path = change.move_path or path
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(change.new_content, encoding="utf-8")
+            output_path.write_bytes(change.new_content.encode("utf-8"))
             if change.move_path is not None and change.move_path != path:
                 path.unlink()
             modified.append(path)

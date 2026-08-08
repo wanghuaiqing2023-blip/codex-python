@@ -22,10 +22,12 @@ from tests.e2e.tui._common import (
     TuiComparisonCommand,
     TuiProcessTranscript,
     _completed_text_response,
+    _responses_sse,
     _isolated_codex_home_env_with_config,
     _repo_root,
     _seed_windows_sandbox_setup,
     _SseFixtureServer,
+    build_inline_tui_command,
     build_rust_python_inline_pair,
     interactive_tui_comparison_capability,
     native_codex_exe_from_env,
@@ -57,6 +59,24 @@ def require_native_slash_comparison() -> Path:
     return native_exe
 
 
+def require_python_slash_conpty() -> None:
+    """Require only the verified ConPTY driver, not a native Rust binary."""
+
+    for variable in (
+        RUN_EXPERIMENTAL_CONPTY_ENV,
+        RUN_VERIFIED_CONPTY_ENV,
+        RUN_VERIFIED_CONPTY_TUI_ENV,
+    ):
+        if os.environ.get(variable) != "1":
+            pytest.skip(f"set {variable}=1 to run Python ConPTY slash E2E")
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY smoke only runs on Windows")
+
+    capability = interactive_tui_comparison_capability()
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+
 def slash_candidate_pair(
     native_exe: Path,
     *,
@@ -72,6 +92,16 @@ def slash_candidate_pair(
         repo_root=_repo_root(),
         native_exe=native_exe,
         extra_args=tuple(extra_args),
+        sandbox_mode="read-only",
+        approval_policy="never",
+    )
+
+
+def python_slash_candidate() -> TuiComparisonCommand:
+    return build_inline_tui_command(
+        "python",
+        repo_root=_repo_root(),
+        extra_args=("--disable", "apps", "--disable", "plugins"),
         sandbox_mode="read-only",
         approval_policy="never",
     )
@@ -946,16 +976,137 @@ def run_compact_slash_candidate(
     *,
     label: str,
     artifact_dir: Path,
-) -> tuple[TuiProcessTranscript, int]:
-    """Run manual compaction, then probe the recovered composer with /status."""
+    compact_failure_message: str | None = None,
+    include_rate_limit_headers: bool = True,
+    queue_follow_up_during_compact: bool = False,
+    compact_repetitions: int = 1,
+) -> tuple[TuiProcessTranscript, tuple[bytes, ...]]:
+    """Run a seeded manual compaction and a real post-compact user turn."""
 
     repo_root = _repo_root()
-    fixture_body = _completed_text_response(
-        f"resp-{label}-compact",
-        f"msg-{label}-compact",
-        "Compacted conversation summary.",
+    seed_user = "COMPACT_E2E_USER_BEFORE"
+    seed_reply = "COMPACT_E2E_ASSISTANT_BEFORE"
+    summary = "COMPACT_E2E_SUMMARY"
+    follow_up_user = "COMPACT_E2E_USER_AFTER"
+    follow_up_reply = "COMPACT_E2E_ASSISTANT_AFTER"
+    if compact_repetitions < 1:
+        raise ValueError("compact_repetitions must be positive")
+    if compact_failure_message is not None and compact_repetitions != 1:
+        raise ValueError("failed compact scenarios support one compact attempt")
+    compact_bodies = tuple(
+        _responses_sse(
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": f"resp-{label}-compact-{index}",
+                    "error": {"message": compact_failure_message},
+                },
+            }
+        )
+        if compact_failure_message is not None
+        else _completed_text_response(
+            f"resp-{label}-compact-{index}",
+            f"msg-{label}-compact-{index}",
+            summary,
+        )
+        for index in range(compact_repetitions)
     )
-    with _SseFixtureServer(fixture_body) as server:
+    fixture_bodies = (
+        _completed_text_response(
+            f"resp-{label}-before",
+            f"msg-{label}-before",
+            seed_reply,
+        ),
+        *compact_bodies,
+        _completed_text_response(
+            f"resp-{label}-after",
+            f"msg-{label}-after",
+            follow_up_reply,
+        ),
+    )
+    compact_ready_sequence = (
+        (compact_failure_message,)
+        if compact_failure_message is not None
+        else (
+            "Context compacted",
+            "Heads up: Long threads and multiple compactions",
+        )
+    )
+    compact_result_step = ConptyInputStep(
+        "",
+        ready_text_sequence=compact_ready_sequence,
+        ready_timeout=20.0,
+        ready_quiet_period=0.2,
+    )
+    repeated_compact_steps = tuple(
+        step
+        for _index in range(1, compact_repetitions)
+        for step in (
+            ConptyInputStep(
+                "/compact",
+                ready_timeout=2.0,
+                atomic_write=True,
+            ),
+            ConptyInputStep(
+                "\r",
+                ready_screen_text="/compact",
+                ready_timeout=10.0,
+                ready_quiet_period=0.2,
+            ),
+            compact_result_step,
+        )
+    )
+    follow_up_steps = (
+        ConptyInputStep(
+            follow_up_user,
+            ready_timeout=0.2,
+            atomic_write=True,
+        ),
+        ConptyInputStep(
+            "\r",
+            ready_screen_text=follow_up_user,
+            ready_timeout=10.0,
+            ready_quiet_period=0.2,
+        ),
+        ConptyInputStep(
+            "",
+            ready_text=follow_up_reply,
+            ready_timeout=25.0,
+            ready_quiet_period=0.2,
+        ),
+    ) if queue_follow_up_during_compact else (
+        compact_result_step,
+        *repeated_compact_steps,
+        ConptyInputStep(
+            follow_up_user,
+            ready_timeout=2.0,
+            atomic_write=True,
+        ),
+        ConptyInputStep(
+            "\r",
+            ready_screen_text=follow_up_user,
+            ready_timeout=10.0,
+            ready_quiet_period=0.2,
+        ),
+        ConptyInputStep(
+            "",
+            ready_text=follow_up_reply,
+            ready_timeout=20.0,
+            ready_quiet_period=0.2,
+        ),
+    )
+    with _SseFixtureServer(
+        fixture_bodies,
+        response_delay_seconds=0.75 if queue_follow_up_during_compact else 0.0,
+        response_headers=(
+            {
+                "x-codex-primary-used-percent": "25",
+                "x-codex-primary-window-minutes": "300",
+            }
+            if include_rate_limit_headers
+            else None
+        ),
+    ) as server:
         config = (
             'model = "mock-model"\n'
             'model_provider = "pycodex_mock"\n'
@@ -981,10 +1132,27 @@ def run_compact_slash_candidate(
                 command,
                 input_steps=(
                     ConptyInputStep(
-                        "/compact",
+                        seed_user,
                         ready_pattern=SESSION_CONFIGURED_COMPOSER_PATTERN,
                         ready_timeout=30.0,
                         ready_quiet_period=0.5,
+                        atomic_write=True,
+                    ),
+                    ConptyInputStep(
+                        "\r",
+                        ready_screen_text=seed_user,
+                        ready_timeout=10.0,
+                        ready_quiet_period=0.2,
+                    ),
+                    ConptyInputStep(
+                        "",
+                        ready_text=seed_reply,
+                        ready_timeout=20.0,
+                        ready_quiet_period=0.2,
+                    ),
+                    ConptyInputStep(
+                        "/compact",
+                        ready_timeout=2.0,
                         atomic_write=True,
                     ),
                     ConptyInputStep(
@@ -993,26 +1161,29 @@ def run_compact_slash_candidate(
                         ready_timeout=10.0,
                         ready_quiet_period=0.2,
                     ),
+                    *follow_up_steps,
                     ConptyInputStep(
-                        "/status",
-                        ready_timeout=5.0,
+                        "/quit",
+                        ready_timeout=2.0,
                         atomic_write=True,
                     ),
                     ConptyInputStep(
                         "\r",
-                        ready_screen_text="/status",
+                        ready_screen_text="/quit",
                         ready_timeout=10.0,
                         ready_quiet_period=0.2,
                     ),
+                    ConptyInputStep(
+                        "",
+                        ready_text="Token usage:",
+                        ready_timeout=10.0,
+                    ),
                 ),
                 env=env,
-                timeout=45,
-                stop_pattern="Session:",
-                stop_timeout=15,
-                terminate_on_stop_pattern=True,
+                timeout=60,
                 size=TerminalSize(rows=36, cols=120),
             )
-        request_count = len(server.request_bodies)
+        request_bodies = tuple(server.request_bodies)
 
     transcript.write_artifacts(
         artifact_dir,
@@ -1020,7 +1191,7 @@ def run_compact_slash_candidate(
         rows=36,
         cols=120,
     )
-    return transcript, request_count
+    return transcript, request_bodies
 
 
 def run_side_slash_candidate(

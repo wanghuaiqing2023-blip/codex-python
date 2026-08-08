@@ -2,21 +2,76 @@
 from types import SimpleNamespace
 
 from pycodex.core.context import NetworkRuleSaved
+from pycodex.core.context_manager import estimate_token_count_with_base_instructions
 from pycodex.core.goals import goal_token_delta_for_usage, should_ignore_goal_for_mode, validate_goal_budget
+from pycodex.core.session.session import Session
 from pycodex.core.session.input_queue import InputQueue
 from pycodex.core.state.turn import MailboxDeliveryPhase, TurnState
 from pycodex.core.stream_events_utils import AssistantMessageStreamParsers
 from pycodex.protocol import (
+    AutoCompactTokenLimitScope,
+    BaseInstructions,
+    ContentItem,
     InterAgentCommunication,
     ModeKind,
     NetworkPolicyAmendment,
     NetworkPolicyRuleAction,
     ResponseItem,
     TokenUsage,
+    TokenUsageInfo,
 )
 
 
 class CoreSessionRootParityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recompute_token_usage_uses_session_base_instructions(self) -> None:
+        # Rust crate/module: codex-core::session.
+        # Rust test: recompute_token_usage_uses_session_base_instructions.
+        instructions = BaseInstructions("SESSION_OVERRIDE_INSTRUCTIONS_ONLY" * 120)
+        user_item = ResponseItem.message(
+            "user",
+            (ContentItem.input_text("hello"),),
+        )
+        prior_total = TokenUsage(input_tokens=40, output_tokens=2, total_tokens=42)
+        session = Session(
+            cwd="C:/work/project",
+            base_instructions=instructions,
+            history=[user_item],
+            token_usage_info=TokenUsageInfo(
+                total_token_usage=prior_total,
+                last_token_usage=prior_total,
+                model_context_window=258_400,
+            ),
+        )
+        turn_context = SimpleNamespace(
+            sub_id="compact-turn",
+            config=SimpleNamespace(
+                model_auto_compact_token_limit_scope=(
+                    AutoCompactTokenLimitScope.BODY_AFTER_PREFIX
+                )
+            ),
+            model_info=SimpleNamespace(
+                context_window=128_000,
+                effective_context_window_percent=100,
+            ),
+        )
+        expected = estimate_token_count_with_base_instructions(
+            session.history,
+            instructions,
+        )
+
+        await session.recompute_token_usage(turn_context)
+
+        self.assertIsNotNone(session.token_usage_info)
+        assert session.token_usage_info is not None
+        self.assertEqual(session.token_usage_info.total_token_usage, prior_total)
+        self.assertEqual(session.token_usage_info.last_token_usage, TokenUsage(total_tokens=expected))
+        self.assertEqual(session.token_usage_info.model_context_window, 128_000)
+        self.assertEqual(
+            session.auto_compact_window_snapshot().prefill_input_tokens,
+            expected,
+        )
+        self.assertEqual(session.emitted_events[-1].type, "token_count")
+
     def test_assistant_message_stream_parsers_seed_and_finish_like_session_tests(self) -> None:
         # Rust source: codex/codex-rs/core/src/session/tests.rs
         # Rust tests: assistant_message_stream_parsers_can_be_seeded_from_output_item_added_text,
