@@ -555,13 +555,15 @@ def test_bottom_pane_view_state_routes_active_view_before_command_popup() -> Non
         ),
     )
     state.apply_draft("/model")
-    state.handle_composer_event(
+    outcome = state.handle_composer_event(
         "enter",
         open_command_view=lambda command: params if command == "model" else None,
     )
 
     assert state.draft == ""
     assert state.command_popup_visible is False
+    assert outcome.kind == "Command"
+    state.show_view(params)
     assert state.active_view is not None
     assert state.active_view.selected_index() == 0
 
@@ -643,6 +645,48 @@ def test_terminal_bottom_pane_view_state_recalls_local_history_with_up_down() ->
     assert state.composer.cursor() == 3
 
 
+def test_terminal_bottom_pane_ctrl_c_clears_then_recalls_multiline_draft() -> None:
+    # Rust bottom_pane::BottomPane::on_ctrl_c gives a non-empty composer first
+    # refusal, persists the cleared text, and leaves empty Ctrl+C unhandled.
+    events: list[object] = []
+    state = TerminalBottomPaneViewState.new(app_event_sender=events.append)
+    state.configure_history("thread-ctrl-c", 7, 0, None)
+    state.apply_draft("first line\nsecond line")
+
+    first = state.handle_composer_event("interrupt")
+
+    assert first.kind == "render"
+    assert state.draft == ""
+    assert len(events) == 1
+    assert events[0].kind == "AppendMessageHistoryEntry"
+    assert events[0].payload == {
+        "thread_id": "thread-ctrl-c",
+        "text": "first line\nsecond line",
+    }
+
+    state.handle_composer_event("up")
+    assert state.draft == "first line\nsecond line"
+    state.handle_composer_event("interrupt")
+    assert state.draft == ""
+
+    second = state.handle_composer_event("interrupt")
+    assert second.kind == "interrupt"
+
+
+def test_terminal_bottom_pane_ctrl_c_cancels_history_search_before_clearing() -> None:
+    # Rust BottomPane::on_ctrl_c cancels reverse search before considering the
+    # restored draft, so one Ctrl+C never both cancels search and clears text.
+    state = TerminalBottomPaneViewState.new()
+    state.apply_draft("keep this draft")
+    state.composer.begin_history_search()
+
+    result = state.handle_composer_event("interrupt")
+
+    assert result.kind == "render"
+    assert state.composer.history_search_active is False
+    assert state.draft == "keep this draft"
+
+
 def test_terminal_bottom_pane_history_does_not_steal_slash_popup_navigation() -> None:
     # Fixed Rust chat_composer precedence: an active command popup owns Up/Down
     # before shell-style history traversal.
@@ -654,6 +698,22 @@ def test_terminal_bottom_pane_history_does_not_steal_slash_popup_navigation() ->
     assert state.command_popup.selected_item().command() == "model"
     state.handle_composer_event("down")
     assert state.command_popup.selected_item().command() == "memories"
+
+
+def test_recalled_slash_command_does_not_steal_continued_history_navigation() -> None:
+    # Rust chat_composer::sync_popups suppresses every popup while
+    # ChatComposerHistory recognizes the current draft as a recalled entry.
+    # This lets repeated Up continue past a slash command in history.
+    state = TerminalBottomPaneViewState.new()
+    state.record_submission("older prompt")
+    state.record_submission("/status")
+
+    state.handle_composer_event("up")
+    assert state.draft == "/status"
+    assert state.command_popup_visible is False
+
+    state.handle_composer_event("up")
+    assert state.draft == "older prompt"
 
 
 def test_terminal_bottom_pane_history_combines_persistent_and_local_entries() -> None:
@@ -801,7 +861,7 @@ def test_terminal_bottom_pane_view_state_pushes_child_selection_view_from_events
         return None
 
     state.apply_draft("/model")
-    state.handle_composer_event(
+    outcome = state.handle_composer_event(
         "enter",
         open_command_view=lambda command: SelectionViewParams(
             header="Select Model and Effort",
@@ -814,6 +874,20 @@ def test_terminal_bottom_pane_view_state_pushes_child_selection_view_from_events
                 )
             ],
         ),
+    )
+    assert outcome.kind == "Command"
+    state.show_view(
+        SelectionViewParams(
+            header="Select Model and Effort",
+            items=[
+                SelectionItem(
+                    name="gpt-5.4",
+                    actions=["open_child"],
+                    dismiss_on_select=False,
+                    dismiss_parent_on_child_accept=True,
+                )
+            ],
+        )
     )
     state.handle_composer_event("enter", on_selection_events=handle_events)
     assert state.active_view is not None
@@ -835,7 +909,7 @@ def test_terminal_bottom_pane_view_state_normalizes_text_enter_for_active_select
     emitted: list[object] = []
 
     state.apply_draft("/model")
-    state.handle_composer_event(
+    outcome = state.handle_composer_event(
         "enter",
         open_command_view=lambda command: SelectionViewParams(
             header="Select Reasoning Level",
@@ -844,6 +918,16 @@ def test_terminal_bottom_pane_view_state_normalizes_text_enter_for_active_select
                 SelectionItem(name="Medium", actions=["medium"], dismiss_on_select=True),
             ],
         ),
+    )
+    assert outcome.kind == "Command"
+    state.show_view(
+        SelectionViewParams(
+            header="Select Reasoning Level",
+            items=[
+                SelectionItem(name="Low", actions=["low"], dismiss_on_select=True),
+                SelectionItem(name="Medium", actions=["medium"], dismiss_on_select=True),
+            ],
+        )
     )
     state.handle_composer_event("down")
     state.handle_composer_event(
@@ -978,3 +1062,17 @@ def test_terminal_bottom_pane_question_mark_after_text_stays_in_draft() -> None:
     state.handle_composer_event("text", "?")
 
     assert state.composer.current_text() == "h?"
+
+
+def test_render_context_projects_unified_exec_footer_from_bottom_pane_state() -> None:
+    state = TerminalBottomPaneViewState.new()
+
+    assert state.apply_unified_exec_processes(["sleep 5", "tail -f log"]) is True
+    context = state.render_context_for_size(
+        os.terminal_size((100, 20)),
+        lambda: True,
+    )
+
+    assert len(context.supplemental_footer_lines) == 1
+    assert "2 background terminals running" in context.supplemental_footer_lines[0]
+    assert context.footer_height == 2

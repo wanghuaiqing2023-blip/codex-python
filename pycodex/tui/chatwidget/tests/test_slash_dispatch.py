@@ -1,6 +1,9 @@
 # Rust owner: codex-tui::chatwidget::slash_dispatch.
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
+
+import pycodex.tui.chatwidget.slash_dispatch as slash_dispatch_module
 
 from pycodex.tui.history_cell.base import line_text
 from pycodex.tui.chatwidget.slash_dispatch import (
@@ -46,6 +49,52 @@ from pycodex.tui.auto_review_denials import denied_event
 from pycodex.tui.chatwidget.protocol import ChatWidgetProtocolRuntime
 from pycodex.protocol import ModeKind
 from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime, TuiAppRuntime
+
+
+# Fixed Rust baseline: codex/codex-rs/tui/prompt_for_init_command.md.
+# This test fixture is deliberately Python-owned: normal Python tests must not
+# need the Rust source tree in order to define or verify the product contract.
+EXPECTED_INIT_PROMPT = """Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
+Follow the outline below, but adapt as needed — add sections if relevant, and omit those that do not apply to this project.
+
+Document Requirements
+
+- Title the document "Repository Guidelines".
+- Use Markdown headings (#, ##, etc.) for structure.
+- Keep the document concise. 200-400 words is optimal.
+- Keep explanations short, direct, and specific to this repository.
+- Provide examples where helpful (commands, directory paths, naming patterns).
+- Maintain a professional, instructional tone.
+
+Recommended Sections
+
+Project Structure & Module Organization
+
+- Outline the project structure, including where the source code, tests, and assets are located.
+
+Build, Test, and Development Commands
+
+- List key commands for building, testing, and running locally (e.g., npm test, make build).
+- Briefly explain what each command does.
+
+Coding Style & Naming Conventions
+
+- Specify indentation rules, language-specific style preferences, and naming patterns.
+- Include any formatting or linting tools used.
+
+Testing Guidelines
+
+- Identify testing frameworks and coverage requirements.
+- State test naming conventions and how to run tests.
+
+Commit & Pull Request Guidelines
+
+- Summarize commit message conventions found in the project’s Git history.
+- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).
+
+(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions.
+""".replace("\n", "\r\n")
 
 
 def test_constants_match_rust_user_facing_text() -> None:
@@ -1097,6 +1146,42 @@ def test_init_existing_file_uses_rust_skip_notice_without_submitting(tmp_path) -
             None,
         )
     ]
+
+
+def test_init_success_submits_fixed_complete_prompt_without_rust_runtime_dependency(
+    tmp_path,
+) -> None:
+    # Rust anchor: SlashCommand::Init -> submit_user_message(INIT_PROMPT).
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(
+            session_config=SimpleNamespace(cwd=tmp_path)
+        ),
+        insert_info_history_message=lambda *_args: None,
+        insert_history_cell=lambda _cell: None,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(
+        SlashCommand.INIT
+    )
+
+    assert result.action == "submit"
+    assert result.command is SlashCommand.INIT
+    assert result.prompt == EXPECTED_INIT_PROMPT
+    assert result.prompt.endswith("\n")
+    assert "—" in result.prompt
+    assert "project’s Git history" in result.prompt
+    assert result.prompt != "/init"
+    assert "Create an AGENTS.md file that explains" not in result.prompt
+    source = inspect.getsource(slash_dispatch_module)
+    assert '"codex" / "codex-rs"' not in source
+    init_source = inspect.getsource(TerminalSlashCommandEffectDispatcher._init)
+    assert "prompt_path" not in init_source
+    assert "read_text" not in init_source
+
+
+def test_init_registry_contract_is_bare_and_unavailable_during_task() -> None:
+    assert SlashCommand.INIT.supports_inline_args() is False
+    assert SlashCommand.INIT.available_during_task() is False
 
 
 def test_guarded_command_emits_reason_instead_of_opening_or_submitting() -> None:

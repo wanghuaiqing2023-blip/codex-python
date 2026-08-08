@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
 import queue
@@ -221,6 +222,8 @@ def spawn_exit_watcher(
     process_id: int,
     transcript: "HeadTailBuffer",
     started_at: float | None = None,
+    *,
+    event_loop: asyncio.AbstractEventLoop | None = None,
 ) -> threading.Thread:
     """Start the background unified-exec exit watcher.
 
@@ -249,6 +252,7 @@ def spawn_exit_watcher(
                 "",
                 failure_message,
                 duration_ms,
+                event_loop=event_loop,
             )
         else:
             emit_exec_end_for_unified_exec(
@@ -262,6 +266,7 @@ def spawn_exit_watcher(
                 "",
                 _process_exit_code(process),
                 duration_ms,
+                event_loop=event_loop,
             )
 
     thread = threading.Thread(target=run, name=f"unified-exec-exit-{call_id}", daemon=True)
@@ -279,6 +284,8 @@ def emit_exec_end_for_unified_exec(
     fallback_output: str,
     exit_code: int,
     duration_ms: int = 0,
+    *,
+    event_loop: asyncio.AbstractEventLoop | None = None,
 ) -> UnifiedExecEndEventPlan:
     plan = unified_exec_success_end_event_plan(
         call_id=call_id,
@@ -290,7 +297,7 @@ def emit_exec_end_for_unified_exec(
         exit_code=exit_code,
         duration_ms=duration_ms,
     )
-    _send_unified_exec_end_event(session_ref, turn_ref, plan)
+    _send_unified_exec_end_event(session_ref, turn_ref, plan, event_loop=event_loop)
     return plan
 
 def emit_failed_exec_end_for_unified_exec(
@@ -304,6 +311,8 @@ def emit_failed_exec_end_for_unified_exec(
     fallback_output: str,
     message: str,
     duration_ms: int = 0,
+    *,
+    event_loop: asyncio.AbstractEventLoop | None = None,
 ) -> UnifiedExecEndEventPlan:
     plan = unified_exec_failed_end_event_plan(
         call_id=call_id,
@@ -315,7 +324,7 @@ def emit_failed_exec_end_for_unified_exec(
         message=message,
         duration_ms=duration_ms,
     )
-    _send_unified_exec_end_event(session_ref, turn_ref, plan)
+    _send_unified_exec_end_event(session_ref, turn_ref, plan, event_loop=event_loop)
     return plan
 
 def _process_output_receiver(process: Any) -> Any:
@@ -431,36 +440,77 @@ def _send_exec_output_delta(context: UnifiedExecContext, chunk: str) -> None:
     }
     _send_session_event(context.session, context.turn, event)
 
-def _send_unified_exec_end_event(session_ref: Any, turn_ref: Any, plan: UnifiedExecEndEventPlan) -> None:
+def _send_unified_exec_end_event(
+    session_ref: Any,
+    turn_ref: Any,
+    plan: UnifiedExecEndEventPlan,
+    *,
+    event_loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    from pycodex.protocol import (
+        EventMsg,
+        ExecCommandEndEvent,
+        ExecCommandSource,
+        ExecCommandStatus,
+    )
+    from pycodex.shell_command import parse_command
+
+    turn_id = str(getattr(turn_ref, "sub_id", None) or getattr(turn_ref, "turn_id", ""))
+    payload = ExecCommandEndEvent(
+        call_id=plan.call_id,
+        turn_id=turn_id,
+        command=plan.command,
+        cwd=Path(plan.cwd),
+        parsed_cmd=tuple(parse_command(plan.command)),
+        stdout=plan.stdout,
+        stderr=plan.stderr,
+        aggregated_output=plan.aggregated_output,
+        exit_code=plan.exit_code,
+        duration=plan.duration_ms,
+        formatted_output=plan.aggregated_output,
+        status=(
+            ExecCommandStatus.COMPLETED
+            if plan.status == "success"
+            else ExecCommandStatus.FAILED
+        ),
+        process_id=plan.process_id,
+        source=ExecCommandSource.UNIFIED_EXEC_STARTUP,
+    )
     _send_session_event(
         session_ref,
         turn_ref,
-        {
-            "type": "exec_command_end",
-            "call_id": plan.call_id,
-            "command": plan.command,
-            "cwd": plan.cwd,
-            "process_id": plan.process_id,
-            "source": plan.source,
-            "status": plan.status,
-            "exit_code": plan.exit_code,
-            "stdout": plan.stdout,
-            "stderr": plan.stderr,
-            "aggregated_output": plan.aggregated_output,
-            "duration_ms": plan.duration_ms,
-            "timed_out": plan.timed_out,
-        },
+        EventMsg.with_payload("exec_command_end", payload),
+        event_loop=event_loop,
     )
 
-def _send_session_event(session_ref: Any, turn_ref: Any, event: dict[str, Any]) -> None:
+def _send_session_event(
+    session_ref: Any,
+    turn_ref: Any,
+    event: Any,
+    *,
+    event_loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
     send = getattr(session_ref, "send_event", None)
     if callable(send):
         try:
-            send(turn_ref, event)
+            result = send(turn_ref, event)
         except TypeError:
-            send(event)
+            result = send(event)
+        _schedule_session_event_result(result, event_loop)
         return
     send_raw = getattr(session_ref, "send_event_raw", None)
     if callable(send_raw):
-        send_raw(event)
+        _schedule_session_event_result(send_raw(event), event_loop)
+
+
+def _schedule_session_event_result(
+    result: Any,
+    event_loop: asyncio.AbstractEventLoop | None,
+) -> None:
+    if not inspect.isawaitable(result):
+        return
+    if event_loop is not None and event_loop.is_running():
+        asyncio.run_coroutine_threadsafe(result, event_loop)
+        return
+    asyncio.run(result)
 

@@ -56,6 +56,37 @@ def test_queued_input_action_variants_match_rust():
     assert [action.name for action in QueuedInputAction] == ["Plain", "ParseSlash", "RunShell"]
 
 
+def test_clear_for_ctrl_c_records_complete_multiline_draft_for_recall() -> None:
+    # Rust source: bottom_pane/chat_composer.rs::clear_for_ctrl_c snapshots the
+    # entire draft, clears it atomically, and records it as local history.
+    placeholder = "[Pasted Content 4 chars]"
+    draft = f"first line\nsecond line {placeholder}"
+    composer = ChatComposer(
+        text=draft,
+        pending_pastes=[(placeholder, "data")],
+        remote_image_urls=["https://example.test/image.png"],
+    )
+
+    assert composer.clear_for_ctrl_c() == draft
+    assert composer.current_text() == ""
+    assert composer.pending_pastes == []
+    assert composer.remote_image_urls == []
+
+    assert composer.navigate_history("up") is True
+    assert composer.current_text() == draft
+    assert composer.pending_pastes == [(placeholder, "data")]
+    assert composer.remote_image_urls == ["https://example.test/image.png"]
+
+
+def test_clear_for_ctrl_c_leaves_empty_composer_unhandled() -> None:
+    # Rust BottomPane treats None as first-refusal not handled, allowing the
+    # empty-composer Ctrl+C path to exit the application.
+    composer = ChatComposer()
+
+    assert composer.clear_for_ctrl_c() is None
+    assert composer.history.local_history == []
+
+
 def test_configured_submit_key_dispatches_current_draft() -> None:
     """Rust ChatComposer::set_keymap replaces the composer submit binding."""
 
@@ -226,10 +257,10 @@ def test_terminal_command_popup_reopens_with_fresh_rust_payload_state() -> None:
     ]
 
 
-def test_terminal_command_popup_runner_applies_navigation_completion_and_model_view() -> None:
+def test_terminal_command_popup_runner_applies_navigation_completion_and_returns_model_command() -> None:
     # Rust owner: codex-tui::bottom_pane::chat_composer routes popup keys and
-    # applies slash-popup outcomes before normal composer input. The terminal
-    # adapter only supplies callbacks for concrete view creation/presentation.
+    # applies slash-popup outcomes before normal composer input. View opening
+    # remains owned by chatwidget::slash_dispatch after the command is returned.
     state = TerminalCommandPopupState.new()
     shown: list[object] = []
     params = object()
@@ -240,17 +271,16 @@ def test_terminal_command_popup_runner_applies_navigation_completion_and_model_v
     assert run_terminal_command_popup_input_action(state, "/m", "tab") == "/memories "
 
     assert state.sync_draft("/model") is True
-    assert (
-        run_terminal_command_popup_input_action(
-            state,
-            "/model",
-            "enter",
-            open_command_view=lambda command: params if command == "model" else None,
-            show_view=shown.append,
-        )
-        == ""
+    model_result = run_terminal_command_popup_input_action(
+        state,
+        "/model",
+        "enter",
+        open_command_view=lambda command: params if command == "model" else None,
+        show_view=shown.append,
     )
-    assert shown == [params]
+    assert model_result.kind == "Command"
+    assert model_result.command is SlashCommand.MODEL
+    assert shown == []
 
     assert state.sync_draft("/clear") is True
     clear_result = run_terminal_command_popup_input_action(state, "/clear", "enter")
@@ -268,13 +298,12 @@ def test_terminal_command_popup_runner_applies_navigation_completion_and_model_v
         .command
         is SlashCommand.CLEAR
     )
-    assert shown == [params]
+    assert shown == []
 
 
-def test_terminal_command_popup_consumes_registered_view_empty_state_once() -> None:
-    # A registered view owner may render an informational empty state without
-    # returning a BottomPaneView. The composer must consume that outcome rather
-    # than returning InputResult::Command and dispatching the owner again.
+def test_terminal_command_popup_defers_registered_view_empty_state_to_slash_dispatch() -> None:
+    # The composer returns the command without consulting the view owner. This
+    # preserves Rust's composer -> slash_dispatch ownership boundary.
     from pycodex.tui.chatwidget.slash_dispatch import (
         TerminalSlashCommandViewDispatchResult,
     )
@@ -294,8 +323,9 @@ def test_terminal_command_popup_consumes_registered_view_empty_state_once() -> N
         show_view=lambda _view: None,
     )
 
-    assert result == ""
-    assert calls == ["approve"]
+    assert result.kind == "Command"
+    assert result.command is SlashCommand.AUTO_REVIEW
+    assert calls == []
     assert state.visible is False
 
 
@@ -449,6 +479,135 @@ def test_chat_composer_handles_terminal_events_without_string_editor_adapter():
     assert composer.handle_terminal_event("eof").kind == "eof"
     composer.set_text_content("draft")
     assert composer.handle_terminal_event("interrupt").kind == "interrupt"
+
+
+@pytest.mark.parametrize(
+    ("event_kind", "event_text"),
+    (
+        ("ctrl_u", ""),
+        ("text", "!"),
+        ("backspace", ""),
+        ("paste", " pasted"),
+        ("text", "你好"),
+    ),
+    ids=("ctrl-u", "typed-character", "backspace", "paste", "ime-text"),
+)
+def test_history_navigation_restarts_after_user_edits_recalled_draft(
+    event_kind: str,
+    event_text: str,
+) -> None:
+    """A real user edit leaves history mode and makes Up start at newest.
+
+    Rust owners are ``bottom_pane::chat_composer`` for input routing and
+    ``chat_composer_history`` for the navigation cursor.  Rust currently does
+    not reset that cursor for ordinary TextArea edits, so this is an explicit
+    user-requested product regression contract rather than an existing parity
+    claim.
+    """
+
+    composer = ChatComposer()
+    composer.record_submission("newest prompt")
+
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "newest prompt"
+    assert composer.history.history_cursor == 0
+
+    composer.handle_terminal_event(event_kind, event_text)
+    assert composer.history.history_cursor is None
+    composer.handle_terminal_event("ctrl_u")
+    composer.handle_terminal_event("up")
+
+    assert composer.current_text() == "newest prompt"
+    assert composer.history.history_cursor == 0
+
+
+def test_applying_history_entry_keeps_cursor_for_continuous_up_down_navigation() -> None:
+    """History application itself must not look like a user draft edit."""
+
+    composer = ChatComposer()
+    composer.record_submission("older prompt")
+    composer.record_submission("newest prompt")
+
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "newest prompt"
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "older prompt"
+    composer.handle_terminal_event("down")
+    assert composer.current_text() == "newest prompt"
+    composer.handle_terminal_event("down")
+    assert composer.current_text() == ""
+
+
+def test_bare_slash_command_can_be_recalled_after_recording_pending_history() -> None:
+    # Rust source: chat_composer.rs::bare_slash_command_can_be_recalled_after_recording_pending_history.
+    composer = ChatComposer(text="/diff")
+
+    result = composer.handle_terminal_event("enter")
+
+    assert result == InputResult.Command(SlashCommand.DIFF)
+    assert composer.history.local_history == []
+    composer.record_pending_slash_command_history()
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "/diff"
+
+
+def test_init_slash_command_records_literal_command_in_composer_history() -> None:
+    # Rust ownership split: chat_composer stores /init in slash history while
+    # chatwidget::slash_dispatch replaces it with INIT_PROMPT for the model.
+    composer = ChatComposer(text="/init")
+
+    result = composer.handle_terminal_event("enter")
+
+    assert result == InputResult.Command(SlashCommand.INIT)
+    composer.record_pending_slash_command_history()
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "/init"
+
+
+def test_popup_selected_slash_command_records_canonical_command_history() -> None:
+    # Rust source: chat_composer.rs::popup_selected_slash_command_records_canonical_command_history.
+    composer = ChatComposer()
+    composer.set_text_content("/di")
+
+    result = composer.handle_terminal_event("enter")
+
+    assert result == InputResult.Command(SlashCommand.DIFF)
+    assert composer.history.local_history == []
+    composer.record_pending_slash_command_history()
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "/diff"
+
+
+def test_inline_slash_command_can_be_recalled_after_recording_pending_history() -> None:
+    # Rust source: chat_composer.rs::inline_slash_command_can_be_recalled_after_recording_pending_history.
+    composer = ChatComposer(text="/plan investigate this")
+    composer.command_popup_state.hide()
+    composer.active_popup = "none"
+
+    result = composer.handle_terminal_event("enter")
+
+    assert result == InputResult.CommandWithArgs(
+        SlashCommand.PLAN,
+        "investigate this",
+        [],
+    )
+    assert composer.history.local_history == []
+    composer.record_pending_slash_command_history()
+    composer.handle_terminal_event("up")
+    assert composer.current_text() == "/plan investigate this"
+
+
+def test_history_does_not_steal_up_inside_user_edited_multiline_draft() -> None:
+    """An interior multiline Up remains TextArea cursor motion."""
+
+    composer = ChatComposer(text="first line\nsecond line")
+    composer.record_submission("history prompt")
+    composer.set_cursor(len(composer.current_text()))
+
+    composer.handle_terminal_event("up")
+
+    assert composer.current_text() == "first line\nsecond line"
+    assert composer.cursor() < len(composer.current_text())
 
 
 def test_run_terminal_composer_input_action_dispatches_terminal_effects():

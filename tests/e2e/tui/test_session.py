@@ -5,6 +5,124 @@ from tests.e2e.tui._common import *  # noqa: F401,F403
 pytestmark = pytest.mark.e2e
 
 
+def _live_composer_row(screen: str) -> str:
+    rows = [line.strip() for line in screen.splitlines() if line.lstrip().startswith("›")]
+    return rows[-1] if rows else ""
+
+
+def test_windows_conpty_python_up_recall_restarts_after_recalled_draft_is_cleared(
+    tmp_path: Path,
+) -> None:
+    """Up recall must restart after a recalled draft is cleared.
+
+    Rust owners/tests:
+    - ``bottom_pane::chat_composer`` records the submitted draft before
+      clearing it and routes Up through history navigation even during a turn;
+    - ``bottom_pane::chat_composer_history`` owns the navigation cursor and
+      documents ``reset_navigation`` as restarting Up from the newest entry.
+
+    The screen assertion deliberately inspects the last visible composer row.
+    This user-reported regression sequence first proves immediate Up recall,
+    clears that recalled draft, then tries Up again after the turn. Searching
+    cumulative output for the prompt is insufficient because the submitted
+    user-history row contains the same text even when the second recall fails.
+    """
+
+    if os.name != "nt":
+        pytest.skip("Windows ConPTY regression only runs on Windows")
+    capability = interactive_tui_comparison_capability(conpty_driver_available=True)
+    if not capability.available:
+        pytest.skip(capability.reason)
+
+    repo_root = _repo_root()
+    prompt = "PYCODEX_ENTER_UP_HISTORY_PROBE"
+    answer = "PYCODEX_ENTER_UP_HISTORY_ACK"
+    body = _completed_text_response("resp-enter-up", "msg-enter-up", answer)
+    config = (
+        'model = "mock-model"\n'
+        'model_provider = "pycodex_mock"\n'
+        'approval_policy = "never"\n'
+        'sandbox_mode = "read-only"\n'
+        'suppress_unstable_features_warning = true\n\n'
+        "[features]\n"
+        "apps = false\n"
+        "plugins = false\n\n"
+        "[model_providers.pycodex_mock]\n"
+        'name = "Mock provider for Enter then Up history E2E"\n'
+        'base_url = "{base_url}"\n'
+        'wire_api = "responses"\n'
+        "request_max_retries = 0\n"
+        "stream_max_retries = 0\n"
+        "supports_websockets = false\n\n"
+        f"[projects.'{str(repo_root.resolve(strict=False)).lower()}']\n"
+        'trust_level = "trusted"\n'
+    )
+    python = build_inline_tui_command(
+        "python",
+        repo_root=repo_root,
+        extra_args=("--disable", "apps", "--disable", "plugins"),
+    )
+
+    with _SseFixtureServer(body, response_delay_seconds=1.5) as server:
+        env, temp_home = _isolated_codex_home_env_with_config(
+            config.format(base_url=server.base_url)
+        )
+        with temp_home:
+            transcript = run_windows_conpty_tui_command(
+                python,
+                input_steps=(
+                    ConptyInputStep(
+                        prompt,
+                        ready_pattern=READY_COMPOSER_PATTERN,
+                        ready_timeout=30.0,
+                        ready_quiet_period=0.2,
+                        atomic_write=True,
+                    ),
+                    ConptyInputStep(
+                        "\r\x1b[A",
+                        ready_screen_text=prompt,
+                        ready_timeout=10.0,
+                        ready_quiet_period=0.2,
+                        atomic_write=True,
+                    ),
+                    ConptyInputStep(
+                        "",
+                        ready_timeout=0.5,
+                        capture_name="up-during-turn",
+                    ),
+                    ConptyInputStep("\x15", ready_timeout=0.1, atomic_write=True),
+                    ConptyInputStep(
+                        "",
+                        ready_text_sequence=(answer, "mock-model"),
+                        ready_timeout=15.0,
+                        ready_quiet_period=0.2,
+                    ),
+                    ConptyInputStep("\x1b[A", ready_timeout=0.1, atomic_write=True),
+                    ConptyInputStep(
+                        "",
+                        ready_timeout=0.5,
+                        capture_name="up-after-turn",
+                    ),
+                    ConptyInputStep("\x15/quit\r", ready_timeout=0.2, atomic_write=True),
+                    ConptyInputStep("", ready_text="Token usage:", ready_timeout=10.0),
+                ),
+                env=env,
+                timeout=35,
+                size=TerminalSize(rows=32, cols=120),
+            )
+        request_count = len(server.requests)
+
+    transcript.write_artifacts(tmp_path, prefix="python-enter-up-history", rows=32, cols=120)
+    expected_composer = f"› {prompt}"
+    during_turn = transcript.checkpoint_screen("up-during-turn", rows=32, cols=120)
+    after_turn = transcript.checkpoint_screen("up-after-turn", rows=32, cols=120)
+
+    assert _live_composer_row(during_turn) == expected_composer, during_turn
+    assert _live_composer_row(after_turn) == expected_composer, after_turn
+    assert request_count == 1, "Up recall must not submit another user turn"
+    assert "Traceback" not in transcript.normalized_combined()
+
+
 def test_windows_conpty_native_and_python_transcript_ctrl_t_overlay_when_enabled() -> None:
     # Rust source/test contract:
     # - codex-tui::app::input maps Global.open_transcript to opening
@@ -266,10 +384,13 @@ def test_windows_conpty_native_and_python_same_session_history_up_recall_when_en
                         ),
                         ConptyInputStep(
                             "\x1b[A",
-                            ready_text=recalled,
-                            ready_timeout=10.0,
-                            ready_quiet_period=0.2,
-                            chunk_delay=0.02,
+                            ready_timeout=0.1,
+                            atomic_write=True,
+                        ),
+                        ConptyInputStep(
+                            "",
+                            ready_timeout=0.5,
+                            capture_name="history-up-recalled",
                         ),
                         ConptyInputStep(
                             "\x15/quit\r",
@@ -299,6 +420,12 @@ def test_windows_conpty_native_and_python_same_session_history_up_recall_when_en
         assert "OpenAI Codex" in output
         assert recalled in output
         assert answer in output
+        recalled_screen = transcript.checkpoint_screen(
+            "history-up-recalled",
+            rows=32,
+            cols=120,
+        )
+        assert _live_composer_row(recalled_screen) == f"› {recalled}", recalled_screen
 
 
 def test_windows_conpty_python_healthy_mcp_turn_closes_without_pipe_errors_when_enabled() -> None:

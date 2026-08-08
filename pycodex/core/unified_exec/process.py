@@ -31,8 +31,12 @@ class UnifiedExecProcess:
         self.tty = tty
         self.truncation_policy = truncation_policy
         self._buffer = HeadTailBuffer()
+        self._transcript = HeadTailBuffer()
         self._condition = threading.Condition()
         self._output_closed = False
+        self._cancelled = threading.Event()
+        self._output_drained = threading.Event()
+        self._failure_message: str | None = None
         self._reader = threading.Thread(target=self._read_output, daemon=True)
         self._reader.start()
 
@@ -50,11 +54,36 @@ class UnifiedExecProcess:
                     break
                 with self._condition:
                     self._buffer.push_chunk(chunk)
+                    self._transcript.push_chunk(chunk)
                     self._condition.notify_all()
+        except OSError as error:
+            self._failure_message = str(error)
         finally:
+            try:
+                self.process.wait()
+            except OSError as error:
+                if self._failure_message is None:
+                    self._failure_message = str(error)
             with self._condition:
                 self._output_closed = True
                 self._condition.notify_all()
+            # Rust's process cancellation token fires at exit and its output
+            # watcher then signals output-drained. EOF on this stdlib pipe is
+            # already proof that all child output has been consumed.
+            self._cancelled.set()
+            self._output_drained.set()
+
+    def cancellation_token(self) -> threading.Event:
+        return self._cancelled
+
+    def output_drained_notify(self) -> threading.Event:
+        return self._output_drained
+
+    def transcript(self) -> HeadTailBuffer:
+        return self._transcript
+
+    def failure_message(self) -> str | None:
+        return self._failure_message
 
     def has_exited(self) -> bool:
         return self.process.poll() is not None

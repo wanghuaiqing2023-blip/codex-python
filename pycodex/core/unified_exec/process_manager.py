@@ -438,6 +438,7 @@ class UnifiedExecProcessManager:
         self.deterministic_process_ids = deterministic_process_ids
         self._processes: dict[int, ProcessEntry] = {}
         self._reserved_process_ids: set[int] = set()
+        self._exit_watchers: dict[int, threading.Thread] = {}
 
     def exec_command(self, request: Any) -> Any:
         command = tuple(getattr(request, "command", ()) or ())
@@ -568,6 +569,7 @@ class UnifiedExecProcessManager:
 
     def release_process_id(self, process_id: int) -> ProcessEntry | None:
         self._reserved_process_ids.discard(process_id)
+        self._exit_watchers.pop(process_id, None)
         entry = self._processes.pop(process_id, None)
         if entry is not None:
             close = getattr(entry.process, "close", None)
@@ -598,6 +600,47 @@ class UnifiedExecProcessManager:
         self._reserved_process_ids.add(process_id)
         self._processes[process_id] = entry
         return self.prune_processes_if_needed()
+
+    def watch_process_exit(
+        self,
+        process_id: int,
+        *,
+        session_ref: Any,
+        turn_ref: Any,
+        call_id: str,
+        command: Iterable[str],
+        cwd: Any,
+        event_loop: Any = None,
+    ) -> threading.Thread | None:
+        """Start Rust's one-shot async watcher for a retained process."""
+
+        entry = self._processes.get(process_id)
+        if entry is None:
+            return None
+        existing = self._exit_watchers.get(process_id)
+        if existing is not None:
+            return existing
+        transcript = getattr(entry.process, "transcript", None)
+        transcript = transcript() if callable(transcript) else transcript
+        if not isinstance(transcript, HeadTailBuffer):
+            return None
+
+        from .async_watcher import spawn_exit_watcher
+
+        watcher = spawn_exit_watcher(
+            entry.process,
+            session_ref,
+            turn_ref,
+            str(call_id),
+            tuple(str(part) for part in command),
+            cwd,
+            process_id,
+            transcript,
+            entry.last_used,
+            event_loop=event_loop,
+        )
+        self._exit_watchers[process_id] = watcher
+        return watcher
 
     def get_process(self, process_id: int) -> ProcessEntry | None:
         return self._processes.get(process_id)
@@ -635,6 +678,7 @@ class UnifiedExecProcessManager:
         entries = tuple(self._processes.values())
         self._processes.clear()
         self._reserved_process_ids.clear()
+        self._exit_watchers.clear()
         for entry in entries:
             terminate = getattr(entry.process, "terminate", None)
             if callable(terminate):

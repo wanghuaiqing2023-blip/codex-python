@@ -35,6 +35,51 @@ GOAL_USAGE_HINT = "Example: /goal improve benchmark coverage"
 RAW_USAGE = "Usage: /raw [on|off]"
 KEYMAP_USAGE = "Usage: /keymap [debug]"
 
+# Rust baseline: ``codex-tui/prompt_for_init_command.md`` at the fixed porting
+# reference. This is product behavior data, so the Python port owns an exact
+# immutable copy and never reaches into the Rust checkout at runtime.
+INIT_PROMPT = """Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
+Follow the outline below, but adapt as needed — add sections if relevant, and omit those that do not apply to this project.
+
+Document Requirements
+
+- Title the document "Repository Guidelines".
+- Use Markdown headings (#, ##, etc.) for structure.
+- Keep the document concise. 200-400 words is optimal.
+- Keep explanations short, direct, and specific to this repository.
+- Provide examples where helpful (commands, directory paths, naming patterns).
+- Maintain a professional, instructional tone.
+
+Recommended Sections
+
+Project Structure & Module Organization
+
+- Outline the project structure, including where the source code, tests, and assets are located.
+
+Build, Test, and Development Commands
+
+- List key commands for building, testing, and running locally (e.g., npm test, make build).
+- Briefly explain what each command does.
+
+Coding Style & Naming Conventions
+
+- Specify indentation rules, language-specific style preferences, and naming patterns.
+- Include any formatting or linting tools used.
+
+Testing Guidelines
+
+- Identify testing frameworks and coverage requirements.
+- State test naming conventions and how to run tests.
+
+Commit & Pull Request Guidelines
+
+- Summarize commit message conventions found in the project’s Git history.
+- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).
+
+(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions.
+""".replace("\n", "\r\n")
+
 
 class SlashCommandDispatchSource(Enum):
     LIVE = "live"
@@ -988,11 +1033,7 @@ class TerminalSlashCommandEffectDispatcher:
                 "AGENTS.md already exists here. Skipping /init to avoid overwriting it."
             )
             return self._handled(command)
-        prompt_path = Path(__file__).parents[3] / "codex" / "codex-rs" / "tui" / "prompt_for_init_command.md"
-        prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else (
-            "Create an AGENTS.md file that explains how to work effectively in this repository."
-        )
-        return TerminalPromptDispatchResult("submit", prompt=prompt, command=command)
+        return TerminalPromptDispatchResult("submit", prompt=INIT_PROMPT, command=command)
 
     def _goal(self, command: SlashCommand, args: str) -> TerminalPromptDispatchResult:
         thread_id = getattr(self.app_runtime.routing_state, "active_thread_id", None)
@@ -1449,6 +1490,7 @@ __all__ = [
     "GOAL_USAGE",
     "GOAL_USAGE_HINT",
     "GuardResult",
+    "INIT_PROMPT",
     "PreparedSlashCommandArgs",
     "PreparedUserMessage",
     "QueueDrain",

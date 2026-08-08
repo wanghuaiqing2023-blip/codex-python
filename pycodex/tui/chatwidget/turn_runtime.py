@@ -27,6 +27,7 @@ from .rate_limits import (
     app_server_rate_limit_error_kind,
     is_app_server_cyber_policy_error,
 )
+from .warnings import WarningDisplayState
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -170,17 +171,6 @@ class StatusState:
     retry_status_header: Optional[str] = None
     pending_status_indicator_restore: bool = False
     terminal_title_status_kind: TerminalTitleStatusKind = TerminalTitleStatusKind.IDLE
-
-
-@dataclass
-class WarningDisplayState:
-    seen: Set[str] = field(default_factory=set)
-
-    def should_display(self, message: str) -> bool:
-        if message in self.seen:
-            return False
-        self.seen.add(message)
-        return True
 
 
 @dataclass

@@ -445,11 +445,15 @@ def test_terminal_runtime_turn_input_arbitrates_interrupt_without_losing_text(mo
     interrupt_event = runner._poll_turn_input(0.0)
     assert runner._handle_turn_input(interrupt_event) is True
 
-    assert [op.kind for _thread_id, op in active_runtime.submitted] == ["Interrupt"]
+    assert active_runtime.submitted == []
+    assert runner._bottom_pane.composer.current_text() == ""
+    runner._handle_turn_input(TerminalInputEvent("up"))
     assert runner._bottom_pane.composer.current_text() == "你"
     composer_source = runner._get_composer_input_source()
     assert composer_source.poll(0.0) == TerminalInputEvent("eof")
 
+    runner._bottom_pane.sync_draft("")
+    assert runner._handle_turn_input(TerminalInputEvent("interrupt")) is True
     assert runner._handle_turn_input(TerminalInputEvent("escape")) is True
     assert [op.kind for _thread_id, op in active_runtime.submitted] == [
         "Interrupt",

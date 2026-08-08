@@ -49,8 +49,13 @@ from pycodex.core.codex_thread import (
 )
 from pycodex.core.compact_remote import normalize_history_for_prompt
 from pycodex.core.context_manager.history import (
+    estimate_token_count_with_base_instructions,
     process_history_item as _context_manager_process_history_item,
     process_history_items as _context_manager_process_history_items,
+)
+from pycodex.core.state.auto_compact_window import (
+    AutoCompactWindow,
+    AutoCompactWindowSnapshot,
 )
 from pycodex.core.state.session import SessionState
 from pycodex.core.state.additional_context import AdditionalContextStore
@@ -86,6 +91,7 @@ from pycodex.protocol import (
     AdditionalPermissionProfile,
     ApprovalsReviewer,
     AskForApproval,
+    AutoCompactTokenLimitScope,
     BaseInstructions,
     CodexErrorInfo,
     CollaborationMode,
@@ -247,6 +253,7 @@ class Session:
     flush_rollout_count: int = 0
     compacted_items: list[CompactedItem] = field(default_factory=list)
     token_usage_info: TokenUsageInfo | None = None
+    auto_compact_window: AutoCompactWindow = field(default_factory=AutoCompactWindow)
     latest_rate_limits: RateLimitSnapshot | None = None
     server_reasoning_included: bool = False
     models_etag: str | None = None
@@ -819,6 +826,7 @@ class Session:
             raise TypeError("items must be a list or tuple of ResponseItem or mapping")
         await self.set_reference_context_item(reference_context_item)
         self.history = [_response_item(item) for item in items]
+        self.auto_compact_window.clear_prefill()
 
     async def replace_compacted_history(
         self,
@@ -1099,6 +1107,8 @@ class Session:
         state = self._session_state_snapshot()
         state.update_token_info_from_usage(token_usage, model_context_window)
         self.token_usage_info = state.token_info()
+        if _auto_compact_scope_is_body_after_prefix(turn_context):
+            self.auto_compact_window.ensure_server_observed_prefill_from_usage(token_usage)
         if self.token_usage_info is None:
             return
         extensions = getattr(self.services, "extensions", None)
@@ -1116,6 +1126,44 @@ class Session:
             )
             if inspect.isawaitable(result):
                 await result
+
+    async def update_token_usage_info(
+        self,
+        turn_context: TurnContext,
+        token_usage: TokenUsage | None,
+    ) -> None:
+        await self.record_token_usage_info(turn_context, token_usage)
+        await self.send_token_count_event(turn_context)
+
+    async def recompute_token_usage(self, turn_context: TurnContext) -> None:
+        estimated_total_tokens = estimate_token_count_with_base_instructions(
+            self.history,
+            await self.get_base_instructions(),
+        )
+        if estimated_total_tokens is None:
+            return
+
+        current = self.token_usage_info or TokenUsageInfo(
+            total_token_usage=TokenUsage(),
+            last_token_usage=TokenUsage(),
+            model_context_window=None,
+        )
+        model_context_window = _turn_model_context_window(turn_context)
+        self.token_usage_info = TokenUsageInfo(
+            total_token_usage=current.total_token_usage,
+            last_token_usage=TokenUsage(total_tokens=max(estimated_total_tokens, 0)),
+            model_context_window=(
+                model_context_window
+                if model_context_window is not None
+                else current.model_context_window
+            ),
+        )
+        if _auto_compact_scope_is_body_after_prefix(turn_context):
+            self.auto_compact_window.set_estimated_prefill(estimated_total_tokens)
+        await self.send_token_count_event(turn_context)
+
+    def auto_compact_window_snapshot(self) -> AutoCompactWindowSnapshot:
+        return self.auto_compact_window.snapshot()
 
     async def set_total_tokens_full(self, turn_context: TurnContext) -> None:
         context_window = _turn_model_context_window(turn_context)
@@ -1805,6 +1853,14 @@ def _turn_model_context_window(turn_context: Any) -> int | None:
     if isinstance(percent, bool) or not isinstance(percent, int):
         percent = 95
     return max((resolved * max(percent, 0)) // 100, 0)
+
+
+def _auto_compact_scope_is_body_after_prefix(turn_context: Any) -> bool:
+    config = getattr(turn_context, "config", None)
+    scope = getattr(config, "model_auto_compact_token_limit_scope", None)
+    if isinstance(scope, AutoCompactTokenLimitScope):
+        return scope is AutoCompactTokenLimitScope.BODY_AFTER_PREFIX
+    return scope == AutoCompactTokenLimitScope.BODY_AFTER_PREFIX.value
 
 
 def _retarget_workspace_roots(roots: tuple[Path, ...], old_cwd: Path, new_cwd: Path) -> tuple[Path, ...]:

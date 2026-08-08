@@ -38,6 +38,7 @@ class TerminalBottomPaneState:
     footer_text: str = ""
     footer_right_text: str = ""
     footer_lines: tuple[str, ...] = ()
+    supplemental_footer_lines: tuple[str, ...] = ()
     live_status_text: str | None = None
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = ()
     popup_cursor: tuple[int, int] | None = None
@@ -57,7 +58,7 @@ class TerminalBottomPaneState:
 
     @property
     def footer_height(self) -> int:
-        return max(1, len(self.footer_lines))
+        return len(self.supplemental_footer_lines) + max(1, len(self.footer_lines))
 
 
 @dataclass(frozen=True)
@@ -101,6 +102,7 @@ class TerminalBottomPaneRenderContextProtocol(Protocol):
     active_tail_lines: tuple[object, ...]
     composer_height: int
     footer_lines: tuple[str, ...]
+    supplemental_footer_lines: tuple[str, ...]
     footer_height: int
 
 
@@ -169,6 +171,7 @@ class TerminalBottomPaneRenderRequest:
     composer_projection: object | None = None
     footer_right_text: str = ""
     footer_lines: tuple[str, ...] = ()
+    supplemental_footer_lines: tuple[str, ...] = ()
     check_resize: bool = True
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = ()
     popup_cursor: tuple[int, int] | None = None
@@ -193,6 +196,7 @@ class TerminalBottomPaneRenderRequest:
             footer_text=self.footer_text,
             footer_right_text=self.footer_right_text,
             footer_lines=self.footer_lines,
+            supplemental_footer_lines=self.supplemental_footer_lines,
             popup_lines=self.popup_lines,
             popup_cursor=self.popup_cursor,
             live_status=self.live_status,
@@ -291,6 +295,11 @@ def terminal_bottom_pane_render_request(
             if popup_replaces_footer
             else tuple(getattr(render_context, "footer_lines", ()))
         ),
+        supplemental_footer_lines=(
+            ()
+            if popup_replaces_footer
+            else tuple(getattr(render_context, "supplemental_footer_lines", ()))
+        ),
         popup_lines=tuple(render_context.popup_lines),
         popup_cursor=getattr(render_context, "popup_cursor", None),
         active_tail_lines=tuple(getattr(render_context, "active_tail_lines", ())),
@@ -382,6 +391,7 @@ def terminal_bottom_pane_render_plan(
     active_tail_lines: tuple[object, ...] = (),
     footer_right_text: str = "",
     footer_lines: tuple[str, ...] = (),
+    supplemental_footer_lines: tuple[str, ...] = (),
 ) -> TerminalBottomPaneActionPlan:
     """Plan rendering the real-terminal bottom pane."""
 
@@ -397,6 +407,7 @@ def terminal_bottom_pane_render_plan(
             footer_text=footer_text,
             footer_right_text=footer_right_text,
             footer_lines=tuple(footer_lines),
+            supplemental_footer_lines=tuple(supplemental_footer_lines),
             live_status_text=live_status.render_text,
             popup_lines=tuple(popup_lines),
             popup_cursor=popup_cursor,

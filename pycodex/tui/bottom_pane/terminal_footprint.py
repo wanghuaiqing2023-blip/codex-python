@@ -99,6 +99,7 @@ class TerminalBottomPaneLayoutRows:
     composer_rows: tuple[int, ...]
     popup_rows: tuple[int, ...]
     footer_rows: tuple[int, ...]
+    supplemental_footer_rows: tuple[int, ...] = ()
     active_tail_rows: tuple[int, ...] = ()
 
     @property
@@ -183,6 +184,7 @@ def terminal_bottom_pane_layout_rows(
     composer_height: int = 1,
     clear_composer_height: int = 1,
     footer_height: int = 1,
+    supplemental_footer_height: int = 0,
     clear_footer_height: int = 1,
     viewport_area: object | None = None,
 ) -> TerminalBottomPaneLayoutRows:
@@ -269,19 +271,27 @@ def terminal_bottom_pane_layout_rows(
             composer_rows=composer_rows,
             popup_rows=tuple(rows[cursor:-1])[: int(popup_height)],
             footer_rows=(rows[-1],),
+            supplemental_footer_rows=(),
             active_tail_rows=active_tail_rows,
         )
 
-    visible_footer_height = max(1, int(footer_height))
+    supplemental_height = max(0, int(supplemental_footer_height))
+    visible_footer_height = max(1, int(footer_height) - supplemental_height)
     footer_start = max(0, len(content_rows) - visible_footer_height)
     composer_end = max(0, footer_start - 1)
     composer_start = max(0, composer_end - max(1, int(composer_height)))
+    supplemental_start = current_status_height
     return TerminalBottomPaneLayoutRows(
         clear_rows=clear_rows,
         live_status_rows=tuple(content_rows[:current_status_height]),
         composer_rows=tuple(content_rows[composer_start:composer_end]),
         popup_rows=(),
         footer_rows=tuple(content_rows[footer_start:]),
+        supplemental_footer_rows=tuple(
+            content_rows[
+                supplemental_start : supplemental_start + supplemental_height
+            ]
+        ),
         active_tail_rows=active_tail_rows,
     )
 

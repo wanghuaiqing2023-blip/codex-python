@@ -84,6 +84,7 @@ def test_apply_patch_custom_tool_call_creates_file(tmp_path):
         output,
     )
     assert (tmp_path / file_name).read_text() == "custom tool content\n"
+    assert (tmp_path / file_name).read_bytes() == b"custom tool content\n"
 
 
 def test_apply_patch_custom_tool_call_updates_existing_file(tmp_path):

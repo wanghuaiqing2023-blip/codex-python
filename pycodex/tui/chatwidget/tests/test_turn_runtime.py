@@ -250,18 +250,26 @@ def test_finalize_turn_clears_running_state_without_clearing_mcp_startup() -> No
     assert runtime.pending_rate_limit_prompt_checks == 1
 
 
-def test_on_warning_deduplicates_messages_and_requests_redraw() -> None:
+def test_on_warning_repeats_general_messages_and_only_deduplicates_fallback_metadata() -> None:
+    # Rust: chatwidget::warnings::WarningDisplayState only tracks fallback
+    # model-metadata slugs; ordinary warnings (including /compact) repeat.
     runtime = ChatWidgetTurnRuntime()
+    fallback = (
+        "Model metadata for `gpt-test` not found. Defaulting to fallback "
+        "metadata; this can degrade performance and cause issues."
+    )
 
     runtime.on_warning("careful")
     runtime.on_warning("careful")
-    runtime.on_warning("different")
+    runtime.on_warning(fallback)
+    runtime.on_warning(fallback)
 
     assert runtime.history == [
         {"kind": "warning", "message": "careful"},
-        {"kind": "warning", "message": "different"},
+        {"kind": "warning", "message": "careful"},
+        {"kind": "warning", "message": fallback},
     ]
-    assert runtime.redraw_requests == 2
+    assert runtime.redraw_requests == 3
 
 
 def test_on_plan_update_records_progress_and_history() -> None:

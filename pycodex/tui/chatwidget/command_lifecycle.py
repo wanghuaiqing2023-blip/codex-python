@@ -20,6 +20,7 @@ from .exec_state import (
     UnifiedExecWaitState,
     UnifiedExecWaitStreak,
     command_execution_command_and_parsed,
+    is_standard_tool_call,
     is_unified_exec_source,
 )
 
@@ -84,6 +85,7 @@ class CommandLifecycleState:
     set_active_cell: Optional[Callable[[object | None], Any]] = None
     redraw_sink: Optional[Callable[[], Any]] = None
     ensure_status_indicator_sink: Optional[Callable[[], Any]] = None
+    unified_exec_processes_sink: Optional[Callable[[List[str]], Any]] = None
 
     def bind_history_projection(
         self,
@@ -103,6 +105,13 @@ class CommandLifecycleState:
         ensure_status_indicator: Callable[[], Any],
     ) -> None:
         self.ensure_status_indicator_sink = ensure_status_indicator
+
+    def bind_unified_exec_processes_projection(
+        self,
+        sink: Callable[[List[str]], Any],
+    ) -> None:
+        self.unified_exec_processes_sink = sink
+        sink(list(self.footer_processes))
 
     def flush_unified_exec_wait_streak(self) -> Optional[UnifiedExecInteractionCell]:
         wait = self.unified_exec_wait_streak
@@ -144,6 +153,8 @@ class CommandLifecycleState:
 
     def sync_unified_exec_footer(self) -> List[str]:
         self.footer_processes = [process.command_display for process in self.unified_exec_processes]
+        if self.unified_exec_processes_sink is not None:
+            self.unified_exec_processes_sink(list(self.footer_processes))
         return list(self.footer_processes)
 
     def track_unified_exec_output_chunk(self, call_id: str, chunk: Union[bytes, str]) -> bool:
@@ -202,7 +213,7 @@ class CommandLifecycleState:
             if not self.bottom_pane_task_running:
                 return
             self.ensure_status_indicator()
-            if not parsed_cmd:
+            if not is_standard_tool_call(parsed_cmd):
                 return
         self.handle_command_execution_started_now(item)
 

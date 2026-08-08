@@ -34,6 +34,7 @@ from pycodex.core.config.edit import (
 )
 from pycodex.app_server.bespoke_event_handling import turn_plan_updated_notification
 from pycodex.exec.local_runtime import (
+    _local_http_auth_for_recovered_manager,
     _local_http_prompt_visible_rollout_items,
     create_exec_core_session,
     final_text_from_local_http_exec_result,
@@ -2300,7 +2301,17 @@ class CoreExecActiveThreadRuntime:
                         observed_live_kinds.add(notification.kind)
                         continue
                     observed_live_kinds.add(notification.kind)
-                    active_turn.put(notification)
+                    if not active_turn.put(notification):
+                        # Rust's app-server event channel outlives an individual
+                        # turn. Late process-exit notifications must therefore
+                        # re-enter the idle app loop instead of being discarded
+                        # with the completed turn's stream.
+                        self._startup_app_server_events.put(
+                            {
+                                "kind": "ServerNotification",
+                                "notification": notification,
+                            }
+                        )
 
             try:
                 previous_session_config = self.session_config
@@ -2558,7 +2569,11 @@ class CoreExecActiveThreadRuntime:
                 )
                 from pycodex.core.client_common import Prompt
                 from pycodex.core.session.turn.sampler import PreparedSamplingRequest
-                from pycodex.protocol import BaseInstructions
+                from pycodex.protocol import (
+                    BaseInstructions,
+                    CodexErr,
+                    UnexpectedResponseError,
+                )
 
                 if self._core_session is None:
                     raise RuntimeError("compact operation requires an active core session")
@@ -2610,18 +2625,50 @@ class CoreExecActiveThreadRuntime:
                                 request
                             ),
                         )
-                        transport = http_transport_config_from_provider(
-                            model_client,
-                            provider,
-                            auth=runtime.auth,
-                            endpoint=runtime.endpoint,
-                            timeout=runtime.timeout,
+                        auth_recovery = (
+                            runtime.auth_manager.unauthorized_recovery()
+                            if runtime.auth_manager is not None
+                            else None
                         )
-                        result = await send_prepared_http_sampling_request_live(
-                            prepared,
-                            transport,
-                            opener=runtime.opener,
-                        )
+                        while True:
+                            transport = http_transport_config_from_provider(
+                                model_client,
+                                provider,
+                                auth=_local_http_auth_for_recovered_manager(
+                                    runtime.auth_manager,
+                                    runtime.auth,
+                                ),
+                                endpoint=runtime.endpoint,
+                                timeout=runtime.timeout,
+                            )
+                            try:
+                                result = await send_prepared_http_sampling_request_live(
+                                    prepared,
+                                    transport,
+                                    opener=runtime.opener,
+                                )
+                                break
+                            except CodexErr as exc:
+                                payload = exc.payload
+                                unauthorized = (
+                                    exc.kind == "unexpected_status"
+                                    and isinstance(payload, UnexpectedResponseError)
+                                    and payload.status == 401
+                                )
+                                if (
+                                    not unauthorized
+                                    or auth_recovery is None
+                                    or not auth_recovery.has_next()
+                                ):
+                                    raise
+                                try:
+                                    await auth_recovery.next()
+                                except Exception as refresh_exc:
+                                    error = getattr(refresh_exc, "error", refresh_exc)
+                                    raise CodexErr(
+                                        "refresh_token_failed",
+                                        payload=error,
+                                    ) from refresh_exc
 
                         async def events() -> Any:
                             for event in result.stream_events:
@@ -6773,6 +6820,22 @@ def _server_notifications_from_session_event(
                 },
             ),
         )
+    if event_type == "warning":
+        message = _field(payload, "message", None)
+        if not isinstance(message, str) or not message:
+            return ()
+        return (
+            ServerNotification(
+                "Warning",
+                {
+                    "thread_id": _thread_id_value(
+                        _field(payload, "thread_id", thread_id)
+                    ),
+                    "turn_id": _field(payload, "turn_id", turn_id),
+                    "message": message,
+                },
+            ),
+        )
     if event_type == "stream_error":
         message = _field(payload, "message", None)
         if not isinstance(message, str) or not message:
@@ -6823,6 +6886,32 @@ def _server_notifications_from_session_event(
         return (_turn_completed_notification(thread_id, turn_id, SimpleNamespace(turn_status="completed")),)
     if event_type in {"task_aborted", "turn_aborted"}:
         return (_turn_interrupted_notification(thread_id, turn_id),)
+    if event_type == "exec_command_end":
+        from pycodex.core.tools.events import build_command_execution_end_item
+        from pycodex.protocol import ExecCommandEndEvent
+
+        if not isinstance(payload, ExecCommandEndEvent):
+            return ()
+        item = _chatwidget_item_from_turn_item(
+            build_command_execution_end_item(payload)
+        )
+        if item is None:
+            return ()
+        item_id = item.get("id")
+        if isinstance(item_id, str) and completed_commands is not None:
+            completed_commands.add(item_id)
+        completed_at_ms = payload.completed_at_ms or int(time.time() * 1000)
+        return (
+            ServerNotification(
+                "ItemCompleted",
+                {
+                    "thread_id": thread_id,
+                    "turn_id": payload.turn_id or turn_id,
+                    "completed_at_ms": completed_at_ms,
+                    "item": item,
+                },
+            ),
+        )
     if event_type in {"item_started", "item_completed"}:
         item = _chatwidget_item_from_turn_item(_field(payload, "item"))
         if item is None:
@@ -7005,6 +7094,14 @@ def _command_completion_notifications_from_result(
             continue
         started = pending_commands.get(call_id)
         if started is None:
+            continue
+        if (
+            started.get("source") == "unified_exec_startup"
+            and started.get("process_id") is not None
+        ):
+            # Rust keeps a live unified-exec startup open after turn completion;
+            # its process watcher (or /stop) owns the later completion. A model
+            # tool response is only the initial output snapshot, not an end.
             continue
         completed = dict(started)
         completed["status"] = "Completed" if _tool_output_success(item) is not False else "Failed"

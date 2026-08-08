@@ -104,6 +104,17 @@ def test_thread_rate_limits_notification_caches_display_snapshot_at_receipt() ->
     assert compose_rate_limit_data_many([cached], cached.captured_at).kind == "available"
 
 
+def test_warning_notification_is_projected_to_terminal_history() -> None:
+    """Rust ``ChatWidget::on_warning`` immediately inserts a warning cell."""
+
+    runtime = ChatWidgetProtocolRuntime()
+
+    runtime.handle(ServerNotification("Warning", {"message": "compact warning"}))
+
+    assert len(runtime.history) == 1
+    assert line_text(runtime.history[0].display_lines(80)[0]) == "! compact warning"
+
+
 def test_settled_mcp_startup_hides_stale_status_indicator() -> None:
     runtime = ChatWidgetProtocolRuntime()
     runtime.mcp_startup.set_mcp_startup_expected_servers(["delayed"])

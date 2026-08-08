@@ -247,6 +247,7 @@ def terminal_bottom_pane_frame(
         composer_height=composer_projection.height,
         clear_composer_height=clear_composer_height,
         footer_height=state.footer_height,
+        supplemental_footer_height=len(state.supplemental_footer_lines),
         clear_footer_height=clear_footer_height,
         viewport_area=viewport_area,
     )
@@ -258,6 +259,18 @@ def terminal_bottom_pane_frame(
         writes.append(_active_tail_frame_write(row, line))
     for row, line in zip(layout.live_status_rows, live_status_projection.lines):
         writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
+
+    if not state.popup_lines:
+        for row, line in zip(
+            layout.supplemental_footer_rows,
+            state.supplemental_footer_lines,
+        ):
+            semantic_spans = (
+                line.semantic_spans
+                if isinstance(line, TerminalStyledText)
+                else ()
+            )
+            writes.append(_semantic_frame_write(row, str(line), semantic_spans))
 
     composer_semantic_spans = tuple(
         getattr(composer_projection, "line_semantic_spans", ())
@@ -281,8 +294,9 @@ def terminal_bottom_pane_frame(
                     line.spans,
                 )
             )
+    footer_rows = iter(layout.footer_rows)
     if state.footer_lines and not state.popup_lines:
-        for row, line in zip(layout.footer_rows, state.footer_lines):
+        for row, line in zip(footer_rows, state.footer_lines):
             semantic_spans = (
                 line.semantic_spans
                 if isinstance(line, TerminalStyledText)
@@ -297,7 +311,7 @@ def terminal_bottom_pane_frame(
         ).line
         writes.append(
             _footer_frame_write(
-                layout.footer_row,
+                next(footer_rows, layout.footer_row),
                 footer_line,
                 state.footer_right_text,
             )

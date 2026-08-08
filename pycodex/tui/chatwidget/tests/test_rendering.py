@@ -339,3 +339,20 @@ def test_desired_height_cursor_pos_and_style_delegate_to_composed_renderable() -
     assert desired_height(widget, 20) == 6
     assert cursor_pos(widget, Rect(0, 0, 20, 5)) == (4, 1)
     assert cursor_style(widget, Rect(0, 0, 20, 5)) == "bar"
+
+
+def test_terminal_bottom_pane_frame_renders_unified_exec_and_idle_footers() -> None:
+    frame = terminal_bottom_pane_frame(
+        os.terminal_size((80, 12)),
+        TerminalBottomPaneState(
+            draft="",
+            footer_text="gpt-test high",
+            supplemental_footer_lines=("  1 background terminal running",),
+        ),
+    )
+
+    assert frame.writes == (
+        TerminalBottomPaneFrameWrite(8, 1, "  1 background terminal running"),
+        TerminalBottomPaneFrameWrite(10, 1, "› "),
+        TerminalBottomPaneFrameWrite(12, 1, "gpt-test high"),
+    )

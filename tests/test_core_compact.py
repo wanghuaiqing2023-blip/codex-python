@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from pycodex.core.compact import (
     COMPACT_USER_MESSAGE_MAX_TOKENS,
@@ -11,11 +12,18 @@ from pycodex.core.compact import (
     collect_user_messages,
     compaction_status_from_result,
     content_items_to_text,
+    drain_to_completed,
     insert_initial_context_before_last_real_user_or_summary,
     is_summary_message,
     should_use_remote_compact_task,
 )
-from pycodex.protocol import DEFAULT_IMAGE_DETAIL, ContentItem, ResponseItem
+from pycodex.protocol import (
+    DEFAULT_IMAGE_DETAIL,
+    ContentItem,
+    RateLimitSnapshot,
+    ResponseItem,
+    TokenUsage,
+)
 
 
 def user_message(text: str) -> ResponseItem:
@@ -38,6 +46,152 @@ class CodexLikeError(RuntimeError):
     def __init__(self, kind: str) -> None:
         super().__init__(kind)
         self.kind = kind
+
+
+class CompactStream:
+    def __init__(self, *events: object) -> None:
+        self.events = events
+
+    async def stream(self, *_args: object):
+        async def events():
+            for event in self.events:
+                yield event
+
+        return events()
+
+
+def compact_turn_context() -> SimpleNamespace:
+    return SimpleNamespace(
+        model_info=object(),
+        session_telemetry=object(),
+        reasoning_effort=None,
+        reasoning_summary=None,
+        config=SimpleNamespace(service_tier=None),
+    )
+
+
+class RecordingCompactStreamSession:
+    def __init__(self) -> None:
+        self.conversation_items: list[ResponseItem] = []
+        self.reasoning_included: list[bool] = []
+        self.rate_limits: list[RateLimitSnapshot] = []
+        self.token_usage: list[TokenUsage | None] = []
+
+    async def record_conversation_items(
+        self,
+        _turn_context: object,
+        items: list[ResponseItem],
+    ) -> None:
+        self.conversation_items.extend(items)
+
+    async def set_server_reasoning_included(self, included: bool) -> None:
+        self.reasoning_included.append(included)
+
+    async def update_rate_limits(
+        self,
+        _turn_context: object,
+        snapshot: RateLimitSnapshot,
+    ) -> None:
+        if not isinstance(snapshot, RateLimitSnapshot):
+            raise TypeError("new_rate_limits must be RateLimitSnapshot")
+        self.rate_limits.append(snapshot)
+
+    async def record_token_usage_info(
+        self,
+        _turn_context: object,
+        usage: TokenUsage | None,
+    ) -> None:
+        self.token_usage.append(usage)
+
+    async def update_token_usage_info(
+        self,
+        turn_context: object,
+        usage: TokenUsage | None,
+    ) -> None:
+        await self.record_token_usage_info(turn_context, usage)
+
+
+class CompactStreamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_drain_uses_client_output_item_done_event_field(self) -> None:
+        # Rust match arm: ResponseEvent::OutputItemDone(item).
+        item = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("summary"),),
+        )
+        session = RecordingCompactStreamSession()
+        stream = CompactStream(
+            {"type": "output_item_done", "item": item},
+            {"type": "completed", "token_usage": None},
+        )
+
+        await drain_to_completed(session, compact_turn_context(), stream, None, {})
+
+        self.assertEqual(session.conversation_items, [item])
+        self.assertEqual(session.token_usage, [None])
+
+    async def test_drain_uses_client_server_reasoning_event_field(self) -> None:
+        # Rust crate/module: codex-core::compact::drain_to_completed.
+        # Rust match arm: ResponseEvent::ServerReasoningIncluded(included).
+        session = RecordingCompactStreamSession()
+        stream = CompactStream(
+            {
+                "type": "server_reasoning_included",
+                "server_reasoning_included": False,
+            },
+            {"type": "completed", "token_usage": None},
+        )
+
+        await drain_to_completed(session, compact_turn_context(), stream, None, {})
+
+        self.assertEqual(session.reasoning_included, [False])
+
+    async def test_drain_uses_client_rate_limits_event_field(self) -> None:
+        # Rust crate/module: codex-core::compact::drain_to_completed.
+        # Rust match arm: ResponseEvent::RateLimits(snapshot).
+        snapshot = RateLimitSnapshot(limit_id="codex")
+        session = RecordingCompactStreamSession()
+        stream = CompactStream(
+            {"type": "rate_limits", "rate_limits": snapshot},
+            {"type": "completed", "token_usage": None},
+        )
+
+        await drain_to_completed(session, compact_turn_context(), stream, None, {})
+
+        self.assertEqual(session.rate_limits, [snapshot])
+        self.assertEqual(session.token_usage, [None])
+
+    async def test_drain_records_completed_token_usage(self) -> None:
+        # Rust crate/module: codex-core::compact::drain_to_completed.
+        # Rust match arm: ResponseEvent::Completed { token_usage, .. }.
+        session = RecordingCompactStreamSession()
+        stream = CompactStream(
+            {
+                "type": "completed",
+                "response_id": "response-compact",
+                "token_usage": {
+                    "input_tokens": 4,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens": 2,
+                    "output_tokens_details": None,
+                    "total_tokens": 6,
+                },
+            }
+        )
+
+        await drain_to_completed(session, compact_turn_context(), stream, None, {})
+
+        self.assertEqual(
+            session.token_usage,
+            [
+                TokenUsage(
+                    input_tokens=4,
+                    cached_input_tokens=0,
+                    output_tokens=2,
+                    reasoning_output_tokens=0,
+                    total_tokens=6,
+                )
+            ],
+        )
 
 
 class CompactTests(unittest.TestCase):

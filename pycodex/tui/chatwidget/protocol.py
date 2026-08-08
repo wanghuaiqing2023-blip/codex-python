@@ -364,6 +364,12 @@ class ChatWidgetProtocolRuntime:
     def bind_terminal_title_refresh(self, sink: Callable[[], Any] | None) -> None:
         self.terminal_title_refresh_sink = sink
 
+    def bind_unified_exec_processes_sink(
+        self,
+        sink: Callable[[list[str]], Any],
+    ) -> None:
+        self.command_lifecycle.bind_unified_exec_processes_projection(sink)
+
     def refresh_terminal_title(self) -> None:
         if self.terminal_title_refresh_sink is not None:
             self.terminal_title_refresh_sink()
@@ -1165,7 +1171,9 @@ class ChatWidgetProtocolRuntime:
                 self.add_to_history(new_cyber_policy_error_event())
 
     def on_warning(self, message: Any) -> None:
+        history_start = len(self.turn.history)
         self.turn.on_warning(message)
+        self._project_new_turn_error_history(history_start)
 
     def on_plan_delta(self, delta: str) -> None:
         self._sync_collaboration_mode_state()

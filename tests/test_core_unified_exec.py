@@ -1,9 +1,11 @@
+import asyncio
 import gc
 import sys
 import threading
 import time
 import unittest
 import warnings
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -866,6 +868,63 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(followup.exit_code, 0)
         self.assertIn(b"late", followup.raw_output)
         self.assertIsNone(manager.get_process(process_id))
+
+    def test_process_manager_exit_watcher_emits_one_rust_shaped_end_event(self) -> None:
+        """Port ``async_watcher::spawn_exit_watcher`` for retained processes."""
+
+        events = []
+
+        class Session:
+            async def send_event(self, _turn, event) -> None:
+                events.append(event)
+
+        async def scenario() -> None:
+            manager = UnifiedExecProcessManager()
+            process_id = manager.allocate_process_id()
+            output = manager.exec_command(
+                SimpleNamespace(
+                    command=(
+                        sys.executable,
+                        "-c",
+                        "import time; time.sleep(0.6); print('watcher done')",
+                    ),
+                    process_id=process_id,
+                    yield_time_ms=250,
+                    max_output_tokens=None,
+                    cwd=None,
+                    environment=None,
+                    hook_command="python self exiting",
+                    tty=False,
+                    truncation_policy=TruncationPolicyConfig.tokens(10_000),
+                )
+            )
+            self.assertEqual(output.process_id, process_id)
+
+            kwargs = {
+                "session_ref": Session(),
+                "turn_ref": SimpleNamespace(turn_id="turn-watcher"),
+                "call_id": "call-watcher",
+                "command": (sys.executable, "-c", "self exiting"),
+                "cwd": Path.cwd(),
+                "event_loop": asyncio.get_running_loop(),
+            }
+            first = manager.watch_process_exit(process_id, **kwargs)
+            second = manager.watch_process_exit(process_id, **kwargs)
+            self.assertIs(first, second)
+
+            deadline = time.monotonic() + 5.0
+            while not events and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)
+            self.assertEqual(len(events), 1)
+            event = events[0]
+            self.assertEqual(event.type, "exec_command_end")
+            self.assertEqual(event.payload.call_id, "call-watcher")
+            self.assertEqual(event.payload.process_id, str(process_id))
+            self.assertEqual(event.payload.turn_id, "turn-watcher")
+            self.assertEqual(event.payload.exit_code, 0)
+            self.assertIn("watcher done", event.payload.aggregated_output)
+
+        asyncio.run(scenario())
 
 
 class FakeUnifiedExecProcess:
